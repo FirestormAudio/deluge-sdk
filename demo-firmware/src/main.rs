@@ -275,6 +275,9 @@ pub extern "C" fn main() -> ! {
     info!("encoder: configuring interrupt-driven inputs...");
     unsafe { deluge_bsp::encoder::irq_init() };
 
+    info!("trigger_clock: configuring interrupt-driven input...");
+    unsafe { deluge_bsp::trigger_clock::irq_init() };
+
     debug!("enabling IRQ...");
     unsafe { cortex_ar::interrupt::enable() };
     debug!("IRQ enabled OK");

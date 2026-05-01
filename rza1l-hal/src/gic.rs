@@ -324,6 +324,25 @@ pub unsafe fn set_irq_both_edges(irq_num: u8) {
     }
 }
 
+/// Configure external interrupt `irq_num` (0–7) for **falling-edge** detection.
+///
+/// Programs ICR1 at `0xFCFEF802` (mode bits `01`).  Per the TRM the mode bits
+/// must be cleared to `0b00` (level-low) before writing the desired value.
+///
+/// # Safety
+/// Writes to MMIO.  Call before enabling the interrupt in the GIC.
+pub unsafe fn set_irq_falling_edge(irq_num: u8) {
+    unsafe {
+        const ICR1: usize = 0xFCFE_F802;
+        let shift = (irq_num * 2) as u32;
+        let mask = 0b11u16 << shift;
+        let ptr = ICR1 as *mut u16;
+        let cleared = ptr.read_volatile() & !mask;
+        ptr.write_volatile(cleared);
+        ptr.write_volatile(cleared | (0b01u16 << shift));
+    }
+}
+
 /// Clear the pending flag for external interrupt `irq_num` (0–7) in IRQRR.
 ///
 /// Must be called inside the IRQ handler body before returning; otherwise the

@@ -76,7 +76,10 @@ pub unsafe fn irq_init() {
             (0, 15, 36, 4, false),
             (5, 4, 33, 1, false),
             (8, 10, 32, 0, false),
-            (2, 3, 38, 6, false),
+            // SELECT: P1_14 (trigger-clock input) owns IRQ6 (GIC 38), so SELECT uses
+            // IRQ7 on P1_3 instead. A/B are swapped versus the polled wiring, so
+            // `invert = true` to keep CW = positive direction.
+            (3, 2, 39, 7, true),
         ];
 
         for &(irq_pin, comp_pin, _, _, _) in &SETUP {
@@ -94,13 +97,13 @@ pub unsafe fn irq_init() {
         rza1l_hal::gic::register(36, || enc_irq_handler(2, 0, 15, 4, false));
         rza1l_hal::gic::register(33, || enc_irq_handler(3, 5, 4, 1, false));
         rza1l_hal::gic::register(32, || enc_irq_handler(4, 8, 10, 0, false));
-        rza1l_hal::gic::register(38, || enc_irq_handler(5, 2, 3, 6, false));
+        rza1l_hal::gic::register(39, || enc_irq_handler(5, 3, 2, 7, true));
 
         for &(_, _, gic_id, _, _) in &SETUP {
             rza1l_hal::gic::set_priority(gic_id, 14);
             rza1l_hal::gic::enable(gic_id);
         }
 
-        info!("encoder: interrupt-driven init complete (IRQ0/1/2/3/4/6 → GIC 32–38)");
+        info!("encoder: interrupt-driven init complete (IRQ0/1/2/3/4/7 → GIC 32–36, 39)");
     }
 }
