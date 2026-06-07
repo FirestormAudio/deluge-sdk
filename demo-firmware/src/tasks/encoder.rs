@@ -1,7 +1,6 @@
 use core::sync::atomic::Ordering;
 use log::info;
 
-use crate::events::{EVENT_CHANNEL, HardwareEvent};
 use deluge_bsp::{controls, encoder, pic, scux_dvu_path};
 
 /// Map a 0–32 level to a 4-segment brightness bar.
@@ -78,10 +77,6 @@ pub(crate) async fn encoder_task() {
             let detents = encoder::take_detents(i, slot);
             if detents != 0 {
                 let encoder_id = i as u8;
-                let _ = EVENT_CHANNEL.try_send(HardwareEvent::EncoderRotated {
-                    id: encoder_id,
-                    delta: detents,
-                });
                 if encoder_id == controls::encoder::MOD_0 || encoder_id == controls::encoder::MOD_1
                 {
                     let k = if encoder_id == controls::encoder::MOD_0 {

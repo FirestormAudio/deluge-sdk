@@ -37,6 +37,7 @@ const OFF_NXLA: usize = 0x38; // Next link-descriptor address
 
 // ── CHCTRL bits ──────────────────────────────────────────────────────────────
 const CHCTRL_SETEN: u32 = 1 << 0; // Set enable  (start transfer)
+const CHCTRL_CLREN: u32 = 1 << 1; // Clear enable (stop transfer)
 const CHCTRL_SWRST: u32 = 1 << 3; // Software reset (clears status)
 const CHCTRL_CLRTC: u32 = 1 << 6; // Clear terminal count (TC bit)
 
@@ -185,6 +186,25 @@ pub unsafe fn channel_start(ch: u8) {
         // DSB required: drain write buffer so SWRST reaches the DMAC before SETEN.
         core::arch::asm!("dsb", options(nostack));
         chctrl.write_volatile(CHCTRL_SETEN);
+    }
+}
+
+/// Stop a DMA channel immediately: clear its enable bit, then software-reset
+/// it so any in-flight (including circular/peripheral-driven) transfer ceases.
+///
+/// Intended for use before handing the SoC to another program — a circular
+/// channel such as the SCIF RX DMA keeps writing to its buffer forever and is
+/// unaffected by masking CPU interrupts, so it must be stopped explicitly or
+/// it will corrupt the next program's memory.
+///
+/// # Safety
+/// Writes the channel's `CHCTRL` register.
+pub unsafe fn stop(ch: u8) {
+    unsafe {
+        let chctrl = ch_reg(ch, OFF_CHCTRL);
+        chctrl.write_volatile(CHCTRL_CLREN);
+        core::arch::asm!("dsb", options(nostack));
+        chctrl.write_volatile(CHCTRL_SWRST);
     }
 }
 

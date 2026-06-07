@@ -11,7 +11,7 @@ testing.
 
 ## Modules
 
-| Module | Hardware |
+| Module | Description |
 |---|---|
 | [`system`] | Clock gating (CPG / `StbConfig`), DMA channel map, single `init_clocks()` boot entry point |
 | [`sdram`] | 64 MB SDRAM (Micron MT48LC16M16A2P-75) — pin-mux, BSC registers, JEDEC init |
@@ -22,6 +22,9 @@ testing.
 | [`midi_gate`] | MTU2 one-shot timer for sub-millisecond precise gate-off scheduling (~1.92 µs resolution) |
 | [`oled`] | SSD1309 128×48 OLED — `FrameBuffer`, pixel API, DMA frame send via RSPI0; CS/RST handshaked through the PIC co-processor |
 | [`pic`] | PIC32 co-processor — 144-pad matrix, 36 buttons, 6 encoders, 36 LEDs, 7-segment display, gold knob indicators; dual-baud UART handshake (31 250 → 200 000 bps) |
+| [`controls`] | Stable human-readable IDs for buttons, encoder shaft clicks, rotation indices, and gold-knob indicator bars |
+| [`encoder`] | 6× rotary encoder IRQ accumulators (`ENCODER_DELTAS`) and detent extraction; wakes the firmware encoder task via `ENCODER_WAKER` |
+| [`pads`] | Lock-free shared pad state — 144 pads packed into 5 × `AtomicU32`; `pad_get` / `pad_toggle` for ISR-safe access |
 | [`uart`] | SCIF0 MIDI DIN (31 250 bps) + SCIF1 PIC UART; DMA-backed RX/TX |
 | [`sd`] | SDHI SD v2 card — full JEDEC init, block read/write, SDHC/SDXC auto-detect, DMA bounce buffer |
 | [`fat`] | `embedded-sdmmc` wrapper — `DelugeVolumeManager`, `DelugeBlockDevice`, FAT filesystem access |

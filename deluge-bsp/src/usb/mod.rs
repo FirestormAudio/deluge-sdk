@@ -39,6 +39,7 @@
 //! }
 //! ```
 
+pub mod bot;
 pub mod classes;
 pub mod driver;
 pub mod fifo;
@@ -179,6 +180,30 @@ pub unsafe fn init_host_mode(port: u8) -> (UsbPort<Host>, Rusb1HostDriver) {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/// Disconnect a device-mode port from the host and disable the SIE.
+///
+/// Clears the D+ pull-up (host sees SE0 / unplug), masks all USB interrupts, and
+/// clears `USBE`.  Use this to leave a USB mode cleanly; a later
+/// [`init_device_mode`] re-attaches and re-enumerates.
+///
+/// # Safety
+/// Writes USB registers; no transfer may be in flight.
+pub unsafe fn disconnect(port: u8) {
+    unsafe {
+        use regs::{Rusb1Regs, SYSCFG_DPRPU, SYSCFG_USBE, rmw, wr};
+        rusb1::int_disable(port);
+        let regs = Rusb1Regs::ptr(port);
+        // Pull-up off: host sees a disconnect.
+        rmw(core::ptr::addr_of_mut!((*regs).syscfg0), SYSCFG_DPRPU, 0);
+        wr(core::ptr::addr_of_mut!((*regs).intenb0), 0);
+        wr(core::ptr::addr_of_mut!((*regs).brdyenb), 0);
+        wr(core::ptr::addr_of_mut!((*regs).bempenb), 0);
+        // Clear USBE to reset the SIE.
+        let cur = regs::rd(core::ptr::addr_of!((*regs).syscfg0));
+        wr(core::ptr::addr_of_mut!((*regs).syscfg0), cur & !SYSCFG_USBE);
+    }
+}
 
 /// Bring a port to a quiescent state (USBE=0, interrupts off) before a mode
 /// switch.

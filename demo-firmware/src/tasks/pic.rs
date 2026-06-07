@@ -1,6 +1,5 @@
 use log::{debug, info};
 
-use crate::events::{EVENT_CHANNEL, HardwareEvent};
 use deluge_bsp::controls;
 use deluge_bsp::oled;
 use deluge_bsp::pads::{pad_invert_all, pad_set_all, pad_toggle};
@@ -36,8 +35,8 @@ pub(crate) async fn pic_task() {
         match event {
             // ---- Pad toggle ------------------------------------------------
             pic::Event::PadPress { id } => {
-                let lit = pad_toggle(id);
                 let (col, row) = pic::pad_coords(id);
+                let lit = pad_toggle(id);
                 info!(
                     "pad {} ({},{}) → {}",
                     id,
@@ -46,17 +45,12 @@ pub(crate) async fn pic_task() {
                     if lit { "on" } else { "off" }
                 );
                 oled::notify_redraw();
-                let _ = EVENT_CHANNEL.try_send(HardwareEvent::PadPressed { col, row });
             }
-            pic::Event::PadRelease { id } => {
-                let (col, row) = pic::pad_coords(id);
-                let _ = EVENT_CHANNEL.try_send(HardwareEvent::PadReleased { col, row });
-            }
+            pic::Event::PadRelease { .. } => {}
 
             // ---- Buttons ---------------------------------------------------
             pic::Event::ButtonPress { id } => {
                 info!("button {} press", id);
-                let _ = EVENT_CHANNEL.try_send(HardwareEvent::ButtonPressed { id });
                 if id == controls::encoder_button::TEMPO {
                     let enabled = crate::tasks::blink::toggle_heartbeat_enabled();
                     info!(
@@ -88,7 +82,6 @@ pub(crate) async fn pic_task() {
                 }
             }
             pic::Event::ButtonRelease { id } => {
-                let _ = EVENT_CHANNEL.try_send(HardwareEvent::ButtonReleased { id });
                 pic::led_off(id).await;
             }
 

@@ -32,6 +32,8 @@
 use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 
 use rza1l_hal::UNCACHED_MIRROR_OFFSET;
+use rza1l_hal::cache;
+use rza1l_hal::dmac;
 use rza1l_hal::sdhi::{self, SdhiError};
 
 // The Deluge SD card is on SDHI port 1.
@@ -171,6 +173,7 @@ pub async fn init() -> Result<(), SdError> {
     log::debug!("sd: init port {}", SD_PORT);
     CARD_READY.store(false, Ordering::Release);
 
+    // ---- Bring up the SDHI controller + pins (once) ----
     unsafe {
         // ---- SD pin mux: P7_0–7 → SDHI1 (function 3) ----
         rza1l_hal::gpio::set_pin_mux(7, 0, 3); // SD_CD1  — card detect
@@ -184,12 +187,72 @@ pub async fn init() -> Result<(), SdError> {
 
         sdhi::init(SD_PORT, crate::system::SD_OPTION);
         sdhi::register_irqs(SD_PORT);
+
+        // Register the DMAC completion IRQ for the RX channel so that
+        // read_blocks_dma can await DMAC TC after DATA_TRNS (M7 fix).
+        dmac::register_completion_irq(SD_DMA_RX_CH);
+
+        // Clean-invalidate the DMA bounce buffer's cacheable alias.  BSS
+        // zeroing wrote dirty lines there; if those lines were later evicted
+        // after a DMA fill via the uncached mirror, they would corrupt the
+        // received data (M8 fix).
+        let buf_start = core::ptr::addr_of!(SD_DMA_BUF) as usize;
+        let buf_end = buf_start + core::mem::size_of::<SdDmaBuf>();
+        cache::dma_clean_inv_range(buf_start, buf_end);
     }
 
-    // Short delay to allow power-up (hardware needs ~1 ms minimum,
-    // awaiting a tiny future yields back to the executor which is enough).
-    embassy_time::Timer::after_millis(5).await;
+    // ---- Wait for the card to wake up, then run the protocol ----
+    //
+    // On a *cold* power-up the card only starts its internal power-on once the
+    // pins are muxed and the clock starts (above).  Critically, the SDHI
+    // card-detect status also only reports "present" after `Ncycle` SD_CLK
+    // cycles elapse with SD_CD held low (SD_OPTION[3:0]); until the card has
+    // woken up it won't answer, so CMD55 returns ResponseTimeout (or the OCR
+    // busy bit never clears → UnsupportedCard).  The stock Renesas driver simply
+    // blind-waits ~1 s here.  Instead we retry the protocol over a ~1 s budget
+    // and return the instant it succeeds: a *warm* card (already awake from a
+    // previous session) is ready on the first try, while a *cold* card is given
+    // the full second it needs — no manual reload required.
+    const INIT_ATTEMPTS: u32 = 16;
+    const RETRY_DELAY_MS: u64 = 75; // 16 × ~(protocol + 75 ms) ≈ 1.3 s budget
 
+    // Minimum supply/clock settle (SD spec: ≥1 ms + 74 clocks) before CMD0.
+    embassy_time::Timer::after_millis(15).await;
+
+    let mut last_err = SdError::NotInitialized;
+    for attempt in 1..=INIT_ATTEMPTS {
+        match run_protocol().await {
+            Ok(()) => {
+                CARD_READY.store(true, Ordering::Release);
+                log::debug!(
+                    "sd: card ready on attempt {}/{} (HC={})",
+                    attempt,
+                    INIT_ATTEMPTS,
+                    CARD_HC.load(Ordering::Relaxed)
+                );
+                return Ok(());
+            }
+            Err(e) => {
+                last_err = e;
+                log::debug!("sd: init attempt {}/{}: {:?}", attempt, INIT_ATTEMPTS, e);
+                if attempt < INIT_ATTEMPTS {
+                    embassy_time::Timer::after_millis(RETRY_DELAY_MS).await;
+                }
+            }
+        }
+    }
+    log::warn!(
+        "sd: init failed after {} attempts: {:?}",
+        INIT_ATTEMPTS,
+        last_err
+    );
+    Err(last_err)
+}
+
+/// Run the SD v2 card bring-up protocol (CMD0 … high-speed clock) once against
+/// an already-initialised controller.  [`init`] retries this until the card —
+/// which may still be waking up after a cold power-on — responds.
+async fn run_protocol() -> Result<(), SdError> {
     unsafe {
         // ---- CMD0: reset to IDLE ----
         // No response expected; ignore timeout.
@@ -224,6 +287,13 @@ pub async fn init() -> Result<(), SdError> {
         // Determine high-capacity flag
         let hc = cmd8_ok && (ocr & OCR_HCS != 0);
         CARD_HC.store(hc, Ordering::Release);
+        log::debug!(
+            "sd: cmd8_ok={} ocr={:#010x} hcs={} -> hc={}",
+            cmd8_ok,
+            ocr,
+            ocr & OCR_HCS != 0,
+            hc
+        );
 
         // ---- CMD2: get CID (ignore content, just consume response) ----
         sdhi::set_arg(SD_PORT, 0);
@@ -243,8 +313,28 @@ pub async fn init() -> Result<(), SdError> {
         // Per TRM/SD spec: argument = RCA in bits [31:16], lower 16 bits = 0.
         sdhi::set_arg(SD_PORT, (rca as u32) << 16);
         if sdhi::send_cmd(SD_PORT, 9u16).await.is_ok() {
-            let csd = sdhi::read_r2(SD_PORT);
+            // The RZ/A1 SDHI returns R2 (CID/CSD) as the 120-bit content
+            // CSD[127:8] right-justified — i.e. the array holds (full_CSD >> 8)
+            // with the trailing CRC byte stripped.  Shift the four words left by
+            // 8 bits to restore the canonical 128-bit CSD layout that
+            // `decode_csd_capacity` (which uses spec bit positions) expects.
+            let raw = sdhi::read_r2(SD_PORT);
+            let csd = [
+                (raw[0] << 8) | (raw[1] >> 24),
+                (raw[1] << 8) | (raw[2] >> 24),
+                (raw[2] << 8) | (raw[3] >> 24),
+                raw[3] << 8,
+            ];
             let total = decode_csd_capacity(csd, hc);
+            log::debug!(
+                "sd: CSD={:08x} {:08x} {:08x} {:08x} struct={} -> {} sectors",
+                csd[0],
+                csd[1],
+                csd[2],
+                csd[3],
+                csd[0] >> 30,
+                total
+            );
             sdhi::set_card_blocks(SD_PORT, total);
         }
 
@@ -266,8 +356,6 @@ pub async fn init() -> Result<(), SdError> {
         sdhi::set_clock_fast(SD_PORT);
     }
 
-    CARD_READY.store(true, Ordering::Release);
-    log::debug!("sd: card ready, HC={}", CARD_HC.load(Ordering::Relaxed));
     Ok(())
 }
 
@@ -430,6 +518,28 @@ pub fn is_inserted() -> bool {
     unsafe { sdhi::card_inserted(SD_PORT) }
 }
 
+/// Returns `true` if the card's physical write-protect (lock) tab is engaged.
+///
+/// Reads the SDHI SD_WP signal.  Only meaningful once the controller is up
+/// (after [`init`]); returns `false` when no card is ready.
+pub fn is_write_protected() -> bool {
+    if !CARD_READY.load(Ordering::Acquire) {
+        return false;
+    }
+    unsafe { sdhi::card_write_protected(SD_PORT) }
+}
+
+/// Total number of 512-byte sectors on the card.
+///
+/// Only valid after [`init()`] has returned `Ok(())`.  Returns 0 if the card
+/// is not ready.  Used to answer SCSI READ CAPACITY for USB mass storage.
+pub fn total_sectors() -> u32 {
+    if !CARD_READY.load(Ordering::Acquire) {
+        return 0;
+    }
+    sdhi::card_size_blocks(SD_PORT)
+}
+
 // ---------------------------------------------------------------------------
 // Internal: convert LBA to card address
 // ---------------------------------------------------------------------------
@@ -438,7 +548,12 @@ fn lba_to_addr(lba: u32) -> u32 {
     if CARD_HC.load(Ordering::Relaxed) {
         lba // SDHC/SDXC: block addressing
     } else {
-        lba * 512 // SDSC: byte addressing
+        // SDSC: byte addressing.  Saturate rather than panic on overflow — a
+        // bogus high LBA (e.g. a host reading past a mis-decoded capacity)
+        // would otherwise multiply-overflow u32.  A saturated address is out of
+        // range for the card, which rejects it and surfaces a clean `SdError`
+        // instead of crashing the firmware.
+        lba.saturating_mul(512)
     }
 }
 
@@ -469,15 +584,13 @@ fn decode_csd_capacity(csd: [u32; 4], hc: bool) -> u32 {
         (c_size + 1) * 1024 // blocks of 512 B
     } else {
         // CSD v1:
-        // READ_BL_LEN at bits [83:80] → word1 bits [19:16]
-        // C_SIZE at bits [73:62] → word1 bits [9:8] + word2 bits [31:22]
-        // C_SIZE_MULT at bits [49:47] → word2 bits [17:15]
+        // READ_BL_LEN at bits [83:80] → word1[19:16]
+        // C_SIZE at bits [73:62] → word1[9:0] (bits 73:64) ++ word2[31:30] (bits 63:62)
+        // C_SIZE_MULT at bits [49:47] → word2[17:15]
         let read_bl_len = (csd[1] >> 16) & 0xF;
-        let c_size_hi = csd[1] & 0x3; // bits [73:72]
-        let c_size_lo = (csd[2] >> 22) & 0x3FF; // bits [71:62]
-        let c_size = (c_size_hi << 10) | c_size_lo;
+        let c_size = ((csd[1] & 0x3FF) << 2) | ((csd[2] >> 30) & 0x3);
         let c_size_mult = (csd[2] >> 15) & 0x7;
-        let block_len = 1u32 << read_bl_len; // bytes per block
+        let block_len = 1u32 << read_bl_len;
         let mult = 1u32 << (c_size_mult + 2);
         let capacity_bytes = (c_size as u64 + 1) * mult as u64 * block_len as u64;
         (capacity_bytes / 512) as u32
@@ -568,9 +681,11 @@ impl embedded_sdmmc::BlockDevice for DelugeBlockDevice {
     }
 }
 
-/// A stub [`embedded_sdmmc::TimeSource`] returning a fixed epoch-zero timestamp.
+/// An [`embedded_sdmmc::TimeSource`] that returns a fixed epoch-zero timestamp
+/// (1970-01-01 00:00:00) for all FAT file operations.
 ///
-/// Replace with a real RTC implementation when one is available.
+/// File modification times will not be recorded accurately. No RTC peripheral
+/// is currently available on this BSP.
 pub struct DelugeTimeSource;
 
 impl embedded_sdmmc::TimeSource for DelugeTimeSource {

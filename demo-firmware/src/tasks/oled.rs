@@ -1,5 +1,7 @@
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::Ordering;
 use log::info;
+
+use embassy_time::Timer;
 
 use crate::tasks::analysis::WAVEFORM;
 use crate::tasks::audio::USB_AUDIO_STREAMING;
@@ -20,40 +22,6 @@ const FILL_W: usize = 5; // CELL_W − 2px borders
 const FILL_H: usize = 3; // CELL_H − 2px borders
 /// First visible OLED row (rows 0–4 are off-panel, C constant OLED_MAIN_TOPMOST_PIXEL=5).
 const TOPMOST: usize = 5;
-
-// ---------------------------------------------------------------------------
-// CDC-supplied framebuffer
-// ---------------------------------------------------------------------------
-//
-// When a CDC host sends MSG_TO_UPDATE_DISPLAY, `set_cdc_display` stores the
-// 768-byte frame here and sets CDC_FRAME_VALID.  The oled_task uses this
-// framebuffer in preference to re-rendering from PAD_BITS.  On
-// MSG_TO_CLEAR_DISPLAY or host disconnect, `clear_cdc_display` clears the
-// flag and oled_task falls back to pad rendering.
-
-static mut CDC_FRAME: [u8; oled::FRAME_BYTES] = [0u8; oled::FRAME_BYTES];
-static CDC_FRAME_VALID: AtomicBool = AtomicBool::new(false);
-
-/// Store a host-supplied OLED framebuffer and request a redraw.
-///
-/// `data` must be exactly [`oled::FRAME_BYTES`] bytes (768), laid out as
-/// `data[page * oled::WIDTH + col]` (page-major, matching the SSD1309 wire
-/// format).  Any extra bytes in `data` are ignored.
-pub(crate) fn set_cdc_display(data: &[u8]) {
-    let n = data.len().min(oled::FRAME_BYTES);
-    // Safety: single-threaded cooperative executor; no concurrent writer.
-    unsafe {
-        CDC_FRAME[..n].copy_from_slice(&data[..n]);
-    }
-    CDC_FRAME_VALID.store(true, Ordering::Release);
-    oled::notify_redraw();
-}
-
-/// Discard the host-supplied framebuffer and fall back to pad rendering.
-pub(crate) fn clear_cdc_display() {
-    CDC_FRAME_VALID.store(false, Ordering::Release);
-    oled::notify_redraw();
-}
 
 /// Render the latest waveform snapshot from `analysis_task` as a dot-scope.
 ///
@@ -120,10 +88,113 @@ fn render_pads(fb: &mut oled::FrameBuffer) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Starscape screensaver
+// ---------------------------------------------------------------------------
+//
+// Classic perspective-projection starfield: stars have a 3D position (x, y, z)
+// and are projected onto the 2D screen with factor = FOV / z.  z decrements
+// each frame so stars fly toward the viewer; when z ≤ 0 the star is respawned
+// far away at z = MAX_DEPTH.  Brightness = 1 − z/MAX_DEPTH, so dim/distant
+// stars are only rendered once they cross a visibility threshold.
+
+const N_OLED_STARS: usize = 60;
+const MAX_DEPTH: f32 = 32.0;
+/// Depth units consumed per 50 ms frame.
+const Z_STEP: f32 = 0.4;
+/// Field of view (radians) — matches the reference implementation.
+const FOV: f32 = core::f32::consts::PI;
+/// Projected screen centre.
+const CX: f32 = 64.0;
+const CY: f32 = 26.0; // (TOPMOST + HEIGHT) / 2
+
+#[derive(Clone, Copy)]
+struct OledStar {
+    x: f32, // 3D position, range −128 … +128
+    y: f32, // 3D position, range  −43 …  +43
+    z: f32, // depth, range 0 … MAX_DEPTH
+}
+
+#[inline(always)]
+fn lcg(s: &mut u32) -> u32 {
+    *s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+    *s
+}
+
+/// LCG output mapped to [0, 1).
+#[inline(always)]
+fn lcg_f32(s: &mut u32) -> f32 {
+    lcg(s) as f32 * (1.0 / 4_294_967_296.0)
+}
+
+fn spawn_star(star: &mut OledStar, rng: &mut u32, z: f32) {
+    // Wide 3D range so that at z=MAX_DEPTH (factor≈0.098) stars project across
+    // the full canvas: x=±512 → ±50 px from centre; y=±200 → ±19 px from centre.
+    star.x = lcg_f32(rng) * 512.0 - 256.0; // −256 … +256
+    star.y = lcg_f32(rng) * 200.0 - 100.0; // −100 … +100
+    star.z = z;
+}
+
+fn init_oled_stars(stars: &mut [OledStar; N_OLED_STARS], rng: &mut u32) {
+    for star in stars.iter_mut() {
+        // Scatter across the full depth range so the field is populated immediately.
+        let z = lcg_f32(rng) * MAX_DEPTH + 0.1;
+        spawn_star(star, rng, z);
+    }
+}
+
+fn render_starscape(
+    stars: &mut [OledStar; N_OLED_STARS],
+    rng: &mut u32,
+    fb: &mut oled::FrameBuffer,
+) {
+    fb.fill(0x00);
+
+    for star in stars.iter_mut() {
+        star.z -= Z_STEP;
+
+        if star.z <= 0.0 {
+            spawn_star(star, rng, MAX_DEPTH);
+            continue;
+        }
+
+        let factor = FOV / star.z;
+        let sx = (star.x * factor + CX) as i32;
+        // Negate y so that positive-y is up on screen, matching the reference.
+        let sy = (-star.y * factor + CY) as i32;
+
+        // Close stars (z < ~40% of MAX_DEPTH) draw as 2×2 blocks, matching the
+        // reference's radius growth from 0→1.7 as z→0.
+        let size: i32 = if star.z < MAX_DEPTH * 0.4 { 2 } else { 1 };
+        for dy in 0..size {
+            for dx in 0..size {
+                let px = sx + dx;
+                let py = sy + dy;
+                if px >= 0
+                    && px < oled::WIDTH as i32
+                    && py >= TOPMOST as i32
+                    && py < oled::HEIGHT as i32
+                {
+                    fb.set_pixel(px as usize, py as usize, true);
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Task
+// ---------------------------------------------------------------------------
+
 /// OLED render task.
 ///
-/// Initialises the SSD1309 then waits for [`oled::notify_redraw()`] on every
-/// pad-state change before rendering and pushing a full 768-byte frame.
+/// Initialises the SSD1309 then loops, choosing a render mode based on state:
+///
+/// - **Audio streaming** (`USB_AUDIO_STREAMING`): oscilloscope waveform,
+///   redrawn by `analysis_task` via [`oled::notify_redraw`].
+/// - **Idle**: starscape screensaver — stars fly outward from the centre via
+///   perspective projection, animating at 50 ms / frame.
+/// - **Pad state** (any other pad change): pad cell map, redrawn on demand.
 #[embassy_executor::task]
 pub(crate) async fn oled_task() {
     // Wait for pic::init() to complete before issuing any PIC UART commands.
@@ -137,29 +208,36 @@ pub(crate) async fn oled_task() {
 
     let mut fb = oled::FrameBuffer::new();
 
+    let mut rng: u32 = 0xCAFE_5678;
+    let mut stars = [OledStar {
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    }; N_OLED_STARS];
+    init_oled_stars(&mut stars, &mut rng);
+
     // Render the initial (empty) state immediately without waiting for a pad press.
     render_pads(&mut fb);
     oled::send_frame(&fb).await;
 
     loop {
-        // Suspend until pic_task (or any other caller) marks the state dirty.
-        oled::wait_redraw().await;
+        let streaming = USB_AUDIO_STREAMING.load(Ordering::Acquire);
 
-        if CDC_FRAME_VALID.load(Ordering::Acquire) {
-            // Host supplied a framebuffer — copy directly and send.
-            // Safety: CDC_FRAME is only mutated by set_cdc_display() which
-            // runs from the CDC task; since the executor is single-threaded,
-            // there is no concurrent access here.
-            unsafe {
-                fb.pages
-                    .as_flattened_mut()
-                    .copy_from_slice(&*core::ptr::addr_of!(CDC_FRAME));
-            }
-        } else if USB_AUDIO_STREAMING.load(Ordering::Acquire) {
-            render_waveform(&mut fb);
+        if !streaming {
+            // ── Starscape screensaver — timer-driven at 50 ms/frame ───────────
+            render_starscape(&mut stars, &mut rng, &mut fb);
+            oled::send_frame(&fb).await;
+            Timer::after_millis(50).await;
         } else {
-            render_pads(&mut fb);
+            // ── Event-driven modes ────────────────────────────────────────────
+            oled::wait_redraw().await;
+
+            if USB_AUDIO_STREAMING.load(Ordering::Acquire) {
+                render_waveform(&mut fb);
+            } else {
+                render_pads(&mut fb);
+            }
+            oled::send_frame(&fb).await;
         }
-        oled::send_frame(&fb).await;
     }
 }

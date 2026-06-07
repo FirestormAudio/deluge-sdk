@@ -35,7 +35,6 @@
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
 
-mod events;
 mod tasks;
 
 use core::mem::MaybeUninit;
@@ -92,9 +91,6 @@ static mut USB_CONTROL_BUF: [u8; 64] = [0; 64];
 /// Backing storage for the UAC2 `AudioClass` handler (must be `'static`).
 static mut AUDIO_CLASS_BUF: core::mem::MaybeUninit<deluge_bsp::usb::classes::audio::AudioClass<8>> =
     core::mem::MaybeUninit::uninit();
-/// Backing storage for the CDC-ACM class state (line-coding, control signals).
-static mut CDC_ACM_STATE: embassy_usb::class::cdc_acm::State<'static> =
-    embassy_usb::class::cdc_acm::State::new();
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -207,7 +203,6 @@ pub extern "C" fn main() -> ! {
     let mut usb_device_opt: Option<embassy_usb::UsbDevice<'static, Rusb1Driver>> = None;
     let mut ep_out_opt: Option<deluge_bsp::usb::Rusb1EndpointOut> = None;
     let mut ep_in_opt: Option<deluge_bsp::usb::Rusb1EndpointIn> = None;
-    let mut cdc_opt: Option<embassy_usb::class::cdc_acm::CdcAcmClass<'static, Rusb1Driver>> = None;
     let mut midi_sender_opt: Option<embassy_usb::class::midi::Sender<'static, Rusb1Driver>> = None;
     let mut midi_receiver_opt: Option<embassy_usb::class::midi::Receiver<'static, Rusb1Driver>> =
         None;
@@ -217,7 +212,7 @@ pub extern "C" fn main() -> ! {
         usb_host_driver = Some(hd);
         info!("USB: host driver ready");
     } else {
-        let (usb_device, ep_out, ep_in, cdc, midi_sender, midi_receiver) = unsafe {
+        let (usb_device, ep_out, ep_in, midi_sender, midi_receiver) = unsafe {
             let (_port, driver) = init_device_mode(0);
             let mut config = embassy_usb::Config::new(0x16D0, 0x0EDA);
             config.manufacturer = Some("Synthstrom Audible");
@@ -243,30 +238,20 @@ pub extern "C" fn main() -> ! {
             let audio_ref = (&mut *core::ptr::addr_of_mut!(AUDIO_CLASS_BUF)).write(audio_instance);
             builder.handler(audio_ref);
 
-            // CDC-ACM serial class (Deluge host protocol).
-            let cdc = embassy_usb::class::cdc_acm::CdcAcmClass::new(
-                &mut builder,
-                &mut *core::ptr::addr_of_mut!(CDC_ACM_STATE),
-                64,
-            );
-
             // USB MIDI 1.0 class — 1 in-jack (DIN→USB), 1 out-jack (USB→DIN).
-            let midi = embassy_usb::class::midi::MidiClass::new(&mut builder, 1, 1, 64);
+            // 512-byte bulk endpoints: the RUSB1 PHY always negotiates high
+            // speed (SYSCFG.HSE=1), and USB 2.0 requires HS bulk endpoints to use
+            // wMaxPacketSize 512.  Advertising 64 (the FS value) makes the host
+            // reject the endpoints ("invalid maxpacket 64") and silently breaks
+            // the bulk OUT direction.
+            let midi = embassy_usb::class::midi::MidiClass::new(&mut builder, 1, 1, 512);
             let (midi_sender, midi_receiver) = midi.split();
 
-            (
-                builder.build(),
-                ep_out,
-                ep_in,
-                cdc,
-                midi_sender,
-                midi_receiver,
-            )
+            (builder.build(), ep_out, ep_in, midi_sender, midi_receiver)
         };
         usb_device_opt = Some(usb_device);
         ep_out_opt = Some(ep_out);
         ep_in_opt = Some(ep_in);
-        cdc_opt = Some(cdc);
         midi_sender_opt = Some(midi_sender);
         midi_receiver_opt = Some(midi_receiver);
         info!("USB: UsbDevice built");
@@ -300,21 +285,18 @@ pub extern "C" fn main() -> ! {
             Some(usb_device),
             Some(ep_out),
             Some(ep_in),
-            Some(cdc),
             Some(midi_sender),
             Some(midi_receiver),
         ) = (
             usb_device_opt,
             ep_out_opt,
             ep_in_opt,
-            cdc_opt,
             midi_sender_opt,
             midi_receiver_opt,
         ) {
             spawner.spawn(tasks::usb::usb_task(usb_device).unwrap());
             spawner.spawn(tasks::audio::uac2_task(ep_out).unwrap());
             spawner.spawn(tasks::audio::uac2_mic_task(ep_in).unwrap());
-            spawner.spawn(tasks::cdc::cdc_task(cdc).unwrap());
             spawner.spawn(tasks::midi::midi_usb_rx_task(midi_receiver).unwrap());
             spawner.spawn(tasks::midi::midi_din_tx_task(midi_sender).unwrap());
         }

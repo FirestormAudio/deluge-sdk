@@ -60,6 +60,6 @@ jobs:
         with:
           name: ${{ steps.set-artifact.outputs.name }}
           path: |
-            target/armv7a-none-eabihf/release/deluge-firmware.bin
-            target/armv7a-none-eabihf/debug/deluge-firmware
+            target/armv7a-none-eabihf/release/demo-firmware.bin
+            target/armv7a-none-eabihf/debug/demo-firmware
           retention-days: ${{ inputs.retention-days }}

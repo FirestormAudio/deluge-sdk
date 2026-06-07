@@ -31,7 +31,12 @@ rustflags = [
 # build-fw-bin requires cargo-binutils (`cargo install cargo-binutils`).
 build-fw      = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem"
 build-fw-rel  = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features"
-build-fw-bin  = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p deluge-firmware -- -O binary target/armv7a-none-eabihf/release/deluge-firmware.bin"
+build-fw-bin  = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p demo-firmware -- -O binary target/armv7a-none-eabihf/release/demo-firmware.bin"
+build-controller-bin = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p deluge-controller -- -O binary target/armv7a-none-eabihf/release/deluge-controller.bin"
+build-msc            = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem -p msc-firmware"
+build-msc-bin        = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p msc-firmware -- -O binary target/armv7a-none-eabihf/release/msc-firmware.bin"
+build-bootloader     = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem -p second-stage-bootloader"
+build-ssb-bin        = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p second-stage-bootloader -- -O binary target/armv7a-none-eabihf/release/second-stage-bootloader.bin"
 
 [env]
 # UAC2 (3 ifaces) + CDC-ACM (2 ifaces) + USB-MIDI (2 ifaces) = 7 total.

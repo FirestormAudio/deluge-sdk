@@ -1,11 +1,11 @@
 [package]
-name = "deluge-firmware"
+name = "demo-firmware"
 version = "0.1.0"
 edition = "2024"
 license.workspace = true
 
 [[bin]]
-name = "deluge-firmware"
+name = "demo-firmware"
 test = false
 
 [dependencies]

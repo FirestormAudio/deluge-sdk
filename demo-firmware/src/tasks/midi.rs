@@ -49,20 +49,23 @@ const CIN_BYTES: [u8; 16] = [
 /// count, and writes the raw MIDI bytes to SCIF0 TX.
 #[embassy_executor::task]
 pub(crate) async fn midi_usb_rx_task(mut receiver: Receiver<'static, Rusb1Driver>) {
-    let mut pkt = [0u8; 4];
+    // Must be >= the bulk OUT max packet size (512 at high speed).  One USB
+    // packet can carry many 4-byte MIDI events, so iterate over all of them.
+    let mut pkt = [0u8; 512];
     loop {
         receiver.wait_connection().await;
         debug!("MIDI USB RX: connected");
         loop {
             match receiver.read_packet(&mut pkt).await {
-                Ok(n) if n >= 4 => {
-                    let cin = (pkt[0] & 0x0F) as usize;
-                    let count = CIN_BYTES[cin] as usize;
-                    if count > 0 && count <= 3 {
-                        bsp_uart::write_midi(&pkt[1..1 + count]).await;
+                Ok(n) => {
+                    for ev in pkt[..n].chunks_exact(4) {
+                        let cin = (ev[0] & 0x0F) as usize;
+                        let count = CIN_BYTES[cin] as usize;
+                        if count > 0 && count <= 3 {
+                            bsp_uart::write_midi(&ev[1..1 + count]).await;
+                        }
                     }
                 }
-                Ok(_) => {}      // short/empty packet — ignore
                 Err(_) => break, // endpoint disabled
             }
         }

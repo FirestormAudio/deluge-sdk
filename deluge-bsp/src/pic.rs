@@ -322,6 +322,16 @@ pub async fn done_sending_rows() {
     uart::write_bytes(UART_CH, &[CMD_DONE_SENDING_ROWS]).await;
 }
 
+/// Set the PIC display refresh interval (SET_REFRESH_TIME, command 19).
+///
+/// `interval` is in milliseconds.  Lower values mean faster refresh and
+/// brighter LEDs; higher values dim them.  The Deluge uses the range 0–25,
+/// where `interval = 25 - brightness_level`.
+#[inline]
+pub async fn set_refresh_time(interval: u8) {
+    uart::write_bytes(UART_CH, &[CMD_SET_REFRESH_TIME, interval]).await;
+}
+
 /// Request the PIC to re-send all button/pad pressed states.
 #[inline]
 pub async fn resend_button_states() {

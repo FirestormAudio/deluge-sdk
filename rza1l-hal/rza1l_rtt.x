@@ -95,6 +95,9 @@ SECTIONS {
     end = .;
     _end = .;
 
+    /* FSB metadata code_end: the FSB copies _start..code_end to SRAM. */
+    __metadata_code_end = end;
+
     /* SRAM heap: free space between the image and the RTT/stack reservation */
     __sram_heap_start = end;
     __sram_heap_end   = ORIGIN(RTT_RAM);

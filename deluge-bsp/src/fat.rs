@@ -56,7 +56,7 @@ use crate::sd::{DelugeBlockDevice, DelugeTimeSource, SdError};
 // ---------------------------------------------------------------------------
 
 pub use embedded_sdmmc::{
-    DirEntry, Mode, RawDirectory, RawFile, RawVolume, ShortFileName, VolumeIdx,
+    DirEntry, LfnBuffer, Mode, RawDirectory, RawFile, RawVolume, ShortFileName, VolumeIdx,
 };
 
 /// The [`embedded_sdmmc`] error type parameterised for the Deluge block device.

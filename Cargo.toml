@@ -1,5 +1,5 @@
 [workspace]
-members = ["demo-firmware", "rza1l-hal", "deluge-bsp", "deluge-fft"]
+members = ["demo-firmware", "controller-firmware", "msc-firmware", "rza1l-hal", "deluge-bsp", "deluge-fft", "second-stage-bootloader"]
 resolver = "2"
 
 [workspace.package]

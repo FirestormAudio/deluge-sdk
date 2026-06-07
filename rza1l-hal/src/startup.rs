@@ -36,7 +36,7 @@ _start:
 
     /* Bootloader metadata — fixed offsets from _start */
     .word _start                  /* 0x20  code_start             */
-    .word end                     /* 0x24  code_end               */
+    .word __metadata_code_end     /* 0x24  code_end (FSB copies _start..code_end to SRAM) */
     .word _start                  /* 0x28  code_execute           */
     .asciz ".BootLoad_ValidProgramTest."   /* 0x2C  signature      */
     .align 4
@@ -373,38 +373,6 @@ _reserved_handler:
      * the interrupted instruction.  SUBS restores CPSR from SPSR_fiq.
      * Uses only the FIQ-banked r8–r12/lr so no save/restore needed. */
 _fiq_handler:       subs pc, lr, #4
-"#
-);
-
-// Non-XIP builds: _copy_data_to_ram is a no-op (everything is already in RAM).
-#[cfg(not(feature = "xip"))]
-global_asm!(
-    r#"
-    .section .text._copy_data_to_ram, "ax"
-    .code 32
-    .global _copy_data_to_ram
-_copy_data_to_ram:
-    bx lr
-"#
-);
-
-// XIP builds: copy .data section from flash LMA (__sidata) to RAM VMA (__sdata..__edata).
-#[cfg(feature = "xip")]
-global_asm!(
-    r#"
-    .section .text._copy_data_to_ram, "ax"
-    .code 32
-    .global _copy_data_to_ram
-_copy_data_to_ram:
-    ldr  r0, =__sidata            /* src: LMA of .data (in flash)  */
-    ldr  r1, =__sdata             /* dst: VMA start (in RAM)       */
-    ldr  r2, =__edata             /* end: VMA end (in RAM)         */
-.Ldata_copy_loop:
-    cmp  r1, r2
-    ldrlt r3, [r0], #4
-    strlt r3, [r1], #4
-    blt  .Ldata_copy_loop
-    bx   lr
 "#
 );
 

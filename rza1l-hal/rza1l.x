@@ -87,6 +87,9 @@ SECTIONS {
     end = .;
     _end = .;
 
+    /* FSB metadata code_end: the FSB copies _start..code_end to SRAM. */
+    __metadata_code_end = end;
+
     /* SRAM heap: free space between the image and the stack reservation */
     __sram_heap_start = end;
     __sram_heap_end   = INTERNAL_RAM_END - PROGRAM_STACK_SIZE - ABT_STACK_SIZE - SVC_STACK_SIZE - FIQ_STACK_SIZE - IRQ_STACK_SIZE;

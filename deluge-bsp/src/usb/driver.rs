@@ -25,10 +25,10 @@
 //! - **VBINT** (VBUS change): queues a `BUS_EVENT_VBUS` bit.
 //! - **DVST** (device-state change): queues reset / suspend / resume events.
 //! - **CTRT** (control-transfer ready): records CTSQ and queues event.
-//! - **BRDY** (buffer-ready for OUT pipe): calls `pipe_xfer_out_brdy`; wakes
-//!   the per-pipe `AtomicWaker` on completion.
-//! - **BEMP** (buffer-empty for IN pipe): calls `pipe_xfer_in_bemp`; wakes on
-//!   completion.
+//! - **BRDY**: for OUT pipes, calls `pipe_xfer_out_brdy`; for pipe 0, wakes
+//!   control write data-stage waiters.
+//! - **BEMP**: for IN pipes, calls `pipe_xfer_in_bemp` to queue the next packet
+//!   or complete the transfer; pipe 0 handles control-IN completion.
 //!
 //! ## Register-interrupt caveat (RZ/A1L §28.3.8)
 //!
@@ -51,10 +51,10 @@ use super::fifo::{
     sw_to_hw_fifo,
 };
 use super::pipe::{
-    BufAllocator, PIPE_COUNT, PIPE_DONE, PIPE_NRDY, PIPE_WAKERS, PIPE_XFER, PipeConfig, XferType,
-    pipe_bemp_disable, pipe_bemp_enable, pipe_brdy_disable, pipe_brdy_enable, pipe_configure,
-    pipe_disable, pipe_enable, pipe_reset, pipe_stall, pipe_xfer_in_bemp, pipe_xfer_in_start,
-    pipe_xfer_out_brdy,
+    BufAllocator, PIPE_COUNT, PIPE_DONE, PIPE_IS_IN, PIPE_NRDY, PIPE_WAKERS, PIPE_XFER, PipeConfig,
+    XferType, pipe_bemp_disable, pipe_bemp_enable, pipe_brdy_disable, pipe_brdy_enable,
+    pipe_configure, pipe_disable, pipe_enable, pipe_reset, pipe_stall, pipe_xfer_in_bemp,
+    pipe_xfer_in_start, pipe_xfer_out_brdy,
 };
 use super::regs::{
     BUSWAIT_VALUE, DCPMAXP_MXPS_MASK, DVSQ_DEFAULT, DVSQ_SUSP0, DVSTCTR0_RHST, DVSTCTR0_RHST_FS,
@@ -94,6 +94,16 @@ static CTRL_STAGE: [AtomicU8; 2] = [AtomicU8::new(0xFF), AtomicU8::new(0xFF)];
 
 /// Waker for [`Rusb1ControlPipe::setup`] and [`Rusb1ControlPipe::data_out`] per port.
 static CTRL_WAKERS: [AtomicWaker; 2] = [AtomicWaker::new(), AtomicWaker::new()];
+
+/// Target number of max packets to buffer for a continuous-mode bulk IN pipe.
+/// 4 × 512 B = 2 KiB, the largest a single pipe buffer can be (PIPEBUF BUFSIZE
+/// caps at 32 × 64-byte blocks).  Lets the SIE stream up to 4 packets per
+/// micro-frame between CPU refills instead of one.
+const CONT_BULK_PACKETS: usize = 4;
+
+/// Free-block headroom required before a bulk IN pipe takes a large continuous
+/// buffer, so later pipes of multi-class firmwares still fit in the 8 KB RAM.
+const CONT_BULK_MARGIN: usize = 24;
 
 /// Set to 1 by the ISR when a BRDY fires on pipe 0 (control write data arrived).
 /// Consumed by [`Rusb1ControlPipe::data_out`].
@@ -137,13 +147,29 @@ impl PortAlloc {
     }
 
     fn alloc_pipe(&mut self, xfer_type: XferType, _is_in: bool) -> Option<usize> {
+        // RZ/A1 RUSB pipe transfer-type constraints are fixed in hardware
+        // (see hardware manual §28.4.7/§28.4.8 and the reference tinyusb
+        // dcd_rusb1.c pipe allocator):
+        //   PIPE1-2  : isochronous or bulk — reserved here for ISO audio.
+        //   PIPE3-5  : bulk only.
+        //   PIPE6-8  : interrupt only (64-byte fixed single buffer).
+        //   PIPE9-15 : bulk (function-controller mode).
+        // Bulk endpoints MUST skip pipes 6-8: assigning a bulk transfer to an
+        // interrupt-only pipe silently never raises BRDY, and (because all
+        // bulk/interrupt pipes share the D1FIFO port) it stalls the other
+        // bulk pipes too — which manifests as the CDC OUT endpoint never
+        // delivering host packets.
         let (start, end) = match xfer_type {
             XferType::Control => return Some(0),
             XferType::Isochronous => (1, 3), // pipes 1-2
-            XferType::Bulk => (3, 10),       // pipes 3-9
-            XferType::Interrupt => (6, 15),  // pipes 6-14 (avoid ISO range)
+            XferType::Bulk => (3, 16),       // pipes 3-5, 9-15 (6-8 skipped below)
+            XferType::Interrupt => (6, 9),   // pipes 6-8
         };
         for n in start..end {
+            // Pipes 6-8 are interrupt-only; never allocate them for bulk.
+            if xfer_type == XferType::Bulk && (6..=8).contains(&n) {
+                continue;
+            }
             if self.pipes_used & (1 << n) == 0 {
                 self.pipes_used |= 1 << n;
                 return Some(n);
@@ -183,6 +209,16 @@ impl Rusb1Driver {
     pub unsafe fn new(port: u8) -> Self {
         unsafe {
             debug_assert!(port <= 1);
+            // A fresh device-mode bring-up re-enumerates from scratch and the
+            // embassy-usb Builder re-allocates every endpoint.  Reset this
+            // port's pipe / packet-buffer allocator so repeated bring-ups (e.g.
+            // the SSB entering UF2 / DATA TRANSFER more than once) start from a
+            // clean slate instead of leaking pipes until `alloc_endpoint`
+            // fails with `EndpointAllocError`.
+            critical_section::with(|cs| {
+                let alloc = &mut *PORT_ALLOC[port as usize].borrow(cs).get();
+                *alloc = PortAlloc::new();
+            });
             // Set BUSWAIT early so register accesses after USBE=1 are safe.
             let regs = Rusb1Regs::ptr(port);
             wr(core::ptr::addr_of_mut!((*regs).buswait), BUSWAIT_VALUE);
@@ -242,7 +278,15 @@ impl<'d> Driver<'d> for Rusb1Driver {
                 .alloc_pipe(xfer_type, false)
                 .ok_or(EndpointAllocError)?;
             let buf_blocks = mps_to_blocks(max_packet_size);
-            let buf_start = alloc.buf.alloc(buf_blocks).ok_or(EndpointAllocError)?;
+            // ISO pipes are hardware double-buffered (PIPECFG.DBLB), so the SIE
+            // uses TWO consecutive banks of `buf_blocks` each.  Reserve both, or
+            // the second bank silently overlaps the next pipe's buffer — and a
+            // bulk pipe whose PIPEBUF overlaps an active ISO pipe never gets a
+            // free buffer from the SIE and NAKs forever (the IN endpoint looks
+            // "stuck").  Matches dcd_rusb1.c: blocks × (double_buffer ? 2 : 1).
+            let double_buf = xfer_type == XferType::Isochronous;
+            let reserve = buf_blocks * if double_buf { 2 } else { 1 };
+            let buf_start = alloc.buf.alloc(reserve).ok_or(EndpointAllocError)?;
 
             // Use requested ep address or pick a free one.
             let ep_num = if let Some(addr) = ep_addr {
@@ -261,7 +305,8 @@ impl<'d> Driver<'d> for Rusb1Driver {
                 mps: max_packet_size,
                 buf_start,
                 buf_blocks: buf_blocks as u8,
-                double_buf: false,
+                double_buf,
+                continuous: false,
             });
 
             let info = EndpointInfo {
@@ -311,6 +356,7 @@ impl<'d> Driver<'d> for Rusb1Driver {
                         port: self.port,
                         pipe: existing_pipe as u8,
                         info,
+                        buf_bytes: max_packet_size,
                     });
                 }
             }
@@ -318,8 +364,51 @@ impl<'d> Driver<'d> for Rusb1Driver {
             let pipe = alloc
                 .alloc_pipe(xfer_type, true)
                 .ok_or(EndpointAllocError)?;
-            let buf_blocks = mps_to_blocks(max_packet_size);
-            let buf_start = alloc.buf.alloc(buf_blocks).ok_or(EndpointAllocError)?;
+            let mps_blocks = mps_to_blocks(max_packet_size);
+            let double_buf = xfer_type == XferType::Isochronous;
+
+            // For a bulk IN pipe on a buffer-capable pipe (1-5), try to grab a
+            // multi-packet buffer and run it in continuous transfer mode (CNTMD)
+            // so the SIE streams several packets per micro-frame instead of one.
+            // Adaptive: fall back to fewer packets — and finally to a single
+            // packet — if the 8 KB packet RAM is tight, so multi-class firmwares
+            // still fit.  BUFSIZE maxes at 32 blocks (2 KiB = 4 × 512 B packets).
+            let mut continuous = false;
+            let mut buf_blocks = mps_blocks;
+            let mut buf_start_opt = None;
+            if xfer_type == XferType::Bulk && (1..=5).contains(&pipe) {
+                for mult in [CONT_BULK_PACKETS, 2] {
+                    let want = mps_blocks * mult;
+                    // Only grab a large buffer if it leaves headroom for the
+                    // remaining pipes of multi-class firmwares (ISO+CDC+MIDI),
+                    // so their later allocations don't fail.  A lone-MSC config
+                    // has plenty free and always qualifies.
+                    if alloc.buf.free_blocks() < want + CONT_BULK_MARGIN {
+                        continue;
+                    }
+                    if let Some(s) = alloc.buf.alloc(want) {
+                        buf_blocks = want;
+                        continuous = true;
+                        buf_start_opt = Some(s);
+                        break;
+                    }
+                }
+            }
+            let buf_start = match buf_start_opt {
+                Some(s) => s,
+                None => {
+                    // Reserve both banks for double-buffered (ISO) pipes.
+                    let reserve = mps_blocks * if double_buf { 2 } else { 1 };
+                    alloc.buf.alloc(reserve).ok_or(EndpointAllocError)?
+                }
+            };
+            // One fill stages the whole buffer for a continuous pipe; a single
+            // max packet otherwise.
+            let buf_bytes = if continuous {
+                buf_blocks as u16 * PKT_BUF_BLOCK_SIZE as u16
+            } else {
+                max_packet_size
+            };
 
             let ep_num = if let Some(addr) = ep_addr {
                 addr.index() as u8
@@ -337,7 +426,8 @@ impl<'d> Driver<'d> for Rusb1Driver {
                 mps: max_packet_size,
                 buf_start,
                 buf_blocks: buf_blocks as u8,
-                double_buf: false,
+                double_buf,
+                continuous,
             });
 
             let info = EndpointInfo {
@@ -350,6 +440,7 @@ impl<'d> Driver<'d> for Rusb1Driver {
                 port: self.port,
                 pipe: pipe as u8,
                 info,
+                buf_bytes,
             })
         })
     }
@@ -413,14 +504,31 @@ impl<'d> Driver<'d> for Rusb1Driver {
                 SYSCFG_USBE,
             );
 
-            // D+ pull-up: notifies host of connection.
+            // Force a clean disconnect->re-attach so every boot re-enumerates
+            // from scratch.  On a warm reset (debugger flash with the cable still
+            // plugged) the module can retain DPRPU=1 from the previous session;
+            // driving it straight to 1 is then a no-op, the host never sees SE0,
+            // and it never re-enumerates.  That matters because the only paths
+            // that scrub the CDC pipe FIFOs are host-driven — `process_bus_reset`
+            // (bus reset) and `endpoint_set_enabled`->`pipe_reset` (SET_CONFIGURATION) —
+            // so without a re-enumeration, stale bytes the previous firmware left
+            // in the IN FIFO leak into the new session's stream and misalign it.
+            //
+            // Step 1: pull-up off — host sees SE0 (disconnect).
+            rmw(core::ptr::addr_of_mut!((*regs).syscfg0), SYSCFG_DPRPU, 0);
+            // Step 2: hold SE0 long enough for the host to debounce the
+            // disconnect (~10 ms; the PLL-lock spin above is ~1 ms / 400 K iters).
+            for _ in 0u32..4_000_000 {
+                core::hint::spin_loop();
+            }
+            // Step 3: pull-up on — notifies the host of (re)connection.
             rmw(
                 core::ptr::addr_of_mut!((*regs).syscfg0),
                 SYSCFG_DPRPU,
                 SYSCFG_DPRPU,
             );
             log::debug!(
-                "usb{}: SYSCFG0={:#06x} (DPRPU set, D+ pull-up active)",
+                "usb{}: SYSCFG0={:#06x} (DPRPU pulsed low->high, D+ pull-up active)",
                 self.port,
                 rd(core::ptr::addr_of!((*regs).syscfg0))
             );
@@ -598,15 +706,31 @@ impl Bus for Rusb1Bus {
     fn endpoint_set_enabled(&mut self, ep_addr: EndpointAddress, enabled: bool) {
         let pipe = ep_addr_to_pipe(self.port, ep_addr);
         if let Some(p) = pipe {
+            log::debug!(
+                "usb{} P{} endpoint_set_enabled({}) ep={:#04x} dir={:?} — resets FIFO+toggle (SQCLR)",
+                self.port,
+                p,
+                enabled,
+                ep_addr.index() as u8 | ((ep_addr.direction() == Direction::In) as u8) << 7,
+                ep_addr.direction(),
+            );
             unsafe {
                 let regs = Rusb1Regs::ptr(self.port);
                 if enabled {
+                    // Clear the FIFO and reset the data toggle to DATA0 BEFORE
+                    // arming the pipe.  After SET_CONFIGURATION / SET_INTERFACE
+                    // the host resets its bulk/interrupt toggle to DATA0; the
+                    // device must do the same or every IN packet goes out with
+                    // the wrong DATAx phase and the host ACKs but discards it as
+                    // a duplicate (matches reference dcd_rusb1.c, which issues
+                    // ACLRM|SQCLR on endpoint open).  pipe_reset leaves PID=NAK.
+                    pipe_reset(regs, p);
                     pipe_enable(regs, p);
-                    if ep_addr.direction() == Direction::In {
-                        pipe_bemp_enable(regs, p);
-                    } else {
+                    if ep_addr.direction() == Direction::Out {
                         pipe_brdy_enable(regs, p);
                     }
+                    // IN pipes arm their completion interrupt per-transfer in
+                    // `write()`, so nothing to enable here.
                 } else {
                     pipe_disable(regs, p);
                     pipe_bemp_disable(regs, p);
@@ -912,6 +1036,18 @@ pub struct Rusb1EndpointOut {
     pub info: EndpointInfo,
 }
 
+impl Rusb1EndpointOut {
+    /// Stall (halt) this endpoint's pipe.
+    ///
+    /// Used by class code to signal a protocol error without access to the
+    /// [`Rusb1Bus`] — e.g. a USB Mass Storage Bulk-Only Transport phase error.
+    /// The host clears the halt with Clear-Feature(ENDPOINT_HALT), which the
+    /// standard control path turns into `endpoint_set_stalled(false)`.
+    pub fn stall(&mut self) {
+        unsafe { pipe_stall(Rusb1Regs::ptr(self.port), self.pipe as usize) };
+    }
+}
+
 impl embassy_usb_driver::Endpoint for Rusb1EndpointOut {
     fn info(&self) -> &EndpointInfo {
         &self.info
@@ -947,6 +1083,7 @@ impl EndpointOut for Rusb1EndpointOut {
             state.remaining = buf.len() as u16;
             state.transferred = 0;
             state.mps = mps;
+            state.buf_bytes = mps; // OUT pipes drain one packet per FIFO read
             state.xfer_type = endpoint_type_to_xfer(self.info.ep_type);
         });
 
@@ -970,27 +1107,60 @@ impl EndpointOut for Rusb1EndpointOut {
                 let brdyenb = core::ptr::addr_of!((*regs).brdyenb);
                 rd(brdyenb) & (1u16 << pipe) != 0
             };
-            if !already_enabled {
-                // First arm: flush any stale ISO packet before enabling BRDY.
-                if is_iso {
-                    use super::fifo::{fifo_bclr, fifo_for_pipe, fifo_select_pipe};
-                    let fifo = fifo_for_pipe(regs, pipe);
-                    fifo_select_pipe(&fifo, pipe, false);
-                    fifo_bclr(&fifo);
+
+            // D1FIFO MUTUAL EXCLUSION:
+            // The arm/drain below touches the shared FIFO port — `fifo_select_pipe`
+            // points D1FIFOSEL.CURPIPE at this pipe and `pipe_xfer_out_brdy` then
+            // copies bytes out one at a time.  The USB ISR performs the *same*
+            // select-then-copy for other pipes (an IN pipe's BEMP continuation
+            // fill, or another OUT pipe's BRDY drain).  If the ISR fired in the
+            // middle of our copy it would re-point CURPIPE at its pipe, so our
+            // remaining byte reads would come from the wrong pipe's FIFO —
+            // corrupting both transfers.  This is the CDC IN/OUT cross-corruption
+            // through the shared D1FIFO (e.g. the host's PING read out of the IN
+            // pipe, 0x31 → 0x00).  The ISR is inherently IRQ-masked; masking here
+            // makes every FIFO select+copy sequence mutually exclusive with it.
+            // (The IN first-fill path in write() is likewise already wrapped in a
+            // critical section via pipe_xfer_in_start.)
+            let fired = critical_section::with(|_| {
+                if !already_enabled {
+                    // First arm: flush any stale ISO packet before enabling BRDY.
+                    if is_iso {
+                        use super::fifo::{fifo_bclr, fifo_for_pipe, fifo_select_pipe};
+                        let fifo = fifo_for_pipe(regs, pipe);
+                        fifo_select_pipe(&fifo, pipe, false);
+                        fifo_bclr(&fifo);
+                    }
+                    pipe_brdy_enable(regs, pipe);
+
+                    // For non-ISO (bulk/interrupt) OUT: BRDY is disabled between
+                    // reads and re-enabled here, and pipe_brdy_enable() just
+                    // cleared BRDYSTS.  If a packet arrived while BRDY was disabled
+                    // — e.g. the host sent it before this first read() armed the
+                    // transfer state, or in the gap between two reads — its status
+                    // flag is now gone and no interrupt will ever fire for it,
+                    // leaving the data stranded in the pipe FIFO.  Drain it
+                    // directly here, the same way the ISO re-arm path below does,
+                    // so the poll_fn completes immediately instead of blocking.
+                    if !is_iso {
+                        return pipe_xfer_out_brdy(regs, pipe);
+                    }
+                    false
+                } else if is_iso {
+                    // Subsequent re-arms: the ISR no longer BCLRs stale packets, so
+                    // if a packet arrived while remaining==0 it's still in the FIFO.
+                    // Trigger it directly by calling pipe_xfer_out_brdy now — this
+                    // fills the buf from the waiting FIFO data and signals
+                    // PIPE_DONE, so the poll_fn below completes immediately without
+                    // waiting for another BRDY interrupt.
+                    pipe_xfer_out_brdy(regs, pipe)
+                } else {
+                    false
                 }
-                pipe_brdy_enable(regs, pipe);
-            } else if is_iso {
-                // Subsequent re-arms: the ISR no longer BCLRs stale packets, so
-                // if a packet arrived while remaining==0 it's still in the FIFO.
-                // Trigger it directly by calling pipe_xfer_out_brdy now — this
-                // fills the buf from the waiting FIFO data and signals PIPE_DONE,
-                // so the poll_fn below completes immediately without waiting for
-                // another BRDY interrupt.
-                let fired = pipe_xfer_out_brdy(regs, pipe);
-                if fired {
-                    PIPE_DONE.fetch_or(1u16 << pipe, Ordering::Release);
-                    PIPE_WAKERS[pipe].wake();
-                }
+            });
+            if fired {
+                PIPE_DONE.fetch_or(1u16 << pipe, Ordering::Release);
+                PIPE_WAKERS[pipe].wake();
             }
             pipe_enable(regs, pipe);
         }
@@ -1037,6 +1207,16 @@ pub struct Rusb1EndpointIn {
     pub port: u8,
     pub pipe: u8,
     pub info: EndpointInfo,
+    /// Bytes committed to the FIFO per fill (= `mps`, or the whole multi-packet
+    /// buffer for a continuous-mode bulk IN pipe).
+    pub buf_bytes: u16,
+}
+
+impl Rusb1EndpointIn {
+    /// Stall (halt) this endpoint's pipe.  See [`Rusb1EndpointOut::stall`].
+    pub fn stall(&mut self) {
+        unsafe { pipe_stall(Rusb1Regs::ptr(self.port), self.pipe as usize) };
+    }
 }
 
 impl embassy_usb_driver::Endpoint for Rusb1EndpointIn {
@@ -1073,15 +1253,62 @@ impl EndpointIn for Rusb1EndpointIn {
             state.length = buf.len() as u16;
             state.remaining = buf.len() as u16;
             state.mps = mps;
+            state.buf_bytes = self.buf_bytes;
             state.xfer_type = endpoint_type_to_xfer(self.info.ep_type);
         });
 
-        // Kick off the first packet; subsequent packets sent from BEMP ISR.
+        // Clear any stale completion / error state from a previous transfer
+        // before arming this one.  A leftover BEMP (e.g. a spurious buffer-empty
+        // that fires shortly after the previous packet drained) sets the
+        // PIPE_DONE bit in the ISR; if it is still set when the next write()
+        // arms, poll_fn below returns immediately — the new packet is never
+        // waited on, so it goes out on the *same* data toggle as the previous
+        // one.  The host ACKs the duplicate-toggle packet at the USB level
+        // (BEMP fires) but discards it as a retransmission, so the application
+        // never receives it.  This is what stranded the greeting VERSION (and
+        // any back-to-back IN packet) before the host could read it.
+        PIPE_DONE.fetch_and(!(1u16 << pipe), Ordering::Release);
+        PIPE_NRDY.fetch_and(!(1u16 << pipe), Ordering::Release);
+
+        // Kick off the first packet; subsequent packets are sent from the BEMP ISR.
+        //
+        // Order matters in two ways:
+        //
+        // 1. Write the FIFO data (pipe_xfer_in_start) BEFORE setting PID=BUF
+        //    (pipe_enable) — matches reference dcd_rusb1.c process_pipe_xfer IN.
+        //    If PID=BUF is asserted before the FIFO holds a committed buffer the
+        //    SIE answers IN tokens with NAK and can stay stuck in NAK.
+        //
+        // 2. Use BEMP for non-control IN progress/completion.  The TRM defines
+        //    BRDY on transmitting pipes as "FIFO write access available", which
+        //    can fire while a packet is merely staged; BEMP is the
+        //    transmit-complete source.  Order: clear stale status, fill, arm
+        //    BEMP, then release the pipe to BUF — the arm must precede the enable
+        //    (see the BEMP-before-BUF note below).
         unsafe {
             let regs = Rusb1Regs::ptr(self.port);
+            // Hold the pipe at NAK while we fill the FIFO and clear old status.
+            // NAK -> fill -> arm BEMP -> BUF avoids stale BEMP wakeups and the
+            // BRDY "CPU may write" false completion on transmitting pipes.
+            pipe_disable(regs, pipe);
+            pipe_brdy_disable(regs, pipe);
+            pipe_bemp_disable(regs, pipe);
+            wr(core::ptr::addr_of_mut!((*regs).brdysts), !((1u16) << pipe));
+            wr(core::ptr::addr_of_mut!((*regs).bempsts), !((1u16) << pipe));
+            // Commit the first packet to the FIFO; the BEMP ISR sends the rest.
+            pipe_xfer_in_start(regs, pipe, mps);
+            wr(core::ptr::addr_of_mut!((*regs).brdysts), !((1u16) << pipe));
+            wr(core::ptr::addr_of_mut!((*regs).bempsts), !((1u16) << pipe));
+            // Arm BEMP *before* releasing the pipe to BUF.  pipe_bemp_enable
+            // clears BEMPSTS as part of enabling; if it ran after pipe_enable a
+            // transmit-completion BEMP that fired in the gap — the host can read
+            // a short HS IN packet in well under a microframe — would be wiped
+            // before BEMPENB latched it, and with no further BEMP write() would
+            // hang forever (this was the CDC-session freeze).  PID is still NAK
+            // here, so no transmission — hence no BEMP — can occur until
+            // pipe_enable, and any stale BEMP was just cleared above.
             pipe_bemp_enable(regs, pipe);
             pipe_enable(regs, pipe);
-            pipe_xfer_in_start(regs, pipe, mps);
         }
 
         // Wait for all packets to drain.
@@ -1235,7 +1462,7 @@ pub unsafe fn dcd_int_handler(port: u8) {
             }
         }
 
-        // ── BRDY (buffer ready — data received on OUT pipe) ──────────────────
+        // ── BRDY (OUT data received / control write data-stage data) ────────
         if sts & INTSTS0_BRDY != 0 {
             let brdysts = rd(core::ptr::addr_of!((*regs).brdysts));
             let brdyenb = rd(core::ptr::addr_of!((*regs).brdyenb));
@@ -1264,7 +1491,7 @@ pub unsafe fn dcd_int_handler(port: u8) {
             }
         }
 
-        // ── BEMP (buffer empty — IN pipe sent its data) ───────────────────────
+        // ── BEMP (buffer empty — IN transmit progress/completion) ────────────
         if sts & INTSTS0_BEMP != 0 {
             let bempsts = rd(core::ptr::addr_of!((*regs).bempsts));
             let bempenb = rd(core::ptr::addr_of!((*regs).bempenb));
@@ -1285,12 +1512,22 @@ pub unsafe fn dcd_int_handler(port: u8) {
                     rmw(core::ptr::addr_of_mut!((*regs).bempenb), 0x0001, 0x0000);
                     PIPE_DONE.fetch_or(1, Ordering::Release);
                     PIPE_WAKERS[0].wake();
-                } else {
-                    let done = pipe_xfer_in_bemp(regs, n);
-                    if done {
-                        PIPE_DONE.fetch_or(1u16 << n, Ordering::Release);
-                        PIPE_WAKERS[n].wake();
-                    }
+                } else if PIPE_IS_IN.load(Ordering::Acquire) & (1u16 << n) != 0
+                    && pipe_xfer_in_bemp(regs, n)
+                {
+                    // All packets transmitted — complete unconditionally.
+                    // `write()` clears any stale BEMP before arming, so this BEMP
+                    // belongs to the current transfer.  We deliberately do NOT
+                    // gate on the SQMON data toggle: BEMP can fire a few cycles
+                    // before the hardware finishes toggling SQMON on the host
+                    // ACK, and because the BEMP status bit is already cleared
+                    // there is no later interrupt to recover — gating here
+                    // silently dropped the completion and hung the pipe (which
+                    // then stalled the whole CDC session).  The reference
+                    // dcd_rusb1.c likewise completes on the empty-buffer event
+                    // without a toggle check; the hardware owns SQMON.
+                    PIPE_DONE.fetch_or(1u16 << n, Ordering::Release);
+                    PIPE_WAKERS[n].wake();
                 }
             }
         }

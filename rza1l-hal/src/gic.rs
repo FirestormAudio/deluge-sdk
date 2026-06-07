@@ -283,6 +283,22 @@ pub unsafe fn disable(id: u16) {
     }
 }
 
+/// Shut the GIC down entirely: turn off the distributor and the CPU
+/// interface so no interrupt is forwarded to the core.
+///
+/// Intended for use before handing control to another program that will
+/// re-initialise the interrupt controller from scratch (e.g. an application
+/// loaded by the second-stage bootloader).
+///
+/// # Safety
+/// Writes the GIC distributor and CPU-interface control registers.
+pub unsafe fn shutdown() {
+    unsafe {
+        (GICC_CTLR_ADDR as *mut u32).write_volatile(0); // CPU interface off
+        (GICD_CTLR as *mut u32).write_volatile(0); // distributor off
+    }
+}
+
 /// Set priority for interrupt `id` (0 = highest, 31 = lowest).
 ///
 /// # Safety

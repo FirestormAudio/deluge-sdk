@@ -104,6 +104,9 @@ pub const INFO1_DET_CD: u16 = 0x0018;
 /// Card currently present — SD_CD level (1 = SD_CD held low = card inserted).
 /// Use this for steady-state presence queries; INFO1_INS_CD is only for edge events.
 pub const INFO1_CD_LEVEL: u16 = 0x0020;
+/// Write-protect — SD_WP level (INFO7).  Per the TRM: 1 = SD_WP held low =
+/// card's lock tab engaged (read-only); 0 = SD_WP high = writable.
+pub const INFO1_WP: u16 = 0x0080;
 
 // ---------------------------------------------------------------------------
 // SD_INFO2 bit masks
@@ -1022,6 +1025,15 @@ pub async unsafe fn read_blocks_dma(
         })
         .await;
 
+        // 5b. For RX: wait for the DMAC to drain its final burst into memory.
+        // DATA_TRNS fires when the SD-bus transfer ends; the DMAC may still
+        // be writing the last burst to the destination buffer.  Reading the
+        // buffer before CHSTAT.TC would observe stale data.
+        // (register_completion_irq must be called once for dma_ch at init.)
+        if data_result.is_ok() {
+            crate::dmac::wait_transfer_complete(dma_ch).await;
+        }
+
         // 6. Restore software transfer mode.
         reg16(base, OFF_INFO1_MASK).write_volatile(0xFFFF);
         reg16(base, OFF_INFO2_MASK).write_volatile(0xFFFF);
@@ -1199,6 +1211,22 @@ pub unsafe fn card_inserted(port: u8) -> bool {
         let info1 = reg16(base, OFF_INFO1).read_volatile();
         // INFO1_CD_LEVEL (bit 5 = INFO5): 1 = SD_CD held low = card present.
         info1 & INFO1_CD_LEVEL != 0
+    }
+}
+
+/// Return `true` if the card's write-protect (lock) tab is engaged (read-only).
+///
+/// Reads SD_INFO1 bit 7 (INFO7 = SD_WP level).  Mirrors the Renesas
+/// `_sd_iswp`: bit 7 set ⇒ SD_WP low ⇒ write protected.  Only meaningful when
+/// SD_WP is wired to the SDHI (the Deluge's full-size SD socket wires it to the
+/// lock tab); a socket without a WP switch reads as not-protected.
+///
+/// # Safety
+/// Reads SDHI INFO1 register.
+pub unsafe fn card_write_protected(port: u8) -> bool {
+    unsafe {
+        let base = port_base(port);
+        reg16(base, OFF_INFO1).read_volatile() & INFO1_WP != 0
     }
 }
 

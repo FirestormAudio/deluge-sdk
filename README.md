@@ -53,9 +53,9 @@ aliases — always use them instead of bare `cargo build` so the required
 
 | Command | Output | Notes |
 |---------|--------|-------|
-| `cargo build-fw` | `target/armv7a-none-eabihf/debug/deluge-firmware` | Debug ELF, RTT enabled |
-| `cargo build-fw-rel` | `target/armv7a-none-eabihf/release/deluge-firmware` | Release ELF, RTT disabled |
-| `cargo build-fw-bin` | `target/armv7a-none-eabihf/release/deluge-firmware.bin` | Raw binary for flashing |
+| `cargo build-fw` | `target/armv7a-none-eabihf/debug/demo-firmware` | Debug ELF, RTT enabled |
+| `cargo build-fw-rel` | `target/armv7a-none-eabihf/release/demo-firmware` | Release ELF, RTT disabled |
+| `cargo build-fw-bin` | `target/armv7a-none-eabihf/release/demo-firmware.bin` | Raw binary for flashing |
 
 ---
 
@@ -95,7 +95,7 @@ cargo install --path probe-rs-tools --locked
 **Flash and run** (streams RTT to the terminal):
 
 ```sh
-probe-rs run --chip R7S721020 target/armv7a-none-eabihf/debug/deluge-firmware
+probe-rs run --chip R7S721020 target/armv7a-none-eabihf/debug/demo-firmware
 ```
 
 **Capture PTM instruction trace** from the on-chip ETF buffer:
@@ -106,15 +106,15 @@ probe-rs read-trace --chip R7S721020 --duration-ms 2000 --output trace.bin
 
 # Decode inline and print packets:
 probe-rs read-trace --chip R7S721020 --duration-ms 2000 --decode \
-    --elf target/armv7a-none-eabihf/debug/deluge-firmware
+    --elf target/armv7a-none-eabihf/debug/demo-firmware
 
 # Compact execution-flow view (ISync + branch targets with symbols):
 probe-rs read-trace --chip R7S721020 --duration-ms 2000 --flow \
-    --elf target/armv7a-none-eabihf/debug/deluge-firmware
+    --elf target/armv7a-none-eabihf/debug/demo-firmware
 
 # JSON Lines output for programmatic processing:
 probe-rs read-trace --chip R7S721020 --duration-ms 2000 --decode \
-    --elf target/armv7a-none-eabihf/debug/deluge-firmware \
+    --elf target/armv7a-none-eabihf/debug/demo-firmware \
     --output-format json 2>&1 | jq 'select(.type == "Branch")'
 ```
 
@@ -124,7 +124,7 @@ probe-rs read-trace --chip R7S721020 --duration-ms 2000 --decode \
 
 The [CI workflow](.github/workflows/ci.yml) builds the release firmware binary
 on every push to `main` and on pull requests. The resulting
-`firmware-release` artifact contains `deluge-firmware.bin`.
+`firmware-release` artifact contains `demo-firmware.bin`.
 
 [Synthstrom Deluge]: https://synthstrom.com/product/deluge/
 [Embassy]: https://embassy.dev

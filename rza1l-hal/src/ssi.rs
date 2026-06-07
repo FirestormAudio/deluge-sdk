@@ -68,8 +68,8 @@ const DMARS_SSI0_RX: u32 = 0x00E2;
 
 // ── CHCFG register field constants (shared with scux; defined in dmac) ───────
 use crate::dmac::{
-    CHCFG_AM_BURST, CHCFG_DAD, CHCFG_DDS_32BIT, CHCFG_DMS, CHCFG_HIEN, CHCFG_LVL,
-    CHCFG_REQD, CHCFG_SAD, CHCFG_SDS_32BIT,
+    CHCFG_AM_BURST, CHCFG_DAD, CHCFG_DDS_32BIT, CHCFG_DMS, CHCFG_HIEN, CHCFG_LVL, CHCFG_REQD,
+    CHCFG_SAD, CHCFG_SDS_32BIT,
 };
 
 // ── SSI0 register map ────────────────────────────────────────────────────────

@@ -53,7 +53,11 @@ unsafe fn cpg_basic_init() {
         let _ = frqcr2.read_volatile();
     }
 
-    // Enable writes to the on-chip data-retention RAM banks.
+    // Enable writes to the on-chip data-retention RAM banks (0x20000000-
+    // 0x2001FFFF).  The rest of the large-capacity on-chip RAM is gated by
+    // SYSCR1/SYSCR2, but those reset to 0xFF (all pages enabled) on a power-on
+    // reset and nothing in the Deluge boot chain disables them, so they need no
+    // attention here.
     unsafe {
         syscr3.write_volatile(0x0F);
         let _ = syscr3.read_volatile();
