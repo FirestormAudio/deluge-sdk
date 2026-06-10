@@ -80,6 +80,14 @@ static mut ISO_OUT_HOOK_PIPE: usize = usize::MAX;
 /// Called from IRQ context on single-core ARMv7-A (IRQs already disabled).
 static mut ISO_OUT_HOOK: Option<unsafe fn(*const u8, usize)> = None;
 
+/// Scratch buffer used to drain an ISO OUT packet from the hardware FIFO when no
+/// task-side `read()` is pending, before handing it to the registered hook.
+/// Sized for the largest ISO packet this module configures (288 B), rounded up
+/// to a block boundary.  Touched only by the BRDY ISR, which cannot reenter on
+/// single-core ARMv7-A.
+const ISO_DRAIN_LEN: usize = 512;
+static mut ISO_DRAIN_BUF: [u8; ISO_DRAIN_LEN] = [0; ISO_DRAIN_LEN];
+
 /// Register an ISO OUT packet callback for `pipe`.
 ///
 /// The callback is invoked from the BRDY ISR with a pointer to the fully
@@ -477,11 +485,47 @@ pub unsafe fn pipe_xfer_out_brdy(regs: *mut Rusb1Regs, n: usize) -> bool {
         let is_iso = state.xfer_type == XferType::Isochronous;
 
         if state.remaining == 0 {
-            // No active transfer buffer.  For ISO: do NOT BCLR — leave the packet
-            // in the FIFO so the task can read it without missing it.  The task's
-            // re-arm path (in driver.rs EndpointOut::read) will drain it directly
-            // via fifo_is_ready check, or the next BRDY will deliver it once the
-            // task sets up the transfer state.
+            // No task-side read() is pending for this pipe.
+            //
+            // If an ISO OUT hook is registered for this pipe, drain the packet
+            // from the FIFO into the scratch buffer and hand it to the hook here,
+            // in ISR context.  This is the audio fast path: it decouples ISO OUT
+            // servicing from executor scheduling latency entirely.  Without it, a
+            // packet that arrives while no read() is armed sits in the
+            // double-buffered FIFO; if the CPU does not drain it within ~2
+            // microframes the SIE has nowhere to put the next packet and drops it
+            // (TRM §28.4.9 / Table 28.26: OVRN set, NRDY raised, "no data packet
+            // is received in response to OUT token") — an audible gap.
+            //
+            // A hook is only ever installed on the ISO OUT pipe, so matching the
+            // pipe number is sufficient; `state.xfer_type` is NOT reliable here
+            // because it is only set by `read()`, the very dependency this path
+            // exists to avoid.
+            if n == core::ptr::addr_of!(ISO_OUT_HOOK_PIPE).read()
+                && let Some(hook) = core::ptr::addr_of!(ISO_OUT_HOOK).read()
+            {
+                let fifo = fifo_for_pipe(regs, n);
+                fifo_select_pipe(&fifo, n, false);
+                if fifo_is_ready(&fifo, n) {
+                    let vld = fifo_dtln(&fifo) as usize;
+                    let scratch = core::ptr::addr_of_mut!(ISO_DRAIN_BUF) as *mut u8;
+                    let len = vld.min(ISO_DRAIN_LEN);
+                    if len > 0 {
+                        hw_to_sw_fifo(&fifo, scratch, len);
+                    }
+                    // Always BCLR to release the double-buffer bank so the SIE can
+                    // accept the next packet.
+                    fifo_bclr(&fifo);
+                    if len > 0 {
+                        hook(scratch as *const u8, len);
+                    }
+                }
+                return false;
+            }
+
+            // No hook (bulk/interrupt-style OUT, or ISO before the hook is
+            // installed): do NOT BCLR — leave the packet in the FIFO so the
+            // task's read() re-arm path can drain it without missing it.
             return false;
         }
 
