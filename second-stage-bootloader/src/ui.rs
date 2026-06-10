@@ -221,8 +221,8 @@ pub async fn run_selector(entries: &[&[u8]], default_idx: usize, countdown_secs:
                 if cursor + 1 < entries.len() {
                     cursor += 1;
                 }
-            } else if cursor > 0 {
-                cursor -= 1;
+            } else {
+                cursor = cursor.saturating_sub(1);
             }
 
             // Keep scroll window tracking cursor.

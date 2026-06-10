@@ -21,10 +21,10 @@ pub mod scux_usb_tx_path;
 pub mod sd;
 pub mod sdram;
 pub mod system;
-pub mod uart;
-pub mod usb;
 #[cfg(target_os = "none")]
 pub mod trigger_clock;
+pub mod uart;
+pub mod usb;
 
 /// Guards concurrent RSPI0 access between the OLED DMA path and `cv_gate`.
 ///

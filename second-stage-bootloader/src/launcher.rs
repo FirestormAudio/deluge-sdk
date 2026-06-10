@@ -195,8 +195,8 @@ pub unsafe fn launch(entry: u32) -> ! {
 /// - `entry` must be the address of a valid ARM-state function.
 pub unsafe fn launch_via_trampoline(descs: &[SramSegDesc], entry: u32) -> ! {
     unsafe {
-        let code_start = core::ptr::addr_of!(_trampoline_start) as *const u8;
-        let code_end = core::ptr::addr_of!(_trampoline_end) as *const u8;
+        let code_start = core::ptr::addr_of!(_trampoline_start);
+        let code_end = core::ptr::addr_of!(_trampoline_end);
         let code_len = code_end as usize - code_start as usize;
 
         // Copy trampoline code into retention RAM.

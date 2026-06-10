@@ -36,7 +36,7 @@
 //! This driver enables them inside `Rusb1Bus::enable()` which is called after
 //! `Driver::start()` once embassy-usb has confirmed VBUS.
 
-use core::sync::atomic::{AtomicU8, AtomicU16, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, Ordering};
 use core::task::Poll;
 
 use embassy_sync::waitqueue::AtomicWaker;
@@ -59,11 +59,11 @@ use super::pipe::{
 use super::regs::{
     BUSWAIT_VALUE, DCPMAXP_MXPS_MASK, DVSQ_DEFAULT, DVSQ_SUSP0, DVSTCTR0_RHST, DVSTCTR0_RHST_FS,
     DVSTCTR0_RHST_HS, FIFOCTR_BCLR, INTENB0_BEMPE, INTENB0_BRDYE, INTENB0_CTRE, INTENB0_DVSE,
-    INTENB0_VBSE, INTSTS0_BEMP, INTSTS0_BRDY, INTSTS0_CTRT, INTSTS0_CTSQ_MASK, INTSTS0_DVSQ_MASK,
-    INTSTS0_DVSQ_SHIFT, INTSTS0_DVST, INTSTS0_VALID, INTSTS0_VBINT, INTSTS0_VBSTS, PIPECTR_ACLRM,
-    PIPECTR_CCPL, PIPECTR_PID_BUF, PIPECTR_PID_MASK, PIPECTR_PID_STALL, PIPECTR_SQCLR,
-    PKT_BUF_BLOCK_SIZE, Rusb1Regs, SUSPMODE_SUSPM, SYSCFG_DCFM, SYSCFG_DPRPU, SYSCFG_DRPD,
-    SYSCFG_HSE, SYSCFG_UPLLE, SYSCFG_USBE, pipectr_ptr, rd, rmw, wr,
+    INTENB0_RSME, INTENB0_VBSE, INTSTS0_BEMP, INTSTS0_BRDY, INTSTS0_CTRT, INTSTS0_CTSQ_MASK,
+    INTSTS0_DVSQ_MASK, INTSTS0_DVSQ_SHIFT, INTSTS0_DVST, INTSTS0_RESM, INTSTS0_VALID,
+    INTSTS0_VBINT, INTSTS0_VBSTS, PIPECTR_ACLRM, PIPECTR_CCPL, PIPECTR_PID_BUF, PIPECTR_PID_MASK,
+    PIPECTR_PID_STALL, PIPECTR_SQCLR, PKT_BUF_BLOCK_SIZE, Rusb1Regs, SUSPMODE_SUSPM, SYSCFG_DCFM,
+    SYSCFG_DPRPU, SYSCFG_DRPD, SYSCFG_HSE, SYSCFG_UPLLE, SYSCFG_USBE, pipectr_ptr, rd, rmw, wr,
 };
 
 // ---------------------------------------------------------------------------
@@ -94,6 +94,14 @@ static CTRL_STAGE: [AtomicU8; 2] = [AtomicU8::new(0xFF), AtomicU8::new(0xFF)];
 
 /// Waker for [`Rusb1ControlPipe::setup`] and [`Rusb1ControlPipe::data_out`] per port.
 static CTRL_WAKERS: [AtomicWaker; 2] = [AtomicWaker::new(), AtomicWaker::new()];
+
+/// Set by [`process_bus_reset`] to abort an in-flight control (pipe 0)
+/// data/status stage. Unlike bulk pipes, an ep0 transfer is awaited *outside*
+/// embassy-usb's `bus.poll()` select, so a host reset mid-control-transfer
+/// would otherwise hang `device.run()` forever (the BRDY/BEMP it waits on never
+/// arrives). `data_in`/`data_out` observe this flag and return an error, letting
+/// the device task fall back to `bus.poll()` and handle the reset.
+static CTRL_ABORT: [AtomicBool; 2] = [AtomicBool::new(false), AtomicBool::new(false)];
 
 /// Target number of max packets to buffer for a continuous-mode bulk IN pipe.
 /// 4 × 512 B = 2 KiB, the largest a single pipe buffer can be (PIPEBUF BUFSIZE
@@ -590,31 +598,35 @@ pub struct Rusb1Bus {
 impl Bus for Rusb1Bus {
     async fn poll(&mut self) -> Event {
         core::future::poll_fn(|cx| {
-            BUS_WAKERS[self.port as usize].register(cx.waker());
-            let ev = BUS_EVENTS[self.port as usize].swap(0, Ordering::Acquire);
-            if ev & BUS_EVT_RESET != 0 {
-                log::debug!("usb{}: Bus::poll → Reset", self.port);
-                return Poll::Ready(Event::Reset);
-            }
-            if ev & BUS_EVT_SUSPEND != 0 {
-                log::debug!("usb{}: Bus::poll → Suspend", self.port);
-                return Poll::Ready(Event::Suspend);
-            }
-            if ev & BUS_EVT_RESUME != 0 {
-                log::debug!("usb{}: Bus::poll → Resume", self.port);
-                return Poll::Ready(Event::Resume);
-            }
-            if ev & BUS_EVT_VBUS_ON != 0 {
-                log::debug!("usb{}: Bus::poll → PowerDetected", self.port);
+            let port = self.port as usize;
+            BUS_WAKERS[port].register(cx.waker());
+            // Pick the highest-priority pending event and clear ONLY that bit.
+            // The old `swap(0)` cleared every pending bit but returned just one,
+            // silently dropping the rest — so a SUSPEND+RESET (or RESET+RESUME)
+            // pair could lose the Reset/Resume and desync enumeration.
+            let ev = BUS_EVENTS[port].load(Ordering::Acquire);
+            let (bit, event, name) = if ev & BUS_EVT_RESET != 0 {
+                (BUS_EVT_RESET, Event::Reset, "Reset")
+            } else if ev & BUS_EVT_SUSPEND != 0 {
+                (BUS_EVT_SUSPEND, Event::Suspend, "Suspend")
+            } else if ev & BUS_EVT_RESUME != 0 {
+                (BUS_EVT_RESUME, Event::Resume, "Resume")
+            } else if ev & BUS_EVT_VBUS_ON != 0 {
                 self.connected = true;
-                return Poll::Ready(Event::PowerDetected);
-            }
-            if ev & BUS_EVT_VBUS_OFF != 0 {
-                log::debug!("usb{}: Bus::poll → PowerRemoved", self.port);
+                (BUS_EVT_VBUS_ON, Event::PowerDetected, "PowerDetected")
+            } else if ev & BUS_EVT_VBUS_OFF != 0 {
                 self.connected = false;
-                return Poll::Ready(Event::PowerRemoved);
+                (BUS_EVT_VBUS_OFF, Event::PowerRemoved, "PowerRemoved")
+            } else {
+                return Poll::Pending;
+            };
+            BUS_EVENTS[port].fetch_and(!bit, Ordering::AcqRel);
+            // If other events are still pending, ensure we get polled again.
+            if BUS_EVENTS[port].load(Ordering::Acquire) != 0 {
+                BUS_WAKERS[port].wake();
             }
-            Poll::Pending
+            log::debug!("usb{}: Bus::poll → {}", self.port, name);
+            Poll::Ready(event)
         })
         .await
     }
@@ -817,6 +829,13 @@ impl ControlPipe for Rusb1ControlPipe {
             Poll::Pending
         })
         .await;
+        // A fresh SETUP marks the start of a new control transfer: discard any
+        // stale reset-abort flag here, ONCE per transfer. Do NOT clear it in
+        // data_in/data_out — those are called once per packet, so clearing there
+        // would race a reset that lands between packets of a multi-packet
+        // transfer (the next packet would wipe the flag, then hang on a
+        // BRDY/BEMP the re-enumerating host never produces).
+        CTRL_ABORT[self.port as usize].store(false, Ordering::Release);
         log::debug!("usb{}: setup() → {:02x?}", self.port, pkt);
         pkt
     }
@@ -857,17 +876,28 @@ impl ControlPipe for Rusb1ControlPipe {
             );
         }
 
+        // The reset-abort flag is cleared once per transfer in setup(); a reset
+        // that fires now (or between packets) must stay latched so this and any
+        // subsequent packet abort rather than hang.
+
         // Wait for the BRDY interrupt on pipe 0 signalling that the host's
-        // OUT data packet has been received and is ready to read (Bug #5).
-        core::future::poll_fn(|cx| {
+        // OUT data packet has been received and is ready to read (Bug #5), or
+        // for a bus reset to abort the transfer.
+        let aborted = core::future::poll_fn(|cx| {
             CTRL_WAKERS[p].register(cx.waker());
+            if CTRL_ABORT[p].load(Ordering::Acquire) {
+                return Poll::Ready(true);
+            }
             if PIPE0_BRDY[p].swap(0, Ordering::Acquire) != 0 {
-                Poll::Ready(())
+                Poll::Ready(false)
             } else {
                 Poll::Pending
             }
         })
         .await;
+        if aborted {
+            return Err(EndpointError::Disabled);
+        }
 
         // Read from CFIFO (pipe 0 OUT).
         unsafe {
@@ -909,6 +939,8 @@ impl ControlPipe for Rusb1ControlPipe {
             wr(core::ptr::addr_of_mut!((*regs).bempsts), !(1u16));
             rmw(core::ptr::addr_of_mut!((*regs).bempenb), 0x0001, 0x0001);
             PIPE_DONE.fetch_and(!(1u16), Ordering::Release);
+            // The reset-abort flag is cleared once per transfer in setup(); leave
+            // it latched here so a reset between packets aborts rather than hangs.
 
             let fifo = FifoPort::cfifo(regs);
             fifo_select_pipe(&fifo, 0, true); // ISEL=1 selects IN direction
@@ -953,17 +985,24 @@ impl ControlPipe for Rusb1ControlPipe {
                 (ctr & !PIPECTR_PID_MASK) | PIPECTR_PID_BUF,
             );
 
-            // Wait for BEMP on pipe 0 (data transmitted to host).
-            core::future::poll_fn(|cx| {
+            // Wait for BEMP on pipe 0 (data transmitted to host), or for a bus
+            // reset to abort the transfer.
+            let aborted = core::future::poll_fn(|cx| {
                 PIPE_WAKERS[0].register(cx.waker());
+                if CTRL_ABORT[self.port as usize].load(Ordering::Acquire) {
+                    return Poll::Ready(true);
+                }
                 let done = PIPE_DONE.fetch_and(!(1u16), Ordering::Acquire);
                 if done & 1 != 0 {
-                    Poll::Ready(())
+                    Poll::Ready(false)
                 } else {
                     Poll::Pending
                 }
             })
             .await;
+            if aborted {
+                return Err(EndpointError::Disabled);
+            }
 
             // CCPL (status-stage ACK for control reads) is set by the ISR's
             // non-VALID CTRT ctsq=2 handler, matching the C driver's
@@ -1377,6 +1416,20 @@ pub unsafe fn dcd_int_handler(port: u8) {
             BUS_WAKERS[p].wake();
         }
 
+        // ── RESM (resume detected) ───────────────────────────────────────────
+        // The host has driven the bus out of suspend. RESM is enabled only while
+        // suspended (see the DVST suspend path). Clear the status, disable RESM
+        // again, and emit Resume so embassy-usb's wait_resume() unblocks and
+        // resumes servicing control/data (matches C `usb_pstd_resume_process`).
+        // RESM is not in STICKY_FLAGS, so the bulk clear at the top of the ISR
+        // left it set — clear it here (write 0 to RESM, 1 elsewhere to preserve).
+        if sts & INTSTS0_RESM != 0 {
+            wr(core::ptr::addr_of_mut!((*regs).intsts0), !INTSTS0_RESM);
+            rmw(core::ptr::addr_of_mut!((*regs).intenb0), INTENB0_RSME, 0);
+            BUS_EVENTS[p].fetch_or(BUS_EVT_RESUME, Ordering::Release);
+            BUS_WAKERS[p].wake();
+        }
+
         // ── DVST (device-state change) ───────────────────────────────────────
         if sts & INTSTS0_DVST != 0 {
             let dvsq = (sts & INTSTS0_DVSQ_MASK) >> INTSTS0_DVSQ_SHIFT;
@@ -1391,6 +1444,21 @@ pub unsafe fn dcd_int_handler(port: u8) {
                 _ => None,
             };
             if let Some(evt) = evt {
+                if evt == BUS_EVT_SUSPEND {
+                    // Arm the resume (RESM) interrupt so we can detect the host
+                    // driving K-state to wake us. The module clock is gated in
+                    // suspend, so DVST can't be relied on for resume — RESM is the
+                    // analog line-state detector that fires regardless (matches C
+                    // `usb_pstd_suspend_process`: hw_usb_pset_enb_rsme()). Without
+                    // this the device never emits Event::Resume, so embassy-usb's
+                    // wait_resume() — which only polls the bus, not control —
+                    // wedges forever after the first selective suspend.
+                    rmw(
+                        core::ptr::addr_of_mut!((*regs).intenb0),
+                        INTENB0_RSME,
+                        INTENB0_RSME,
+                    );
+                }
                 BUS_EVENTS[p].fetch_or(evt, Ordering::Release);
                 BUS_WAKERS[p].wake();
             }
@@ -1588,7 +1656,7 @@ unsafe fn process_bus_reset(port: u8) {
             _ => "LS / unknown",
         };
         log::info!(
-            "usb{}: bus reset — negotiated speed: {} (RHST={:#03x})",
+            "usb{}: bus reset — negotiated speed: {} (RHST={:#06x})",
             port,
             speed_str,
             rhst
@@ -1600,6 +1668,11 @@ unsafe fn process_bus_reset(port: u8) {
         // (matches C firmware: USB200.BRDYENB = 1; USB200.BEMPENB = 1).
         wr(core::ptr::addr_of_mut!((*regs).brdyenb), 0x0001);
         wr(core::ptr::addr_of_mut!((*regs).bempenb), 0x0001);
+
+        // If we got a reset instead of a resume out of suspend, RSME may still be
+        // armed — disable it so a later spurious RESM can't fire. RESM is re-armed
+        // by the DVST suspend path as needed.
+        rmw(core::ptr::addr_of_mut!((*regs).intenb0), INTENB0_RSME, 0);
 
         // Clear the control FIFO.
         wr(core::ptr::addr_of_mut!((*regs).cfifoctr), FIFOCTR_BCLR);
@@ -1641,6 +1714,16 @@ unsafe fn process_bus_reset(port: u8) {
                 }
             }
         }
+
+        // Abort any in-flight control (pipe 0) data/status stage. embassy-usb
+        // awaits these *outside* the bus.poll() select, so a host reset mid
+        // control transfer (e.g. a re-probe after the idle port was suspended)
+        // would hang device.run() forever — the BRDY/BEMP it waits on never
+        // arrives. Flag + wake both control waiters so data_in/data_out return
+        // an error and the device task falls back to bus.poll() to handle reset.
+        CTRL_ABORT[p].store(true, Ordering::Release);
+        CTRL_WAKERS[p].wake();
+        PIPE_WAKERS[0].wake();
 
         // Re-apply all pipe hardware configs so the host can re-enumerate.
         configure_all_pipes(port);

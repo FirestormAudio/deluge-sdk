@@ -78,7 +78,7 @@ pub fn probe() -> Option<FlashImage> {
     let entry = read_word(META_CODE_EXECUTE);
 
     // Sanity-check the metadata before we trust it for a memcpy + jump.
-    if code_start < SRAM_LOAD_ORIGIN || code_start >= SRAM_END {
+    if !(SRAM_LOAD_ORIGIN..SRAM_END).contains(&code_start) {
         return None;
     }
     if code_end <= code_start || code_end > SRAM_END {

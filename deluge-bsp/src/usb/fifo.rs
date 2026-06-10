@@ -136,8 +136,11 @@ unsafe fn set_mbw(sel: *mut u16, mbw: u16) {
 /// `fifo` fields must be valid register pointers.
 pub unsafe fn fifo_is_ready(fifo: &FifoPort, pipe_num: usize) -> bool {
     unsafe {
-        // Hardware settles within ~4 reads normally; 64 gives ample margin without
-        // hanging the ISR if the pipe has no data (e.g. after BCLR).
+        // Confirm CURPIPE has latched to the requested pipe (TRM §28: after a
+        // CURPIPE write, read it back to confirm it updated), then poll FRDY.
+        // Correct selection — including the deselect-first dance the TRM mandates
+        // when switching to a *receiving* pipe — is handled by the caller via
+        // `fifo_select_recv` so the port can't surface the prior pipe's data.
         for _ in 0..64 {
             let sel = rd(fifo.sel);
             if (sel & FIFOSEL_CURPIPE_MASK) as usize != pipe_num {
@@ -148,6 +151,32 @@ pub unsafe fn fifo_is_ready(fifo: &FifoPort, pipe_num: usize) -> bool {
             }
         }
         false
+    }
+}
+
+/// Select a **receiving-direction** (OUT) pipe on a DnFIFO port, following the
+/// TRM §28 CURPIPE-change procedure: set CURPIPE to a different value (0 = no
+/// pipe) first, confirm it latched, then select the target pipe.
+///
+/// This is required to avoid the shared-D1FIFO CDC IN/OUT cross-corruption: an
+/// OUT drain that selects its pipe in a single write can observe the FRDY/data
+/// of the *previously selected* IN pipe (e.g. crow's just-staged TX), reading
+/// its bytes back onto the OUT path. Deselecting first flushes the port state
+/// machine so the subsequent read reflects only the target pipe.
+///
+/// # Safety
+/// `fifo` must be a valid DnFIFO port; `pipe_num` must be a DnFIFO pipe (≥ 1).
+pub unsafe fn fifo_select_recv(fifo: &FifoPort, pipe_num: usize) {
+    unsafe {
+        // Step 1: deselect (CURPIPE = 0 → "no pipe" on D0/D1FIFO) and confirm.
+        fifo_select_pipe(fifo, 0, false);
+        for _ in 0..64 {
+            if (rd(fifo.sel) & FIFOSEL_CURPIPE_MASK) == 0 {
+                break;
+            }
+        }
+        // Step 2: select the target receiving pipe.
+        fifo_select_pipe(fifo, pipe_num, false);
     }
 }
 

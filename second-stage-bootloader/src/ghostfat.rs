@@ -39,7 +39,7 @@ const ROOT_DIR_SECTORS: u32 = (ROOT_ENTRIES * 32) / SECTOR as u32;
 /// Total data clusters — ≥ 4085 keeps the volume unambiguously FAT16, and the
 /// resulting total stays under 65536 sectors so a 16-bit sector count suffices.
 const TOTAL_CLUSTERS: u32 = 8000;
-const SECTORS_PER_FAT: u32 = ((TOTAL_CLUSTERS + 2) * 2 + SECTOR as u32 - 1) / SECTOR as u32;
+const SECTORS_PER_FAT: u32 = ((TOTAL_CLUSTERS + 2) * 2).div_ceil(SECTOR as u32);
 
 const FAT_START: u32 = RESERVED_SECTORS;
 const ROOT_START: u32 = FAT_START + NUM_FATS * SECTORS_PER_FAT;
@@ -92,11 +92,11 @@ impl GhostFat {
         out[..SECTOR].fill(0);
         if lba == 0 {
             self.boot_sector(out);
-        } else if lba >= FAT_START && lba < ROOT_START {
+        } else if (FAT_START..ROOT_START).contains(&lba) {
             // Two identical FAT copies follow the reserved region.
             let fat_sector = (lba - FAT_START) % SECTORS_PER_FAT;
             self.fat_sector(fat_sector, out);
-        } else if lba >= ROOT_START && lba < DATA_START {
+        } else if (ROOT_START..DATA_START).contains(&lba) {
             if lba - ROOT_START == 0 {
                 self.root_dir(out);
             }

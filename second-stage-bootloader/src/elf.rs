@@ -329,11 +329,10 @@ where
                 remaining -= n;
 
                 copied_bytes = copied_bytes.saturating_add(n as u32);
-                let percent = if total_bytes == 0 {
-                    100
-                } else {
-                    ((copied_bytes.saturating_mul(100)) / total_bytes) as u8
-                };
+                let percent = copied_bytes
+                    .saturating_mul(100)
+                    .checked_div(total_bytes)
+                    .unwrap_or(100) as u8;
                 if percent != last_percent {
                     on_progress(copied_bytes, total_bytes).await;
                     last_percent = percent;

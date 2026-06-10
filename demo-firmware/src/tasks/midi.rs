@@ -55,18 +55,14 @@ pub(crate) async fn midi_usb_rx_task(mut receiver: Receiver<'static, Rusb1Driver
     loop {
         receiver.wait_connection().await;
         debug!("MIDI USB RX: connected");
-        loop {
-            match receiver.read_packet(&mut pkt).await {
-                Ok(n) => {
-                    for ev in pkt[..n].chunks_exact(4) {
-                        let cin = (ev[0] & 0x0F) as usize;
-                        let count = CIN_BYTES[cin] as usize;
-                        if count > 0 && count <= 3 {
-                            bsp_uart::write_midi(&ev[1..1 + count]).await;
-                        }
-                    }
+        // Loop until the endpoint is disabled (read_packet returns Err).
+        while let Ok(n) = receiver.read_packet(&mut pkt).await {
+            for ev in pkt[..n].chunks_exact(4) {
+                let cin = (ev[0] & 0x0F) as usize;
+                let count = CIN_BYTES[cin] as usize;
+                if count > 0 && count <= 3 {
+                    bsp_uart::write_midi(&ev[1..1 + count]).await;
                 }
-                Err(_) => break, // endpoint disabled
             }
         }
         debug!("MIDI USB RX: disconnected");

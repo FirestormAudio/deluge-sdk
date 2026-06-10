@@ -17,8 +17,8 @@ use core::sync::atomic::AtomicU16;
 use embassy_sync::waitqueue::AtomicWaker;
 
 use super::fifo::{
-    fifo_bclr, fifo_bval, fifo_dtln, fifo_for_pipe, fifo_is_ready, fifo_select_pipe, hw_to_sw_fifo,
-    sw_to_hw_fifo,
+    fifo_bclr, fifo_bval, fifo_dtln, fifo_for_pipe, fifo_is_ready, fifo_select_pipe,
+    fifo_select_recv, hw_to_sw_fifo, sw_to_hw_fifo,
 };
 use super::regs::{
     PIPEBUF_BUFSIZE_SHIFT, PIPECFG_CNTMD, PIPECFG_DBLB, PIPECFG_DIR, PIPECFG_EPNUM_MASK,
@@ -498,7 +498,17 @@ pub unsafe fn pipe_xfer_out_brdy(regs: *mut Rusb1Regs, n: usize) -> bool {
         }
 
         let fifo = fifo_for_pipe(regs, n);
-        fifo_select_pipe(&fifo, n, false);
+        // Receiving (OUT) pipe selection.  For bulk pipes on the shared D1FIFO
+        // (e.g. CDC OUT pipe 3 sharing the port with IN pipe 4) use the TRM
+        // deselect-first CURPIPE-change procedure so this read cannot surface
+        // the previously-selected IN pipe's staged data (the IN/OUT
+        // cross-corruption).  ISO pipes live on their own D0FIFO and are
+        // timing-critical for audio, so keep their original single select.
+        if is_iso {
+            fifo_select_pipe(&fifo, n, false);
+        } else {
+            fifo_select_recv(&fifo, n);
+        }
 
         if !fifo_is_ready(&fifo, n) {
             // FIFO port not ready; re-arm and retry next BRDY.

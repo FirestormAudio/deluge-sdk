@@ -1,7 +1,8 @@
 //! FAT filesystem layer for the Deluge SD card.
 //!
 //! Wraps [`embedded_sdmmc::VolumeManager`] with the Deluge-specific block
-//! device ([`DelugeBlockDevice`]) and time source ([`DelugeTimeSource`]).
+//! device ([`PartitionShim`], which adds superfloppy support on top of
+//! `DelugeBlockDevice`) and time source ([`DelugeTimeSource`]).
 //!
 //! ## Quick start
 //!
@@ -49,7 +50,7 @@
 
 use embedded_sdmmc::VolumeManager;
 
-use crate::sd::{DelugeBlockDevice, DelugeTimeSource, SdError};
+use crate::sd::{DelugeTimeSource, PartitionShim, SdError};
 
 // ---------------------------------------------------------------------------
 // Public re-exports — everything a caller needs to use the FAT API.
@@ -73,7 +74,7 @@ pub type FatError = embedded_sdmmc::Error<SdError>;
 ///
 /// [`sd::init`](crate::sd::init) **must** have completed successfully before
 /// calling any method on this type.
-pub type DelugeVolumeManager = VolumeManager<DelugeBlockDevice, DelugeTimeSource>;
+pub type DelugeVolumeManager = VolumeManager<PartitionShim, DelugeTimeSource>;
 
 // ---------------------------------------------------------------------------
 // Constructors
@@ -81,10 +82,12 @@ pub type DelugeVolumeManager = VolumeManager<DelugeBlockDevice, DelugeTimeSource
 
 /// Create a [`DelugeVolumeManager`] with the default open-handle limits.
 ///
-/// Equivalent to `VolumeManager::new(DelugeBlockDevice, DelugeTimeSource)`.
+/// Equivalent to `VolumeManager::new(PartitionShim::new(), DelugeTimeSource)`.
+/// Probes the card at construction so both MBR-partitioned and superfloppy
+/// (no-partition-table) cards work transparently.
 #[inline]
 pub fn new_volume_manager() -> DelugeVolumeManager {
-    VolumeManager::new(DelugeBlockDevice, DelugeTimeSource)
+    VolumeManager::new(PartitionShim::new(), DelugeTimeSource)
 }
 
 /// Create a [`VolumeManager`] with custom open-handle limits.
@@ -104,6 +107,6 @@ pub fn new_volume_manager_with_limits<
     const MAX_VOLUMES: usize,
 >(
     id_offset: u32,
-) -> VolumeManager<DelugeBlockDevice, DelugeTimeSource, MAX_DIRS, MAX_FILES, MAX_VOLUMES> {
-    VolumeManager::new_with_limits(DelugeBlockDevice, DelugeTimeSource, id_offset)
+) -> VolumeManager<PartitionShim, DelugeTimeSource, MAX_DIRS, MAX_FILES, MAX_VOLUMES> {
+    VolumeManager::new_with_limits(PartitionShim::new(), DelugeTimeSource, id_offset)
 }

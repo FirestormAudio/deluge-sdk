@@ -67,12 +67,22 @@ const ACMD6: u16 = 0x40 | 6;
 /// ACMD41 (0x40 | 41): SD_SEND_OP_COND — R3
 const ACMD41: u16 = 0x40 | 41;
 
-// CMD17/18 SDHC variant: upper bits encode high-capacity block addressing.
-// Matches the Renesas driver: `CMD18 | 0x7c00u`.
-const CMD17_SDHC: u16 = CMD17 | 0x7C00;
-const CMD18_SDHC: u16 = CMD18 | 0x7C00;
-const CMD24_SDHC: u16 = CMD24 | 0x7C00;
-const CMD25_SDHC: u16 = CMD25 | 0x7C00;
+// Multiple-block READ uses the SDHI's *extended* transfer mode (SD_CMD[15:8]):
+// bit 13 = multiple block, bit 12 = read, bit 11 = with-data, [10:8]=100 = R1,
+// [15:14]=01 = CMD12 not auto-issued. This is the Renesas driver's
+// `CMD18 | 0x7c00`.
+//
+// Single-block reads and *all* writes use *normal* mode — the plain command
+// index — exactly as the vendor HAL does (`_sd_send_mcmd(hndl, CMD17/24/25)`):
+// the SDHI derives the response and transfer type from the command index.
+//
+// IMPORTANT: high-capacity vs standard cards differ only in the command
+// *argument* (block- vs byte-address, handled by `lba_to_addr`), NOT in the
+// command encoding. The old `CMDxx | 0x7C00` "SDHC" constants were a bug:
+// 0x7C00 forces *multiple-block read* mode, so a single-block CMD17 made the
+// controller wait for a second block until the data-timeout (~1s), and the
+// write commands additionally got the read-direction bit set.
+const CMD18_MULTI: u16 = CMD18 | 0x7C00;
 
 // ---------------------------------------------------------------------------
 // Voltage / capacity constants
@@ -370,8 +380,7 @@ pub async fn read_sector(lba: u32, buf: &mut [u8; 512]) -> Result<(), SdError> {
     }
 
     let addr = lba_to_addr(lba);
-    let hc = CARD_HC.load(Ordering::Relaxed);
-    let cmd = if hc { CMD17_SDHC } else { CMD17 };
+    let cmd = CMD17;
 
     unsafe {
         let dma_ptr =
@@ -395,8 +404,7 @@ pub async fn write_sector(lba: u32, buf: &[u8; 512]) -> Result<(), SdError> {
     }
 
     let addr = lba_to_addr(lba);
-    let hc = CARD_HC.load(Ordering::Relaxed);
-    let cmd = if hc { CMD24_SDHC } else { CMD24 };
+    let cmd = CMD24;
 
     unsafe {
         let dma_ptr =
@@ -432,8 +440,6 @@ pub async fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> Result<(), Sd
         return read_sector(lba, unsafe { &mut *arr }).await;
     }
 
-    let hc = CARD_HC.load(Ordering::Relaxed);
-
     unsafe {
         let dma_ptr =
             (core::ptr::addr_of!(SD_DMA_BUF.0[0]) as usize + UNCACHED_MIRROR_OFFSET) as *mut u8;
@@ -443,7 +449,7 @@ pub async fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> Result<(), Sd
         while remaining > 0 {
             let chunk = remaining.min(SD_DMA_MAX_SECTORS as u32);
             let chunk_addr = lba_to_addr(cur_lba);
-            let cmd = if hc { CMD18_SDHC } else { CMD18 };
+            let cmd = if chunk > 1 { CMD18_MULTI } else { CMD17 };
             sdhi::set_block_count(SD_PORT, chunk);
             sdhi::set_arg(SD_PORT, chunk_addr);
             sdhi::read_blocks_dma(SD_PORT, cmd, dma_ptr, chunk, SD_DMA_RX_CH).await?;
@@ -476,8 +482,6 @@ pub async fn write_sectors(lba: u32, count: u32, buf: &[u8]) -> Result<(), SdErr
         return write_sector(lba, unsafe { &*arr }).await;
     }
 
-    let hc = CARD_HC.load(Ordering::Relaxed);
-
     unsafe {
         let dma_ptr =
             (core::ptr::addr_of!(SD_DMA_BUF.0[0]) as usize + UNCACHED_MIRROR_OFFSET) as *mut u8;
@@ -487,7 +491,7 @@ pub async fn write_sectors(lba: u32, count: u32, buf: &[u8]) -> Result<(), SdErr
         while remaining > 0 {
             let chunk = remaining.min(SD_DMA_MAX_SECTORS as u32);
             let chunk_addr = lba_to_addr(cur_lba);
-            let cmd = if hc { CMD25_SDHC } else { CMD25 };
+            let cmd = if chunk > 1 { CMD25 } else { CMD24 };
             let chunk_bytes = (chunk as usize) * 512;
             core::ptr::copy_nonoverlapping(buf.as_ptr().add(buf_offset), dma_ptr, chunk_bytes);
             sdhi::set_block_count(SD_PORT, chunk);
@@ -626,20 +630,25 @@ impl embedded_sdmmc::BlockDevice for DelugeBlockDevice {
         }
         let lba = start_block_idx.0;
         let addr = lba_to_addr(lba);
-        let hc = CARD_HC.load(Ordering::Relaxed);
-        let cmd = if count > 1 {
-            if hc { CMD18_SDHC } else { CMD18 }
-        } else {
-            if hc { CMD17_SDHC } else { CMD17 }
-        };
-
-        unsafe {
-            sdhi::set_block_count(SD_PORT, count);
-            sdhi::set_arg(SD_PORT, addr);
-            sdhi::send_cmd_poll(SD_PORT, cmd)?;
-            sdhi::read_blocks_poll(SD_PORT, blocks.as_mut_ptr() as *mut u8, count)?;
-        }
-        Ok(())
+        // Single-block read = plain CMD17 (normal mode); multi-block read adds
+        // the extended multiple-block bits. HC vs SC addressing is in `addr`.
+        let cmd = if count > 1 { CMD18_MULTI } else { CMD17 };
+        let ptr = blocks.as_mut_ptr() as *mut u8;
+        // Interrupt-driven PIO transfer, mirroring the vendor HAL's
+        // `_sd_software_trans`. embedded-sdmmc's `BlockDevice` is synchronous,
+        // so run the async transfer to completion with block_on (fine for the
+        // bootloader — nothing else runs). The real firmware uses the async DMA
+        // path, [`read_sectors`], directly so the executor keeps running during
+        // transfers.
+        embassy_futures::block_on(async {
+            unsafe {
+                sdhi::set_block_count(SD_PORT, count);
+                sdhi::set_arg(SD_PORT, addr);
+                sdhi::send_cmd(SD_PORT, cmd).await?;
+                sdhi::read_blocks_sw(SD_PORT, ptr, count).await
+            }
+        })
+        .map_err(SdError::from)
     }
 
     fn write(
@@ -656,20 +665,20 @@ impl embedded_sdmmc::BlockDevice for DelugeBlockDevice {
         }
         let lba = start_block_idx.0;
         let addr = lba_to_addr(lba);
-        let hc = CARD_HC.load(Ordering::Relaxed);
-        let cmd = if count > 1 {
-            if hc { CMD25_SDHC } else { CMD25 }
-        } else {
-            if hc { CMD24_SDHC } else { CMD24 }
-        };
+        // Single/multi-block write both use normal mode (plain command index).
+        let cmd = if count > 1 { CMD25 } else { CMD24 };
 
-        unsafe {
-            sdhi::set_block_count(SD_PORT, count);
-            sdhi::set_arg(SD_PORT, addr);
-            sdhi::send_cmd_poll(SD_PORT, cmd)?;
-            sdhi::write_blocks_poll(SD_PORT, blocks.as_ptr() as *const u8, count)?;
-        }
-        Ok(())
+        let ptr = blocks.as_ptr() as *const u8;
+        // Interrupt-driven PIO transfer (see `read` above).
+        embassy_futures::block_on(async {
+            unsafe {
+                sdhi::set_block_count(SD_PORT, count);
+                sdhi::set_arg(SD_PORT, addr);
+                sdhi::send_cmd(SD_PORT, cmd).await?;
+                sdhi::write_blocks_sw(SD_PORT, ptr, count).await
+            }
+        })
+        .map_err(SdError::from)
     }
 
     fn num_blocks(&self) -> Result<embedded_sdmmc::BlockCount, SdError> {
@@ -678,6 +687,195 @@ impl embedded_sdmmc::BlockDevice for DelugeBlockDevice {
         }
         let n = sdhi::card_size_blocks(SD_PORT);
         Ok(embedded_sdmmc::BlockCount(n))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Superfloppy (no-MBR) compatibility shim
+// ---------------------------------------------------------------------------
+
+/// Internal mode for [`PartitionShim`], decided once at construction time.
+#[derive(Clone, Copy)]
+enum ShimMode {
+    /// The card has a real MBR (or we couldn't probe it): forward every
+    /// request to [`DelugeBlockDevice`] unchanged.
+    Passthrough,
+    /// The card is a "superfloppy" — a FAT volume boot record sits directly at
+    /// LBA 0 with no partition table. We present a one-block-shifted virtual
+    /// address space: virtual LBA 0 returns a synthesized MBR, and virtual LBA
+    /// `n` (n >= 1) maps to physical LBA `n - 1`. `total` is the physical card
+    /// size in blocks.
+    Superfloppy { total: u32 },
+}
+
+/// A [`BlockDevice`](embedded_sdmmc::BlockDevice) wrapper that transparently
+/// supports both MBR-partitioned and "superfloppy" (no-partition-table) SD
+/// cards.
+///
+/// [`embedded_sdmmc`] only understands MBR-partitioned cards: it reads LBA 0,
+/// requires the `0x55AA` signature, then validates byte 446 as a partition
+/// status byte. A superfloppy card has a FAT VBR at LBA 0 — which also ends in
+/// `0x55AA` — so the signature check passes but the "partition status" check
+/// reads FAT boot code and fails with `FormatError("Invalid partition status")`.
+///
+/// This shim detects that case at construction (by probing LBA 0) and, for
+/// superfloppy cards, synthesizes a single-partition MBR pointing at the real
+/// VBR. MBR-partitioned cards are passed straight through with no shift.
+///
+/// [`init`] must have completed successfully before this is constructed.
+pub struct PartitionShim {
+    inner: DelugeBlockDevice,
+    mode: ShimMode,
+}
+
+impl PartitionShim {
+    /// Probe LBA 0 and pick a [`ShimMode`]. Any read error or ambiguous layout
+    /// falls back to [`ShimMode::Passthrough`] (the previous behaviour).
+    pub fn new() -> Self {
+        let inner = DelugeBlockDevice;
+        let mode = Self::detect(&inner);
+        Self { inner, mode }
+    }
+
+    fn detect(inner: &DelugeBlockDevice) -> ShimMode {
+        use embedded_sdmmc::{BlockDevice, BlockIdx};
+
+        let mut block = [embedded_sdmmc::Block::new()];
+        if let Err(e) = inner.read(&mut block, BlockIdx(0)) {
+            log::warn!("sd: shim probe read failed: {:?} -> passthrough", e);
+            return ShimMode::Passthrough;
+        }
+        let b = &block[0].contents;
+
+        // No boot signature at all: not FAT and not an MBR — let the normal
+        // path surface the error.
+        if b[510] != 0x55 || b[511] != 0xAA {
+            log::warn!("sd: shim no 0x55AA signature -> passthrough");
+            return ShimMode::Passthrough;
+        }
+
+        // embedded-sdmmc accepts the card as MBR-partitioned when the
+        // partition-0 status byte is 0x00 or 0x80.
+        let looks_like_mbr = (b[446] & 0x7F) == 0x00;
+
+        // A FAT VBR begins with a short/near jump (0xEB .. 0x90 or 0xE9) and
+        // declares 512 bytes per logical sector in its BPB. To avoid a false
+        // positive on an MBR whose boot code happens to start with a jump, also
+        // require a couple of always-present FAT BPB invariants: a non-zero
+        // reserved-sector count (offset 14) and 1 or 2 FATs (offset 16). These
+        // hold for every FAT12/16/32 volume but are vanishingly unlikely to all
+        // line up in MBR boot code.
+        let jump_ok = b[0] == 0xEB || b[0] == 0xE9;
+        let bytes_per_sector = u16::from_le_bytes([b[11], b[12]]);
+        let reserved_sectors = u16::from_le_bytes([b[14], b[15]]);
+        let num_fats = b[16];
+        let looks_like_vbr = jump_ok
+            && bytes_per_sector == 512
+            && reserved_sectors != 0
+            && (num_fats == 1 || num_fats == 2);
+
+        // An unambiguous VBR wins even if byte 446 happens to read as a valid
+        // MBR status byte (it falls inside the VBR's boot-code region and can be
+        // anything): a real FAT VBR at LBA 0 is always a superfloppy.
+        if looks_like_vbr {
+            let total = inner.num_blocks().map(|c| c.0).unwrap_or(0);
+            log::info!("sd: shim -> superfloppy (synthetic MBR, {} blocks)", total);
+            ShimMode::Superfloppy { total }
+        } else {
+            log::info!(
+                "sd: shim -> passthrough (mbr={} vbr={})",
+                looks_like_mbr,
+                looks_like_vbr
+            );
+            ShimMode::Passthrough
+        }
+    }
+}
+
+impl Default for PartitionShim {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Fill `buf` with a minimal MBR describing one FAT32 (LBA) partition that
+/// starts at LBA 1 and spans `total` blocks.
+fn synthesize_mbr(buf: &mut [u8; 512], total: u32) {
+    buf.fill(0);
+    // Partition entry 0 lives at offset 446 and is 16 bytes long.
+    let p = &mut buf[446..462];
+    p[0] = 0x00; // status: non-bootable (passes embedded-sdmmc's check)
+    // p[1..4]  CHS of first sector  — ignored for LBA parsing, leave zero.
+    p[4] = 0x0C; // partition type: FAT32 with LBA
+    // p[5..8]  CHS of last sector   — ignored, leave zero.
+    p[8..12].copy_from_slice(&1u32.to_le_bytes()); // LBA of first sector
+    p[12..16].copy_from_slice(&total.to_le_bytes()); // number of sectors
+    buf[510] = 0x55;
+    buf[511] = 0xAA;
+}
+
+impl embedded_sdmmc::BlockDevice for PartitionShim {
+    type Error = SdError;
+
+    fn read(
+        &self,
+        blocks: &mut [embedded_sdmmc::Block],
+        start_block_idx: embedded_sdmmc::BlockIdx,
+    ) -> Result<(), SdError> {
+        match self.mode {
+            ShimMode::Passthrough => self.inner.read(blocks, start_block_idx),
+            ShimMode::Superfloppy { total } => {
+                let start = start_block_idx.0;
+                if start == 0 {
+                    if let Some((first, rest)) = blocks.split_first_mut() {
+                        synthesize_mbr(&mut first.contents, total);
+                        // Virtual blocks 1.. map to physical 0..
+                        if !rest.is_empty() {
+                            self.inner.read(rest, embedded_sdmmc::BlockIdx(0))?;
+                        }
+                    }
+                    Ok(())
+                } else {
+                    self.inner.read(blocks, embedded_sdmmc::BlockIdx(start - 1))
+                }
+            }
+        }
+    }
+
+    fn write(
+        &self,
+        blocks: &[embedded_sdmmc::Block],
+        start_block_idx: embedded_sdmmc::BlockIdx,
+    ) -> Result<(), SdError> {
+        match self.mode {
+            ShimMode::Passthrough => self.inner.write(blocks, start_block_idx),
+            ShimMode::Superfloppy { .. } => {
+                let start = start_block_idx.0;
+                if start == 0 {
+                    // The synthetic MBR is virtual-only; never write it back.
+                    // Forward any trailing real blocks to physical LBA 0..
+                    if let Some((_, rest)) = blocks.split_first()
+                        && !rest.is_empty()
+                    {
+                        self.inner.write(rest, embedded_sdmmc::BlockIdx(0))?;
+                    }
+                    Ok(())
+                } else {
+                    self.inner
+                        .write(blocks, embedded_sdmmc::BlockIdx(start - 1))
+                }
+            }
+        }
+    }
+
+    fn num_blocks(&self) -> Result<embedded_sdmmc::BlockCount, SdError> {
+        match self.mode {
+            ShimMode::Passthrough => self.inner.num_blocks(),
+            // One extra block for the synthetic MBR at virtual LBA 0.
+            ShimMode::Superfloppy { total } => {
+                Ok(embedded_sdmmc::BlockCount(total.saturating_add(1)))
+            }
+        }
     }
 }
 

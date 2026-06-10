@@ -1301,6 +1301,19 @@ pub unsafe fn send_cmd_poll(port: u8, cmd_val: u16) -> Result<(), SdhiError> {
         reg16(base, OFF_INFO1_MASK).write_volatile(0xFFFF);
         reg16(base, OFF_INFO2_MASK).write_volatile(0xFFFF);
 
+        // Clear any *hardware* INFO2 status/error bits latched by the previous
+        // polled transfer. clear_info() only resets the software-side
+        // accumulators used by the interrupt-driven path; the polling path
+        // reads INFO2 directly, so a stale bit here (notably ERR3/DTO, which
+        // the TRM notes "halts the command sequence" until cleared) would be
+        // picked up the instant we issue the next command and fail it.
+        // Status bits clear on a 0 write and retain on a 1 write, so write the
+        // complement (matches interrupt_handler): clears exactly the currently
+        // set bits and writes 1 back to reserved/unset bits (INFO2 bit 11 must
+        // always be written as 1).
+        let info2 = reg16(base, OFF_INFO2).read_volatile();
+        reg16(base, OFF_INFO2).write_volatile(!info2);
+
         // Issue command.
         reg16(base, OFF_CMD).write_volatile(cmd_val);
 

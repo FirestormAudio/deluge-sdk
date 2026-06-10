@@ -368,11 +368,7 @@ async fn boot_task(spawner: Spawner) {
         // SDRAM-targeting segments are written to their final addresses directly.
         let load_result = match unsafe {
             elf::load_from_sd_with_progress(&mut vm, file, |done, total| async move {
-                let raw = if total == 0 {
-                    100u8
-                } else {
-                    ((done.saturating_mul(100)) / total) as u8
-                };
+                let raw = done.saturating_mul(100).checked_div(total).unwrap_or(100) as u8;
                 ui::show_progress(label, raw).await;
             })
             .await
