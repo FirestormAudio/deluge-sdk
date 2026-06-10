@@ -68,3 +68,38 @@ pub unsafe fn init() {
         log::debug!("audio: CODEC_POWER asserted, codec active");
     }
 }
+
+/// Like [`init`], but feeds the SSIF0 transmitter **directly** from a CPU buffer
+/// via SSI0 TX DMA (ch 6), bypassing the SCUX entirely. Use this when the CPU
+/// renders audio itself (e.g. the wren DSP engine) and does not want the SCUX
+/// SRC/DVU stages. Samples are written into `rza1l_hal::ssi`'s circular TX buffer
+/// ([`rza1l_hal::ssi::tx_buf_start`] / [`rza1l_hal::ssi::tx_current_ptr`]).
+///
+/// **Call after:** `rza1l_hal::stb::init()` and `rza1l_hal::ostm::start_free_running(0)`.
+///
+/// # Safety
+/// Must be called exactly once from the single-threaded boot context, before
+/// interrupts are enabled and before any audio task starts. Mutually exclusive
+/// with [`init`] (do not call both).
+pub unsafe fn init_direct() {
+    unsafe {
+        log::debug!("audio: pin-mux SSI0 (direct, no SCUX)");
+        gpio::set_pin_mux(7, 11, 6); // AUDIO_XOUT — master clock to codec
+        gpio::set_pin_mux(6, 8, 3); // SSITXD0    — I²S TX data
+        gpio::set_pin_mux(6, 9, 3); // SSISCK0    — I²S BCLK
+        gpio::set_pin_mux(6, 10, 3); // SSIWS0     — I²S LRCK
+        gpio::set_pin_mux(6, 11, 3); // SSIRXD0    — I²S RX data (input)
+
+        gpio::set_as_output(CODEC_PORT, CODEC_PIN);
+        gpio::write(CODEC_PORT, CODEC_PIN, false);
+
+        // Direct SSI0 TX+RX DMA (circular TX_BUF → SSIFTDR, TEN set). No SCUX,
+        // so `SSICTRL.SSI0TX` is left clear and the CPU owns the TX buffer.
+        rza1l_hal::ssi::init(&crate::system::SSI_CONFIG);
+
+        ostm::delay_ms(CODEC_POWER_DELAY_MS);
+        log::debug!("audio: codec power-on delay done (direct)");
+        gpio::write(CODEC_PORT, CODEC_PIN, true);
+        log::debug!("audio: CODEC_POWER asserted, codec active (direct SSI)");
+    }
+}

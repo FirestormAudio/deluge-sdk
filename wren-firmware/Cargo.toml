@@ -1,0 +1,27 @@
+[package]
+name = "wren-firmware"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Deluge on-device Wren scripting firmware (RZ/A1L) via Embassy"
+
+[[bin]]
+name = "wren-firmware"
+test = false
+
+[dependencies]
+rza1l-hal = { path = "../rza1l-hal" }
+deluge-bsp = { path = "../deluge-bsp" }
+wren-sys = { path = "../wren-sys" }
+cortex-ar = "0.3"
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", branch = "main", features = ["nightly", "platform-cortex-ar", "executor-thread"] }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", branch = "main", features = ["tick-hz-1_000_000"] }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", branch = "main" }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy", branch = "main" }
+embassy-usb = { git = "https://github.com/embassy-rs/embassy", branch = "main" }
+rtt-target = { version = "0.6", features = ["log"], optional = true }
+log = { version = "0.4.29", features = ["release_max_level_off"] }
+
+[features]
+default = ["rtt"]
+rtt = ["dep:rtt-target", "rza1l-hal/rtt"]

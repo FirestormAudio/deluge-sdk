@@ -1,0 +1,15 @@
+[package]
+name = "wren-sys"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "FFI bindings + cc build of the upstream wren-lang/wren C VM (compiler + VM) for the Deluge"
+
+[lib]
+test = false
+
+[dependencies]
+rza1l-hal = { path = "../rza1l-hal" }
+
+[build-dependencies]
+cc = "1"
