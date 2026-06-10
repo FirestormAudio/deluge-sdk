@@ -1,11 +1,11 @@
 [package]
-name = "msc-firmware"
+name = "app-loader"
 version = "0.1.0"
 edition = "2024"
 license.workspace = true
 
 [[bin]]
-name = "msc-firmware"
+name = "app-loader"
 test = false
 
 [dependencies]
@@ -17,13 +17,9 @@ embassy-time = { git = "https://github.com/embassy-rs/embassy", branch = "main",
 embassy-sync = { git = "https://github.com/embassy-rs/embassy", branch = "main" }
 embassy-futures = { git = "https://github.com/embassy-rs/embassy", branch = "main" }
 embassy-usb = { git = "https://github.com/embassy-rs/embassy", branch = "main" }
-embassy-usb-driver = { git = "https://github.com/embassy-rs/embassy", branch = "main" }
-rtt-target = { version = "0.6", features = ["log"], optional = true }
 log = { version = "0.4.29", features = ["release_max_level_off"] }
+rtt-target = { version = "0.6", features = ["log"], optional = true }
 
 [features]
-## Enable RTT (SEGGER Real-Time Transfer) debug logging.
-## Activates rtt-target, defines _SEGGER_RTT, and registers the logger.
-## Disable for release builds: cargo build-fw --release --no-default-features
 default = ["rtt"]
 rtt = ["dep:rtt-target", "rza1l-hal/rtt"]

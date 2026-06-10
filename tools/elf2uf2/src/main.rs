@@ -3,8 +3,8 @@
 //! This is the single-step replacement for the old `objcopy -O binary` +
 //! `uf2conv.py` pipeline (see `tools/uf2/README.md`).  It takes the *same* ELF
 //! that the second-stage bootloader's SD-card path consumes
-//! (`second-stage-bootloader/src/elf.rs`) and emits a `.uf2` that the USB
-//! update path flashes into the app slot (`second-stage-bootloader/src/uf2.rs`).
+//! (`app-loader/src/elf.rs`) and emits a `.uf2` that the USB
+//! update path flashes into the app slot (`app-loader/src/uf2.rs`).
 //!
 //! ## What it does
 //!  1. Parses the ELF32-LE ARM executable and flattens its `PT_LOAD` segments
@@ -20,7 +20,7 @@
 //!     (`--family`, default `0x6E275A1C`).
 //!
 //! Keep the defaults in sync with `rza1l-hal/src/spibsc.rs` and
-//! `second-stage-bootloader/src/uf2.rs`.
+//! `app-loader/src/uf2.rs`.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

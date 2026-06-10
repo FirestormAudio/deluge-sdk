@@ -10,7 +10,7 @@ R7S721001).
 
 | Crate | Description |
 |-------|-------------|
-| [`demo-firmware`](demo-firmware/) | Top-level firmware binary — Embassy executor, USB stack, audio, task orchestration |
+| [`demo-firmware`](firmwares/demo-firmware/) | Top-level firmware binary — Embassy executor, USB stack, audio, task orchestration |
 | [`rza1l-hal`](rza1l-hal/) | Register-level HAL for the RZ/A1L SoC (MMU, caches, GIC, timers, DMA, RSPI, SSI, SCUX, SDHI, …) |
 | [`deluge-bsp`](deluge-bsp/) | Board support package — SDRAM, audio codec, OLED, PIC co-processor, CV/gate, MIDI, SD card, USB |
 | [`deluge-fft`](deluge-fft/) | `no_std` FFT library with RZ/A1L-tuned radix-4/8 paths and a real-FFT spectrum analyser |

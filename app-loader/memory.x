@@ -1,4 +1,4 @@
-/* Board-specific memory layout for the second-stage-bootloader (RZ/A1L) — RTT disabled.
+/* Board-specific memory layout for the app-loader (RZ/A1L) — RTT disabled.
  * This file is INCLUDE'd by rza1l.x (from the rza1l-hal crate).
  * The bootloader occupies the same SRAM window as the main firmware so it can
  * be flashed via the same first-stage bootloader mechanism. */

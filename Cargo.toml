@@ -1,5 +1,5 @@
 [workspace]
-members = ["demo-firmware", "controller-firmware", "msc-firmware", "rza1l-hal", "deluge-bsp", "deluge-fft", "second-stage-bootloader"]
+members = ["firmwares/demo-firmware", "firmwares/controller-firmware", "firmwares/msc-firmware", "rza1l-hal", "deluge-bsp", "deluge-fft", "app-loader"]
 # Host-side tooling: built for the host triple, not the embedded armv7a target,
 # so it must not be a member of this no_std cross-compiled workspace.
 exclude = ["tools/elf2uf2"]

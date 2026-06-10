@@ -1,4 +1,4 @@
-/* Board-specific memory layout for the second-stage-bootloader (RZ/A1L) — RTT enabled.
+/* Board-specific memory layout for the app-loader (RZ/A1L) — RTT enabled.
  * This file is INCLUDE'd by rza1l_rtt.x (from the rza1l-hal crate). */
 
 MEMORY {

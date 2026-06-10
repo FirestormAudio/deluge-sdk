@@ -67,6 +67,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
 
 [[package]]
+name = "app-loader"
+version = "0.1.0"
+dependencies = [
+ "cortex-ar",
+ "deluge-bsp",
+ "embassy-executor",
+ "embassy-futures",
+ "embassy-sync 0.8.0 (git+https://github.com/embassy-rs/embassy?branch=main)",
+ "embassy-time",
+ "embassy-usb",
+ "log",
+ "rtt-target",
+ "rza1l-hal",
+]
+
+[[package]]
 name = "approx"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1121,22 +1137,6 @@ name = "scoped-tls"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e1cf6437eb19a8f4a6cc0f7dca544973b0b78843adbfeb3683d1a94a0024a294"
-
-[[package]]
-name = "second-stage-bootloader"
-version = "0.1.0"
-dependencies = [
- "cortex-ar",
- "deluge-bsp",
- "embassy-executor",
- "embassy-futures",
- "embassy-sync 0.8.0 (git+https://github.com/embassy-rs/embassy?branch=main)",
- "embassy-time",
- "embassy-usb",
- "log",
- "rtt-target",
- "rza1l-hal",
-]
 
 [[package]]
 name = "serde"

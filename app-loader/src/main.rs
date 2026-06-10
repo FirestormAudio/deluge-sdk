@@ -1,4 +1,4 @@
-//! Second-stage bootloader for the Synthstrom Deluge (RZ/A1L).
+//! App loader (second-stage bootloader) for the Synthstrom Deluge (RZ/A1L).
 //!
 //! Loaded by the Deluge first-stage bootloader from SPI flash into SRAM at
 //! `0x20020000`.  On boot it:
@@ -81,7 +81,7 @@ pub extern "C" fn main() -> ! {
         rtt_target::set_print_channel(channels.up.0);
         rtt_target::init_logger_with_level(log::LevelFilter::Debug);
     }
-    info!("second-stage-bootloader: starting");
+    info!("app-loader: starting");
 
     unsafe {
         let start = core::ptr::addr_of!(__sram_heap_start) as *mut u8;

@@ -79,5 +79,5 @@ uf2conv.py target/armv7a-none-eabihf/release/demo-firmware.bin \
 ```
 
 The `--family` **must** match `UF2_FAMILY_DELUGE` in
-`second-stage-bootloader/src/uf2.rs`; blocks with any other family ID are
+`app-loader/src/uf2.rs`; blocks with any other family ID are
 ignored so a foreign image can never be programmed.

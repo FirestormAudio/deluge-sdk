@@ -1,4 +1,4 @@
-//! OLED file-selector UI for the second-stage bootloader.
+//! OLED file-selector UI for the app loader (second-stage bootloader).
 //!
 //! Presents a scrollable list of application names on the 128×48 OLED display.
 //! The user scrolls with the SELECT encoder and confirms by pressing the
