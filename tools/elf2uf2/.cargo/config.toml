@@ -1,0 +1,6 @@
+# Build for the host, not the embedded armv7a target inherited from the repo
+# root's .cargo/config.toml. This file wins for `build.target` when cargo is run
+# from inside this directory (e.g. rust-analyzer), and the `cargo elf2uf2` alias
+# at the repo root passes `--target` explicitly for the cwd-independent case.
+[build]
+target = "x86_64-unknown-linux-gnu"

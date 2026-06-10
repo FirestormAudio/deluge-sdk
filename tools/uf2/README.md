@@ -52,22 +52,31 @@ flash into SRAM via the trampoline, and jumps to `code_execute`.
 
 ## Building a `.uf2`
 
-1. Produce the raw binary (RAM-linked):
+Use the `elf2uf2` host tool (`tools/elf2uf2`), which does ELF → flat `.bin` →
+UF2 in one step from the *same* RAM-linked ELF the SD-card boot path consumes —
+no `objcopy` or `uf2conv.py` needed:
 
-   ```sh
-   cargo build-fw-bin   # -> target/armv7a-none-eabihf/release/demo-firmware.bin
-   ```
+```sh
+cargo build-fw-rel   # -> target/armv7a-none-eabihf/release/demo-firmware (ELF)
+cargo elf2uf2 target/armv7a-none-eabihf/release/demo-firmware -o demo-firmware.uf2
+```
 
-2. Convert it to UF2 with Microsoft's `uf2conv.py`
-   (https://github.com/microsoft/uf2/blob/master/utils/uf2conv.py):
+`elf2uf2` validates the embedded FSB metadata (`code_start` / `code_end` /
+`code_execute` + `.BootLoad_ValidProgramTest.` signature) before emitting, so a
+non-bootable image is caught on the host rather than as a silent non-boot on the
+device. The defaults (`--base 0x18100000`, `--family 0x6E275A1C`, 256-byte
+payloads) mirror `spibsc::FLASH_SLOT_ADDR` and `uf2::UF2_FAMILY_DELUGE`. Pass
+`--bin` to also emit the intermediate flat binary, `--help` for all options.
 
-   ```sh
-   uf2conv.py target/armv7a-none-eabihf/release/demo-firmware.bin \
-       --base 0x18100000 \
-       --family 0x6E275A1C \
-       --convert \
-       --output demo-firmware.uf2
-   ```
+The emitted flat image is byte-identical to `arm-none-eabi-objcopy -O binary`,
+and the UF2 blocks match what Microsoft's `uf2conv.py` would produce — so the
+old two-step pipeline still works if you prefer it:
+
+```sh
+cargo build-fw-bin   # -> target/.../demo-firmware.bin  (objcopy -O binary)
+uf2conv.py target/armv7a-none-eabihf/release/demo-firmware.bin \
+    --base 0x18100000 --family 0x6E275A1C --convert --output demo-firmware.uf2
+```
 
 The `--family` **must** match `UF2_FAMILY_DELUGE` in
 `second-stage-bootloader/src/uf2.rs`; blocks with any other family ID are
