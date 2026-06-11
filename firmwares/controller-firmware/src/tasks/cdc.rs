@@ -16,7 +16,7 @@ use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channe
 use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver, Sender};
 use log::{debug, info};
 
-use deluge_bsp::usb::Rusb1Driver;
+use rza1l_hal::usb::Rusb1Driver;
 use deluge_bsp::{cv_gate, pic};
 
 use crate::events::{EVENT_CHANNEL, HardwareEvent};

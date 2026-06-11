@@ -42,7 +42,7 @@ use embassy_executor::{Executor, Spawner};
 use core::sync::atomic::{AtomicBool, Ordering};
 use deluge_bsp::cv_gate;
 use deluge_bsp::uart as bsp_uart;
-use deluge_bsp::usb::{
+use rza1l_hal::usb::{
     Rusb1Driver, dcd_int_handler, hcd_int_handler, init_device_mode, init_host_mode,
 };
 use rza1l_hal::{allocator, gic};
@@ -184,7 +184,7 @@ pub extern "C" fn main() -> ! {
     // checks USB0_HOST_MODE on every interrupt to direct the call to either the
     // device or host interrupt handler without needing to re-register the ISR.
     unsafe {
-        gic::register(rza1l_hal::rusb1::USB0_IRQ, || {
+        gic::register(rza1l_hal::usb::USB0_IRQ, || {
             if USB0_HOST_MODE.load(Ordering::Relaxed) {
                 hcd_int_handler(0);
             } else {
@@ -198,10 +198,10 @@ pub extern "C" fn main() -> ! {
     //
     // `init_device_mode` / `init_host_mode` both call `module_clock_enable`.
     // UsbDevice buffers must be `'static`; they live in the statics above.
-    let mut usb_host_driver: Option<deluge_bsp::usb::Rusb1HostDriver> = None;
+    let mut usb_host_driver: Option<rza1l_hal::usb::Rusb1HostDriver> = None;
     let mut usb_device_opt: Option<embassy_usb::UsbDevice<'static, Rusb1Driver>> = None;
-    let mut ep_out_opt: Option<deluge_bsp::usb::Rusb1EndpointOut> = None;
-    let mut ep_in_opt: Option<deluge_bsp::usb::Rusb1EndpointIn> = None;
+    let mut ep_out_opt: Option<rza1l_hal::usb::Rusb1EndpointOut> = None;
+    let mut ep_in_opt: Option<rza1l_hal::usb::Rusb1EndpointIn> = None;
     let mut cdc_opt: Option<embassy_usb::class::cdc_acm::CdcAcmClass<'static, Rusb1Driver>> = None;
     let mut midi_sender_opt: Option<embassy_usb::class::midi::Sender<'static, Rusb1Driver>> = None;
     let mut midi_receiver_opt: Option<embassy_usb::class::midi::Receiver<'static, Rusb1Driver>> =

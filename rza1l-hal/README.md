@@ -77,7 +77,7 @@ documented in each peripheral module.
 | `uart`  | SCIF async serial — five channels (SCIF0–4). TX via TXI interrupts; RX via DMA ring buffer (`init_dma_rx`) or interrupt (`register_txi_for`). |
 | `rspi`  | SPI master (RSPI0–4). 32-bit frame mode; interrupt-driven transfer-complete. Used for CV DAC and OLED. |
 | `gpio`  | GPIO port registers (P1–P11, PMC0–PMC11). `set_pin_mux`, `set_output`, `read_input`. Implements `embedded-hal` `InputPin` / `OutputPin`. |
-| `rusb1` | USB200/USB201 GIC interrupt helpers and clock-gate wrappers. Register-level USB logic lives in the BSP layer. |
+| `usb` | RUSB1 USB 2.0 dual-role driver: chip plumbing (bases, IRQs, STBCR7 clock gates) plus full `embassy-usb-driver` **device** (`usb::driver`) and **host** (`usb::host`) implementations over shared `regs`/`fifo`/`pipe` layers. `usb::init_device_mode(port)` / `usb::init_host_mode(port)` are the entry points. USB *class* code (UAC2/MIDI/MSC/BOT) stays in `deluge_bsp::usb`, which re-exports this module. |
 
 ---
 

@@ -18,7 +18,7 @@ use embassy_usb::class::midi::{Receiver, Sender};
 use log::debug;
 
 use deluge_bsp::uart as bsp_uart;
-use deluge_bsp::usb::Rusb1Driver;
+use rza1l_hal::usb::Rusb1Driver;
 
 // ── USB → DIN direction ───────────────────────────────────────────────────────
 

@@ -20,6 +20,7 @@ linked_list_allocator = { version = "0.10", default-features = false }
 embassy-time = { git = "https://github.com/embassy-rs/embassy", branch = "main" }
 embassy-time-driver = { git = "https://github.com/embassy-rs/embassy", branch = "main" }
 embassy-time-queue-utils = { git = "https://github.com/embassy-rs/embassy", branch = "main" }
+embassy-usb-driver = { git = "https://github.com/embassy-rs/embassy", branch = "main" }
 embedded-hal = "1"
 embedded-hal-async = "1"
 embedded-io-async = "0.7"

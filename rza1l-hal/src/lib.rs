@@ -26,7 +26,7 @@ pub mod mmu;
 pub mod mtu2;
 pub mod ostm;
 pub mod rspi;
-pub mod rusb1;
+pub mod usb;
 pub mod scux;
 pub mod sdhi;
 pub mod spibsc;

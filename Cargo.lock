@@ -1115,6 +1115,7 @@ dependencies = [
  "embassy-time",
  "embassy-time-driver",
  "embassy-time-queue-utils",
+ "embassy-usb-driver",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
  "embedded-io-async",

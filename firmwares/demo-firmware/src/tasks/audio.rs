@@ -95,7 +95,7 @@ pub(crate) fn fill_tx_with_dither() {
 /// [31:8]; 24-bit shifts left by 8, 16-bit by 16.
 ///
 /// # Safety
-/// Installed via [`deluge_bsp::usb::pipe::register_iso_out_hook`] and called
+/// Installed via [`rza1l_hal::usb::pipe::register_iso_out_hook`] and called
 /// only from the BRDY ISR (single producer, IRQs disabled).  `pkt` points to
 /// `len` valid bytes.  Uses integer arithmetic only — no VFP state to preserve.
 unsafe fn iso_out_to_ssi(pkt: *const u8, len: usize) {
@@ -194,7 +194,7 @@ unsafe fn iso_out_to_ssi(pkt: *const u8, len: usize) {
 ///   [`USB_AUDIO_STREAMING`] (so the hook re-anchors on resume), and refills the
 ///   TX ring with dither so the codec does not auto-mute.
 #[embassy_executor::task]
-pub(crate) async fn uac2_task(ep_out: deluge_bsp::usb::Rusb1EndpointOut) {
+pub(crate) async fn uac2_task(ep_out: rza1l_hal::usb::Rusb1EndpointOut) {
     /// Activity poll interval.  At 8000 packets/s an active stream bumps
     /// PACKET_SEQ hundreds of times per tick, so a single tick with no change
     /// unambiguously means the host has stopped — silence follows within ≤2
@@ -210,7 +210,7 @@ pub(crate) async fn uac2_task(ep_out: deluge_bsp::usb::Rusb1EndpointOut) {
     // endpoint is enabled (driver `endpoint_set_enabled`), so once the hook is
     // registered every packet is serviced in interrupt context.
     unsafe {
-        deluge_bsp::usb::pipe::register_iso_out_hook(ep_out.pipe as usize, iso_out_to_ssi);
+        rza1l_hal::usb::pipe::register_iso_out_hook(ep_out.pipe as usize, iso_out_to_ssi);
     }
     info!("uac2_task: ISO OUT hook installed; supervising stream state");
 
@@ -281,7 +281,7 @@ pub(crate) async fn uac2_task(ep_out: deluge_bsp::usb::Rusb1EndpointOut) {
 /// sends per SOF, correcting long-term clock drift without a separate feedback
 /// endpoint.
 #[embassy_executor::task]
-pub(crate) async fn uac2_mic_task(mut ep_in: deluge_bsp::usb::Rusb1EndpointIn) {
+pub(crate) async fn uac2_mic_task(mut ep_in: rza1l_hal::usb::Rusb1EndpointIn) {
     info!("uac2_mic_task: waiting for capture enable");
     ep_in.wait_enabled().await;
     info!("uac2_mic_task: capture enabled");

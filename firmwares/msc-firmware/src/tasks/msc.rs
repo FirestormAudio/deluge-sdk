@@ -10,7 +10,7 @@ use log::{info, warn};
 
 use deluge_bsp::sd;
 use deluge_bsp::usb::bot::{self, SdBlock};
-use deluge_bsp::usb::{Rusb1EndpointIn, Rusb1EndpointOut};
+use rza1l_hal::usb::{Rusb1EndpointIn, Rusb1EndpointOut};
 
 pub use deluge_bsp::usb::bot::{RX_BYTES, TX_BYTES};
 

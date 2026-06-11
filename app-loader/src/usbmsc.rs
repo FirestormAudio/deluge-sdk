@@ -20,10 +20,10 @@ use log::info;
 use deluge_bsp::oled::{self, text};
 use deluge_bsp::usb::bot::{self, BlockDevice, SdBlock};
 use deluge_bsp::usb::classes::msc::MscClass;
-use deluge_bsp::usb::{
+use rza1l_hal::usb::{
     Rusb1Driver, Rusb1EndpointIn, Rusb1EndpointOut, dcd_int_handler, disconnect, init_device_mode,
 };
-use rza1l_hal::{gic, rusb1};
+use rza1l_hal::gic;
 
 use crate::ghostfat::{self, GhostFat};
 use crate::ui;
@@ -102,7 +102,7 @@ unsafe fn build_usb(
     unsafe {
         // Wire the USB0 ISR once (global IRQs are already enabled by boot_task).
         if !USB_IRQ_REGISTERED.swap(true, Ordering::AcqRel) {
-            gic::register(rusb1::USB0_IRQ, || {
+            gic::register(rza1l_hal::usb::USB0_IRQ, || {
                 dcd_int_handler(0);
             });
         }

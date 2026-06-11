@@ -22,7 +22,7 @@ use embassy_futures::select::{Either, select};
 use embassy_time::{Duration, Instant, Timer};
 use log::{error, info, warn};
 
-use super::{Rusb1EndpointIn, Rusb1EndpointOut};
+use rza1l_hal::usb::{Rusb1EndpointIn, Rusb1EndpointOut};
 use embassy_usb_driver::{Endpoint, EndpointIn, EndpointOut};
 
 use crate::usb::classes::msc::take_reset;

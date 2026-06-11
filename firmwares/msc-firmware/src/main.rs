@@ -31,7 +31,7 @@ use embassy_executor::{Executor, Spawner};
 
 use deluge_bsp::cv_gate;
 use deluge_bsp::uart as bsp_uart;
-use deluge_bsp::usb::{dcd_int_handler, init_device_mode};
+use rza1l_hal::usb::{dcd_int_handler, init_device_mode};
 use rza1l_hal::{allocator, gic};
 
 unsafe extern "C" {
@@ -122,7 +122,7 @@ pub extern "C" fn main() -> ! {
     // ── USB0 device mode ──────────────────────────────────────────────────
     // Register the USB0 ISR *before* IRQ is globally enabled.
     unsafe {
-        gic::register(rza1l_hal::rusb1::USB0_IRQ, || {
+        gic::register(rza1l_hal::usb::USB0_IRQ, || {
             dcd_int_handler(0);
         });
     }
