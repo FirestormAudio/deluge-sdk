@@ -220,17 +220,23 @@ pub struct PipeConfig {
 /// Simple bump allocator over the 128 × 64-byte packet buffer.
 ///
 /// Uses a 128-bit bitmask: bit N = block N is allocated.
-/// Blocks 0-3 (0x00–0xFF) are reserved for DCP (pipe 0).
+///
+/// Blocks 0-6 are permanently reserved (TRM §28.3.33 BUFNMB / Table 28.19):
+/// - Blocks 0-3: fixed DCP (pipe 0) buffer (256 bytes).
+/// - Blocks 4, 5, 6: hardwired to PIPE6, PIPE7, PIPE8 respectively.  BUFNMB
+///   writes for those pipes are *ignored* by the hardware, so if these blocks
+///   were handed to another pipe while an interrupt pipe is in use the two
+///   buffers would silently overlap.  Other pipes' valid BUFNMB range starts
+///   at H'07.
 pub struct BufAllocator {
     /// Bitmask: 1 = allocated.
     bits: u128,
 }
 
 impl BufAllocator {
-    /// Create a new allocator with the first 4 blocks reserved for DCP.
+    /// Create a new allocator with blocks 0-6 reserved (DCP + PIPE6-8 fixed areas).
     pub const fn new() -> Self {
-        // DCP uses blocks 0-3 (256 bytes = 4 × 64)
-        Self { bits: 0b1111 }
+        Self { bits: 0b111_1111 }
     }
 
     /// Allocate `n_blocks` contiguous blocks.  Returns the start block index,
@@ -400,6 +406,21 @@ pub unsafe fn pipe_xfer_in_start(regs: *mut Rusb1Regs, n: usize, mps: u16) -> bo
             let state = &mut *PIPE_XFER[n].borrow(cs).get();
             if state.remaining == 0 {
                 state.buf = core::ptr::NonNull::dangling();
+                if state.length == 0 {
+                    // Explicit zero-length-packet transmit (write(&[])).  TRM
+                    // §28.4.5: "to send a zero-length packet, the BCLR bit must
+                    // be used to clear the buffer and then the BVAL bit is set
+                    // to end the writing."  Without this commit nothing is ever
+                    // staged, the SIE NAKs every IN token, no BEMP fires, and
+                    // write(&[]) hangs forever.
+                    let fifo = fifo_for_pipe(regs, n);
+                    fifo_select_pipe(&fifo, n, true);
+                    if fifo_is_ready(&fifo, n) {
+                        fifo_bclr(&fifo);
+                        fifo_bval(&fifo);
+                        return false; // ZLP staged — BEMP will signal completion
+                    }
+                }
                 return true;
             }
             if !fill_in_packet(regs, n, mps as usize, state) {
@@ -773,22 +794,22 @@ mod tests {
     #[test]
     fn buf_allocator_basic() {
         let mut alloc = BufAllocator::new();
-        // Blocks 0-3 are pre-allocated for DCP.
+        // Blocks 0-3 (DCP) and 4-6 (PIPE6-8 fixed areas) are pre-allocated.
         let a = alloc.alloc(4).unwrap();
-        assert_eq!(a, 4); // first free block is 4
+        assert_eq!(a, 7); // first free block is 7
         let b = alloc.alloc(4).unwrap();
-        assert_eq!(b, 8);
+        assert_eq!(b, 11);
         alloc.free(a, 4);
         let c = alloc.alloc(2).unwrap();
-        assert_eq!(c, 4); // reuse freed blocks
+        assert_eq!(c, 7); // reuse freed blocks
     }
 
     #[test]
     fn buf_allocator_full() {
         let mut alloc = BufAllocator::new();
-        // Fill everything after DCP (blocks 4-127 = 124 blocks).
-        let start = alloc.alloc(124).unwrap();
-        assert_eq!(start, 4);
+        // Fill everything after the reserved area (blocks 7-127 = 121 blocks).
+        let start = alloc.alloc(121).unwrap();
+        assert_eq!(start, 7);
         // Now no room for even 1 more block.
         assert!(alloc.alloc(1).is_none());
     }

@@ -62,15 +62,15 @@ use super::regs::{
     BUSWAIT_VALUE, DCPCFG_DIR, DCPCFG_SHTNAK, DCPCTR_SUREQ, DCPCTR_SUREQCLR, DCPMAXP_DEVSEL_SHIFT,
     DCPMAXP_MXPS_MASK, DEVADD_HUBPORT_SHIFT, DEVADD_UPPHUB_SHIFT, DEVADD_USBSPD_FS,
     DEVADD_USBSPD_HS, DEVADD_USBSPD_LS, DVSTCTR0_RHST, DVSTCTR0_RHST_LS, DVSTCTR0_UACT,
-    DVSTCTR0_USBRST, DVSTCTR0_VBUSEN, FIFOCTR_BCLR, FIFOCTR_BVAL, FIFOSEL_ISEL, INTENB0_BEMPE,
-    INTENB0_BRDYE, INTENB0_NRDYE, INTENB1_ATTCHE, INTENB1_DTCHE, INTENB1_SACKE, INTENB1_SIGNE,
-    INTSTS0_BEMP, INTSTS0_BRDY, INTSTS0_NRDY, INTSTS1_ATTCH, INTSTS1_DTCH, INTSTS1_SACK,
-    INTSTS1_SIGN, PIPECFG_DBLB, PIPECFG_EPNUM_MASK, PIPECFG_SHTNAK, PIPECFG_TYPE_BULK,
-    PIPECFG_TYPE_INTR, PIPECFG_TYPE_ISO, PIPECTR_ACLRM, PIPECTR_BSTS, PIPECTR_PBUSY,
-    PIPECTR_PID_BUF, PIPECTR_PID_MASK, PIPECTR_PID_NAK, PIPECTR_SQCLR, PIPECTR_SQSET,
-    PIPEMAXP_DEVSEL_SHIFT, PIPEMAXP_MXPS_MASK, PIPEPERI_IITV_MASK, Rusb1Regs, SUSPMODE_SUSPM,
-    SYSCFG_DCFM, SYSCFG_DPRPU, SYSCFG_DRPD, SYSCFG_HSE, SYSCFG_UPLLE, SYSCFG_USBE, devadd_ptr,
-    pipectr_ptr, rd, rmw, wr,
+    DVSTCTR0_USBRST, FIFOCTR_BCLR, FIFOCTR_BVAL, FIFOCTR_DTLN_MASK, FIFOCTR_FRDY,
+    FIFOSEL_CURPIPE_MASK, FIFOSEL_ISEL, INTENB0_BEMPE, INTENB0_BRDYE, INTENB0_NRDYE,
+    INTENB1_ATTCHE, INTENB1_DTCHE, INTENB1_SACKE, INTENB1_SIGNE, INTSTS0_BEMP, INTSTS0_BRDY,
+    INTSTS0_NRDY, INTSTS1_ATTCH, INTSTS1_DTCH, INTSTS1_SACK, INTSTS1_SIGN, PIPECFG_DBLB,
+    PIPECFG_EPNUM_MASK, PIPECFG_SHTNAK, PIPECFG_TYPE_BULK, PIPECFG_TYPE_INTR, PIPECFG_TYPE_ISO,
+    PIPECTR_ACLRM, PIPECTR_BSTS, PIPECTR_PBUSY, PIPECTR_PID_BUF, PIPECTR_PID_MASK,
+    PIPECTR_PID_NAK, PIPECTR_SQCLR, PIPECTR_SQSET, PIPEMAXP_DEVSEL_SHIFT, PIPEMAXP_MXPS_MASK,
+    PIPEPERI_IITV_MASK, Rusb1Regs, SUSPMODE_SUSPM, SYSCFG_DCFM, SYSCFG_DPRPU, SYSCFG_DRPD,
+    SYSCFG_HSE, SYSCFG_UPLLE, SYSCFG_USBE, SYSSTS0_LNST, devadd_ptr, pipectr_ptr, rd, rmw, wr,
 };
 
 // ---------------------------------------------------------------------------
@@ -89,14 +89,11 @@ const EVT_DETACH: u8 = 1 << 1;
 const EVT_SACK: u8 = 1 << 2; // setup ACK from device
 const EVT_SIGN: u8 = 1 << 3; // setup ignored (NAK/error)
 
-// D0FIFO CURPIPE mask (bits [3:0]).
-const D0FIFOSEL_CURPIPE_MASK: u16 = 0x000F;
-// D0FIFOCTR FRDY bit (FIFO ready).
-const D0FIFOCTR_FRDY: u16 = 0x0020;
-// CFIFOCTR DTLN mask (data byte count, bits [8:0]).
-const CFIFOCTR_DTLN_MASK: u16 = 0x01FF;
-// D0FIFOCTR DTLN mask.
-const D0FIFOCTR_DTLN_MASK: u16 = 0x01FF;
+// FIFO SEL/CTR field layout is shared by CFIFO and DnFIFO and lives in
+// `regs.rs` (CURPIPE [3:0], FRDY bit 13, DTLN [11:0] — TRM §28.3.8/28.3.9).
+// Earlier revisions redefined FRDY as 0x0020 and DTLN as 0x01FF here, which
+// polled a DTLN bit instead of FRDY and truncated a 512-byte HS bulk packet's
+// length to 0.
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -284,12 +281,9 @@ impl Rusb1HostDriver {
                 SYSCFG_DCFM | SYSCFG_DRPD,
             );
 
-            // Power VBUS.
-            rmw(
-                core::ptr::addr_of_mut!((*regs).dvstctr0),
-                DVSTCTR0_VBUSEN,
-                DVSTCTR0_VBUSEN,
-            );
+            // NOTE: VBUS power is NOT module-controlled on the RZ/A1L —
+            // DVSTCTR0 bits 11:9 are reserved (there is no VBUSEN bit, TRM
+            // §28.3.4).  Host-port VBUS must be switched externally (GPIO).
 
             // Enable the USB module.
             rmw(
@@ -349,11 +343,11 @@ impl Rusb1HostDriver {
             wr(core::ptr::addr_of_mut!(e.nrdyenb), 0);
             wr(core::ptr::addr_of_mut!(e.bempenb), 0);
 
-            // Stop SOF generation and de-assert VBUS.
+            // Stop SOF generation.  (VBUS is switched externally on the
+            // RZ/A1L — DVSTCTR0 has no VBUSEN bit.)
             rmw(core::ptr::addr_of_mut!(e.dvstctr0), DVSTCTR0_UACT, 0);
-            rmw(core::ptr::addr_of_mut!(e.dvstctr0), DVSTCTR0_VBUSEN, 0);
         }
-        // Allow VBUS to settle before changing resistor config.
+        // Let the bus settle before changing resistor config.
         Timer::after_micros(1).await;
         unsafe {
             let regs = Rusb1Regs::ptr(self.port);
@@ -407,10 +401,19 @@ impl Rusb1HostDriver {
             }
             rza1l_hal::rusb1::int_enable(self.port);
 
-            // Set HSE before asserting USBRST (TRM §28.3 SYSCFG.HSE).
-            // LS devices cannot do HS negotiation — skip HSE for them.
+            // Set HSE before asserting USBRST (TRM §28.3 SYSCFG.HSE: "after
+            // detecting the ATTCH interrupt and before setting USBRST to 1").
+            // LS devices cannot do HS negotiation — HSE must be 0 for them.
+            //
+            // LS detection: RHST only reports 001 (LS) after a *previous* bus
+            // reset, so on the first reset after attach it still reads 000.
+            // In that case use the idle line state instead (TRM Table 28.5
+            // with DRPD=1): an attached FS/HS device pulls D+ → LNST = 01
+            // (full-speed J); an LS device pulls D- → LNST = 10.
             let rhst_now = rd(core::ptr::addr_of!((*regs).dvstctr0)) & DVSTCTR0_RHST;
-            if rhst_now == DVSTCTR0_RHST_LS {
+            let lnst = rd(core::ptr::addr_of!((*regs).syssts0)) & SYSSTS0_LNST;
+            let is_ls = rhst_now == DVSTCTR0_RHST_LS || (rhst_now == 0 && lnst == 0b10);
+            if is_ls {
                 rmw(core::ptr::addr_of_mut!((*regs).syscfg0), SYSCFG_HSE, 0);
             } else {
                 rmw(
@@ -432,16 +435,13 @@ impl Rusb1HostDriver {
         unsafe {
             let regs = Rusb1Regs::ptr(self.port);
             let p = self.port as usize;
-            rmw(
+            // End the reset and re-enable SOF generation in a single write:
+            // TRM §28.3.4 USBRST: "Write 1 to the UACT bit simultaneously with
+            // the end of the USB bus reset process (writing 0 to USBRST)."
+            let cur = rd(core::ptr::addr_of!((*regs).dvstctr0));
+            wr(
                 core::ptr::addr_of_mut!((*regs).dvstctr0),
-                DVSTCTR0_USBRST,
-                0,
-            );
-            // Re-enable SOF generation.
-            rmw(
-                core::ptr::addr_of_mut!((*regs).dvstctr0),
-                DVSTCTR0_UACT,
-                DVSTCTR0_UACT,
+                (cur & !DVSTCTR0_USBRST) | DVSTCTR0_UACT,
             );
             critical_section::with(|cs| {
                 (&mut *HCD_ALLOC[p].borrow(cs).get()).need_reset = false;
@@ -591,8 +591,11 @@ impl Rusb1HostDriver {
 
             // Set DCPCFG.DIR: DIR=0 for IN data stage, DIR=1 for OUT data stage.
             // bmRequestType bit 7: 1 = device-to-host (IN).
+            // SHTNAK (auto-NAK at end of a receiving transfer) must be 0 in
+            // the transmitting direction (TRM §28.3.28), so set it only when
+            // the DCP receives (IN data stage).
             let dir_in = setup[0] & 0x80 != 0;
-            let dcpcfg = DCPCFG_SHTNAK | if dir_in { 0 } else { DCPCFG_DIR };
+            let dcpcfg = if dir_in { DCPCFG_SHTNAK } else { DCPCFG_DIR };
             wr(core::ptr::addr_of_mut!((*regs).dcpcfg), dcpcfg);
 
             // Write the 8 setup bytes to hardware registers.
@@ -717,25 +720,37 @@ impl Rusb1HostDriver {
             HCD_PIPE_STALL.fetch_and(!1, Ordering::Release);
 
             if buf.is_empty() {
-                // ZLP: issue BVAL with zero bytes.
+                // ZLP (TRM §28.4.5): clear the buffer with BCLR, then write
+                // BVAL to end the (zero-byte) write and commit the packet.
+                wr(core::ptr::addr_of_mut!((*regs).cfifoctr), FIFOCTR_BCLR);
                 wr(core::ptr::addr_of_mut!((*regs).cfifoctr), FIFOCTR_BVAL);
             } else {
-                // Write the first packet only if BSTS=1 (FIFO ready).
-                let dcpctr = rd(pipectr_ptr(regs, 0));
-                if dcpctr & PIPECTR_BSTS != 0 {
-                    let len = buf.len().min(ctl_mps);
-                    // Write 16-bit words to CFIFO (matches C pipe_write_packet).
-                    let fifo = FifoPort::cfifo(regs);
-                    sw_to_hw_fifo(&fifo, buf.as_ptr(), len);
-                    if len < ctl_mps {
-                        wr(core::ptr::addr_of_mut!((*regs).cfifoctr), FIFOCTR_BVAL);
+                // Wait (bounded) for BSTS=1 (FIFO writable) before the first
+                // packet.  If the FIFO never became ready we must not arm the
+                // pipe with nothing staged — with PID=BUF and an empty buffer
+                // the SIE never issues OUT tokens, no BEMP arrives, and the
+                // transfer would hang.
+                let mut ready = false;
+                for _ in 0..1000u32 {
+                    if rd(pipectr_ptr(regs, 0)) & PIPECTR_BSTS != 0 {
+                        ready = true;
+                        break;
                     }
-                    critical_section::with(|cs| {
-                        let xfer = &mut *HCD_XFER[0].borrow(cs).get();
-                        xfer.buf = xfer.buf.add(len);
-                        xfer.remaining = xfer.remaining.saturating_sub(len as u16);
-                    });
                 }
+                if !ready {
+                    return Err(ChannelError::Canceled);
+                }
+                let len = buf.len().min(ctl_mps);
+                let fifo = FifoPort::cfifo(regs);
+                sw_to_hw_fifo(&fifo, buf.as_ptr(), len);
+                if len < ctl_mps {
+                    wr(core::ptr::addr_of_mut!((*regs).cfifoctr), FIFOCTR_BVAL);
+                }
+                critical_section::with(|cs| {
+                    let xfer = &mut *HCD_XFER[0].borrow(cs).get();
+                    xfer.buf = xfer.buf.add(len);
+                    xfer.remaining = xfer.remaining.saturating_sub(len as u16);
+                });
             }
 
             // Arm DCP.
@@ -911,19 +926,23 @@ impl Rusb1HostDriver {
             let e = &mut *regs;
 
             if buf.is_empty() {
-                // ZLP: select D0FIFO, commit empty buffer, deselect.
+                // ZLP: select D0FIFO, wait FRDY, then BCLR + BVAL (TRM
+                // §28.4.5: "to send a zero-length packet, the BCLR bit must be
+                // used to clear the buffer and then the BVAL bit is set").
                 wr(core::ptr::addr_of_mut!(e.d0fifosel), pipe as u16);
-                while rd(core::ptr::addr_of!(e.d0fifosel)) & D0FIFOSEL_CURPIPE_MASK != pipe as u16 {
+                while rd(core::ptr::addr_of!(e.d0fifosel)) & FIFOSEL_CURPIPE_MASK != pipe as u16 {
                 }
+                while rd(core::ptr::addr_of!(e.d0fifoctr)) & FIFOCTR_FRDY == 0 {}
+                wr(core::ptr::addr_of_mut!(e.d0fifoctr), FIFOCTR_BCLR);
                 wr(core::ptr::addr_of_mut!(e.d0fifoctr), FIFOCTR_BVAL);
                 wr(core::ptr::addr_of_mut!(e.d0fifosel), 0);
-                while rd(core::ptr::addr_of!(e.d0fifosel)) & D0FIFOSEL_CURPIPE_MASK != 0 {}
+                while rd(core::ptr::addr_of!(e.d0fifosel)) & FIFOSEL_CURPIPE_MASK != 0 {}
             } else {
                 // Write first packet to D0FIFO (16-bit access for speed).
                 wr(core::ptr::addr_of_mut!(e.d0fifosel), pipe as u16);
-                while rd(core::ptr::addr_of!(e.d0fifosel)) & D0FIFOSEL_CURPIPE_MASK != pipe as u16 {
+                while rd(core::ptr::addr_of!(e.d0fifosel)) & FIFOSEL_CURPIPE_MASK != pipe as u16 {
                 }
-                while rd(core::ptr::addr_of!(e.d0fifoctr)) & D0FIFOCTR_FRDY == 0 {}
+                while rd(core::ptr::addr_of!(e.d0fifoctr)) & FIFOCTR_FRDY == 0 {}
 
                 // Read MPS from PIPEMAXP.
                 wr(core::ptr::addr_of_mut!(e.pipesel), pipe as u16);
@@ -944,7 +963,7 @@ impl Rusb1HostDriver {
                 });
 
                 wr(core::ptr::addr_of_mut!(e.d0fifosel), 0);
-                while rd(core::ptr::addr_of!(e.d0fifosel)) & D0FIFOSEL_CURPIPE_MASK != 0 {}
+                while rd(core::ptr::addr_of!(e.d0fifosel)) & FIFOSEL_CURPIPE_MASK != 0 {}
             }
 
             // Arm the pipe.
@@ -978,6 +997,32 @@ impl Rusb1HostDriver {
     }
 
     // --- Internal helpers ---
+
+    /// Prepare the DCP for a control-transfer **status stage**.
+    ///
+    /// TRM §28.4.6 (1)(c): the status-stage ZLP travels in the direction
+    /// *opposite* to the data stage, so DCPCFG.DIR must be flipped, and its
+    /// data PID is always DATA1, so SQSET must be written.  Both DCPCFG and
+    /// SQSET may only be modified while PID = NAK (after the BUF→NAK
+    /// transition has completed, PBUSY = 0).
+    ///
+    /// `dir_out` = true → host transmits the ZLP (status of a control read);
+    /// false → host receives the ZLP (status of a control write / no-data).
+    fn dcp_prepare_status(&self, dir_out: bool) {
+        unsafe {
+            let regs = Rusb1Regs::ptr(self.port);
+            // Halt the DCP and wait for the NAK transition to finish.
+            let ctr = rd(pipectr_ptr(regs, 0));
+            wr(pipectr_ptr(regs, 0), (ctr & !PIPECTR_PID_MASK) | PIPECTR_PID_NAK);
+            while rd(pipectr_ptr(regs, 0)) & PIPECTR_PBUSY != 0 {}
+            // Status direction; SHTNAK only in the receiving direction
+            // (must be 0 when transmitting, TRM §28.3.28).
+            let dcpcfg = if dir_out { DCPCFG_DIR } else { DCPCFG_SHTNAK };
+            wr(core::ptr::addr_of_mut!((*regs).dcpcfg), dcpcfg);
+            // Status-stage ZLP is always DATA1.
+            wr(pipectr_ptr(regs, 0), PIPECTR_SQSET);
+        }
+    }
 
     fn ep_to_pipe(&self, dev_addr: u8, ep_addr: u8) -> Option<usize> {
         if dev_addr == 0 || (dev_addr as usize) >= HCD_MAX_DEV {
@@ -1160,7 +1205,7 @@ unsafe fn pipe0_in_brdy(regs: *mut Rusb1Regs) {
         let xfer = &mut *HCD_XFER[0].borrow(cs).get();
 
         let mps = (rd(core::ptr::addr_of!((*regs).dcpmaxp)) & DCPMAXP_MXPS_MASK) as usize;
-        let vld = (rd(core::ptr::addr_of!((*regs).cfifoctr)) & CFIFOCTR_DTLN_MASK) as usize;
+        let vld = (rd(core::ptr::addr_of!((*regs).cfifoctr)) & FIFOCTR_DTLN_MASK) as usize;
         let rem = xfer.remaining as usize;
         let len = rem.min(mps).min(vld);
 
@@ -1230,7 +1275,7 @@ unsafe fn pipe_brdy_in(regs: *mut Rusb1Regs, n: usize) {
         if xfer.buf.is_null() {
             // No buffer — discard and BCLR.
             wr(core::ptr::addr_of_mut!((*regs).d0fifosel), n as u16);
-            while rd(core::ptr::addr_of!((*regs).d0fifosel)) & D0FIFOSEL_CURPIPE_MASK != n as u16 {}
+            while rd(core::ptr::addr_of!((*regs).d0fifosel)) & FIFOSEL_CURPIPE_MASK != n as u16 {}
             wr(core::ptr::addr_of_mut!((*regs).d0fifoctr), FIFOCTR_BCLR);
             wr(core::ptr::addr_of_mut!((*regs).d0fifosel), 0);
             return;
@@ -1238,14 +1283,14 @@ unsafe fn pipe_brdy_in(regs: *mut Rusb1Regs, n: usize) {
 
         // Select D0FIFO on this pipe for reading.
         wr(core::ptr::addr_of_mut!((*regs).d0fifosel), n as u16);
-        while rd(core::ptr::addr_of!((*regs).d0fifosel)) & D0FIFOSEL_CURPIPE_MASK != n as u16 {}
-        while rd(core::ptr::addr_of!((*regs).d0fifoctr)) & D0FIFOCTR_FRDY == 0 {}
+        while rd(core::ptr::addr_of!((*regs).d0fifosel)) & FIFOSEL_CURPIPE_MASK != n as u16 {}
+        while rd(core::ptr::addr_of!((*regs).d0fifoctr)) & FIFOCTR_FRDY == 0 {}
 
         // PIPEMAXP is gated by PIPESEL, not by D0FIFOSEL.CURPIPE — select pipe explicitly.
         wr(core::ptr::addr_of_mut!((*regs).pipesel), n as u16);
         let mps = (rd(core::ptr::addr_of!((*regs).pipemaxp)) & PIPEMAXP_MXPS_MASK) as usize;
         wr(core::ptr::addr_of_mut!((*regs).pipesel), 0);
-        let vld = (rd(core::ptr::addr_of!((*regs).d0fifoctr)) & D0FIFOCTR_DTLN_MASK) as usize;
+        let vld = (rd(core::ptr::addr_of!((*regs).d0fifoctr)) & FIFOCTR_DTLN_MASK) as usize;
         let rem = xfer.remaining as usize;
         let len = rem.min(mps).min(vld);
 
@@ -1267,7 +1312,7 @@ unsafe fn pipe_brdy_in(regs: *mut Rusb1Regs, n: usize) {
 
         // Deselect D0FIFO.
         wr(core::ptr::addr_of_mut!((*regs).d0fifosel), 0);
-        while rd(core::ptr::addr_of!((*regs).d0fifosel)) & D0FIFOSEL_CURPIPE_MASK != 0 {}
+        while rd(core::ptr::addr_of!((*regs).d0fifosel)) & FIFOSEL_CURPIPE_MASK != 0 {}
 
         let done = (len < mps) || (xfer.remaining == 0);
         if done {
@@ -1294,8 +1339,8 @@ unsafe fn pipe_brdy_out(regs: *mut Rusb1Regs, n: usize) {
         }
 
         wr(core::ptr::addr_of_mut!((*regs).d0fifosel), n as u16);
-        while rd(core::ptr::addr_of!((*regs).d0fifosel)) & D0FIFOSEL_CURPIPE_MASK != n as u16 {}
-        while rd(core::ptr::addr_of!((*regs).d0fifoctr)) & D0FIFOCTR_FRDY == 0 {}
+        while rd(core::ptr::addr_of!((*regs).d0fifosel)) & FIFOSEL_CURPIPE_MASK != n as u16 {}
+        while rd(core::ptr::addr_of!((*regs).d0fifoctr)) & FIFOCTR_FRDY == 0 {}
 
         // PIPEMAXP is gated by PIPESEL, not by D0FIFOSEL.CURPIPE — select pipe explicitly.
         wr(core::ptr::addr_of_mut!((*regs).pipesel), n as u16);
@@ -1311,7 +1356,7 @@ unsafe fn pipe_brdy_out(regs: *mut Rusb1Regs, n: usize) {
         xfer.remaining = xfer.remaining.saturating_sub(len as u16);
 
         wr(core::ptr::addr_of_mut!((*regs).d0fifosel), 0);
-        while rd(core::ptr::addr_of!((*regs).d0fifosel)) & D0FIFOSEL_CURPIPE_MASK != 0 {}
+        while rd(core::ptr::addr_of!((*regs).d0fifosel)) & FIFOSEL_CURPIPE_MASK != 0 {}
         // BRDY fires again when the SIE has consumed this chunk.
     }
 }
@@ -1505,7 +1550,8 @@ impl<T: channel::Type, D: channel::Direction> UsbChannel<T, D> for Rusb1Channel<
         let bytes = setup_to_bytes(setup);
         drv.setup_send(self.dev_addr, &bytes).await?;
         let n = drv.control_data_in(self.dev_addr, buf).await?;
-        // Status stage: OUT ZLP.
+        // Status stage: OUT ZLP, opposite direction to the data stage, DATA1.
+        drv.dcp_prepare_status(true);
         drv.control_data_out(self.dev_addr, &[]).await?;
         Ok(n)
     }
@@ -1522,7 +1568,8 @@ impl<T: channel::Type, D: channel::Direction> UsbChannel<T, D> for Rusb1Channel<
         if !buf.is_empty() {
             drv.control_data_out(self.dev_addr, buf).await?;
         }
-        // Status stage: IN ZLP (receive and discard).
+        // Status stage: IN ZLP, opposite direction to the data stage, DATA1.
+        drv.dcp_prepare_status(false);
         let mut dummy = [];
         drv.control_data_in(self.dev_addr, &mut dummy).await?;
         Ok(())

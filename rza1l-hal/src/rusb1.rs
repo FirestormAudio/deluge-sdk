@@ -9,13 +9,13 @@
 //!
 //! Higher-level register access lives in `deluge_bsp::usb::regs`.
 
-/// USB200 peripheral register base address.
-/// USB200 is the High-Speed USB (USBHS) host/function controller on the RZ/A1L.
+/// USB channel 0 peripheral register base address (TRM §28: SYSCFG0_0 at
+/// H'E8010000).  Both channels are identical USB 2.0 high-speed host/function
+/// modules.
 pub const USB0_BASE: usize = 0xE801_0000;
-/// USB201 peripheral register base address.
-/// USB201 is the Full-Speed USB (USBFS) host/function controller — distinct from
-/// USB200 (USBHS).  The name `USB1` refers to the second port index, not a second
-/// USBHS instance.  See RZ/A1L HW Manual §19 (USB Function Module, USB201).
+/// USB channel 1 peripheral register base address (TRM §28: SYSCFG0_1 at
+/// H'E8207000).  Same USB 2.0 HS host/function module as channel 0; note that
+/// the UCKSEL/UPLLE clock bits exist only in channel 0's SYSCFG0.
 pub const USB1_BASE: usize = 0xE820_7000;
 
 /// GIC interrupt ID for USB0 (USB200).

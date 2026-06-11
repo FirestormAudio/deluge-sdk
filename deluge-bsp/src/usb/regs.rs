@@ -41,12 +41,16 @@ pub const SYSSTS0_LNST: u16 = 0x0003;
 // ---------------------------------------------------------------------------
 // DVSTCTR0
 // ---------------------------------------------------------------------------
+// NOTE: unlike other Renesas USBHS variants (RX, RZ/A1H USBHS), the RZ/A1L
+// DVSTCTR0 has NO VBUSEN/EXICEN/HNPBTOA bits — bits 11:9 are reserved
+// ("always read as 0, write 0", TRM §28.3.4).  VBUS power must be switched
+// externally (board GPIO); the module only *senses* VBUS via the VBUS pin.
 pub const DVSTCTR0_RHST: u16 = 0x0007;
 pub const DVSTCTR0_UACT: u16 = 0x0010;
 pub const DVSTCTR0_RESUME: u16 = 0x0020;
 pub const DVSTCTR0_USBRST: u16 = 0x0040;
+pub const DVSTCTR0_RWUPE: u16 = 0x0080;
 pub const DVSTCTR0_WKUP: u16 = 0x0100;
-pub const DVSTCTR0_VBUSEN: u16 = 0x0200; // Host mode: enable VBUS power (bit 9)
 
 pub const DVSTCTR0_RHST_LS: u16 = 0b001;
 pub const DVSTCTR0_RHST_FS: u16 = 0b010;
@@ -171,7 +175,7 @@ pub const PIPECTR_SQMON: u16 = 0x0040;
 pub const PIPECTR_SQSET: u16 = 0x0080;
 pub const PIPECTR_SQCLR: u16 = 0x0100;
 pub const PIPECTR_ACLRM: u16 = 0x0200; // pipes 1-9,A-F
-pub const PIPECTR_INBUFM: u16 = 0x4000; // pipes 1-5 only
+pub const PIPECTR_INBUFM: u16 = 0x4000; // pipes 1-5 and 9-15 (not 6-8)
 pub const PIPECTR_BSTS: u16 = 0x8000;
 
 // ---------------------------------------------------------------------------
@@ -260,9 +264,10 @@ pub const PKT_BUF_BLOCK_SIZE: usize = 64;
 pub const PKT_BUF_BLOCKS: usize = PKT_BUF_SIZE_BYTES / PKT_BUF_BLOCK_SIZE; // 128
 
 // ---------------------------------------------------------------------------
-// BUSWAIT — minimum wait cycles for >= 67 ns at 12 MHz P1 bus.
-// At 12 MHz one cycle = 83.3 ns, so 1 wait cycle is sufficient.
-// The Deluge firmware uses 0x0F (15 wait cycles) which is very conservative.
+// BUSWAIT — BWAIT[5:0] wait cycles per register access (TRM §28.3.2).
+// Constraint: consecutive register accesses must take >= 67 ns of P1-bus
+// (66.7 MHz, 15 ns/cycle) time, i.e. >= 3 wait cycles (5 access cycles).
+// The Deluge firmware uses 0x0F (15 waits, the reset value) — conservative.
 // ---------------------------------------------------------------------------
 pub const BUSWAIT_VALUE: u16 = 0x000F;
 
