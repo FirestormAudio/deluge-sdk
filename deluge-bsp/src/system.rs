@@ -32,7 +32,6 @@ use rza1l_hal::stb::StbConfig;
 unsafe fn cpg_basic_init() {
     let power_ctrl = 0x3FFF_FF80 as *mut u32;
     let frqcr = 0xFCFE_0010 as *mut u16;
-    let frqcr2 = 0xFCFE_0014 as *mut u16;
     let syscr3 = 0xFCFE_0408 as *mut u8;
 
     // Matches the known-working Deluge firmware / bootloader CPG_Init path.
@@ -47,11 +46,10 @@ unsafe fn cpg_basic_init() {
         let _ = frqcr.read_volatile();
     }
 
-    // CKIO = P1, low during standby.
-    unsafe {
-        frqcr2.write_volatile(0x0001);
-        let _ = frqcr2.read_volatile();
-    }
+    // NOTE: the original Deluge CPG_Init also wrote FRQCR2 (0xFCFE0014) here,
+    // but that register only exists on the RZ/A1H — the RZ/A1L manual's
+    // revision history (Rev 2.00) records its deletion.  CKIO standby
+    // behaviour on the A1L is controlled by FRQCR.CKOEN[1:0] (set above).
 
     // Enable writes to the on-chip data-retention RAM banks (0x20000000-
     // 0x2001FFFF).  The rest of the large-capacity on-chip RAM is gated by
@@ -111,8 +109,11 @@ pub const STB_CONFIG: StbConfig = StbConfig {
 
 /// SSI0 configuration for the Deluge board.
 ///
-/// - SSICR value 0x002B_C020: AUDIO_X1 clock source, stereo 24-bit/32-bit
-///   system word, RZ/A1L as I²S master, BCLK = AUDIO_X1 ÷ 4 ≈ 5.6448 MHz.
+/// SSICR value 0x002B_C020 decodes as: CKS=0 (AUDIO_X1 source), DWL=101
+/// (24-bit data words), SWL=011 (32-bit system words), SCKD=SWSD=1 (master),
+/// CKDV=0b0010 (AUDIOφ ÷ 4 → BCLK = 22.5792 MHz ÷ 4 = 5.6448 MHz).
+///
+///
 /// - TX DMA channel 6 (SRAM → SSIFTDR).
 /// - RX DMA channel 7 (SSIFRDR → SRAM).
 pub const SSI_CONFIG: SsiConfig = SsiConfig {

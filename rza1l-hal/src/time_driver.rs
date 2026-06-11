@@ -44,11 +44,14 @@ const OSTM0_IRQ: u16 = 134;
 const OSTM1_IRQ: u16 = 135;
 const OSTM_IRQ_PRIORITY: u8 = 14;
 
-/// OSTM0 ticks per Embassy tick (1 µs at 33.333 MHz).
+/// OSTM0 ticks per Embassy tick (1 µs), as an exact rational.
 ///
-/// Two OSTM ticks ≈ 60 ns; dividing is a lossy integer rounding.
-/// Effective resolution: 1/33.333 µs ≈ 30 ns, rounded to 1 µs at output.
-const OSTM_PER_US: u64 = crate::ostm::OSTM_HZ as u64 / 1_000_000; // = 33
+/// P0φ on the Deluge is 13,225,625 Hz × 30 / 12 = 33,064,062.5 Hz, so
+/// ticks-per-µs = 33,064,062.5 / 1e6 = 21,161 / 640 exactly.  Using the
+/// rational avoids the ~0.2% drift that truncating to 33 ticks/µs caused.
+/// Effective resolution: 1 OSTM tick ≈ 30 ns, rounded to 1 µs at output.
+const OSTM_PER_US_NUM: u64 = 21_161;
+const OSTM_PER_US_DEN: u64 = 640;
 
 // ---------------------------------------------------------------------------
 // Overflow counter
@@ -107,7 +110,10 @@ impl OstmDriver {
         let delta_us = at - now;
         // Clamp to u32 range (~128 s); if the alarm is farther out it will
         // be re-armed after the intermediate ISR fires.
-        let delta_ostm = (delta_us.saturating_mul(OSTM_PER_US)).min(u32::MAX as u64) as u32;
+        let delta_ostm = (delta_us
+            .saturating_mul(OSTM_PER_US_NUM)
+            .div_ceil(OSTM_PER_US_DEN))
+        .min(u32::MAX as u64) as u32;
 
         if delta_ostm == 0 {
             return false;
@@ -124,7 +130,9 @@ impl OstmDriver {
 
 impl Driver for OstmDriver {
     fn now(&self) -> u64 {
-        Self::raw_ostm_ticks() / OSTM_PER_US
+        // ticks × 640 / 21161; the multiply overflows u64 only after ~28
+        // years of uptime at 33.064 MHz.
+        Self::raw_ostm_ticks() * OSTM_PER_US_DEN / OSTM_PER_US_NUM
     }
 
     fn schedule_wake(&self, at: u64, waker: &Waker) {

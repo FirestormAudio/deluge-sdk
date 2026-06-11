@@ -111,7 +111,9 @@ const CST: [u8; 5] = [0x01, 0x02, 0x04, 0x40, 0x80];
 // ---------------------------------------------------------------------------
 
 /// P0 clock frequency driving MTU2 (Hz).
-pub const MTU2_P0_HZ: u32 = 33_333_333;
+///
+/// Deluge 13.2256 MHz EXTAL: P0φ = 13,225,625 × 30 / 12 = 33,064,062.5 Hz.
+pub const MTU2_P0_HZ: u32 = 33_064_062;
 
 /// GIC interrupt IDs for the compare-match-A (TGInA) interrupt on channels 0–4.
 /// Source: `devdrv_intc.h`.

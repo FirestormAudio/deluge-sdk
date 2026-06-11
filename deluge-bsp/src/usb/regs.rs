@@ -61,6 +61,7 @@ pub const DVSTCTR0_RHST_HS: u16 = 0b011;
 // ---------------------------------------------------------------------------
 pub const FIFOSEL_CURPIPE_MASK: u16 = 0x000F;
 pub const FIFOSEL_ISEL: u16 = 0x0020; // CFIFOSEL only
+pub const FIFOSEL_DREQE: u16 = 0x1000; // DnFIFOSEL only: DMA request enable
 pub const FIFOSEL_BIGEND: u16 = 0x0100;
 pub const FIFOSEL_MBW_MASK: u16 = 0x0C00;
 pub const FIFOSEL_MBW_SHIFT: u32 = 10;

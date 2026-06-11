@@ -275,10 +275,19 @@ impl Rusb1HostDriver {
             // Host mode: DCFM=1, DRPD=1 (pull-downs enabled), DPRPU=0 (no pull-up).
             // HSE is NOT set here; TRM requires it to be set after ATTCH and before
             // USBRST — it is written in bus_reset() based on the detected device speed.
+            //
+            // TRM §28.3.1: DCFM may only be modified while DPRPU and DRPD are
+            // both 0, so set DCFM first (clearing DPRPU/HSE), then raise DRPD
+            // in a second write.
             rmw(
                 core::ptr::addr_of_mut!((*regs).syscfg0),
-                SYSCFG_DCFM | SYSCFG_DRPD | SYSCFG_DPRPU | SYSCFG_HSE,
-                SYSCFG_DCFM | SYSCFG_DRPD,
+                SYSCFG_DCFM | SYSCFG_DPRPU | SYSCFG_HSE,
+                SYSCFG_DCFM,
+            );
+            rmw(
+                core::ptr::addr_of_mut!((*regs).syscfg0),
+                SYSCFG_DRPD,
+                SYSCFG_DRPD,
             );
 
             // NOTE: VBUS power is NOT module-controlled on the RZ/A1L —

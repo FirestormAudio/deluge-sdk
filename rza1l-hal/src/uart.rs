@@ -66,13 +66,12 @@ const TDFE: u16 = 1 << 5; // TX FIFO Data Empty  (count ≤ trigger)
 // TX FIFO depth
 const TX_FIFO_SIZE: usize = 16;
 
-// Peripheral clock: XTAL(13.2256 MHz) × 5 = 66.128 MHz.
-// The Deluge uses a 13.2256 MHz crystal, giving P0 = 66,128,000 Hz exactly.
+// Peripheral clock P1φ: XTAL(13,225,625 Hz) × 5 = 66,128,125 Hz exactly.
 // Used for SCBRR calculation with BGDM=1 (double-speed mode):
 //   SCBRR = round(P_CLK / (16 × baud)) − 1
 // BGDM=1 (SCEMR bit 7) doubles the effective clock to the BRG, so the
 // oversampling ratio stays at 16× against the nominal SCBRR formula.
-const P_CLK: u32 = 66_128_000;
+const P_CLK: u32 = 66_128_125;
 
 /// Number of SCIF channels on RZ/A1L.
 pub const NUM_CHANNELS: usize = 5;

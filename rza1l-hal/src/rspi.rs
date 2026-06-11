@@ -116,8 +116,9 @@ const SPCMD0_8BIT: u16 = 0b0000_0111_0000_0000;
 const SPCMD0_32BIT: u16 = 0b0000_0011_0000_0000;
 
 // ── P1 clock frequency ────────────────────────────────────────────────────────
-/// P1 = CPU / 6 = 400 MHz / 6 = 66.666... MHz
-const P1_HZ: u32 = 66_666_666;
+/// P1φ = EXTAL × 30 / 6 = 13,225,625 × 5 = 66,128,125 Hz (Deluge 13.2256 MHz
+/// crystal — not the 66.67 MHz the manual's nominal-maximum figures suggest).
+const P1_HZ: u32 = 66_128_125;
 
 // ── GIC interrupt ID base for RSPI ────────────────────────────────────────────
 /// SPEI0 = 270; each channel adds 3: SPEI_n = 270 + 3n, SPRI_n = 271 + 3n, SPTI_n = 272 + 3n
@@ -619,11 +620,11 @@ mod tests {
 
     #[test]
     fn rspi_spbr_10mhz() {
-        // ceil(66_666_666 / (10_000_000 × 2)) - 1 = ceil(3.333) - 1 = 4 - 1 = 3
+        // ceil(66_128_125 / (10_000_000 × 2)) - 1 = ceil(3.306) - 1 = 4 - 1 = 3
         let bit_rate: u32 = 10_000_000;
         let spbr = ((P1_HZ + bit_rate * 2 - 1) / (bit_rate * 2)).saturating_sub(1) as u8;
         assert_eq!(spbr, 3);
-        // Actual rate: 66_666_666 / (2 × (3+1)) = 8.333 MHz (within ±20% of 10 MHz)
+        // Actual rate: 66_128_125 / (2 × (3+1)) = 8.266 MHz (within ±20% of 10 MHz)
         let actual_hz = P1_HZ / (2 * (spbr as u32 + 1));
         assert!(actual_hz >= 8_000_000 && actual_hz <= 11_000_000);
     }

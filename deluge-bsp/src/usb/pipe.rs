@@ -21,10 +21,11 @@ use super::fifo::{
     fifo_select_recv, hw_to_sw_fifo, sw_to_hw_fifo,
 };
 use super::regs::{
-    PIPEBUF_BUFSIZE_SHIFT, PIPECFG_CNTMD, PIPECFG_DBLB, PIPECFG_DIR, PIPECFG_EPNUM_MASK,
-    PIPECFG_SHTNAK, PIPECFG_TYPE_BULK, PIPECFG_TYPE_INTR, PIPECFG_TYPE_ISO, PIPECTR_ACLRM,
-    PIPECTR_PID_BUF, PIPECTR_PID_NAK, PIPECTR_PID_STALL, PIPECTR_SQCLR, PIPEMAXP_MXPS_MASK,
-    PIPEPERI_IFIS, PKT_BUF_BLOCKS, Rusb1Regs, pipectr_ptr, rd, wr,
+    FIFOSEL_CURPIPE_MASK, FIFOSEL_DREQE, PIPEBUF_BUFSIZE_SHIFT, PIPECFG_CNTMD, PIPECFG_DBLB,
+    PIPECFG_DIR, PIPECFG_EPNUM_MASK, PIPECFG_SHTNAK, PIPECFG_TYPE_BULK, PIPECFG_TYPE_INTR,
+    PIPECFG_TYPE_ISO, PIPECTR_ACLRM, PIPECTR_PBUSY, PIPECTR_PID_BUF, PIPECTR_PID_MASK,
+    PIPECTR_PID_NAK, PIPECTR_PID_STALL, PIPECTR_SQCLR, PIPEMAXP_MXPS_MASK, PIPEPERI_IFIS,
+    PKT_BUF_BLOCKS, Rusb1Regs, pipectr_ptr, rd, wr,
 };
 
 // ---------------------------------------------------------------------------
@@ -292,8 +293,11 @@ pub unsafe fn pipe_configure(regs: *mut Rusb1Regs, n: usize, cfg: &PipeConfig) {
     unsafe {
         debug_assert!((1..=15).contains(&n), "pipe_configure: invalid pipe number");
 
-        // Deactivate the pipe before reconfiguring.
-        wr(pipectr_ptr(regs, n), PIPECTR_PID_NAK);
+        // Deactivate the pipe before reconfiguring.  TRM §28.3.32: PIPECFG /
+        // PIPEBUF / PIPEMAXP / PIPEPERI may only be written while PID is NAK
+        // *and* the pipe is not selected by any FIFO port's CURPIPE bits,
+        // with PBUSY confirmed 0 after a software BUF→NAK transition.
+        pipe_quiesce(regs, n);
 
         // Select the pipe and write configuration registers.
         wr(core::ptr::addr_of_mut!((*regs).pipesel), n as u16);
@@ -718,11 +722,64 @@ pub unsafe fn pipe_stall(regs: *mut Rusb1Regs, n: usize) {
 /// `regs` must be valid.
 pub unsafe fn pipe_reset(regs: *mut Rusb1Regs, n: usize) {
     unsafe {
+        // ACLRM and SQCLR require PID=NAK with the pipe idle (PBUSY=0).
+        pipe_quiesce(regs, n);
         let ctr = pipectr_ptr(regs, n);
         // Set ACLRM (auto clear FIFO and toggle) then clear it, per TRM.
         wr(ctr, PIPECTR_PID_NAK | PIPECTR_ACLRM);
         wr(ctr, PIPECTR_PID_NAK);
         wr(ctr, PIPECTR_PID_NAK | PIPECTR_SQCLR);
+    }
+}
+
+/// Halt pipe `n` and make it safe to reconfigure (TRM §28.3.32 precondition).
+///
+/// Sets PID=NAK, waits for PBUSY to clear (required after a software
+/// BUF→NAK transition before touching pipe configuration), and deselects
+/// the pipe from any FIFO port whose CURPIPE bits point at it (clearing
+/// DREQE first on the DnFIFO ports, as required before a CURPIPE change).
+///
+/// # Safety
+/// `regs` must be valid.
+unsafe fn pipe_quiesce(regs: *mut Rusb1Regs, n: usize) {
+    unsafe {
+        let ctr = pipectr_ptr(regs, n);
+        let cur = rd(ctr);
+        if cur & PIPECTR_PID_MASK != PIPECTR_PID_NAK {
+            wr(ctr, (cur & !PIPECTR_PID_MASK) | PIPECTR_PID_NAK);
+            // PBUSY clears once the in-flight transaction (at most one
+            // max-size packet) finishes; bound the wait so a wedged bus
+            // cannot hang the driver.
+            for _ in 0..100_000 {
+                if rd(ctr) & PIPECTR_PBUSY == 0 {
+                    break;
+                }
+            }
+        }
+
+        // CFIFOSEL has no DREQE bit (masking it there is harmless);
+        // DnFIFOSEL requires DREQE=0 before CURPIPE may change.
+        let sels = [
+            core::ptr::addr_of_mut!((*regs).cfifosel),
+            core::ptr::addr_of_mut!((*regs).d0fifosel),
+            core::ptr::addr_of_mut!((*regs).d1fifosel),
+        ];
+        for sel in sels {
+            let v = rd(sel);
+            if (v & FIFOSEL_CURPIPE_MASK) as usize != n {
+                continue;
+            }
+            if v & FIFOSEL_DREQE != 0 {
+                wr(sel, v & !FIFOSEL_DREQE);
+            }
+            wr(sel, rd(sel) & !FIFOSEL_CURPIPE_MASK);
+            // Read back until the CURPIPE change latches (TRM procedure).
+            for _ in 0..1_000 {
+                if rd(sel) & FIFOSEL_CURPIPE_MASK == 0 {
+                    break;
+                }
+            }
+        }
     }
 }
 

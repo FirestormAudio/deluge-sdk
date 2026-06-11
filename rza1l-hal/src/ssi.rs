@@ -6,11 +6,11 @@
 //!
 //! ## Clock derivation
 //! ```text
-//! AUDIO_X1 ≈ 22.5792 MHz  (external crystal on the Deluge board)
+//! AUDIO_X1 = 22.5792 MHz  (external crystal on the Deluge board, 512 × 44.1 kHz)
 //! ÷ 4  (CKDV = 0b0010)  →  BCLK = 5.6448 MHz
-//! ÷ 64 (2 ch × 32-bit SWL)  →  88 200 half-frames / s
-//! ÷ 2  →  44 100 Hz sample rate
+//! one stereo frame = 2 ch × 32-bit system words = 64 BCLK
 //! ```
+//!
 //!
 //! ## DMA layout
 //! | Channel | Direction       | GIC IRQ |

@@ -407,13 +407,18 @@ const fn ffu_chcfg(dma_ch: u8) -> u32 {
 // ── INTIFS helper constants (Q22 ratio: fin/fout * 2^22) ─────────────────────
 
 /// Interpolation ratio for 44.1 kHz → 44.1 kHz (unity, passthrough mode).
-pub const INTIFS_44100_TO_44100: u32 = 0x0400_0000;
+///
+/// TRM Table 37.3 gives unity as 0x0400000 (= 2^22; FSO is fixed at 2^22).
+/// These constants were previously hand-written with an extra hex digit
+/// (0x0400_0000 = 2^26, 16× too large); deriving them via [`intifs`] keeps
+/// them consistent with the documented Q22 encoding.
+pub const INTIFS_44100_TO_44100: u32 = intifs(44100, 44100);
 /// Interpolation ratio for 44.1 kHz → 48 kHz.
-pub const INTIFS_44100_TO_48000: u32 = 0x03AC_CCCC;
+pub const INTIFS_44100_TO_48000: u32 = intifs(44100, 48000);
 /// Interpolation ratio for 48 kHz → 44.1 kHz.
-pub const INTIFS_48000_TO_44100: u32 = 0x045A_8EC0;
+pub const INTIFS_48000_TO_44100: u32 = intifs(48000, 44100);
 /// Interpolation ratio for 48 kHz → 48 kHz (unity).
-pub const INTIFS_48000_TO_48000: u32 = 0x0400_0000;
+pub const INTIFS_48000_TO_48000: u32 = intifs(48000, 48000);
 /// Interpolation ratio for 88.2 kHz → 44.1 kHz (exactly 2:1).
 /// Use when CPU synthesises at 88.2 kHz for higher quality, output at 44.1 kHz.
 pub const INTIFS_88200_TO_44100: u32 = intifs(88200, 44100);

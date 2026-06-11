@@ -20,8 +20,11 @@
 //! }
 //! ```
 
-/// OSTM P0 clock frequency (Hz). P0 = CPU / 12 = 400 MHz / 12 = 33.333... MHz.
-pub const OSTM_HZ: u32 = 33_333_333;
+/// OSTM P0 clock frequency (Hz).
+///
+/// The Deluge board uses a 13.2256 MHz EXTAL crystal (not the RZ/A1L maximum
+/// of 13.33 MHz): P0φ = 13,225,625 × 30 / 12 = 33,064,062.5 Hz, truncated.
+pub const OSTM_HZ: u32 = 33_064_062;
 
 // ------- Peripheral base addresses -------------------------------------------
 const OSTM0_BASE: usize = 0xFCFE_C000;
@@ -158,7 +161,7 @@ pub unsafe fn delay_ticks(ticks: u32) {
 /// See [`delay_ticks`].
 pub unsafe fn delay_ms(ms: u32) {
     unsafe {
-        // OSTM_HZ / 1000 = 33_333 ticks per millisecond
+        // OSTM_HZ / 1000 = 33_064 ticks per millisecond
         delay_ticks(ms * (OSTM_HZ / 1000));
     }
 }
@@ -186,7 +189,7 @@ impl Default for Delay {
 
 impl embedded_hal::delay::DelayNs for Delay {
     fn delay_ns(&mut self, ns: u32) {
-        // OSTM_HZ = 33_333_333 ticks/s → 1 tick ≈ 30 ns.
+        // OSTM_HZ = 33_064_062 ticks/s → 1 tick ≈ 30 ns.
         // ticks = ceil(ns * OSTM_HZ / 1_000_000_000)
         // Use u64 to avoid overflow: max ns = u32::MAX ≈ 4.3 s → 143 M ticks, fits u32.
         let ticks = (ns as u64 * OSTM_HZ as u64).div_ceil(1_000_000_000) as u32;
@@ -334,8 +337,8 @@ mod tests {
 
     #[test]
     fn ostm_hz_is_p0_frequency() {
-        // P0 = CPU / 12 = 400 MHz / 12 = 33.333... MHz
-        assert_eq!(OSTM_HZ, 33_333_333);
+        // P0φ = EXTAL × 30 / 12 with the Deluge 13.2256 MHz crystal
+        assert_eq!(OSTM_HZ, 33_064_062);
     }
 
     #[test]
@@ -351,9 +354,9 @@ mod tests {
         assert_eq!(base(1), OSTM1_BASE);
     }
 
-    /// 1 ms in OSTM ticks: OSTM_HZ / 1000 = 33_333.
+    /// 1 ms in OSTM ticks: OSTM_HZ / 1000 = 33_064.
     #[test]
     fn one_ms_ticks() {
-        assert_eq!(OSTM_HZ / 1000, 33_333);
+        assert_eq!(OSTM_HZ / 1000, 33_064);
     }
 }
