@@ -6,8 +6,8 @@
 //!
 //! - [`driver`] — device mode (`embassy_usb_driver::Driver`):
 //!   [`Rusb1Driver`], [`Rusb1Bus`], [`Rusb1ControlPipe`], endpoints.
-//! - [`host`] — host mode (`embassy_usb_driver::host::UsbHostDriver`):
-//!   [`Rusb1HostDriver`], [`Rusb1Channel`].
+//! - [`host`] — host mode (`embassy_usb_driver::host::UsbHostController`):
+//!   [`Rusb1HostDriver`], [`Rusb1Allocator`], [`Rusb1Pipe`].
 //! - [`pipe`], [`fifo`], [`regs`] — shared pipe/FIFO/register layers.
 //!
 //! USB *class* implementations (UAC2 audio, MIDI, MSC) and the Bulk-Only
@@ -27,12 +27,13 @@
 //!
 //! ```rust,no_run
 //! use rza1l_hal::usb::init_host_mode;
-//! use embassy_usb_host::UsbHost;
+//! use embassy_usb_host::{bus, BusState, handler::BusRoute};
 //!
+//! static BUS_STATE: BusState = BusState::new();
 //! let (port, host) = unsafe { init_host_mode(0) };
-//! let mut usb_host = UsbHost::new(host);
-//! let speed = usb_host.wait_for_connection().await;
-//! let (dev_desc, addr, _) = usb_host.enumerate(speed, &mut [0u8; 256]).await.unwrap();
+//! let (mut controller, handle) = bus(host, &BUS_STATE);
+//! let speed = controller.wait_for_connection().await;
+//! let (info, _) = handle.enumerate(BusRoute::Direct(speed), &mut [0u8; 256]).await.unwrap();
 //! ```
 //!
 //! ## ISR wiring
@@ -62,7 +63,7 @@ pub mod regs;
 pub use driver::{
     Rusb1Bus, Rusb1ControlPipe, Rusb1Driver, Rusb1EndpointIn, Rusb1EndpointOut, dcd_int_handler,
 };
-pub use host::{Rusb1Channel, Rusb1HostDriver, hcd_int_handler};
+pub use host::{Rusb1Allocator, Rusb1HostDriver, Rusb1Pipe, hcd_int_handler};
 
 use core::marker::PhantomData;
 

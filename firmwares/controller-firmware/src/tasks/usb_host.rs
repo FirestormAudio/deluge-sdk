@@ -1,5 +1,6 @@
-use embassy_usb_driver::host::{DeviceEvent, UsbHostDriver};
-use embassy_usb_host::UsbHost;
+use embassy_usb_driver::host::DeviceEvent;
+use embassy_usb_host::handler::BusRoute;
+use embassy_usb_host::{BusState, bus};
 use log::{error, info};
 
 use rza1l_hal::usb::Rusb1HostDriver;
@@ -13,30 +14,36 @@ use rza1l_hal::usb::Rusb1HostDriver;
 #[embassy_executor::task]
 pub(crate) async fn usb_host_task(driver: Rusb1HostDriver) {
     info!("usb_host_task: running");
-    let mut usb_host = UsbHost::new(driver);
+
+    // Bus-wide state (device-address allocator + enumeration lock) lives for
+    // the lifetime of the task; a static gives it the `'static` lifetime that
+    // `bus()` requires.
+    static BUS_STATE: BusState = BusState::new();
+    let (mut controller, handle) = bus(driver, &BUS_STATE);
     let mut config_buf = [0u8; 512];
 
     loop {
-        let speed = usb_host.wait_for_connection().await;
+        let speed = controller.wait_for_connection().await;
         info!("USB host: device connected ({:?})", speed);
 
-        match usb_host.enumerate(speed, &mut config_buf).await {
-            Ok((dev_desc, addr, _)) => {
+        match handle.enumerate(BusRoute::Direct(speed), &mut config_buf).await {
+            Ok((dev_info, _)) => {
+                let addr = dev_info.device_address;
                 info!(
                     "USB host: VID={:04x} PID={:04x} addr={}",
-                    dev_desc.vendor_id, dev_desc.product_id, addr
+                    dev_info.device_desc.vendor_id, dev_info.device_desc.product_id, addr
                 );
                 // Wait for disconnect before accepting a new device.
                 loop {
-                    match usb_host.driver_mut().wait_for_device_event().await {
+                    match controller.wait_for_device_event().await {
                         DeviceEvent::Disconnected => {
                             info!("USB host: device disconnected");
-                            usb_host.free_address(addr);
+                            handle.free_address(addr);
                             break;
                         }
-                        DeviceEvent::Connected(_) => {
-                            // Spurious re-connect while already connected; ignore.
-                        }
+                        // Spurious re-connect / overcurrent while already
+                        // connected; ignore.
+                        _ => {}
                     }
                 }
             }

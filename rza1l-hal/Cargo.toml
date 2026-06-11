@@ -11,29 +11,29 @@ license.workspace = true
 test = false
 
 [target.'cfg(target_os = "none")'.dependencies]
-cortex-ar = { version = "0.3", features = ["critical-section-single-core"] }
+cortex-ar = { workspace = true, features = ["critical-section-single-core"] }
 
 [dependencies]
-critical-section = "1"
-embassy-sync = { git = "https://github.com/embassy-rs/embassy", branch = "main" }
+critical-section = { workspace = true }
+embassy-sync = { workspace = true }
 linked_list_allocator = { version = "0.10", default-features = false }
-embassy-time = { git = "https://github.com/embassy-rs/embassy", branch = "main" }
-embassy-time-driver = { git = "https://github.com/embassy-rs/embassy", branch = "main" }
-embassy-time-queue-utils = { git = "https://github.com/embassy-rs/embassy", branch = "main" }
-embassy-usb-driver = { git = "https://github.com/embassy-rs/embassy", branch = "main" }
+embassy-time = { workspace = true }
+embassy-time-driver = { workspace = true }
+embassy-time-queue-utils = { workspace = true }
+embassy-usb-driver = { workspace = true }
 embedded-hal = "1"
 embedded-hal-async = "1"
 embedded-io-async = "0.7"
-log = { version = "0.4", default-features = false, features = ["release_max_level_off"] }
+log = { workspace = true }
 
 [features]
 rtt = ["dep:rtt-target"]
 
 [dependencies.rtt-target]
-version = "0.6"
+workspace = true
 optional = true
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
-critical-section = { version = "1", features = ["std"] }
+critical-section = { workspace = true, features = ["std"] }
 
 

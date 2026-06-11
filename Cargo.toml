@@ -8,6 +8,25 @@ resolver = "2"
 [workspace.package]
 license = "MIT OR Apache-2.0"
 
+[workspace.dependencies]
+# Embassy async runtime + USB stacks — pinned to crates.io releases so builds
+# are reproducible and don't track a moving `main`. Bump versions here only.
+embassy-executor = "0.10.0"
+embassy-futures = "0.1.2"
+embassy-sync = "0.8.0"
+embassy-time = "0.5.1"
+embassy-time-driver = "0.2.2"
+embassy-time-queue-utils = "0.3.2"
+embassy-usb = "0.6.0"
+embassy-usb-driver = "0.2.2"
+embassy-usb-host = "0.1.0"
+
+# Shared platform / utility crates.
+cortex-ar = "0.3"
+critical-section = "1"
+log = { version = "0.4", features = ["release_max_level_off"] }
+rtt-target = { version = "0.6", features = ["log"] }
+
 [profile.release]
 opt-level = "s"
 lto = true
