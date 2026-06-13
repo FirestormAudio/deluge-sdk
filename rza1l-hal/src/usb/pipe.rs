@@ -485,19 +485,33 @@ unsafe fn fill_in_packet(
     }
 }
 
-/// Called from BRDY ISR for an OUT pipe.  Reads available data from FIFO
-/// into the active transfer buffer.  Returns `true` when the transfer is
-/// complete (short packet or remaining == 0).
+/// Reads available data from an OUT pipe's FIFO into the active transfer
+/// buffer.  Returns `true` when the transfer is complete (short packet or
+/// remaining == 0).
 ///
 /// For non-ISO pipes the hardware PID is set to NAK before the FIFO is read
 /// (preventing the SIE from writing new data while CPU reads), then re-armed
 /// to BUF if the transfer is not yet done — matching the C `process_pipe_brdy`
 /// / `pipe_xfer_out` reference implementation.
 ///
+/// `speculative` distinguishes the two callers:
+/// - `false` — invoked from the BRDY ISR, where the SIE has set BRDYSTS, so a
+///   packet is *guaranteed* present.  A zero-length read is then a genuine ZLP
+///   (the terminator for an exact-multiple-of-mps bulk OUT transfer) and
+///   completes the read by returning `true`.
+/// - `true` — invoked eagerly from `read()` to drain a packet that may have
+///   arrived while BRDY was disabled.  Here only the FIFO `FRDY` flag is
+///   checked, which can be asserted with `DTLN == 0` (no real packet).  A
+///   zero-byte non-ISO read in this mode is *not* treated as complete: the
+///   function re-arms and returns `false` so `read()` waits for a real BRDY,
+///   instead of returning `Ok(0)` and spinning a caller that loops on `read()`
+///   (e.g. the MSC BOT loop awaiting a 31-byte CBW).
+///
 /// # Safety
-/// `regs` must be valid.  Called from ISR context (critical section not needed
-/// on single-core Cortex-A9 with IRQ disabled).
-pub unsafe fn pipe_xfer_out_brdy(regs: *mut Rusb1Regs, n: usize) -> bool {
+/// `regs` must be valid.  When called from ISR context no critical section is
+/// needed (single-core Cortex-A9 with IRQ disabled); the speculative call site
+/// wraps it in one.
+pub unsafe fn pipe_xfer_out_brdy(regs: *mut Rusb1Regs, n: usize, speculative: bool) -> bool {
     unsafe {
         let state = &mut *{
             // Access state without critical_section — we're already in IRQ context
@@ -605,7 +619,12 @@ pub unsafe fn pipe_xfer_out_brdy(regs: *mut Rusb1Regs, n: usize) -> bool {
         // Always BCLR after reading (matches C reference — not just on short packet).
         fifo_bclr(&fifo);
 
-        let done = len < mps || state.remaining == 0;
+        // A zero-byte non-ISO read from a speculative call is not a real packet
+        // (FRDY without DTLN), so don't let it complete the transfer — re-arm and
+        // wait for a genuine BRDY.  A real ZLP only reaches here via the ISR
+        // (speculative == false), where len < mps correctly terminates the read.
+        let real_packet = len > 0 || is_iso || !speculative;
+        let done = real_packet && (len < mps || state.remaining == 0);
         if done {
             // Invoke the ISO OUT hook (if registered for this pipe) before
             // resetting state.  `state.buf` has advanced by `transferred` bytes

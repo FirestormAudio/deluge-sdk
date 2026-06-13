@@ -1163,7 +1163,12 @@ pub async unsafe fn write_blocks_dma(
 
 /// Set the number of blocks for a multi-block transfer.
 ///
-/// Also writes SD_STOP to auto-stop after the given count (CMD12 auto-issue).
+/// Programs SD_SECCNT and the SD_STOP block-count-enable (SEC) bit.  Note SEC
+/// only bounds how many blocks the *controller* clocks in (so DATA_TRNS fires
+/// at the right count) — it does **not** issue CMD12 to the card.  Whether
+/// CMD12 is sent is governed by the SD_CMD mode bits: a command in extended
+/// mode with [15:14]=01 (e.g. `CMD18 | 0x7C00`) suppresses the auto-CMD12, so
+/// the caller must issue [`stop_transfer`] manually after the transfer.
 ///
 /// # Safety
 /// Writes SDHI registers.
@@ -1171,9 +1176,9 @@ pub unsafe fn set_block_count(port: u8, count: u32) {
     unsafe {
         let base = port_base(port);
         reg16(base, OFF_SECCNT).write_volatile(count as u16);
-        // Auto-stop enable (bit 8) when count > 1; otherwise no auto-stop.
+        // Block-count enable (SEC, bit 8) when count > 1; otherwise disabled.
         if count > 1 {
-            reg16(base, OFF_STOP).write_volatile(0x0100); // SEC bit: auto-issue CMD12
+            reg16(base, OFF_STOP).write_volatile(0x0100);
         } else {
             reg16(base, OFF_STOP).write_volatile(0x0000);
         }

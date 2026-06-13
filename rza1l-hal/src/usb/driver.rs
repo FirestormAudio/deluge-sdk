@@ -1181,8 +1181,11 @@ impl EndpointOut for Rusb1EndpointOut {
                     // leaving the data stranded in the pipe FIFO.  Drain it
                     // directly here, the same way the ISO re-arm path below does,
                     // so the poll_fn completes immediately instead of blocking.
+                    // The `speculative = true` arg makes the drain wait for a real
+                    // BRDY rather than completing a zero-byte read (which would
+                    // spin a caller looping on read(); see pipe_xfer_out_brdy).
                     if !is_iso {
-                        return pipe_xfer_out_brdy(regs, pipe);
+                        return pipe_xfer_out_brdy(regs, pipe, true);
                     }
                     false
                 } else if is_iso {
@@ -1191,8 +1194,10 @@ impl EndpointOut for Rusb1EndpointOut {
                     // Trigger it directly by calling pipe_xfer_out_brdy now — this
                     // fills the buf from the waiting FIFO data and signals
                     // PIPE_DONE, so the poll_fn below completes immediately without
-                    // waiting for another BRDY interrupt.
-                    pipe_xfer_out_brdy(regs, pipe)
+                    // waiting for another BRDY interrupt.  Speculative: gated by
+                    // FRDY only (no BRDY), but `is_iso` exempts it from the
+                    // zero-byte guard so empty ISO microframes still complete.
+                    pipe_xfer_out_brdy(regs, pipe, true)
                 } else {
                     false
                 }
@@ -1550,7 +1555,10 @@ pub unsafe fn dcd_int_handler(port: u8) {
                     PIPE0_BRDY[p].store(1, Ordering::Release);
                     CTRL_WAKERS[p].wake();
                 } else {
-                    let done = pipe_xfer_out_brdy(regs, n);
+                    // Real BRDY: BRDYSTS was set, so a packet (possibly a genuine
+                    // ZLP) is present — speculative = false lets a zero-byte read
+                    // legitimately complete the transfer.
+                    let done = pipe_xfer_out_brdy(regs, n, false);
                     if done {
                         PIPE_DONE.fetch_or(1u16 << n, Ordering::Release);
                         PIPE_WAKERS[n].wake();

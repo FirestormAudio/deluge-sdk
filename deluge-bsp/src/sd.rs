@@ -453,6 +453,15 @@ pub async fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> Result<(), Sd
             sdhi::set_block_count(SD_PORT, chunk);
             sdhi::set_arg(SD_PORT, chunk_addr);
             sdhi::read_blocks_dma(SD_PORT, cmd, dma_ptr, chunk, SD_DMA_RX_CH).await?;
+            // CMD18 (READ_MULTIPLE_BLOCK) runs in extended mode with auto-CMD12
+            // disabled (CMD18 | 0x7C00, [15:14]=01), so the card keeps streaming
+            // data until it receives STOP_TRANSMISSION.  The SD_STOP SEC bit only
+            // bounds how many blocks the *controller* clocks in — it does not stop
+            // the *card*.  Issue CMD12 manually (matching the vendor driver), or
+            // the card stays busy and the next command collides and fails.
+            if chunk > 1 {
+                sdhi::stop_transfer(SD_PORT).await?;
+            }
             let chunk_bytes = (chunk as usize) * 512;
             buf[buf_offset..buf_offset + chunk_bytes]
                 .copy_from_slice(core::slice::from_raw_parts(dma_ptr, chunk_bytes));
@@ -645,7 +654,14 @@ impl embedded_sdmmc::BlockDevice for DelugeBlockDevice {
                 sdhi::set_block_count(SD_PORT, count);
                 sdhi::set_arg(SD_PORT, addr);
                 sdhi::send_cmd(SD_PORT, cmd).await?;
-                sdhi::read_blocks_sw(SD_PORT, ptr, count).await
+                sdhi::read_blocks_sw(SD_PORT, ptr, count).await?;
+                // CMD18 multi-block read leaves auto-CMD12 disabled (see
+                // `read_sectors`); stop the card explicitly so the next command
+                // doesn't collide with the still-streaming data phase.
+                if count > 1 {
+                    sdhi::stop_transfer(SD_PORT).await?;
+                }
+                Ok::<(), SdhiError>(())
             }
         })
         .map_err(SdError::from)
