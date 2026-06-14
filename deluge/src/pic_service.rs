@@ -56,9 +56,9 @@ async fn pump() {
         match event {
             pic::Event::OledSelected => pic::notify_oled_selected(),
             pic::Event::OledDeselected => pic::notify_oled_deselected(),
-            // Other events (pads, buttons, …) are dropped until the `input()`
-            // capability adds routing here.
-            _ => {}
+            // Pads, buttons, etc. go to the input event queue (dropped there if
+            // no `input()` consumer is draining it).
+            other => crate::input::route_pic_event(other),
         }
     }
 }

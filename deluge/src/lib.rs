@@ -30,9 +30,11 @@
 
 pub use deluge_macros::app;
 
+mod input;
 mod oled;
 mod pic_service;
 mod sync_led;
+pub use input::{Event, Input};
 pub use oled::Oled;
 pub use sync_led::SyncLed;
 
@@ -118,12 +120,38 @@ impl Deluge {
         deluge_bsp::oled::init().await;
         Oled::new()
     }
+
+    /// Take the unified input event stream (pads, buttons, encoders).
+    ///
+    /// ```ignore
+    /// let input = dlg.input();
+    /// loop {
+    ///     match input.next().await {
+    ///         Event::Pad { x, y, pressed } => { /* … */ }
+    ///         Event::Encoder { index, delta } => { /* … */ }
+    ///         _ => {}
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// Brings up the PIC service (pads/buttons) and the encoder interrupts.
+    /// Takeable once: a second call panics.
+    pub fn input(&self) -> Input {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static TAKEN: AtomicBool = AtomicBool::new(false);
+        if TAKEN.swap(true, Ordering::Relaxed) {
+            panic!("Deluge::input() called more than once");
+        }
+        pic_service::ensure_started(self.spawner);
+        input::ensure_started(self.spawner);
+        Input::new()
+    }
 }
 
 /// Convenient glob import for app authors: `use deluge::prelude::*;`.
 pub mod prelude {
     pub use crate::app;
-    pub use crate::{Deluge, Oled, SyncLed};
+    pub use crate::{Deluge, Event, Input, Oled, SyncLed};
     pub use log::{debug, error, info, warn};
 }
 

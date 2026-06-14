@@ -19,6 +19,7 @@ embassy-executor = { workspace = true, features = [
     "platform-cortex-ar",
     "executor-thread",
 ] }
+embassy-sync = { workspace = true }
 
 [features]
 default = []
