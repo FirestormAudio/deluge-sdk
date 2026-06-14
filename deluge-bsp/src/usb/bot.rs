@@ -223,6 +223,10 @@ pub async fn run_until<B: BlockDevice>(
 
     let mut sense = Sense::GOOD;
     let mut cbw = [0u8; 64];
+    // Latched by a host eject (START STOP UNIT, LOEJ); makes the medium report
+    // as absent so the host stays unmounted instead of auto-remounting.  Resets
+    // with the session (a new `run_until` for a fresh mass-storage mode entry).
+    let mut ejected = false;
 
     loop {
         // Discard any pending Bulk-Only Reset before reading the next CBW.
@@ -262,6 +266,7 @@ pub async fn run_until<B: BlockDevice>(
             &mut ep_in,
             &mut ep_out,
             &mut sense,
+            &mut ejected,
         )
         .await;
 
@@ -281,6 +286,7 @@ async fn handle_command<B: BlockDevice>(
     ep_in: &mut Rusb1EndpointIn,
     ep_out: &mut Rusb1EndpointOut,
     sense: &mut Sense,
+    ejected: &mut bool,
 ) -> (u8, u32) {
     if cdb.is_empty() {
         *sense = Sense::INVALID_COMMAND;
@@ -290,6 +296,14 @@ async fn handle_command<B: BlockDevice>(
     match cdb[0] {
         // TEST UNIT READY — report medium presence (retry init if needed).
         0x00 => {
+            // Once the host has ejected the medium (START STOP UNIT with LOEJ),
+            // keep reporting "not present" so it stays unmounted instead of being
+            // re-detected and auto-remounted.  Don't re-init here — that's what
+            // would resurrect the medium.
+            if *ejected {
+                *sense = Sense::NOT_READY;
+                return (CSW_STATUS_FAILED, data_len);
+            }
             if !dev.is_ready() {
                 let _ = dev.ensure_ready().await;
             }
@@ -337,9 +351,24 @@ async fn handle_command<B: BlockDevice>(
             send_data_in(ep_in, &data, data_len).await
         }
 
-        // PREVENT/ALLOW MEDIUM REMOVAL, START STOP UNIT, SYNCHRONIZE CACHE(10)
-        // — accepted as no-ops.
-        0x1E | 0x1B | 0x35 => {
+        // PREVENT/ALLOW MEDIUM REMOVAL, SYNCHRONIZE CACHE(10) — accepted no-ops.
+        0x1E | 0x35 => {
+            *sense = Sense::GOOD;
+            (CSW_STATUS_GOOD, data_len)
+        }
+
+        // START STOP UNIT — honour the eject request.  CDB byte 4: bit 1 = LOEJ
+        // (load/eject), bit 0 = START.  The host's eject sends LOEJ=1, START=0;
+        // we latch `ejected` so TEST UNIT READY then reports the medium gone and
+        // the host doesn't immediately remount.  A LOEJ=1, START=1 "load" clears
+        // it again.  Spin-up/down without LOEJ is a no-op.
+        0x1B => {
+            if cdb.len() >= 5 && (cdb[4] & 0x02) != 0 {
+                *ejected = (cdb[4] & 0x01) == 0;
+                if *ejected {
+                    info!("BOT: medium ejected by host");
+                }
+            }
             *sense = Sense::GOOD;
             (CSW_STATUS_GOOD, data_len)
         }
@@ -359,7 +388,7 @@ async fn handle_command<B: BlockDevice>(
 
         // READ CAPACITY(10) — last LBA + block size, big-endian.
         0x25 => {
-            if !dev.is_ready() {
+            if *ejected || !dev.is_ready() {
                 *sense = Sense::NOT_READY;
                 return (CSW_STATUS_FAILED, data_len);
             }
@@ -374,6 +403,10 @@ async fn handle_command<B: BlockDevice>(
         0x28 => {
             if cdb.len() < 10 {
                 *sense = Sense::INVALID_COMMAND;
+                return (CSW_STATUS_FAILED, data_len);
+            }
+            if *ejected {
+                *sense = Sense::NOT_READY;
                 return (CSW_STATUS_FAILED, data_len);
             }
             let lba = u32::from_be_bytes([cdb[2], cdb[3], cdb[4], cdb[5]]);
