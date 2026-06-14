@@ -48,7 +48,6 @@
 
 use rza1l_hal::UNCACHED_MIRROR_OFFSET;
 use rza1l_hal::dmac;
-use rza1l_hal::rspi;
 
 #[cfg(target_os = "none")]
 use crate::pic;
@@ -99,8 +98,7 @@ pub const FRAME_BYTES: usize = PAGES * WIDTH; // = 768
 /// are off-screen.  Page addressing starts at `(64 - HEIGHT) / 8 = 2`.
 const FIRST_PAGE: u8 = ((64 - HEIGHT) / 8) as u8; // = 2
 
-/// RSPI channel shared between OLED and CV DAC.
-const SPI_CH: u8 = 0;
+// RSPI0 is owned by [`crate::bus`]; the OLED drives it only through a bus guard.
 
 // ── Frame buffer ──────────────────────────────────────────────────────────────
 
@@ -290,17 +288,14 @@ const INIT_CMDS: &[u8] = &[
     0xAF, // DISPLAY ON
 ];
 
-/// Send all INIT_CMDS bytes via RSPI0 (channel must already be in 8-bit mode).
-///
-/// # Safety
-/// RSPI0 must be configured for 8-bit operation.
-unsafe fn send_init_commands() {
-    unsafe {
-        for &b in INIT_CMDS {
-            rspi::send8(SPI_CH, b);
-        }
-        rspi::wait_end(SPI_CH);
+/// Send all INIT_CMDS bytes via RSPI0. The bus guard must already be in 8-bit
+/// mode (see [`crate::bus::Rspi0::enter_8bit`]).
+#[cfg(target_os = "none")]
+fn send_init_commands(bus: &mut crate::bus::Rspi0) {
+    for &b in INIT_CMDS {
+        bus.send8(b);
     }
+    bus.wait_end();
 }
 
 // ── Public async API (embedded only) ─────────────────────────────────────────
@@ -322,8 +317,12 @@ pub async fn init() {
     use embassy_time::Timer;
     log::debug!("oled: init");
 
-    // ---- 1. Configure RSPI0 for 8-bit SPI mode ----------------------------
-    unsafe { rspi::configure_8bit(SPI_CH) };
+    // ---- 1. Take RSPI0 and configure it for 8-bit SPI mode ----------------
+    // The guard is held across the whole init sequence (including the PIC and
+    // timer awaits below) so a concurrent CV write cannot reconfigure or drive
+    // RSPI0 mid-init.
+    let mut bus = crate::bus::lock_rspi0().await;
+    bus.enter_8bit();
 
     // ---- 1b. Set up DMAC channel 4 for OLED SPI TX ----------------------
     // Mirrors oledDMAInit() from the C firmware.  Must be done after RSPI0
@@ -355,35 +354,29 @@ pub async fn init() {
     // pages before INIT_CMDS locks the visible window to pages 2–7.
     //
     // DC is LOW (command mode) and CS is already asserted by the PIC.
-    unsafe {
-        // Configure horizontal addressing, full column range 0–127, all pages 0–7.
-        for &b in &[
-            0x20u8, 0x00, // SET MEMORY ADDRESSING MODE = horizontal
-            0x21, 0x00, 0x7F, // SET COLUMN ADDRESS: 0–127
-            0x22, 0x00, 0x07,
-        ]
-        // SET PAGE ADDRESS:   0–7  (full 64 rows)
-        {
-            rspi::send8(SPI_CH, b);
-        }
-        rspi::wait_end(SPI_CH);
+    // Configure horizontal addressing, full column range 0–127, all pages 0–7.
+    for &b in &[
+        0x20u8, 0x00, // SET MEMORY ADDRESSING MODE = horizontal
+        0x21, 0x00, 0x7F, // SET COLUMN ADDRESS: 0–127
+        0x22, 0x00, 0x07, // SET PAGE ADDRESS:   0–7  (full 64 rows)
+    ] {
+        bus.send8(b);
     }
+    bus.wait_end();
     // Switch to data mode, give PIC 1 ms to process the DC toggle.
     pic::oled_dc_high().await;
     Timer::after_millis(1).await;
-    unsafe {
-        // 8 pages × 128 columns = 1 024 zero bytes → clears all GDDRAM.
-        for _ in 0..(8 * WIDTH) {
-            rspi::send8(SPI_CH, 0x00);
-        }
-        rspi::wait_end(SPI_CH);
+    // 8 pages × 128 columns = 1 024 zero bytes → clears all GDDRAM.
+    for _ in 0..(8 * WIDTH) {
+        bus.send8(0x00);
     }
+    bus.wait_end();
     // Back to command mode before INIT_CMDS.
     pic::oled_dc_low().await;
     Timer::after_millis(1).await;
 
     // ---- 4. Send SSD1309 init commands -----------------------------------
-    unsafe { send_init_commands() };
+    send_init_commands(&mut bus);
 
     // ---- 5. Switch DC to high (data mode for subsequent frame writes) ----
     pic::oled_dc_high().await;
@@ -414,17 +407,18 @@ pub async fn send_frame(fb: &FrameBuffer) {
     pic::oled_select().await;
     pic::wait_oled_selected().await;
 
+    // Take exclusive ownership of RSPI0 for the whole transfer. The guard is
+    // held across the DMA-completion await below; any concurrent CV write waits.
+    // Dropping the guard (at end of scope) reconfiguring is unnecessary — the
+    // bus tracks that it is left in 8-bit mode, and the next CV write reconfigures.
+    let mut bus = crate::bus::lock_rspi0().await;
+    bus.enter_8bit();
+
     unsafe {
         // Copy frame into the uncached staging buffer so DMAC sees fresh data.
         let dst_uncached =
             (core::ptr::addr_of!(OLED_DMA_BUF.0[0]) as usize + UNCACHED_MIRROR_OFFSET) as *mut u8;
         core::ptr::copy_nonoverlapping(fb.as_bytes().as_ptr(), dst_uncached, FRAME_BYTES);
-
-        // Configure RSPI0 for 8-bit transfers.
-        rspi::configure_8bit(SPI_CH);
-
-        // Signal that RSPI0 is now driven by DMAC — cv_gate must not touch it.
-        crate::RSPI0_DMA_ACTIVE.store(true, core::sync::atomic::Ordering::Release);
 
         // Arm DMA: source must be the uncached alias address because N0SA is the
         // bus address the DMAC will read from — same physical RAM as the cached
@@ -433,17 +427,17 @@ pub async fn send_frame(fb: &FrameBuffer) {
         dmac::start_transfer(OLED_DMA_CH, src_uncached, FRAME_BYTES as u32);
     }
 
-    // Await DMA completion interrupt.
+    // Await DMA completion interrupt (still holding the RSPI0 guard).
     dmac::wait_transfer_complete(OLED_DMA_CH).await;
 
     // Wait for RSPI0 to finish clocking out its FIFO/shift register (TEND=1).
     // DMA completion only means all bytes have been *enqueued*; deselecting
     // before TEND causes the SSD1309 to receive a truncated frame and its
     // GDDRAM address pointer drifts, corrupting every subsequent frame.
-    unsafe { rspi::wait_end(SPI_CH) };
+    bus.wait_end();
 
-    // RSPI0 DMA transfer complete — cv_gate may proceed.
-    crate::RSPI0_DMA_ACTIVE.store(false, core::sync::atomic::Ordering::Release);
+    // Release RSPI0 — a waiting CV write may now proceed.
+    drop(bus);
 
     pic::oled_deselect().await;
     Timer::after_millis(1).await;

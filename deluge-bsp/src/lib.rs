@@ -6,6 +6,8 @@
 // are referenced by the linker script.
 
 pub mod audio;
+#[cfg(target_os = "none")]
+pub mod bus;
 pub mod controls;
 pub mod cv_gate;
 #[cfg(target_os = "none")]
@@ -26,13 +28,6 @@ pub mod trigger_clock;
 pub mod uart;
 pub mod usb;
 
-/// Guards concurrent RSPI0 access between the OLED DMA path and `cv_gate`.
-///
-/// The OLED and CV DAC share RSPI0 (channel 0). The OLED driver uses DMAC
-/// channel 4 for frame transfers (8-bit mode); the CV DAC uses
-/// `rspi::send32_blocking` (32-bit mode). This flag is set to `true` for the
-/// duration of an OLED DMA transfer. `cv_set_blocking` spins on it before
-/// reconfiguring RSPI0.
-#[cfg(target_os = "none")]
-pub static RSPI0_DMA_ACTIVE: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
+// RSPI0 arbitration between the OLED DMA path and the CV DAC now lives in
+// [`bus`] as an owned, mutex-guarded resource (replacing the former
+// `RSPI0_DMA_ACTIVE` spin-flag). See `docs/deluge-sdk.md` §6a.

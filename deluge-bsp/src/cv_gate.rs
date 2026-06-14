@@ -146,23 +146,42 @@ pub unsafe fn init() {
 
 // ── CV output ────────────────────────────────────────────────────────────────
 
-/// Write a voltage code to CV channel `ch` (blocking, polls TEND).
+/// Write a voltage code to CV channel `ch`, acquiring exclusive RSPI0 access.
+///
+/// This is the runtime CV-write path. It locks the shared RSPI0 bus (awaiting
+/// any in-progress OLED frame), ensures 32-bit frame mode, then clocks out the
+/// DAC word. Use this instead of [`cv_set_blocking`] once the executor is
+/// running.
+///
+/// - `ch`: 0 or 1 (hardware supports 0–1 on the Deluge).
+/// - `value`: 16-bit DAC code.  ~6552 counts ≈ 1 V.
+#[cfg(target_os = "none")]
+pub async fn cv_set(ch: u8, value: u16) {
+    let mut bus = crate::bus::lock_rspi0().await;
+    bus.enter_32bit();
+    let word = dac_word(ch, value);
+    // SAFETY: we hold the RSPI0 bus guard, so no concurrent transfer; CS GPIO is
+    // owned by cv_gate.
+    unsafe {
+        gpio::write(CS_PORT, CS_PIN, false);
+        bus.send32_blocking(word);
+        gpio::write(CS_PORT, CS_PIN, true);
+    }
+}
+
+/// Write a voltage code to CV channel `ch` without acquiring the RSPI0 bus.
 ///
 /// - `ch`: 0 or 1 (hardware supports 0–1 on the Deluge).
 /// - `value`: 16-bit DAC code.  ~6552 counts ≈ 1 V.
 ///
 /// # Safety
-/// Writes RSPI0 and CS GPIO registers.  Must not be called concurrently with
-/// any other RSPI0 transfer.  Spins briefly if an OLED DMA transfer is in
-/// progress (typically < 1 ms).
+/// Bypasses the [`crate::bus`] RSPI0 mutex, so it is only sound during
+/// single-threaded startup (e.g. inside [`init`]) before the executor and the
+/// OLED task are running. Once the executor is running, use [`cv_set`] instead;
+/// calling this concurrently with an OLED transfer corrupts both. Writes RSPI0
+/// and CS GPIO registers.
 pub unsafe fn cv_set_blocking(ch: u8, value: u16) {
     unsafe {
-        // Wait for any in-progress OLED DMA transfer to complete before
-        // reconfiguring RSPI0 for 32-bit mode.  The OLED task sets this flag
-        // around `dmac::start_transfer` … `dmac::wait_transfer_complete`.
-        while crate::RSPI0_DMA_ACTIVE.load(core::sync::atomic::Ordering::Acquire) {
-            core::hint::spin_loop();
-        }
         let word = dac_word(ch, value);
         gpio::write(CS_PORT, CS_PIN, false);
         rspi::send32_blocking(SPI_CH, word);

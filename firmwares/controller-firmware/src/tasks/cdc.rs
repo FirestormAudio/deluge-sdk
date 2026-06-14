@@ -267,11 +267,9 @@ async fn handle_message(type_byte: u8, data: &[u8]) {
                 let ch = data[0];
                 let value = u16::from_be_bytes([data[1], data[2]]);
                 if (ch as usize) < deluge_bsp::cv_gate::NUM_CV_CHANNELS {
-                    // Safety: single-threaded; RSPI0_DMA_ACTIVE guard is inside
-                    // cv_set_blocking.
-                    unsafe {
-                        cv_gate::cv_set_blocking(ch, value);
-                    }
+                    // Acquires the shared RSPI0 bus (waiting out any OLED frame)
+                    // and writes in 32-bit mode — see deluge_bsp::bus.
+                    cv_gate::cv_set(ch, value).await;
                 }
             }
         }

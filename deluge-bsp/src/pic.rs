@@ -48,6 +48,11 @@
 
 use rza1l_hal::uart;
 
+#[cfg(target_os = "none")]
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+#[cfg(target_os = "none")]
+use embassy_sync::mutex::Mutex;
+
 // ── Channel / baud constants ──────────────────────────────────────────────────
 
 /// SCIF channel wired to the PIC32 (matches `deluge_bsp::uart::PIC_CH`).
@@ -242,18 +247,18 @@ pub async fn init() {
 
     // ---- Configure PIC while still at 31 250 bps --------------------------
     // Enable OLED
-    uart::write_bytes(UART_CH, &[CMD_ENABLE_OLED]).await;
+    tx(&[CMD_ENABLE_OLED]).await;
     // Debounce: 5  → 5 × 4 ms = 20 ms
-    uart::write_bytes(UART_CH, &[CMD_SET_DEBOUNCE_TIME, 5]).await;
+    tx(&[CMD_SET_DEBOUNCE_TIME, 5]).await;
     // Refresh time: 23 ms
-    uart::write_bytes(UART_CH, &[CMD_SET_REFRESH_TIME, 23]).await;
+    tx(&[CMD_SET_REFRESH_TIME, 23]).await;
     // Min interrupt interval: 8 ms
-    uart::write_bytes(UART_CH, &[CMD_SET_MIN_INTERRUPT_INTERVAL, 8]).await;
+    tx(&[CMD_SET_MIN_INTERRUPT_INTERVAL, 8]).await;
     // Flash length: 6 ms
-    uart::write_bytes(UART_CH, &[CMD_SET_FLASH_LENGTH, 6]).await;
+    tx(&[CMD_SET_FLASH_LENGTH, 6]).await;
     // Tell PIC to switch to 200 000 bps: divider = PIC_CLK / BAUD_FAST − 1
     let speed_divider = (PIC_CLK_HZ / BAUD_FAST).saturating_sub(1) as u8;
-    uart::write_bytes(UART_CH, &[CMD_SET_UART_SPEED, speed_divider]).await;
+    tx(&[CMD_SET_UART_SPEED, speed_divider]).await;
 
     // ---- Give PIC 50 ms to switch baud rate --------------------------------
     Timer::after_millis(50).await;
@@ -264,8 +269,8 @@ pub async fn init() {
     unsafe { uart::set_baud(UART_CH, BAUD_FAST) };
 
     // ---- Request firmware version and initial button state -----------------
-    uart::write_bytes(UART_CH, &[CMD_REQUEST_FIRMWARE_VERSION]).await;
-    uart::write_bytes(UART_CH, &[CMD_RESEND_BUTTON_STATES]).await;
+    tx(&[CMD_REQUEST_FIRMWARE_VERSION]).await;
+    tx(&[CMD_RESEND_BUTTON_STATES]).await;
 
     // Give PIC time to respond
     Timer::after_millis(50).await;
@@ -275,18 +280,47 @@ pub async fn init() {
     ready_signal::signal();
 }
 
+// ── Transport serialization ───────────────────────────────────────────────────
+//
+// The PIC link is a flat byte stream with no framing (see the module docs), and
+// several tasks send to it concurrently: OLED chip-select handshakes, pad-LED
+// updates, gold-knob indicators, refresh-rate changes. If two senders' bytes
+// interleave on SCIF1 the PIC mis-parses both messages. `tx` serializes whole
+// commands behind a mutex so each command's bytes are contiguous on the wire.
+//
+// This is *per-command* exclusion, which is sufficient: RSPI0 (OLED pixel data)
+// is a physically separate bus, and no PIC command other than SELECT/DESELECT
+// (248/249) touches the OLED chip-select — so pad-LED traffic arriving between
+// an OLED select and deselect cannot corrupt a frame. See `docs/deluge-sdk.md`
+// §6a.
+
+/// Serializes the PIC UART so concurrent senders cannot interleave their bytes.
+/// Held only for the duration of a single command.
+#[cfg(target_os = "none")]
+static PIC_TX: Mutex<CriticalSectionRawMutex, ()> = Mutex::new(());
+
+/// Send one complete PIC command, atomically with respect to other senders.
+///
+/// All outbound helpers below funnel through here; do not call
+/// `uart::write_bytes(UART_CH, …)` directly.
+async fn tx(bytes: &[u8]) {
+    #[cfg(target_os = "none")]
+    let _guard = PIC_TX.lock().await;
+    uart::write_bytes(UART_CH, bytes).await;
+}
+
 // ── Outbound helpers ──────────────────────────────────────────────────────────
 
 /// Set indicator LED `id` (0–35) on.
 #[inline]
 pub async fn led_on(id: u8) {
-    uart::write_bytes(UART_CH, &[CMD_LED_ON_BASE + id]).await;
+    tx(&[CMD_LED_ON_BASE + id]).await;
 }
 
 /// Set indicator LED `id` (0–35) off.
 #[inline]
 pub async fn led_off(id: u8) {
-    uart::write_bytes(UART_CH, &[CMD_LED_OFF_BASE + id]).await;
+    tx(&[CMD_LED_OFF_BASE + id]).await;
 }
 
 /// Set RGB colours for one column-pair of the main pad grid.
@@ -311,7 +345,7 @@ pub async fn set_column_pair_rgb(pair: u8, colours: &[[u8; 3]; 16]) {
         buf[2 + i * 3] = *g;
         buf[3 + i * 3] = *b;
     }
-    uart::write_bytes(UART_CH, &buf).await;
+    tx(&buf).await;
 }
 
 /// Signal the PIC that all column-pair colour data has been sent for this
@@ -319,7 +353,7 @@ pub async fn set_column_pair_rgb(pair: u8, colours: &[[u8; 3]; 16]) {
 /// [`set_column_pair_rgb`] for a complete grid update.
 #[inline]
 pub async fn done_sending_rows() {
-    uart::write_bytes(UART_CH, &[CMD_DONE_SENDING_ROWS]).await;
+    tx(&[CMD_DONE_SENDING_ROWS]).await;
 }
 
 /// Set the PIC display refresh interval (SET_REFRESH_TIME, command 19).
@@ -329,20 +363,20 @@ pub async fn done_sending_rows() {
 /// where `interval = 25 - brightness_level`.
 #[inline]
 pub async fn set_refresh_time(interval: u8) {
-    uart::write_bytes(UART_CH, &[CMD_SET_REFRESH_TIME, interval]).await;
+    tx(&[CMD_SET_REFRESH_TIME, interval]).await;
 }
 
 /// Request the PIC to re-send all button/pad pressed states.
 #[inline]
 pub async fn resend_button_states() {
-    uart::write_bytes(UART_CH, &[CMD_RESEND_BUTTON_STATES]).await;
+    tx(&[CMD_RESEND_BUTTON_STATES]).await;
 }
 
 /// Request the PIC firmware version (arrives asynchronously as
 /// [`Event::FirmwareVersion`]).
 #[inline]
 pub async fn request_firmware_version() {
-    uart::write_bytes(UART_CH, &[CMD_REQUEST_FIRMWARE_VERSION]).await;
+    tx(&[CMD_REQUEST_FIRMWARE_VERSION]).await;
 }
 
 /// Set both gold-knob LED rings.
@@ -354,16 +388,13 @@ pub async fn set_gold_knob_indicators(knob: u8, brightnesses: [u8; 4]) {
     } else {
         CMD_SET_GOLD_KNOB_1_INDICATORS
     };
-    uart::write_bytes(
-        UART_CH,
-        &[
-            cmd,
-            brightnesses[0],
-            brightnesses[1],
-            brightnesses[2],
-            brightnesses[3],
-        ],
-    )
+    tx(&[
+        cmd,
+        brightnesses[0],
+        brightnesses[1],
+        brightnesses[2],
+        brightnesses[3],
+    ])
     .await;
 }
 
@@ -374,31 +405,31 @@ pub async fn set_gold_knob_indicators(knob: u8, brightnesses: [u8; 4]) {
 /// Must be called once during initialisation, before the first [`oled_select()`].
 #[inline]
 pub async fn oled_enable() {
-    uart::write_bytes(UART_CH, &[CMD_ENABLE_OLED]).await;
+    tx(&[CMD_ENABLE_OLED]).await;
 }
 
 /// Assert OLED chip-select via the PIC.
 #[inline]
 pub async fn oled_select() {
-    uart::write_bytes(UART_CH, &[CMD_SELECT_OLED]).await;
+    tx(&[CMD_SELECT_OLED]).await;
 }
 
 /// De-assert OLED chip-select via the PIC.
 #[inline]
 pub async fn oled_deselect() {
-    uart::write_bytes(UART_CH, &[CMD_DESELECT_OLED]).await;
+    tx(&[CMD_DESELECT_OLED]).await;
 }
 
 /// Pull OLED Data/!Command line low (command mode).
 #[inline]
 pub async fn oled_dc_low() {
-    uart::write_bytes(UART_CH, &[CMD_SET_DC_LOW]).await;
+    tx(&[CMD_SET_DC_LOW]).await;
 }
 
 /// Pull OLED Data/!Command line high (data mode).
 #[inline]
 pub async fn oled_dc_high() {
-    uart::write_bytes(UART_CH, &[CMD_SET_DC_HIGH]).await;
+    tx(&[CMD_SET_DC_HIGH]).await;
 }
 
 // ── PIC-ready signal ─────────────────────────────────────────────────────────
