@@ -176,6 +176,17 @@ unsafe fn quiesce_for_handoff() {
     }
 }
 
+/// Blank the OLED right before handing off to a launched image, so it starts on
+/// a clean panel instead of inheriting the loader's menu — even if the image
+/// never touches the display.
+///
+/// Must be called while interrupts, the executor, and `pic_rx_task` are still
+/// live: `send_frame` awaits the OLED DMA-completion IRQ and the PIC chip-select
+/// echo, so it cannot complete once the machine has been quiesced for handoff.
+async fn blank_oled() {
+    oled::send_frame(&oled::FrameBuffer::new()).await;
+}
+
 #[embassy_executor::task]
 async fn boot_task(spawner: Spawner) {
     // Global IRQs must be unmasked *before* the first interrupt-driven await.
@@ -330,6 +341,10 @@ async fn boot_task(spawner: Spawner) {
             );
             ui::show_message(b"BOOTING", b"FLASH FW").await;
 
+            // Blank the OLED so the launched image starts on a clean panel.
+            // Must run before interrupts/DMA are quiesced (see blank_oled).
+            blank_oled().await;
+
             // Close FAT handles and quiesce, then copy from flash into SRAM via
             // the trampoline (single descriptor) like the SD ELF path.
             cortex_ar::interrupt::disable();
@@ -392,6 +407,11 @@ async fn boot_task(spawner: Spawner) {
             "ELF loaded, entry = {:#010x}, {} SRAM segment(s) staged",
             load_result.entry, load_result.n_sram
         );
+
+        // Blank the OLED so the launched app starts on a clean panel — even if
+        // it never uses the display. Must run before interrupts/DMA are quiesced
+        // (see blank_oled).
+        blank_oled().await;
 
         // Disable interrupts and close FAT handles before we hand off.
         cortex_ar::interrupt::disable();
