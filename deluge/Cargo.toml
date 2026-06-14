@@ -1,0 +1,24 @@
+[package]
+name = "deluge"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "User-friendly SDK for building apps on the Synthstrom Deluge."
+
+[dependencies]
+deluge-macros = { path = "../deluge-macros" }
+deluge-bsp = { path = "../deluge-bsp" }
+rza1l-hal = { path = "../rza1l-hal" }
+cortex-ar = { workspace = true }
+log = { workspace = true }
+embassy-executor = { workspace = true, features = [
+    "nightly",
+    "platform-cortex-ar",
+    "executor-thread",
+] }
+
+[features]
+default = []
+## Enable RTT (SEGGER Real-Time Transfer) debug logging through the HAL/BSP.
+## Off by default so a minimal app does not pull in the RTT control block.
+rtt = ["rza1l-hal/rtt"]

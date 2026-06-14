@@ -1,0 +1,25 @@
+[package]
+name = "blinky"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Minimal Deluge SDK example: blink the heartbeat LED."
+
+[[bin]]
+name = "blinky"
+test = false
+
+[dependencies]
+deluge = { path = "../../deluge" }
+# embassy-executor is a direct dependency because the `#[deluge::app]` expansion
+# uses `#[embassy_executor::task]`, whose generated code references the
+# `embassy_executor` crate by name.
+embassy-executor = { workspace = true, features = [
+    "nightly",
+    "platform-cortex-ar",
+    "executor-thread",
+] }
+embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
+
+[features]
+default = []

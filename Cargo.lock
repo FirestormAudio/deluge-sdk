@@ -155,6 +155,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4388bee8683e3d04af747c73422af53102d2bd24d9eadb6cbc100baef4b43f8"
 
 [[package]]
+name = "blinky"
+version = "0.1.0"
+dependencies = [
+ "deluge",
+ "embassy-executor",
+ "embassy-time",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -372,6 +381,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "deluge"
+version = "0.1.0"
+dependencies = [
+ "cortex-ar",
+ "deluge-bsp",
+ "deluge-macros",
+ "embassy-executor",
+ "log",
+ "rza1l-hal",
+]
+
+[[package]]
 name = "deluge-bsp"
 version = "0.1.0"
 dependencies = [
@@ -413,6 +434,15 @@ dependencies = [
  "approx",
  "criterion",
  "rustfft",
+]
+
+[[package]]
+name = "deluge-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
