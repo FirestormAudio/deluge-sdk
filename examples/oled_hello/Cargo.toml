@@ -20,4 +20,9 @@ embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
 embedded-graphics = "0.8"
 
 [features]
-default = []
+## Default to RTT so this binary reserves the RTT region. The workspace
+## shares one `deluge` rlib; because another member enables `deluge/rtt`,
+## feature unification compiles the RTT logger in, so every binary must pick
+## the matching rtt linker script (build.rs keys off this feature).
+default = ["rtt"]
+rtt = ["deluge/rtt"]
