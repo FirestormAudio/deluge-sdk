@@ -30,12 +30,16 @@
 
 pub use deluge_macros::app;
 
+mod cv_gate;
 mod input;
+mod midi;
 mod oled;
 mod pads;
 mod pic_service;
 mod sync_led;
+pub use cv_gate::{Cv, Gate};
 pub use input::{Event, Input};
+pub use midi::Midi;
 pub use oled::Oled;
 pub use pads::{Color, Pads};
 pub use sync_led::SyncLed;
@@ -170,12 +174,45 @@ impl Deluge {
         deluge_bsp::pic::wait_ready().await;
         Pads::new()
     }
+
+    /// Take the CV (control-voltage) outputs. Takeable once.
+    ///
+    /// Best acquired before entering the main loop (its one-time DAC bring-up
+    /// reconfigures RSPI0). See [`Cv`].
+    pub fn cv(&self) -> Cv {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static TAKEN: AtomicBool = AtomicBool::new(false);
+        if TAKEN.swap(true, Ordering::Relaxed) {
+            panic!("Deluge::cv() called more than once");
+        }
+        Cv::new()
+    }
+
+    /// Take the gate outputs. Takeable once. See [`Gate`].
+    pub fn gate(&self) -> Gate {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static TAKEN: AtomicBool = AtomicBool::new(false);
+        if TAKEN.swap(true, Ordering::Relaxed) {
+            panic!("Deluge::gate() called more than once");
+        }
+        Gate::new()
+    }
+
+    /// Take the DIN MIDI port. Takeable once. See [`Midi`].
+    pub fn midi(&self) -> Midi {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static TAKEN: AtomicBool = AtomicBool::new(false);
+        if TAKEN.swap(true, Ordering::Relaxed) {
+            panic!("Deluge::midi() called more than once");
+        }
+        Midi::new()
+    }
 }
 
 /// Convenient glob import for app authors: `use deluge::prelude::*;`.
 pub mod prelude {
     pub use crate::app;
-    pub use crate::{Color, Deluge, Event, Input, Oled, Pads, SyncLed};
+    pub use crate::{Color, Cv, Deluge, Event, Gate, Input, Midi, Oled, Pads, SyncLed};
     pub use log::{debug, error, info, warn};
 }
 

@@ -956,6 +956,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3c8dda44ff03a2f238717214da50f65d5a53b45cd213a7370424ffdb6fae815"
 
 [[package]]
+name = "midi_cv"
+version = "0.1.0"
+dependencies = [
+ "deluge",
+ "embassy-executor",
+]
+
+[[package]]
 name = "msc-firmware"
 version = "0.1.0"
 dependencies = [

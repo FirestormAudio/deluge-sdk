@@ -1,0 +1,23 @@
+[package]
+name = "midi_cv"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Deluge SDK example: MIDI DIN -> CV/gate converter."
+
+[[bin]]
+name = "midi_cv"
+test = false
+
+[dependencies]
+deluge = { path = "../../deluge" }
+embassy-executor = { workspace = true, features = [
+    "nightly",
+    "platform-cortex-ar",
+    "executor-thread",
+] }
+
+[features]
+default = []
+## Opt-in RTT (SEGGER) logging over a debug probe.
+rtt = ["deluge/rtt"]
