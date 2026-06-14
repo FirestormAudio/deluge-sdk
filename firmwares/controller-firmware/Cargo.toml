@@ -26,5 +26,5 @@ embassy-futures = { workspace = true }
 ## Enable RTT (SEGGER Real-Time Transfer) debug logging.
 ## Activates rtt-target, defines _SEGGER_RTT, and registers the logger.
 ## Disable for release builds: cargo build-fw --release --no-default-features
-default = ["rtt"]
+default = []
 rtt = ["dep:rtt-target", "rza1l-hal/rtt"]

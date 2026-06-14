@@ -28,5 +28,5 @@ deluge-fft = { path = "../../deluge-fft" }
 ## `#[deluge::app]` runtime registers the logger and defines _SEGGER_RTT; this
 ## feature also selects the rtt linker script via build.rs (CARGO_FEATURE_RTT).
 ## Disable for release builds: cargo build-fw --release --no-default-features
-default = ["rtt"]
+default = []
 rtt = ["deluge/rtt"]
