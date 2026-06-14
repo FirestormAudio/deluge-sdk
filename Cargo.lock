@@ -388,6 +388,7 @@ dependencies = [
  "deluge-bsp",
  "deluge-macros",
  "embassy-executor",
+ "embedded-hal 1.0.0",
  "log",
  "rtt-target",
  "rza1l-hal",

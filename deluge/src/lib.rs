@@ -28,6 +28,9 @@
 
 pub use deluge_macros::app;
 
+mod sync_led;
+pub use sync_led::SyncLed;
+
 // Re-export the underlying layers so apps can reach lower-level functionality
 // through the single `deluge` dependency while the capability API (M2+) grows.
 pub use deluge_bsp;
@@ -56,18 +59,38 @@ impl Deluge {
     ///
     /// Use it to launch your own background tasks:
     /// ```ignore
-    /// dlg.spawner().must_spawn(my_task());
+    /// dlg.spawner().spawn(my_task()).unwrap();
     /// ```
     #[inline]
     pub fn spawner(&self) -> embassy_executor::Spawner {
         self.spawner
     }
+
+    /// Take ownership of the SYNC LED (P6_7).
+    ///
+    /// ```ignore
+    /// let mut led = dlg.sync_led();
+    /// led.toggle();
+    /// ```
+    ///
+    /// Takeable once: a second call panics. Owning the returned [`SyncLed`] is
+    /// what keeps two places from driving the same pin — no `unsafe`, no shared
+    /// globals.
+    #[inline]
+    pub fn sync_led(&self) -> SyncLed {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static TAKEN: AtomicBool = AtomicBool::new(false);
+        if TAKEN.swap(true, Ordering::Relaxed) {
+            panic!("Deluge::sync_led() called more than once");
+        }
+        SyncLed::new()
+    }
 }
 
 /// Convenient glob import for app authors: `use deluge::prelude::*;`.
 pub mod prelude {
-    pub use crate::Deluge;
     pub use crate::app;
+    pub use crate::{Deluge, SyncLed};
     pub use log::{debug, error, info, warn};
 }
 

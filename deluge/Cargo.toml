@@ -11,6 +11,7 @@ deluge-bsp = { path = "../deluge-bsp" }
 rza1l-hal = { path = "../rza1l-hal" }
 cortex-ar = { workspace = true }
 log = { workspace = true }
+embedded-hal = "1"
 rtt-target = { workspace = true, optional = true }
 embassy-executor = { workspace = true, features = [
     "nightly",
