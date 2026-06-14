@@ -25,10 +25,15 @@
 //! See `docs/deluge-sdk.md` for the design.
 
 #![no_std]
+// The internal PIC service uses `#[embassy_executor::task]`, which needs this.
+#![feature(impl_trait_in_assoc_type)]
 
 pub use deluge_macros::app;
 
+mod oled;
+mod pic_service;
 mod sync_led;
+pub use oled::Oled;
 pub use sync_led::SyncLed;
 
 // Re-export the underlying layers so apps can reach lower-level functionality
@@ -85,12 +90,40 @@ impl Deluge {
         }
         SyncLed::new()
     }
+
+    /// Take ownership of the OLED display, bringing up the PIC service and
+    /// initialising the panel.
+    ///
+    /// ```ignore
+    /// let mut oled = dlg.oled().await;
+    /// oled.clear();
+    /// oled.text(0, 0, "hello deluge");
+    /// oled.flush().await;
+    /// ```
+    ///
+    /// `async` because it waits for the PIC handshake and the panel's init
+    /// sequence. Takeable once: a second call panics. The returned [`Oled`] is an
+    /// `embedded-graphics` `DrawTarget`.
+    pub async fn oled(&self) -> Oled {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static TAKEN: AtomicBool = AtomicBool::new(false);
+        if TAKEN.swap(true, Ordering::Relaxed) {
+            panic!("Deluge::oled() called more than once");
+        }
+        // Bring up the PIC co-processor (UART + RX pump) — the OLED chip-select
+        // handshake rides on it — then wait for it to finish configuring.
+        pic_service::ensure_started(self.spawner);
+        deluge_bsp::pic::wait_ready().await;
+        // Run the panel init sequence (SSD1309 over RSPI0, via the bus guard).
+        deluge_bsp::oled::init().await;
+        Oled::new()
+    }
 }
 
 /// Convenient glob import for app authors: `use deluge::prelude::*;`.
 pub mod prelude {
     pub use crate::app;
-    pub use crate::{Deluge, SyncLed};
+    pub use crate::{Deluge, Oled, SyncLed};
     pub use log::{debug, error, info, warn};
 }
 
