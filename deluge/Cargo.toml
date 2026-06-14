@@ -11,6 +11,7 @@ deluge-bsp = { path = "../deluge-bsp" }
 rza1l-hal = { path = "../rza1l-hal" }
 cortex-ar = { workspace = true }
 log = { workspace = true }
+rtt-target = { workspace = true, optional = true }
 embassy-executor = { workspace = true, features = [
     "nightly",
     "platform-cortex-ar",
@@ -19,6 +20,9 @@ embassy-executor = { workspace = true, features = [
 
 [features]
 default = []
-## Enable RTT (SEGGER Real-Time Transfer) debug logging through the HAL/BSP.
+## Enable RTT (SEGGER Real-Time Transfer) debug logging. Initialises the RTT
+## logger in the `#[deluge::app]` runtime and turns on RTT in the HAL/BSP.
 ## Off by default so a minimal app does not pull in the RTT control block.
-rtt = ["rza1l-hal/rtt"]
+## An app that enables this must also build with its matching rtt linker script
+## (the example template's `rtt` feature wires both).
+rtt = ["dep:rtt-target", "rza1l-hal/rtt"]

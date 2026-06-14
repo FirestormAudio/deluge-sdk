@@ -94,11 +94,32 @@ pub mod __rt {
     /// Size of the external SDRAM window in bytes.
     const SDRAM_SIZE: usize = 64 * 1024 * 1024;
 
-    /// Bring up the platform: SRAM/SDRAM heaps, clocks/MMU/caches/GIC/time
-    /// driver, and global interrupt enable.
+    /// Initialise the RTT logger (only with the `rtt` feature).
+    ///
+    /// Defines the `_SEGGER_RTT` control block (in the `.rtt_buffer` section
+    /// provided by the rtt linker script) that the HAL/BSP reference, and
+    /// registers the `log` backend. A no-op when `rtt` is disabled.
+    #[cfg(feature = "rtt")]
+    fn init_logging() {
+        let channels = rtt_target::rtt_init! {
+            up: {
+                0: { size: 16384, name: "Terminal", section: ".rtt_buffer" }
+            }
+            section_cb: ".rtt_buffer"
+        };
+        rtt_target::set_print_channel(channels.up.0);
+        rtt_target::init_logger_with_level(log::LevelFilter::Debug);
+    }
+
+    /// Bring up the platform short of enabling interrupts: SRAM/SDRAM heaps and
+    /// clocks/MMU/caches/SDRAM/GIC/OSTM time driver.
+    ///
+    /// Interrupts are enabled separately, *after* the app's `setup` phase, so
+    /// drivers whose init must run with IRQs masked (e.g. GIC source setup) keep
+    /// working — see [`run`].
     ///
     /// # Safety
-    /// Must run exactly once, at startup, before any allocation or task.
+    /// Must run exactly once, at startup, before any allocation.
     unsafe fn init_platform() {
         unsafe {
             // SRAM heap (internal RAM) — initialise before any allocation.
@@ -111,25 +132,38 @@ pub mod __rt {
 
             // SDRAM heap — now that the SDRAM window is accessible.
             rza1l_hal::allocator::SDRAM.init(SDRAM_BASE as *mut u8, SDRAM_SIZE);
-
-            // Unmask IRQs so the Embassy time driver and peripheral ISRs fire.
-            cortex_ar::interrupt::enable();
         }
     }
 
     static mut EXECUTOR: MaybeUninit<Executor> = MaybeUninit::uninit();
 
-    /// Initialise the platform, then run the Embassy executor forever, invoking
-    /// `init` once with the [`Spawner`] so the app's main task can be spawned.
-    pub fn run(init: impl FnOnce(Spawner)) -> ! {
+    /// The `#[deluge::app]` entry point.
+    ///
+    /// Sequence: logging → heaps + clocks → `setup()` (app's synchronous,
+    /// interrupts-masked init) → enable interrupts → run the Embassy executor,
+    /// invoking `spawn` once with the [`Spawner`].
+    ///
+    /// `setup` runs with IRQs still masked so peripheral/GIC bring-up that
+    /// requires it (per some HAL drivers' contracts) is safe; it is empty for
+    /// apps that don't opt into `#[deluge::app(setup = …)]`.
+    pub fn run(setup: impl FnOnce(), spawn: impl FnOnce(Spawner)) -> ! {
+        #[cfg(feature = "rtt")]
+        init_logging();
+
         unsafe { init_platform() };
+
+        // App's synchronous, interrupts-masked initialisation.
+        setup();
+
+        // Unmask IRQs so the Embassy time driver and peripheral ISRs fire.
+        unsafe { cortex_ar::interrupt::enable() };
 
         #[allow(static_mut_refs)]
         let executor: &'static mut Executor = unsafe {
             EXECUTOR.write(Executor::new());
             EXECUTOR.assume_init_mut()
         };
-        executor.run(init)
+        executor.run(spawn)
     }
 
     /// Default panic behaviour: log and halt.

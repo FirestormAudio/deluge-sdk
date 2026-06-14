@@ -1,24 +1,16 @@
-//! Deluge firmware image.
+//! Deluge demo firmware image — built on the `deluge` SDK.
 //!
 //! This crate assembles the board support package into a runnable Embassy-based
-//! firmware for the Deluge. The BSP owns board-level hardware concerns such as
-//! clocking, PIC transport, shared pad state, encoder IRQ capture/decoding, and
-//! long-running board tasks like jack detection. This crate owns product-level
-//! behavior layered on top of those primitives.
+//! firmware for the Deluge. Platform bring-up (RTT logging, heaps, clocks, the
+//! executor, the panic handler) is provided by [`#[deluge::app]`](deluge::app);
+//! this crate owns product-level behavior layered on top.
 //!
-//! ## Runtime role
-//! - Initialises the platform, heaps, USB, audio, and task executor.
-//! - Runs the Deluge USB device or host stack depending on `USB0_HOST_MODE`.
-//! - Translates BSP input streams into firmware events and UI behavior.
-//! - Applies product policies such as OLED rendering, RGB rendering, analyzer
-//!   display, heartbeat behavior, and MOD knob volume control.
-//!
-//! ## Task split
-//! - **BSP services** — reusable hardware capture and shared state, such as
-//!   PIC transport, shared pad state, and encoder IRQ capture/decoding.
-//! - **Firmware tasks** — product behavior and policy, including PIC event
-//!   handling, encoder actions, jack detection policy, CDC protocol handling,
-//!   USB audio tasks, OLED/RGB rendering, and analysis.
+//! ## Initialisation split
+//! - [`setup`] runs first, with interrupts masked: peripheral and GIC bring-up
+//!   that must happen before IRQs are enabled (UART, audio, CV/RSPI0, the USB
+//!   ISR handler, encoder/trigger GPIO interrupts).
+//! - `main` then runs on the executor with interrupts enabled: it builds the USB
+//!   stack and spawns the product tasks.
 //!
 //! ## UI model
 //! - Shared pad state lives in [`deluge_bsp::pads`].
@@ -37,52 +29,32 @@
 
 mod tasks;
 
-use core::mem::MaybeUninit;
-use core::panic::PanicInfo;
-use log::{debug, error, info};
-
-use embassy_executor::{Executor, Spawner};
-
 use core::sync::atomic::{AtomicBool, Ordering};
+
+use deluge::prelude::*;
 use deluge_bsp::cv_gate;
 use deluge_bsp::uart as bsp_uart;
+use rza1l_hal::gic;
 use rza1l_hal::usb::{
     Rusb1Driver, dcd_int_handler, hcd_int_handler, init_device_mode, init_host_mode,
 };
-use rza1l_hal::{allocator, gic};
-
-unsafe extern "C" {
-    /// Start of the free SRAM heap region (set by the linker script).
-    static __sram_heap_start: u8;
-    /// End of the free SRAM heap region (start of RTT/stack reservation).
-    static __sram_heap_end: u8;
-}
-
-#[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
-    error!("PANIC: {}", info);
-    loop {
-        core::hint::spin_loop();
-    }
-}
 
 // ---------------------------------------------------------------------------
 // USB mode selection
 // ---------------------------------------------------------------------------
 
-/// Set to `true` before calling `main()` (or before the ISR is registered)
-/// to start USB0 in host mode instead of device mode.  Switching at runtime
-/// requires quiescing the port, calling `UsbPort::into_device_mode` /
-/// `UsbPort::into_host_mode`, and updating this flag under an IRQ-disabled
-/// critical section.  The ISR dispatcher reads this on every interrupt.
+/// Set to `true` before `setup()` registers the ISR to start USB0 in host mode
+/// instead of device mode. Switching at runtime requires quiescing the port,
+/// calling `UsbPort::into_device_mode` / `UsbPort::into_host_mode`, and updating
+/// this flag under an IRQ-disabled critical section. The ISR dispatcher reads
+/// this on every interrupt.
 static USB0_HOST_MODE: AtomicBool = AtomicBool::new(false);
 
 // ---------------------------------------------------------------------------
 // USB descriptor static buffers
 // ---------------------------------------------------------------------------
 //
-// Must live here (in the root crate) so the `'static` lifetimes required by
-// `embassy_usb::Builder` and `builder.handler()` are satisfied.
+// `'static` lifetimes required by `embassy_usb::Builder` and `builder.handler()`.
 
 static mut USB_CONFIG_DESC: [u8; 768] = [0; 768];
 static mut USB_BOS_DESC: [u8; 64] = [0; 64];
@@ -93,63 +65,25 @@ static mut AUDIO_CLASS_BUF: core::mem::MaybeUninit<deluge_bsp::usb::classes::aud
     core::mem::MaybeUninit::uninit();
 
 // ---------------------------------------------------------------------------
-// Entry point
+// Pre-interrupt setup (runs with IRQs masked)
 // ---------------------------------------------------------------------------
 
-static mut EXECUTOR: MaybeUninit<Executor> = MaybeUninit::uninit();
-
-#[unsafe(no_mangle)]
-pub extern "C" fn main() -> ! {
-    // rtt_init! must always run to define the _SEGGER_RTT control-block symbol
-    // that rtt-target references at link time (also used by rza1 and deluge-bsp).
-    // The 16 KB ring buffer lives in .rtt_buffer (uncached RAM).
-    // In release builds the logger is never registered and all log!() call sites
-    // compile to nothing (release_max_level_off feature on the log crate).
-    #[cfg(feature = "rtt")]
-    {
-        let channels = rtt_target::rtt_init! {
-            up: {
-                0: {
-                    size: 16384,
-                    name: "Terminal",
-                    section: ".rtt_buffer"   // ring buffer bytes in uncached RAM
-                }
-            }
-            section_cb: ".rtt_buffer"        // _SEGGER_RTT control block in uncached RAM
-        };
-        rtt_target::set_print_channel(channels.up.0);
-        rtt_target::init_logger_with_level(log::LevelFilter::Debug);
-    }
+/// Synchronous board bring-up that must complete before interrupts are enabled.
+///
+/// Runs after the SDK has initialised heaps and clocks (see
+/// [`#[deluge::app]`](deluge::app)), but before `cortex_ar::interrupt::enable()`.
+/// It configures peripherals and registers GIC interrupt handlers; each driver
+/// registers its handler before enabling its interrupt source, so the USB build
+/// in `main` (after IRQs are on) is safe.
+fn setup() {
     info!("Deluge demo firmware starting");
     info!("Pad paint demo: press pads to toggle, buttons 0/1/2 to clear/fill/invert");
 
-    // Initialise the SRAM heap before any allocation from internal RAM.
-    unsafe {
-        let start = core::ptr::addr_of!(__sram_heap_start) as *mut u8;
-        let size = core::ptr::addr_of!(__sram_heap_end) as usize - start as usize;
-        allocator::SRAM.init(start, size);
-    }
-    info!("SRAM heap: initialised ({} KB)", {
-        let s = core::ptr::addr_of!(__sram_heap_end) as usize
-            - core::ptr::addr_of!(__sram_heap_start) as usize;
-        s / 1024
-    });
-
-    unsafe { deluge_bsp::system::init_clocks() };
-    info!("system: module clocks, MMU, cache, SDRAM, GIC, OSTM, time driver ready");
-
-    // Initialise the SDRAM heap now that the SDRAM window is accessible.
-    unsafe { allocator::SDRAM.init(0x0C00_0000 as *mut u8, 64 * 1024 * 1024) };
-    info!("SDRAM heap: initialised (64 MB)");
-
     info!("GPIO: configuring heartbeat LED...");
     unsafe { rza1l_hal::gpio::set_as_output(6, 7) };
-    info!("GPIO: heartbeat LED P6_7 configured");
 
     info!("UART: initialising MIDI...");
     unsafe { bsp_uart::init_midi(31_250) };
-    info!("UART: MIDI ready");
-
     info!("UART: initialising PIC...");
     unsafe { bsp_uart::init_pic(31_250) };
     info!("UART: SCIF0/1 @ 31 250 baud");
@@ -157,33 +91,22 @@ pub extern "C" fn main() -> ! {
     info!("audio: initialising SSI0...");
     unsafe { deluge_bsp::audio::init() };
     info!("audio: SSI0 + DMA + codec running");
-
     // Pre-fill SSI TX buffer with dither so the codec does not auto-mute before
     // the first USB stream arrives.
     tasks::audio::fill_tx_with_dither();
     info!("audio: TX buffer pre-filled with dither");
 
-    // RSPI0 init — shared between OLED (8-bit) and CV DAC (32-bit).
-    // cv_gate::init() puts it in 32-bit mode; oled::init() will switch to 8-bit.
+    // RSPI0 init — shared between OLED (8-bit) and CV DAC (32-bit), arbitrated by
+    // deluge_bsp::bus. cv_gate::init() leaves RSPI0 ready; oled::init() (in its
+    // task) switches frame mode through the bus guard.
     unsafe { cv_gate::init() };
     info!("RSPI0: initialised via cv_gate::init");
 
-    // ── USB0 mode selection (host vs device) ──────────────────────────────
-    // Set USB0_HOST_MODE to true *before* this point to start in host mode.
-    // The ISR registered above dispatches to hcd_int_handler or dcd_int_handler
-    // based on the flag, so no ISR re-registration is needed when switching.
-    info!(
-        "USB: initialising USB0 (host_mode={})...",
-        USB0_HOST_MODE.load(Ordering::Relaxed)
-    );
-
-    // Build UsbDevice (device mode) or a Rusb1HostDriver (host mode).  Both
-    // paths call module_clock_enable internally via init_device_mode /
-    // init_host_mode, so the manual call below is no longer needed.
-
-    // Register the USB0 ISR *before* IRQ is globally enabled.  The dispatcher
-    // checks USB0_HOST_MODE on every interrupt to direct the call to either the
-    // device or host interrupt handler without needing to re-register the ISR.
+    // Register the USB0 ISR handler. The dispatcher checks USB0_HOST_MODE on
+    // every interrupt to direct the call to the device or host handler without
+    // re-registering. The USB interrupt source is only enabled later when the
+    // device/host task starts, so registering here (before global enable) is
+    // sufficient.
     unsafe {
         gic::register(rza1l_hal::usb::USB0_IRQ, || {
             if USB0_HOST_MODE.load(Ordering::Relaxed) {
@@ -194,11 +117,30 @@ pub extern "C" fn main() -> ! {
         });
     }
 
-    // ── Host mode: just allocate the host driver.  ──────────────────────────
-    // ── Device mode: build the full UsbDevice stack.  ───────────────────────
-    //
-    // `init_device_mode` / `init_host_mode` both call `module_clock_enable`.
-    // UsbDevice buffers must be `'static`; they live in the statics above.
+    info!("encoder: configuring interrupt-driven inputs...");
+    unsafe { deluge_bsp::encoder::irq_init() };
+    info!("trigger_clock: configuring interrupt-driven input...");
+    unsafe { deluge_bsp::trigger_clock::irq_init() };
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+#[deluge::app(setup = setup)]
+async fn main(dlg: Deluge) {
+    let spawner = dlg.spawner();
+
+    // ── Build the USB stack ──────────────────────────────────────────────────
+    // The ISR handler was registered in `setup()`; `init_device_mode` /
+    // `init_host_mode` enable the module clock, and the USB interrupt source is
+    // only raised once the device/host task starts running. Building the
+    // descriptors here (with interrupts enabled) therefore does not race the ISR.
+    info!(
+        "USB: initialising USB0 (host_mode={})...",
+        USB0_HOST_MODE.load(Ordering::Relaxed)
+    );
+
     let mut usb_host_driver: Option<rza1l_hal::usb::Rusb1HostDriver> = None;
     let mut usb_device_opt: Option<embassy_usb::UsbDevice<'static, Rusb1Driver>> = None;
     let mut ep_out_opt: Option<rza1l_hal::usb::Rusb1EndpointOut> = None;
@@ -241,7 +183,7 @@ pub extern "C" fn main() -> ! {
             // USB MIDI 1.0 class — 1 in-jack (DIN→USB), 1 out-jack (USB→DIN).
             // 512-byte bulk endpoints: the RUSB1 PHY always negotiates high
             // speed (SYSCFG.HSE=1), and USB 2.0 requires HS bulk endpoints to use
-            // wMaxPacketSize 512.  Advertising 64 (the FS value) makes the host
+            // wMaxPacketSize 512. Advertising 64 (the FS value) makes the host
             // reject the endpoints ("invalid maxpacket 64") and silently breaks
             // the bulk OUT direction.
             let midi = embassy_usb::class::midi::MidiClass::new(&mut builder, 1, 1, 512);
@@ -257,57 +199,39 @@ pub extern "C" fn main() -> ! {
         info!("USB: UsbDevice built");
     }
 
-    info!("encoder: configuring interrupt-driven inputs...");
-    unsafe { deluge_bsp::encoder::irq_init() };
+    // ── Spawn tasks ──────────────────────────────────────────────────────────
+    info!("starting Embassy tasks");
+    spawner.spawn(tasks::blink::blink_task().unwrap());
 
-    info!("trigger_clock: configuring interrupt-driven input...");
-    unsafe { deluge_bsp::trigger_clock::irq_init() };
+    // USB-mode-specific tasks ─────────────────────────────────────────────────
+    if let Some(hd) = usb_host_driver {
+        spawner.spawn(tasks::usb_host::usb_host_task(hd).unwrap());
+    } else if let (
+        Some(usb_device),
+        Some(ep_out),
+        Some(ep_in),
+        Some(midi_sender),
+        Some(midi_receiver),
+    ) = (
+        usb_device_opt,
+        ep_out_opt,
+        ep_in_opt,
+        midi_sender_opt,
+        midi_receiver_opt,
+    ) {
+        spawner.spawn(tasks::usb::usb_task(usb_device).unwrap());
+        spawner.spawn(tasks::audio::uac2_task(ep_out).unwrap());
+        spawner.spawn(tasks::audio::uac2_mic_task(ep_in).unwrap());
+        spawner.spawn(tasks::midi::midi_usb_rx_task(midi_receiver).unwrap());
+        spawner.spawn(tasks::midi::midi_din_tx_task(midi_sender).unwrap());
+    }
 
-    debug!("enabling IRQ...");
-    unsafe { cortex_ar::interrupt::enable() };
-    debug!("IRQ enabled OK");
-    info!("IRQ: enabled — starting Embassy tasks");
-
-    debug!("Executor::new()...");
-    #[allow(static_mut_refs)]
-    let executor = unsafe {
-        EXECUTOR.write(Executor::new());
-        EXECUTOR.assume_init_mut()
-    };
-    debug!("executor.run()...");
-    executor.run(|spawner: Spawner| {
-        spawner.spawn(tasks::blink::blink_task().unwrap());
-
-        // USB-mode-specific tasks ─────────────────────────────────────────
-        if let Some(hd) = usb_host_driver {
-            spawner.spawn(tasks::usb_host::usb_host_task(hd).unwrap());
-        } else if let (
-            Some(usb_device),
-            Some(ep_out),
-            Some(ep_in),
-            Some(midi_sender),
-            Some(midi_receiver),
-        ) = (
-            usb_device_opt,
-            ep_out_opt,
-            ep_in_opt,
-            midi_sender_opt,
-            midi_receiver_opt,
-        ) {
-            spawner.spawn(tasks::usb::usb_task(usb_device).unwrap());
-            spawner.spawn(tasks::audio::uac2_task(ep_out).unwrap());
-            spawner.spawn(tasks::audio::uac2_mic_task(ep_in).unwrap());
-            spawner.spawn(tasks::midi::midi_usb_rx_task(midi_receiver).unwrap());
-            spawner.spawn(tasks::midi::midi_din_tx_task(midi_sender).unwrap());
-        }
-
-        // Tasks common to both modes ───────────────────────────────────────
-        spawner.spawn(tasks::pic::pic_task().unwrap());
-        spawner.spawn(tasks::encoder::encoder_task().unwrap());
-        spawner.spawn(tasks::jack_detect::jack_detect_task(200).unwrap());
-        spawner.spawn(tasks::analysis::analysis_task().unwrap());
-        spawner.spawn(tasks::rgb::rgb_task().unwrap());
-        spawner.spawn(tasks::oled::oled_task().unwrap());
-        spawner.spawn(tasks::sd::sd_task().unwrap());
-    });
+    // Tasks common to both modes ───────────────────────────────────────────────
+    spawner.spawn(tasks::pic::pic_task().unwrap());
+    spawner.spawn(tasks::encoder::encoder_task().unwrap());
+    spawner.spawn(tasks::jack_detect::jack_detect_task(200).unwrap());
+    spawner.spawn(tasks::analysis::analysis_task().unwrap());
+    spawner.spawn(tasks::rgb::rgb_task().unwrap());
+    spawner.spawn(tasks::oled::oled_task().unwrap());
+    spawner.spawn(tasks::sd::sd_task().unwrap());
 }

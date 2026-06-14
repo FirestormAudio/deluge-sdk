@@ -389,6 +389,7 @@ dependencies = [
  "deluge-macros",
  "embassy-executor",
  "log",
+ "rtt-target",
  "rza1l-hal",
 ]
 
@@ -450,6 +451,7 @@ name = "demo-firmware"
 version = "0.1.0"
 dependencies = [
  "cortex-ar",
+ "deluge",
  "deluge-bsp",
  "deluge-fft",
  "embassy-executor",
@@ -460,7 +462,6 @@ dependencies = [
  "embassy-usb-driver",
  "embassy-usb-host",
  "log",
- "rtt-target",
  "rza1l-hal",
 ]
 

@@ -27,13 +27,41 @@ use syn::{FnArg, ItemFn, parse_macro_input};
 /// type [`Deluge`](../deluge/struct.Deluge.html); if omitted, the handle is
 /// simply not bound.
 ///
+/// ## Optional `setup`
+/// Pass `#[deluge::app(setup = path::to::fn)]` to run a synchronous function
+/// *after* clocks are up but *before* interrupts are enabled — for peripheral or
+/// GIC bring-up that must happen with IRQs masked:
+/// ```ignore
+/// #[deluge::app(setup = setup)]
+/// async fn main(dlg: Deluge) { /* interrupts on, executor running */ }
+///
+/// fn setup() { /* interrupts masked; register ISRs, configure GIC sources */ }
+/// ```
+///
 /// ## What it expands to
 /// - an Embassy task wrapping the function body,
-/// - `extern "C" fn main` that initialises the platform via
-///   `deluge::__rt::run` and spawns that task, and
+/// - `extern "C" fn main` that runs `deluge::__rt::run(setup, spawn)` (logging →
+///   heaps + clocks → `setup` → enable interrupts → executor), and
 /// - a `#[panic_handler]`.
 #[proc_macro_attribute]
-pub fn app(_args: TokenStream, item: TokenStream) -> TokenStream {
+pub fn app(args: TokenStream, item: TokenStream) -> TokenStream {
+    // Parse optional `setup = path` from the attribute arguments.
+    let mut setup_path: Option<syn::Path> = None;
+    let arg_parser = syn::meta::parser(|meta| {
+        if meta.path.is_ident("setup") {
+            setup_path = Some(meta.value()?.parse()?);
+            Ok(())
+        } else {
+            Err(meta.error("unknown #[deluge::app] argument (expected `setup = <path>`)"))
+        }
+    });
+    parse_macro_input!(args with arg_parser);
+
+    let setup_call = match setup_path {
+        Some(path) => quote! { #path() },
+        None => quote! {},
+    };
+
     let func = parse_macro_input!(item as ItemFn);
 
     if func.sig.asyncness.is_none() {
@@ -85,11 +113,15 @@ pub fn app(_args: TokenStream, item: TokenStream) -> TokenStream {
 
         #[unsafe(no_mangle)]
         pub extern "C" fn main() -> ! {
-            ::deluge::__rt::run(|spawner: ::deluge::__rt::Spawner| {
-                // In this Embassy version `#[task]` returns a Result; the only
-                // failure is pool exhaustion, impossible for a single spawn here.
-                spawner.spawn(__deluge_app_main(spawner).unwrap());
-            })
+            ::deluge::__rt::run(
+                // Synchronous, interrupts-masked setup (empty unless `setup = …`).
+                || { #setup_call; },
+                |spawner: ::deluge::__rt::Spawner| {
+                    // In this Embassy version `#[task]` returns a Result; the only
+                    // failure is pool exhaustion, impossible for a single spawn here.
+                    spawner.spawn(__deluge_app_main(spawner).unwrap());
+                },
+            )
         }
 
         #[panic_handler]
