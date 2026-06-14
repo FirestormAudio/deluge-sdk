@@ -32,10 +32,12 @@ pub use deluge_macros::app;
 
 mod input;
 mod oled;
+mod pads;
 mod pic_service;
 mod sync_led;
 pub use input::{Event, Input};
 pub use oled::Oled;
+pub use pads::{Color, Pads};
 pub use sync_led::SyncLed;
 
 // Re-export the underlying layers so apps can reach lower-level functionality
@@ -146,12 +148,34 @@ impl Deluge {
         input::ensure_started(self.spawner);
         Input::new()
     }
+
+    /// Take ownership of the RGB pad grid (18 × 8).
+    ///
+    /// ```ignore
+    /// let mut pads = dlg.pads().await;
+    /// pads.set(3, 4, Color::hsv(120, 255, 200));
+    /// pads.flush().await;
+    /// ```
+    ///
+    /// `async` because it brings up and waits for the PIC service the pad LEDs
+    /// are driven over. Takeable once: a second call panics. Pad coordinates
+    /// match [`Event::Pad`].
+    pub async fn pads(&self) -> Pads {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static TAKEN: AtomicBool = AtomicBool::new(false);
+        if TAKEN.swap(true, Ordering::Relaxed) {
+            panic!("Deluge::pads() called more than once");
+        }
+        pic_service::ensure_started(self.spawner);
+        deluge_bsp::pic::wait_ready().await;
+        Pads::new()
+    }
 }
 
 /// Convenient glob import for app authors: `use deluge::prelude::*;`.
 pub mod prelude {
     pub use crate::app;
-    pub use crate::{Deluge, Event, Input, Oled, SyncLed};
+    pub use crate::{Color, Deluge, Event, Input, Oled, Pads, SyncLed};
     pub use log::{debug, error, info, warn};
 }
 
