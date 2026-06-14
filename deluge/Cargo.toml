@@ -20,6 +20,7 @@ embassy-executor = { workspace = true, features = [
     "executor-thread",
 ] }
 embassy-sync = { workspace = true }
+embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
 
 [features]
 default = []

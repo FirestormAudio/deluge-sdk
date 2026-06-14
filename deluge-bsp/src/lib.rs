@@ -7,6 +7,8 @@
 
 pub mod audio;
 #[cfg(target_os = "none")]
+pub mod audio_block;
+#[cfg(target_os = "none")]
 pub mod bus;
 pub mod controls;
 pub mod cv_gate;

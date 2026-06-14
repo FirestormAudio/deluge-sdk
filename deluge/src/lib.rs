@@ -30,6 +30,7 @@
 
 pub use deluge_macros::app;
 
+mod audio;
 mod cv_gate;
 mod input;
 mod midi;
@@ -38,6 +39,7 @@ mod pads;
 mod pic_service;
 mod sd;
 mod sync_led;
+pub use audio::{Audio, StereoFrame};
 pub use cv_gate::{Cv, Gate};
 pub use input::{Event, Input};
 pub use midi::Midi;
@@ -234,12 +236,33 @@ impl Deluge {
         deluge_bsp::sd::init().await?;
         Ok(Sd::new())
     }
+
+    /// Take the codec audio path for per-block DSP. Takeable once.
+    ///
+    /// ```ignore
+    /// dlg.audio().process(|block| {
+    ///     for f in block { f.l *= 0.5; f.r *= 0.5; }
+    /// }).await
+    /// ```
+    ///
+    /// Owns the codec — don't also run a USB audio (UAC2) device stack. Acquire
+    /// before the main loop (its one-time bring-up blocks ~5 ms). See [`Audio`].
+    pub fn audio(&self) -> Audio {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static TAKEN: AtomicBool = AtomicBool::new(false);
+        if TAKEN.swap(true, Ordering::Relaxed) {
+            panic!("Deluge::audio() called more than once");
+        }
+        Audio::new()
+    }
 }
 
 /// Convenient glob import for app authors: `use deluge::prelude::*;`.
 pub mod prelude {
     pub use crate::app;
-    pub use crate::{Color, Cv, Deluge, Event, Gate, Input, Midi, Oled, Pads, Sd, SyncLed};
+    pub use crate::{
+        Audio, Color, Cv, Deluge, Event, Gate, Input, Midi, Oled, Pads, Sd, StereoFrame, SyncLed,
+    };
     pub use log::{debug, error, info, warn};
 }
 
