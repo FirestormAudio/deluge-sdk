@@ -274,14 +274,79 @@ pub mod __rt {
         executor.run(spawn)
     }
 
-    /// Default panic behaviour: log and halt.
+    /// Default panic behaviour: stop the world, show it, keep signalling.
     ///
-    /// A visible (OLED) panic screen + reboot-to-loader is a later milestone
-    /// (`docs/deluge-sdk.md` §9); for now this matches the firmwares' handler.
+    /// Masks interrupts, logs via RTT (if enabled), draws `APP PANIC` + the panic
+    /// location to the OLED (best-effort, via the blocking panic path — no-op if
+    /// the OLED was never brought up), then strobes the SYNC LED forever so a
+    /// probe-less user sees the crash. See `docs/deluge-sdk.md` §9.
     pub fn panic(info: &core::panic::PanicInfo) -> ! {
+        // Stop the world: no more ISRs or task switches.
+        cortex_ar::interrupt::disable();
+
         log::error!("PANIC: {}", info);
+
+        // Best-effort OLED message.
+        let mut fb = deluge_bsp::oled::FrameBuffer::new();
+        deluge_bsp::oled::text::draw_str(&mut fb, 0, 0, b"APP PANIC");
+        if let Some(loc) = info.location() {
+            use core::fmt::Write;
+            let mut line = LineBuf::new();
+            let _ = write!(line, "{}:{}", basename(loc.file()), loc.line());
+            deluge_bsp::oled::text::draw_str(&mut fb, 0, 10, line.as_bytes());
+        }
+        // SAFETY: interrupts are masked and we are single-threaded here.
+        unsafe { deluge_bsp::oled::draw_blocking(&fb) };
+
+        // Always-visible fallback: strobe the SYNC LED forever.
+        unsafe { rza1l_hal::gpio::set_as_output(6, 7) };
         loop {
-            core::hint::spin_loop();
+            unsafe {
+                rza1l_hal::gpio::write(6, 7, true);
+                rza1l_hal::ostm::delay_ms(100);
+                rza1l_hal::gpio::write(6, 7, false);
+                rza1l_hal::ostm::delay_ms(100);
+            }
+        }
+    }
+
+    /// Last path component of `path` (so the OLED shows `main.rs`, not the full
+    /// crate path).
+    fn basename(path: &str) -> &str {
+        match path.rsplit_once(['/', '\\']) {
+            Some((_, name)) => name,
+            None => path,
+        }
+    }
+
+    /// A tiny fixed-width `core::fmt::Write` sink for one OLED text line
+    /// (128 px / 6 px per glyph ≈ 21 chars). Excess is dropped.
+    struct LineBuf {
+        buf: [u8; 21],
+        len: usize,
+    }
+
+    impl LineBuf {
+        fn new() -> Self {
+            Self {
+                buf: [0; 21],
+                len: 0,
+            }
+        }
+        fn as_bytes(&self) -> &[u8] {
+            &self.buf[..self.len]
+        }
+    }
+
+    impl core::fmt::Write for LineBuf {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            for &b in s.as_bytes() {
+                if self.len < self.buf.len() {
+                    self.buf[self.len] = b;
+                    self.len += 1;
+                }
+            }
+            Ok(())
         }
     }
 }

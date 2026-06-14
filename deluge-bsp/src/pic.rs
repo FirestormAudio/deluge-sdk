@@ -432,6 +432,57 @@ pub async fn oled_dc_high() {
     tx(&[CMD_SET_DC_HIGH]).await;
 }
 
+// ── Blocking OLED handshake (panic path) ───────────────────────────────────────
+//
+// Polling, interrupt-free variants of the OLED handshake commands for use from a
+// panic handler, where the executor and IRQs are dead so `tx` (async, mutex,
+// TXI/DMA) cannot run. Best-effort: each write is bounded so it cannot hang.
+
+/// Push `bytes` out the PIC UART by polling the TX FIFO. Bounded so a wedged
+/// peripheral can't hang the panic path; drops the remainder if it stalls.
+#[cfg(target_os = "none")]
+fn send_blocking(bytes: &[u8]) {
+    let mut sent = 0;
+    let mut idle = 0u32;
+    while sent < bytes.len() {
+        // SAFETY: panic context — single owner of the PIC UART.
+        let n = unsafe { uart::try_write_fifo(UART_CH, &bytes[sent..]) };
+        if n == 0 {
+            idle += 1;
+            if idle > 1_000_000 {
+                break;
+            }
+        } else {
+            sent += n;
+            idle = 0;
+        }
+    }
+}
+
+/// Assert OLED chip-select (blocking). See [`oled_select`].
+#[cfg(target_os = "none")]
+pub(crate) fn oled_select_blocking() {
+    send_blocking(&[CMD_SELECT_OLED]);
+}
+
+/// De-assert OLED chip-select (blocking). See [`oled_deselect`].
+#[cfg(target_os = "none")]
+pub(crate) fn oled_deselect_blocking() {
+    send_blocking(&[CMD_DESELECT_OLED]);
+}
+
+/// Command mode (blocking). See [`oled_dc_low`].
+#[cfg(target_os = "none")]
+pub(crate) fn oled_dc_low_blocking() {
+    send_blocking(&[CMD_SET_DC_LOW]);
+}
+
+/// Data mode (blocking). See [`oled_dc_high`].
+#[cfg(target_os = "none")]
+pub(crate) fn oled_dc_high_blocking() {
+    send_blocking(&[CMD_SET_DC_HIGH]);
+}
+
 // ── PIC-ready signal ─────────────────────────────────────────────────────────
 //
 // Set by `pic::init()` once the full initialisation sequence has completed

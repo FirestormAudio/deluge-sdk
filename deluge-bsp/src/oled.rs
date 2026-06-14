@@ -100,6 +100,12 @@ const FIRST_PAGE: u8 = ((64 - HEIGHT) / 8) as u8; // = 2
 
 // RSPI0 is owned by [`crate::bus`]; the OLED drives it only through a bus guard.
 
+/// Set once [`init`] has run. The panic-path [`draw_blocking`] checks this so it
+/// never pokes an uninitialised (and possibly unclocked) RSPI0/PIC — which could
+/// hang the panic handler.
+#[cfg(target_os = "none")]
+static INITIALISED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 // ── Frame buffer ──────────────────────────────────────────────────────────────
 
 /// 128 × 48 monochrome frame buffer, organized as 6 pages of 128 bytes.
@@ -384,7 +390,58 @@ pub async fn init() {
 
     // ---- 6. Deselect (fire-and-forget, matching C firmware) --------------
     pic::oled_deselect().await;
+    INITIALISED.store(true, core::sync::atomic::Ordering::Release);
     log::debug!("oled: ready");
+}
+
+/// Render a frame using a fully blocking, interrupt-free path — for a panic
+/// handler, where the executor and IRQs are dead so the async [`send_frame`]
+/// (DMA + PIC echo wait) cannot run.
+///
+/// Best-effort: no-ops if [`init`] never ran (so it can't poke an unclocked
+/// RSPI0/PIC and hang), re-sends the addressing window in case a frame was
+/// interrupted mid-stream, and streams bytes via polling `send8`. Uses
+/// poll-based `ostm::delay_ms` for the PIC handshake timing.
+///
+/// # Safety
+/// Call only from a single-threaded context with interrupts masked (a panic
+/// handler): it steals the RSPI0 bus token without locking.
+#[cfg(target_os = "none")]
+pub unsafe fn draw_blocking(fb: &FrameBuffer) {
+    use rza1l_hal::ostm;
+
+    if !INITIALISED.load(core::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+
+    // SAFETY: panic context — we are the only RSPI0 user; no locking possible.
+    // `ostm::delay_ms` is poll-based (no IRQ), safe here.
+    unsafe {
+        let mut bus = crate::bus::steal_rspi0();
+
+        pic::oled_select_blocking();
+        ostm::delay_ms(2);
+        bus.enter_8bit();
+
+        // Reset the GDDRAM window (columns 0–127, pages FIRST_PAGE–7) in command
+        // mode, in case the panic interrupted a frame mid-stream.
+        pic::oled_dc_low_blocking();
+        ostm::delay_ms(1);
+        for &b in &[0x21u8, 0x00, 0x7F, 0x22, FIRST_PAGE, 7] {
+            bus.send8(b);
+        }
+        bus.wait_end();
+
+        // Stream the frame in data mode.
+        pic::oled_dc_high_blocking();
+        ostm::delay_ms(1);
+        for &b in fb.as_bytes() {
+            bus.send8(b);
+        }
+        bus.wait_end();
+
+        pic::oled_deselect_blocking();
+    }
 }
 
 /// Send a full 768-byte frame to the display using DMAC channel 4.
