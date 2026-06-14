@@ -36,13 +36,20 @@ mod midi;
 mod oled;
 mod pads;
 mod pic_service;
+mod sd;
 mod sync_led;
 pub use cv_gate::{Cv, Gate};
 pub use input::{Event, Input};
 pub use midi::Midi;
 pub use oled::Oled;
 pub use pads::{Color, Pads};
+pub use sd::Sd;
 pub use sync_led::SyncLed;
+
+/// Filesystem error from [`Sd`] read/write operations.
+pub use deluge_bsp::fat::FatError;
+/// SD-card hardware error from [`Deluge::sd`].
+pub use deluge_bsp::sd::SdError;
 
 // Re-export the underlying layers so apps can reach lower-level functionality
 // through the single `deluge` dependency while the capability API (M2+) grows.
@@ -207,12 +214,32 @@ impl Deluge {
         }
         Midi::new()
     }
+
+    /// Initialise the SD card and take the filesystem handle.
+    ///
+    /// ```ignore
+    /// let mut sd = dlg.sd().await?;
+    /// let mut buf = [0u8; 64];
+    /// let n = sd.read("CONFIG.TXT", &mut buf)?;
+    /// ```
+    ///
+    /// `async` (the card init does I/O); returns `Err` if no card is present or
+    /// init fails. Takeable once: a second call panics.
+    pub async fn sd(&self) -> Result<Sd, SdError> {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static TAKEN: AtomicBool = AtomicBool::new(false);
+        if TAKEN.swap(true, Ordering::Relaxed) {
+            panic!("Deluge::sd() called more than once");
+        }
+        deluge_bsp::sd::init().await?;
+        Ok(Sd::new())
+    }
 }
 
 /// Convenient glob import for app authors: `use deluge::prelude::*;`.
 pub mod prelude {
     pub use crate::app;
-    pub use crate::{Color, Cv, Deluge, Event, Gate, Input, Midi, Oled, Pads, SyncLed};
+    pub use crate::{Color, Cv, Deluge, Event, Gate, Input, Midi, Oled, Pads, Sd, SyncLed};
     pub use log::{debug, error, info, warn};
 }
 
