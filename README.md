@@ -20,6 +20,28 @@ libraries and the on-board app loader.
 | [`crates/rza1l-hal`](crates/rza1l-hal/) | Register-level HAL for the RZ/A1L SoC (MMU, caches, GIC, timers, DMA, RSPI, SSI, SCUX, SDHI, …) |
 | [`crates/deluge-bsp`](crates/deluge-bsp/) | Board support package — SDRAM, audio codec, OLED, PIC co-processor, CV/gate, MIDI, SD card, USB |
 | [`crates/deluge-fft`](crates/deluge-fft/) | `no_std` FFT library with RZ/A1L-tuned radix-4/8 paths and a real-FFT spectrum analyser |
+| [`crates/deluge`](crates/deluge/) | Maker-friendly app SDK facade — the `Deluge` handle + `#[deluge::app]` |
+| [`crates/deluge-macros`](crates/deluge-macros/) | The `#[deluge::app]` attribute macro |
+| [`crates/fixedpoint`](crates/fixedpoint/) | Type-safe fixed-point arithmetic (Q31/Q16/…) for DSP |
+| [`crates/armv7-dsp-intrinsics`](crates/armv7-dsp-intrinsics/) | ARMv7 DSP intrinsics (SMMUL/SSAT/QADD/VCVT) backing `fixedpoint` |
+| [`crates/deluge-ui`](crates/deluge-ui/) | OLED UI toolkit — Deluge fonts, text, graphics, icons, immediate-mode menus (**GPL-3.0**) |
+| [`crates/deluge-fonts`](crates/deluge-fonts/) | Deluge OLED font assets (**GPL-3.0**) |
+
+---
+
+## Licensing
+
+The SDK and core libraries are **`MIT OR Apache-2.0`**. The OLED UI toolkit
+(`crates/deluge-ui`, package `deluge-ui-toolkit`) and its fonts
+(`crates/deluge-fonts`, package `embedded-fonts-deluge`) are **`GPL-3.0-or-later`**
+(see [`LICENSE-GPL`](LICENSE-GPL)). They are standalone crates: the permissive
+`deluge` facade does **not** depend on them, so an app stays MIT/Apache unless it
+opts into the toolkit, in which case that app becomes GPL.
+
+Apps that use the toolkit (menus/text) need a global allocator: enable the
+`deluge` crate's `alloc` feature (registers the on-chip SRAM heap) and build with
+`-Zbuild-std=core,alloc` (the `cargo build-fw-alloc` alias). See
+[`examples/oled_menu`](examples/oled_menu/).
 
 ---
 
