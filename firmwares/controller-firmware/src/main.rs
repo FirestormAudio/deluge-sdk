@@ -154,7 +154,7 @@ pub extern "C" fn main() -> ! {
     info!("UART: SCIF0/1 @ 31 250 baud");
 
     info!("audio: initialising SSI0...");
-    unsafe { deluge_bsp::audio::init() };
+    unsafe { deluge_bsp::audio::init_with_scux() };
     info!("audio: SSI0 + DMA + codec running");
 
     // Pre-fill SSI TX buffer with dither so the codec does not auto-mute before

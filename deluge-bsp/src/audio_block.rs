@@ -195,7 +195,7 @@ impl Default for BlockState {
 
 /// Await the next RX block completion interrupt (v2 IRQ clock). Recurring; call
 /// in a loop. Requires `init_block_irq` + `register_block_irq` (done by
-/// `audio::init_direct` under the `audio-irq` feature).
+/// `audio::init` under the `audio-irq` feature).
 #[cfg(feature = "audio-irq")]
 pub async fn wait_block() {
     rza1l_hal::dmac::wait_block(ssi::rx_dma_ch()).await;

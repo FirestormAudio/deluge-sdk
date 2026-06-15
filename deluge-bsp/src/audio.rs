@@ -30,15 +30,20 @@ const CODEC_PIN: u8 = 12;
 /// Delay required between SSI clock start and codec enable, in milliseconds.
 const CODEC_POWER_DELAY_MS: u32 = 5;
 
-/// Configure SSI0 pin-mux, initialise the SSI peripheral with DMA, wait for
-/// the codec power-on delay, then assert `CODEC_POWER`.
+/// Bring up the codec via the **SCUX** path (SCUX DVU drives SSIF0 TX; SSI RX
+/// DMA captures input). Use this only when SCUX is actually needed — USB audio,
+/// or an internal rate that differs from the codec. For a same-rate DSP effect
+/// prefer [`init`] (direct SSI, no SCUX).
+///
+/// Configures SSI0 pin-mux + the SCUX DVU path + SSI RX DMA, waits the codec
+/// power-on delay, then asserts `CODEC_POWER`.
 ///
 /// **Call after:** `rza1l_hal::stb::init()` and `rza1l_hal::ostm::start_free_running(0)`.
 ///
 /// # Safety
-/// Must be called exactly once from the single-threaded boot context, before
-/// interrupts are enabled and before any audio task starts.
-pub unsafe fn init() {
+/// Call exactly once from the single-threaded boot context, before interrupts
+/// are enabled and before any audio task starts.
+pub unsafe fn init_with_scux() {
     unsafe {
         log::debug!("audio: pin-mux SSI0 (P7.11, P6.8-11)");
         // ── Pin-mux: SSI peripheral signals ──────────────────────────────────────
@@ -69,17 +74,18 @@ pub unsafe fn init() {
     }
 }
 
-/// Like [`init`] but brings the codec up on the **direct SSI TX+RX DMA path**,
-/// bypassing SCUX. Use this for same-rate (44.1 kHz) DSP — SCUX is only needed
-/// when the internal rate differs from the codec or for USB rate conversion.
+/// Bring up the codec on the **direct SSI TX+RX DMA path** (no SCUX) — the
+/// default for same-rate (44.1 kHz) DSP. SCUX is only needed when the internal
+/// rate differs from the codec or for USB rate conversion; use
+/// [`init_with_scux`] for those.
 ///
-/// Identical pin-mux + codec-power sequence as [`init`], but drives SSIF0 TX from
-/// the SSI TX DMA ([`ssi::init`]) instead of the SCUX DVU path. Leaves [`init`] /
-/// [`scux_dvu_path`] untouched for the USB-audio firmware.
+/// Configures SSI0 pin-mux, drives SSIF0 TX directly from the SSI TX DMA
+/// ([`ssi::init`]), waits the codec power-on delay, then asserts `CODEC_POWER`.
 ///
 /// # Safety
-/// Same contract as [`init`]: call once, after `stb::init()` + OSTM running.
-pub unsafe fn init_direct() {
+/// Call exactly once from the single-threaded boot context (after `stb::init()`
+/// + OSTM running), before any audio task starts.
+pub unsafe fn init() {
     unsafe {
         log::debug!("audio: pin-mux SSI0 (direct, no SCUX)");
         gpio::set_pin_mux(7, 11, 6); // AUDIO_XOUT

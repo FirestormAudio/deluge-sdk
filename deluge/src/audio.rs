@@ -18,7 +18,7 @@ fn ensure_init() {
     // (no SCUX — that's only for rate conversion); blocks ~5 ms internally.
     // Acquire `audio()` before the main loop. Owns the codec — incompatible with
     // the USB UAC2 device tasks.
-    unsafe { deluge_bsp::audio::init_direct() };
+    unsafe { deluge_bsp::audio::init() };
 }
 
 /// The codec audio path, taken once from [`Deluge::audio`](crate::Deluge::audio).
