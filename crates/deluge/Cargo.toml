@@ -9,6 +9,7 @@ description = "User-friendly SDK for building apps on the Synthstrom Deluge."
 deluge-macros = { path = "../deluge-macros" }
 deluge-bsp = { path = "../deluge-bsp" }
 rza1l-hal = { path = "../rza1l-hal" }
+fixedpoint = { workspace = true }
 cortex-ar = { workspace = true }
 log = { workspace = true }
 embedded-hal = "1"

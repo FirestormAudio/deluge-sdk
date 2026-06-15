@@ -458,6 +458,7 @@ dependencies = [
  "embassy-usb",
  "embedded-graphics-core",
  "embedded-hal 1.0.0",
+ "fixedpoint",
  "log",
  "rtt-target",
  "rza1l-hal",

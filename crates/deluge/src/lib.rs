@@ -65,6 +65,11 @@ pub use deluge_bsp::fat::FatError;
 /// SD-card hardware error from [`Deluge::sd`].
 pub use deluge_bsp::sd::SdError;
 
+/// Type-safe fixed-point arithmetic (`Q31`, `Q16`, …), re-exported for DSP code
+/// in [`audio`](crate::audio) callbacks. ARMv7 = the Deluge's Cortex-A9, so its
+/// conversions/multiplies map onto the hardware DSP instructions.
+pub use fixedpoint as fixed;
+
 // Re-export the underlying layers so apps can reach lower-level functionality
 // through the single `deluge` dependency while the capability API (M2+) grows.
 pub use deluge_bsp;
