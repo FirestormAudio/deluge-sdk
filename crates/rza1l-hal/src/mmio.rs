@@ -23,6 +23,35 @@
 //! The shadow is **thread-local**, and cargo reuses test threads, so each test
 //! that uses the seam must call [`test::reset`] first for a clean slate.
 
+// ── Register handles ───────────────────────────────────────────────────────
+//
+// A typed address wrapper so pointer-style drivers can do `reg(...).write(v)` /
+// `reg(...).read()` and route through the seam. `regN` helpers return these.
+
+macro_rules! reg_handle {
+    ($name:ident, $ty:ty, $w:ident, $r:ident) => {
+        /// Typed MMIO register handle (address + width); access routes through
+        /// the seam (real volatile on firmware, shadow under test).
+        #[derive(Clone, Copy)]
+        pub struct $name(pub usize);
+        impl $name {
+            /// Write the register. See [`write32`] for safety.
+            #[inline]
+            pub unsafe fn write(self, val: $ty) {
+                unsafe { $w(self.0, val) }
+            }
+            /// Read the register. See [`read32`] for safety.
+            #[inline]
+            pub unsafe fn read(self) -> $ty {
+                unsafe { $r(self.0) }
+            }
+        }
+    };
+}
+reg_handle!(Reg8, u8, write8, read8);
+reg_handle!(Reg16, u16, write16, read16);
+reg_handle!(Reg32, u32, write32, read32);
+
 // ── Firmware: real volatile MMIO ───────────────────────────────────────────
 
 /// Write a 32-bit register.

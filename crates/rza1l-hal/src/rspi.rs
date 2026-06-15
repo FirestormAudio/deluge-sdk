@@ -131,19 +131,21 @@ fn base(ch: u8) -> usize {
     RSPI0_BASE + RSPI_STRIDE * (ch as usize)
 }
 
+// Register handles route through the MMIO seam (real volatile on firmware,
+// shadow + log under test), so the init sequence is unit-testable.
 #[inline]
-fn reg8(ch: u8, off: usize) -> *mut u8 {
-    (base(ch) + off) as *mut u8
+fn reg8(ch: u8, off: usize) -> crate::mmio::Reg8 {
+    crate::mmio::Reg8(base(ch) + off)
 }
 
 #[inline]
-fn reg16(ch: u8, off: usize) -> *mut u16 {
-    (base(ch) + off) as *mut u16
+fn reg16(ch: u8, off: usize) -> crate::mmio::Reg16 {
+    crate::mmio::Reg16(base(ch) + off)
 }
 
 #[inline]
-fn reg32(ch: u8, off: usize) -> *mut u32 {
-    (base(ch) + off) as *mut u32
+fn reg32(ch: u8, off: usize) -> crate::mmio::Reg32 {
+    crate::mmio::Reg32(base(ch) + off)
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -173,52 +175,52 @@ pub fn irq_spri(ch: u8) -> u16 {
 pub unsafe fn init(ch: u8, bit_rate: u32) {
     unsafe {
         // SPPCR = 0 (no loopback, MOSI idle = low)
-        reg8(ch, OFF_SPPCR).write_volatile(0);
-        let _ = reg8(ch, OFF_SPPCR).read_volatile();
+        reg8(ch, OFF_SPPCR).write(0);
+        let _ = reg8(ch, OFF_SPPCR).read();
 
         // SPBR: baud rate divisor. P1 = 66.666 MHz → SPBR = ceil(P1/(bitRate×2)) - 1
         let spbr = P1_HZ.div_ceil(bit_rate * 2).saturating_sub(1) as u8;
-        reg8(ch, OFF_SPBR).write_volatile(spbr);
-        let _ = reg8(ch, OFF_SPBR).read_volatile();
+        reg8(ch, OFF_SPBR).write(spbr);
+        let _ = reg8(ch, OFF_SPBR).read();
 
         // SPDCR: 32-bit longword data
-        reg8(ch, OFF_SPDCR).write_volatile(SPDCR_32BIT);
-        let _ = reg8(ch, OFF_SPDCR).read_volatile();
+        reg8(ch, OFF_SPDCR).write(SPDCR_32BIT);
+        let _ = reg8(ch, OFF_SPDCR).read();
 
         // SPSCR, SPCKD, SSLND, SPND, SSLP, SPSSR: all zero (defaults)
-        reg8(ch, OFF_SPSCR).write_volatile(0);
-        let _ = reg8(ch, OFF_SPSCR).read_volatile();
-        reg8(ch, OFF_SPCKD).write_volatile(0);
-        let _ = reg8(ch, OFF_SPCKD).read_volatile();
-        reg8(ch, OFF_SSLND).write_volatile(0);
-        let _ = reg8(ch, OFF_SSLND).read_volatile();
-        reg8(ch, OFF_SPND).write_volatile(0);
-        let _ = reg8(ch, OFF_SPND).read_volatile();
-        reg8(ch, OFF_SSLP).write_volatile(0);
-        let _ = reg8(ch, OFF_SSLP).read_volatile();
-        reg8(ch, OFF_SPSSR).write_volatile(0);
-        let _ = reg8(ch, OFF_SPSSR).read_volatile();
+        reg8(ch, OFF_SPSCR).write(0);
+        let _ = reg8(ch, OFF_SPSCR).read();
+        reg8(ch, OFF_SPCKD).write(0);
+        let _ = reg8(ch, OFF_SPCKD).read();
+        reg8(ch, OFF_SSLND).write(0);
+        let _ = reg8(ch, OFF_SSLND).read();
+        reg8(ch, OFF_SPND).write(0);
+        let _ = reg8(ch, OFF_SPND).read();
+        reg8(ch, OFF_SSLP).write(0);
+        let _ = reg8(ch, OFF_SSLP).read();
+        reg8(ch, OFF_SPSSR).write(0);
+        let _ = reg8(ch, OFF_SPSSR).read();
 
         // SPBFCR: TX trigger=4 bytes free, RX trigger=2 bytes
-        reg8(ch, OFF_SPBFCR).write_volatile(SPBFCR_INIT_32BIT);
-        let _ = reg8(ch, OFF_SPBFCR).read_volatile();
+        reg8(ch, OFF_SPBFCR).write(SPBFCR_INIT_32BIT);
+        let _ = reg8(ch, OFF_SPBFCR).read();
 
         // SPCMD0: 32-bit frame, mode 0
-        reg16(ch, OFF_SPCMD0).write_volatile(SPCMD0_32BIT);
-        let _ = reg16(ch, OFF_SPCMD0).read_volatile();
+        reg16(ch, OFF_SPCMD0).write(SPCMD0_32BIT);
+        let _ = reg16(ch, OFF_SPCMD0).read();
 
         // SPCR: master mode, TX interrupt enable (for DMA trigger compatibility)
-        let v = reg8(ch, OFF_SPCR).read_volatile();
-        reg8(ch, OFF_SPCR).write_volatile(v | SPCR_MSTR | SPCR_SPTIE);
-        let _ = reg8(ch, OFF_SPCR).read_volatile();
+        let v = reg8(ch, OFF_SPCR).read();
+        reg8(ch, OFF_SPCR).write(v | SPCR_MSTR | SPCR_SPTIE);
+        let _ = reg8(ch, OFF_SPCR).read();
 
         // ---- R_RSPI_Start: clear errors, set SPE --------------------------------
-        let _ = reg8(ch, OFF_SPSR).read_volatile(); // clear error sources
-        reg8(ch, OFF_SPSR).write_volatile(0x00);
+        let _ = reg8(ch, OFF_SPSR).read(); // clear error sources
+        reg8(ch, OFF_SPSR).write(0x00);
 
-        let v = reg8(ch, OFF_SPCR).read_volatile();
-        reg8(ch, OFF_SPCR).write_volatile(v | SPCR_SPE);
-        let _ = reg8(ch, OFF_SPCR).read_volatile();
+        let v = reg8(ch, OFF_SPCR).read();
+        reg8(ch, OFF_SPCR).write(v | SPCR_SPE);
+        let _ = reg8(ch, OFF_SPCR).read();
     }
 }
 
@@ -249,8 +251,8 @@ pub unsafe fn register_irq(ch: u8, handler: fn()) {
 #[inline]
 pub unsafe fn disable_rx_irq(ch: u8) {
     unsafe {
-        let v = reg8(ch, OFF_SPCR).read_volatile();
-        reg8(ch, OFF_SPCR).write_volatile(v & !SPCR_SPRIE);
+        let v = reg8(ch, OFF_SPCR).read();
+        reg8(ch, OFF_SPCR).write(v & !SPCR_SPRIE);
     }
 }
 
@@ -263,8 +265,8 @@ pub unsafe fn disable_rx_irq(ch: u8) {
 #[inline]
 pub unsafe fn enable_rx_irq(ch: u8) {
     unsafe {
-        let v = reg8(ch, OFF_SPCR).read_volatile();
-        reg8(ch, OFF_SPCR).write_volatile(v | SPCR_SPRIE);
+        let v = reg8(ch, OFF_SPCR).read();
+        reg8(ch, OFF_SPCR).write(v | SPCR_SPRIE);
     }
 }
 
@@ -289,16 +291,16 @@ pub unsafe fn enable_rx_irq(ch: u8) {
 pub unsafe fn send32(ch: u8, data: u32) {
     unsafe {
         // Wait until TX buffer has space (SPTEF=1)
-        while reg8(ch, OFF_SPSR).read_volatile() & SPSR_SPTEF == 0 {}
+        while reg8(ch, OFF_SPSR).read() & SPSR_SPTEF == 0 {}
 
         // Program SPBFCR for CV mode (don't reset RX so the interrupt fires)
-        reg8(ch, OFF_SPBFCR).write_volatile(SPBFCR_CV_TRANSFER);
+        reg8(ch, OFF_SPBFCR).write(SPBFCR_CV_TRANSFER);
 
         // Enable receive interrupt: fires when the shift register finishes
         enable_rx_irq(ch);
 
         // Write data — transfer starts immediately
-        reg32(ch, OFF_SPDR).write_volatile(data);
+        reg32(ch, OFF_SPDR).write(data);
     }
 }
 
@@ -315,13 +317,13 @@ pub unsafe fn send32_blocking(ch: u8, data: u32) {
             "rspi: ch{} blocking send {:#010x}, SPSR={:#04x}",
             ch,
             data,
-            reg8(ch, OFF_SPSR).read_volatile()
+            reg8(ch, OFF_SPSR).read()
         );
         // Wait for TX buffer space (bounded to guard against ungated clock).
         // ~1 M polls ≈ a few ms at 400 MHz; SPTEF should assert in microseconds.
         let mut ready = false;
         for _ in 0..1_000_000u32 {
-            if reg8(ch, OFF_SPSR).read_volatile() & SPSR_SPTEF != 0 {
+            if reg8(ch, OFF_SPSR).read() & SPSR_SPTEF != 0 {
                 ready = true;
                 break;
             }
@@ -335,18 +337,18 @@ pub unsafe fn send32_blocking(ch: u8, data: u32) {
         log::debug!("rspi: ch{} SPTEF ok", ch);
 
         // Reset RX buffer (prevents overflow)
-        let v = reg8(ch, OFF_SPBFCR).read_volatile();
-        reg8(ch, OFF_SPBFCR).write_volatile(v | SPBFCR_RX_RESET);
+        let v = reg8(ch, OFF_SPBFCR).read();
+        reg8(ch, OFF_SPBFCR).write(v | SPBFCR_RX_RESET);
 
         // Write data
-        reg32(ch, OFF_SPDR).write_volatile(data);
+        reg32(ch, OFF_SPDR).write(data);
         log::debug!("rspi: ch{} SPDR written, waiting TEND", ch);
 
         // Wait for all bits to be shifted out (bounded; TEND should follow SPTEF
         // by at most frame_bits / SCK_freq ≈ 32 / 10 MHz = 3.2 µs).
         let mut done = false;
         for _ in 0..1_000_000u32 {
-            if reg8(ch, OFF_SPSR).read_volatile() & SPSR_TEND != 0 {
+            if reg8(ch, OFF_SPSR).read() & SPSR_TEND != 0 {
                 done = true;
                 break;
             }
@@ -368,8 +370,8 @@ pub unsafe fn send32_blocking(ch: u8, data: u32) {
 #[inline]
 pub unsafe fn reset_rx_buf(ch: u8) {
     unsafe {
-        let v = reg8(ch, OFF_SPBFCR).read_volatile();
-        reg8(ch, OFF_SPBFCR).write_volatile(v | SPBFCR_RX_RESET);
+        let v = reg8(ch, OFF_SPBFCR).read();
+        reg8(ch, OFF_SPBFCR).write(v | SPBFCR_RX_RESET);
     }
 }
 
@@ -385,9 +387,9 @@ pub unsafe fn reset_rx_buf(ch: u8) {
 /// Writes RSPI registers.  No concurrent SPI transfers must be in progress.
 pub unsafe fn configure_8bit(ch: u8) {
     unsafe {
-        reg8(ch, OFF_SPDCR).write_volatile(SPDCR_8BIT);
-        reg16(ch, OFF_SPCMD0).write_volatile(SPCMD0_8BIT);
-        reg8(ch, OFF_SPBFCR).write_volatile(SPBFCR_8BIT);
+        reg8(ch, OFF_SPDCR).write(SPDCR_8BIT);
+        reg16(ch, OFF_SPCMD0).write(SPCMD0_8BIT);
+        reg8(ch, OFF_SPBFCR).write(SPBFCR_8BIT);
     }
 }
 
@@ -397,9 +399,9 @@ pub unsafe fn configure_8bit(ch: u8) {
 /// Writes RSPI registers.  No concurrent SPI transfers must be in progress.
 pub unsafe fn configure_32bit(ch: u8) {
     unsafe {
-        reg8(ch, OFF_SPDCR).write_volatile(SPDCR_32BIT);
-        reg16(ch, OFF_SPCMD0).write_volatile(SPCMD0_32BIT);
-        reg8(ch, OFF_SPBFCR).write_volatile(SPBFCR_INIT_32BIT);
+        reg8(ch, OFF_SPDCR).write(SPDCR_32BIT);
+        reg16(ch, OFF_SPCMD0).write(SPCMD0_32BIT);
+        reg8(ch, OFF_SPBFCR).write(SPBFCR_INIT_32BIT);
     }
 }
 
@@ -420,12 +422,12 @@ pub unsafe fn configure_32bit(ch: u8) {
 pub unsafe fn send8(ch: u8, data: u8) {
     unsafe {
         // Wait until TX buffer has 4 free bytes (SPTEF=1).
-        while reg8(ch, OFF_SPSR).read_volatile() & SPSR_SPTEF == 0 {}
+        while reg8(ch, OFF_SPSR).read() & SPSR_SPTEF == 0 {}
         // Reset RX buffer to prevent overflow accumulation.
-        let v = reg8(ch, OFF_SPBFCR).read_volatile();
-        reg8(ch, OFF_SPBFCR).write_volatile(v | SPBFCR_RX_RESET);
+        let v = reg8(ch, OFF_SPBFCR).read();
+        reg8(ch, OFF_SPBFCR).write(v | SPBFCR_RX_RESET);
         // Write byte to SPDR.BYTE.LL (little-endian: lowest byte of SPDR = base+0x04).
-        (reg32(ch, OFF_SPDR) as *mut u8).write_volatile(data);
+        crate::mmio::Reg8(reg32(ch, OFF_SPDR).0).write(data);
     }
 }
 
@@ -438,7 +440,7 @@ pub unsafe fn send8(ch: u8, data: u8) {
 /// Reads SPSR register.
 #[inline]
 pub unsafe fn wait_end(ch: u8) {
-    unsafe { while reg8(ch, OFF_SPSR).read_volatile() & SPSR_TEND == 0 {} }
+    unsafe { while reg8(ch, OFF_SPSR).read() & SPSR_TEND == 0 {} }
 }
 
 // ── embedded-hal SpiBus impls ─────────────────────────────────────────────────
@@ -489,7 +491,7 @@ impl<const CH: u8> embedded_hal::spi::SpiBus<u8> for Rspi<CH, Bits8> {
                 wait_end(CH);
                 // The received byte sits in SPDR after the shift completes.
                 // RSPI SPDR lower byte contains the last received byte.
-                *w = (reg32(CH, OFF_SPDR) as *const u8).read_volatile();
+                *w = crate::mmio::Reg8(reg32(CH, OFF_SPDR).0).read();
             }
         }
         Ok(())
@@ -515,7 +517,7 @@ impl<const CH: u8> embedded_hal::spi::SpiBus<u8> for Rspi<CH, Bits8> {
                 send8(CH, tx);
                 wait_end(CH);
                 if i < read.len() {
-                    read[i] = (reg32(CH, OFF_SPDR) as *const u8).read_volatile();
+                    read[i] = crate::mmio::Reg8(reg32(CH, OFF_SPDR).0).read();
                 }
             }
         }
@@ -528,7 +530,7 @@ impl<const CH: u8> embedded_hal::spi::SpiBus<u8> for Rspi<CH, Bits8> {
                 let tx = *w;
                 send8(CH, tx);
                 wait_end(CH);
-                *w = (reg32(CH, OFF_SPDR) as *const u8).read_volatile();
+                *w = crate::mmio::Reg8(reg32(CH, OFF_SPDR).0).read();
             }
         }
         Ok(())
@@ -549,7 +551,7 @@ impl<const CH: u8> embedded_hal::spi::SpiBus<u32> for Rspi<CH, Bits32> {
         for w in words.iter_mut() {
             unsafe {
                 send32_blocking(CH, 0x0000_0000);
-                *w = reg32(CH, OFF_SPDR).read_volatile();
+                *w = reg32(CH, OFF_SPDR).read();
             }
         }
         Ok(())
@@ -571,7 +573,7 @@ impl<const CH: u8> embedded_hal::spi::SpiBus<u32> for Rspi<CH, Bits32> {
             unsafe {
                 send32_blocking(CH, tx);
                 if i < read.len() {
-                    read[i] = reg32(CH, OFF_SPDR).read_volatile();
+                    read[i] = reg32(CH, OFF_SPDR).read();
                 }
             }
         }
@@ -583,7 +585,7 @@ impl<const CH: u8> embedded_hal::spi::SpiBus<u32> for Rspi<CH, Bits32> {
             unsafe {
                 let tx = *w;
                 send32_blocking(CH, tx);
-                *w = reg32(CH, OFF_SPDR).read_volatile();
+                *w = reg32(CH, OFF_SPDR).read();
             }
         }
         Ok(())
@@ -627,5 +629,26 @@ mod tests {
         // Actual rate: 66_128_125 / (2 × (3+1)) = 8.266 MHz (within ±20% of 10 MHz)
         let actual_hz = P1_HZ / (2 * (spbr as u32 + 1));
         assert!(actual_hz >= 8_000_000 && actual_hz <= 11_000_000);
+    }
+
+    /// `init` programs the master-mode SPI config through the seam: verify the
+    /// key registers end up with the expected values for a 10 MHz CV-DAC setup.
+    #[test]
+    fn init_programs_master_mode_config() {
+        use crate::mmio;
+        mmio::test::reset();
+        let ch = 0u8;
+        unsafe { init(ch, 10_000_000) };
+        let b = base(ch);
+
+        assert_eq!(mmio::test::peek8(b + OFF_SPBR), 3, "baud divider for ~10 MHz");
+        assert_eq!(mmio::test::peek8(b + OFF_SPDCR), SPDCR_32BIT, "32-bit longword frames");
+        assert_eq!(mmio::test::peek8(b + OFF_SPBFCR), SPBFCR_INIT_32BIT);
+        assert_eq!(mmio::test::peek16(b + OFF_SPCMD0), SPCMD0_32BIT, "32-bit mode-0 cmd");
+        // Final SPCR has master + TX-int + SPI-enable all set.
+        let spcr = mmio::test::peek8(b + OFF_SPCR);
+        assert_eq!(spcr & SPCR_MSTR, SPCR_MSTR, "master mode");
+        assert_eq!(spcr & SPCR_SPTIE, SPCR_SPTIE, "TX interrupt enabled");
+        assert_eq!(spcr & SPCR_SPE, SPCR_SPE, "SPI enabled (R_RSPI_Start)");
     }
 }
