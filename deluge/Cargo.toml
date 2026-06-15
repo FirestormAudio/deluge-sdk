@@ -21,9 +21,16 @@ embassy-executor = { workspace = true, features = [
 ] }
 embassy-sync = { workspace = true }
 embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
+embassy-usb = { workspace = true, optional = true }
 
 [features]
 default = []
+## Route the `log` crate to a USB CDC-ACM serial interface (a `/dev/ttyACM*`
+## port on the host) so firmware logs are visible over the USB cable with **no
+## debug probe**. Off by default (brings up a USB device + costs flash/RAM).
+## Only one global logger may be registered, so `usb-log` takes precedence over
+## the `rtt` feature when both are enabled.
+usb-log = ["dep:embassy-usb"]
 ## Use the per-block RX DMA interrupt clock for `dlg.audio()` (drift-free, lower
 ## latency) instead of the default poll loop. Same `process()` API.
 audio-irq = ["deluge-bsp/audio-irq"]

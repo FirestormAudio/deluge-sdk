@@ -1,0 +1,20 @@
+[package]
+name = "usb_log"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Deluge SDK example: stream `log` output over USB CDC serial (no probe)."
+
+[[bin]]
+name = "usb_log"
+test = false
+
+[dependencies]
+# `usb-log` routes the `log` crate to a USB CDC-ACM serial port on the host.
+deluge = { path = "../../deluge", features = ["usb-log"] }
+embassy-executor = { workspace = true, features = [
+    "nightly",
+    "platform-cortex-ar",
+    "executor-thread",
+] }
+embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }

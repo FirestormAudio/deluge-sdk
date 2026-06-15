@@ -1,5 +1,5 @@
 //! Deluge SDK example: light each button's indicator LED while it's held, and
-//! turn the gold-knob rings up when PLAY is pressed.
+//! turn the gold-knob columns up when PLAY is pressed.
 //!
 //! Exercises `leds()` + `input()` and the named `controls` ids.
 
@@ -20,7 +20,7 @@ async fn main(dlg: Deluge) {
             // The LED id matches the button id.
             leds.set(id, pressed).await;
 
-            // Light both gold-knob rings while PLAY is held.
+            // Light both gold-knob columns while PLAY is held.
             if id == controls::button::PLAY {
                 let level = if pressed { [255; 4] } else { [0; 4] };
                 leds.gold_knob(0, level).await;

@@ -40,6 +40,8 @@ mod pads;
 mod pic_service;
 mod sd;
 mod sync_led;
+#[cfg(feature = "usb-log")]
+mod usb_debug;
 pub use audio::{Audio, StereoFrame};
 pub use cv_gate::{Cv, Gate};
 pub use input::{Event, Input};
@@ -168,7 +170,7 @@ impl Deluge {
         Input::new()
     }
 
-    /// Take the button/indicator LEDs and gold-knob rings. Takeable once.
+    /// Take the button/indicator LEDs and gold-knob columns. Takeable once.
     ///
     /// ```ignore
     /// let mut leds = dlg.leds().await;
@@ -316,12 +318,13 @@ pub mod __rt {
     /// Size of the external SDRAM window in bytes.
     const SDRAM_SIZE: usize = 64 * 1024 * 1024;
 
-    /// Initialise the RTT logger (only with the `rtt` feature).
+    /// Initialise the RTT logger (only with the `rtt` feature, and only when
+    /// `usb-log` is not also enabled — there can be just one global logger).
     ///
     /// Defines the `_SEGGER_RTT` control block (in the `.rtt_buffer` section
     /// provided by the rtt linker script) that the HAL/BSP reference, and
-    /// registers the `log` backend. A no-op when `rtt` is disabled.
-    #[cfg(feature = "rtt")]
+    /// registers the `log` backend.
+    #[cfg(all(feature = "rtt", not(feature = "usb-log")))]
     fn init_logging() {
         let channels = rtt_target::rtt_init! {
             up: {
@@ -369,13 +372,22 @@ pub mod __rt {
     /// requires it (per some HAL drivers' contracts) is safe; it is empty for
     /// apps that don't opt into `#[deluge::app(setup = …)]`.
     pub fn run(setup: impl FnOnce(), spawn: impl FnOnce(Spawner)) -> ! {
-        #[cfg(feature = "rtt")]
+        // Pick the logger: `usb-log` takes precedence over `rtt` (one logger).
+        #[cfg(feature = "usb-log")]
+        crate::usb_debug::init_logger();
+        #[cfg(all(feature = "rtt", not(feature = "usb-log")))]
         init_logging();
 
         unsafe { init_platform() };
 
         // App's synchronous, interrupts-masked initialisation.
         setup();
+
+        // Bring up the USB-debug device (registers the USB0 ISR and starts the
+        // controller) while interrupts are still masked — matches the proven
+        // controller-firmware ordering. Spawned below once the executor runs.
+        #[cfg(feature = "usb-log")]
+        let usb = unsafe { crate::usb_debug::build() };
 
         // Unmask IRQs so the Embassy time driver and peripheral ISRs fire.
         unsafe { cortex_ar::interrupt::enable() };
@@ -385,7 +397,11 @@ pub mod __rt {
             EXECUTOR.write(Executor::new());
             EXECUTOR.assume_init_mut()
         };
-        executor.run(spawn)
+        executor.run(move |spawner| {
+            #[cfg(feature = "usb-log")]
+            crate::usb_debug::spawn(spawner, usb);
+            spawn(spawner);
+        })
     }
 
     /// Default panic behaviour: stop the world, show it, keep signalling.

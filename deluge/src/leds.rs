@@ -1,8 +1,8 @@
-//! Button/indicator LEDs and the gold-knob LED rings (driven by the PIC).
+//! Button/indicator LEDs and the gold-knob LED columns (driven by the PIC).
 
 use deluge_bsp::pic;
 
-/// The button/indicator LEDs and gold-knob rings, taken once from
+/// The button/indicator LEDs and gold-knob columns, taken once from
 /// [`Deluge::leds`](crate::Deluge::leds).
 ///
 /// LED ids line up with button ids, so lighting the LED under a pressed button
@@ -15,7 +15,7 @@ impl Leds {
     /// Number of indicator LEDs (one per button; LED `id` matches the
     /// [`Event::Button`](crate::Event::Button) / [`controls::button`](crate::controls::button) id).
     pub const NUM_INDICATOR_LEDS: u8 = 36;
-    /// Number of gold-knob LED rings.
+    /// Number of gold-knob LED columns (each a vertical strip of 4 LEDs).
     pub const NUM_GOLD_KNOBS: u8 = 2;
 
     pub(crate) fn new() -> Self {
@@ -51,8 +51,8 @@ impl Leds {
         }
     }
 
-    /// Set a gold-knob LED ring. `knob` is 0 or 1; `brightness` is the four
-    /// segments around the ring (0–255 each).
+    /// Set a gold-knob LED column. `knob` is 0 or 1; `brightness` is the four
+    /// LEDs in the column, bottom→top (0–255 each).
     #[inline]
     pub async fn gold_knob(&mut self, knob: u8, brightness: [u8; 4]) {
         pic::set_gold_knob_indicators(knob, brightness).await;
