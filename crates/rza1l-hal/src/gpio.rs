@@ -62,18 +62,32 @@ fn pibc(port: u8) -> *mut u16 {
 /// Writes to memory-mapped peripheral registers; must run with the pin not
 /// already owned by another driver.
 pub unsafe fn set_as_output(port: u8, pin: u8) {
+    let bit = 1u16 << pin;
     unsafe {
         // PMC = 0: GPIO (not peripheral multiplexed)
-        let v = core::ptr::read_volatile(pmc(port));
-        core::ptr::write_volatile(pmc(port), v & !(1u16 << pin));
-
+        clear_bits16(pmc(port) as usize, bit);
         // PM = 0: output direction
-        let v = core::ptr::read_volatile(pm(port));
-        core::ptr::write_volatile(pm(port), v & !(1u16 << pin));
-
+        clear_bits16(pm(port) as usize, bit);
         // PIPC = 0: software (not hardware-peripheral) control
-        let v = core::ptr::read_volatile(pipc(port));
-        core::ptr::write_volatile(pipc(port), v & !(1u16 << pin));
+        clear_bits16(pipc(port) as usize, bit);
+    }
+}
+
+/// Read-modify-write: clear the given bits in a 16-bit register via the seam.
+#[inline]
+unsafe fn clear_bits16(addr: usize, bits: u16) {
+    unsafe {
+        let v = crate::mmio::read16(addr);
+        crate::mmio::write16(addr, v & !bits);
+    }
+}
+
+/// Read-modify-write: set the given bits in a 16-bit register via the seam.
+#[inline]
+unsafe fn set_bits16(addr: usize, bits: u16) {
+    unsafe {
+        let v = crate::mmio::read16(addr);
+        crate::mmio::write16(addr, v | bits);
     }
 }
 
@@ -86,18 +100,14 @@ pub unsafe fn set_as_output(port: u8, pin: u8) {
 /// Writes to memory-mapped peripheral registers; must run with the pin not
 /// already owned by another driver.
 pub unsafe fn set_as_input(port: u8, pin: u8) {
+    let bit = 1u16 << pin;
     unsafe {
         // PMC = 0: GPIO (not peripheral multiplexed)
-        let v = core::ptr::read_volatile(pmc(port));
-        core::ptr::write_volatile(pmc(port), v & !(1u16 << pin));
-
+        clear_bits16(pmc(port) as usize, bit);
         // PM = 1: input direction
-        let v = core::ptr::read_volatile(pm(port));
-        core::ptr::write_volatile(pm(port), v | (1u16 << pin));
-
+        set_bits16(pm(port) as usize, bit);
         // PIBC = 1: enable input buffer so PPR reflects the live pin state
-        let v = core::ptr::read_volatile(pibc(port));
-        core::ptr::write_volatile(pibc(port), v | (1u16 << pin));
+        set_bits16(pibc(port) as usize, bit);
     }
 }
 
@@ -111,10 +121,7 @@ pub unsafe fn set_as_input(port: u8, pin: u8) {
 /// # Safety
 /// Writes to a memory-mapped peripheral register; `port` must be 1-based (1..=11).
 pub unsafe fn enable_input_buffer(port: u8, pin: u8) {
-    unsafe {
-        let v = core::ptr::read_volatile(pibc(port));
-        core::ptr::write_volatile(pibc(port), v | (1u16 << pin));
-    }
+    unsafe { set_bits16(pibc(port) as usize, 1u16 << pin) }
 }
 
 /// Read the current logic level of a GPIO pin via the Port Pin Read (PPR) register.
@@ -124,7 +131,7 @@ pub unsafe fn enable_input_buffer(port: u8, pin: u8) {
 /// # Safety
 /// Reads a memory-mapped peripheral register; `port` must be 1-based (1..=11).
 pub unsafe fn read_pin(port: u8, pin: u8) -> bool {
-    unsafe { (core::ptr::read_volatile(ppr(port)) >> pin) & 1 != 0 }
+    unsafe { (crate::mmio::read16(ppr(port) as usize) >> pin) & 1 != 0 }
 }
 
 /// Read all 16 pins of a port in a single atomic PPR register read.
@@ -135,7 +142,7 @@ pub unsafe fn read_pin(port: u8, pin: u8) -> bool {
 /// # Safety
 /// Reads a memory-mapped peripheral register; `port` must be 1-based (1..=11).
 pub unsafe fn read_port(port: u8) -> u16 {
-    unsafe { core::ptr::read_volatile(ppr(port)) }
+    unsafe { crate::mmio::read16(ppr(port) as usize) }
 }
 
 /// Drive a GPIO output pin high (`true`) or low (`false`).
@@ -143,12 +150,12 @@ pub unsafe fn read_port(port: u8) -> u16 {
 /// # Safety
 /// The pin must have been configured as an output via [`set_as_output`].
 pub unsafe fn write(port: u8, pin: u8, high: bool) {
+    let bit = 1u16 << pin;
     unsafe {
-        let v = core::ptr::read_volatile(p(port));
         if high {
-            core::ptr::write_volatile(p(port), v | (1u16 << pin));
+            set_bits16(p(port) as usize, bit);
         } else {
-            core::ptr::write_volatile(p(port), v & !(1u16 << pin));
+            clear_bits16(p(port) as usize, bit);
         }
     }
 }
@@ -170,14 +177,14 @@ pub unsafe fn set_pin_mux(port: u8, pin: u8, mux: u8) {
     const PIPC_BASE: usize = 0xFCFE_7204;
 
     fn modify(base: usize, port: u8, pin: u8, set: bool) {
-        let addr = (base + (port as usize - 1) * 4) as *mut u16;
-        let v = unsafe { core::ptr::read_volatile(addr) };
-        let new = if set {
-            v | (1u16 << pin)
-        } else {
-            v & !(1u16 << pin)
-        };
-        unsafe { core::ptr::write_volatile(addr, new) };
+        let addr = base + (port as usize - 1) * 4;
+        unsafe {
+            if set {
+                set_bits16(addr, 1u16 << pin);
+            } else {
+                clear_bits16(addr, 1u16 << pin);
+            }
+        }
     }
 
     log::trace!("gpio: set_pin_mux port={} pin={} mux={}", port, pin, mux);
@@ -334,5 +341,72 @@ mod tests {
             let bits = ((pfcae as u8) << 2) | ((pfce as u8) << 1) | (pfc as u8);
             assert_eq!(bits, mux - 1, "mux={mux}");
         }
+    }
+
+    // ── register-effect tests driven through the MMIO seam ──────────────────
+    use crate::mmio;
+
+    /// `set_as_output` clears the pin bit in PMC, PM and PIPC (read-modify-write
+    /// that leaves the other bits untouched).
+    #[test]
+    fn set_as_output_clears_pmc_pm_pipc_bits() {
+        mmio::test::reset();
+        // Pre-fill the three registers so we can see exactly which bit clears.
+        mmio::test::poke16(pmc(6) as usize, 0xFFFF);
+        mmio::test::poke16(pm(6) as usize, 0xFFFF);
+        mmio::test::poke16(pipc(6) as usize, 0xFFFF);
+
+        unsafe { set_as_output(6, 12) };
+
+        assert_eq!(mmio::test::peek16(pmc(6) as usize), 0xEFFF, "PMC bit 12 cleared");
+        assert_eq!(mmio::test::peek16(pm(6) as usize), 0xEFFF, "PM bit 12 cleared (output)");
+        assert_eq!(mmio::test::peek16(pipc(6) as usize), 0xEFFF, "PIPC bit 12 cleared (sw)");
+    }
+
+    /// `set_as_input` clears PMC, sets PM (input) and sets PIBC (input buffer).
+    #[test]
+    fn set_as_input_sets_direction_and_buffer() {
+        mmio::test::reset();
+        unsafe { set_as_input(3, 5) };
+        let bit = 1u16 << 5;
+        assert_eq!(mmio::test::peek16(pmc(3) as usize), 0, "PMC bit cleared (GPIO)");
+        assert_eq!(mmio::test::peek16(pm(3) as usize), bit, "PM bit set (input)");
+        assert_eq!(mmio::test::peek16(pibc(3) as usize), bit, "PIBC bit set");
+    }
+
+    /// `write` is a read-modify-write that only touches the target bit.
+    #[test]
+    fn write_sets_and_clears_single_bit() {
+        mmio::test::reset();
+        mmio::test::poke16(p(2) as usize, 0b1010);
+        unsafe { write(2, 0, true) }; // set bit 0
+        assert_eq!(mmio::test::peek16(p(2) as usize), 0b1011);
+        unsafe { write(2, 1, false) }; // clear bit 1
+        assert_eq!(mmio::test::peek16(p(2) as usize), 0b1001);
+    }
+
+    /// `set_pin_mux` writes the 3-bit function code across PFCAE/PFCE/PFC and
+    /// enables peripheral mode (PMC=1, PIPC=1). Check a representative mux=6
+    /// (encodes (mux-1)=5 = 0b101 → PFCAE=1, PFCE=0, PFC=1).
+    #[test]
+    fn set_pin_mux_encodes_function_and_enables_peripheral() {
+        mmio::test::reset();
+        const PFC: usize = 0xFCFE_3504;
+        const PFCE: usize = 0xFCFE_3604;
+        const PFCAE: usize = 0xFCFE_3A04;
+        const PMC1: usize = 0xFCFE_3404;
+        const PIPC1: usize = 0xFCFE_7204;
+        let port = 1u8;
+        let pin = 7u8;
+        let off = (port as usize - 1) * 4;
+        let bit = 1u16 << pin;
+
+        unsafe { set_pin_mux(port, pin, 6) };
+
+        assert_eq!(mmio::test::peek16(PFCAE + off), bit, "PFCAE set (mux>=5)");
+        assert_eq!(mmio::test::peek16(PFCE + off), 0, "PFCE clear");
+        assert_eq!(mmio::test::peek16(PFC + off), bit, "PFC set");
+        assert_eq!(mmio::test::peek16(PMC1 + off), bit, "PMC set (peripheral)");
+        assert_eq!(mmio::test::peek16(PIPC1 + off), bit, "PIPC set (hw control)");
     }
 }

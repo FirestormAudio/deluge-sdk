@@ -233,10 +233,26 @@ pub mod test {
     pub fn poke32(addr: usize, val: u32) {
         shadow::poke(addr, val, 4);
     }
+    /// Preload a 16-bit register (does not log).
+    pub fn poke16(addr: usize, val: u16) {
+        shadow::poke(addr, val as u32, 2);
+    }
+    /// Preload an 8-bit register (does not log).
+    pub fn poke8(addr: usize, val: u8) {
+        shadow::poke(addr, val as u32, 1);
+    }
 
     /// Current backing value of a 32-bit register (does not log).
     pub fn peek32(addr: usize) -> u32 {
         shadow::peek(addr, 4)
+    }
+    /// Current backing value of a 16-bit register (does not log).
+    pub fn peek16(addr: usize) -> u16 {
+        shadow::peek(addr, 2) as u16
+    }
+    /// Current backing value of an 8-bit register (does not log).
+    pub fn peek8(addr: usize) -> u8 {
+        shadow::peek(addr, 1) as u8
     }
 }
 

@@ -131,38 +131,26 @@ pub unsafe fn init_with_link_descriptor(ch: u8, descriptor: *const u32, dmars_va
             ch,
             dctrl_reg(ch) as usize
         );
-        dctrl_reg(ch).write_volatile(0);
+        crate::mmio::write32(dctrl_reg(ch) as usize, 0);
         log::trace!("dmac: ch{} DCTRL ok", ch);
 
         // 2. CHCFG comes from link-descriptor word [4]
         let chcfg_val = descriptor.add(4).read();
-        log::trace!(
-            "dmac: ch{} desc[4]={:#010x}, writing CHCFG={:#010x}",
-            ch,
-            chcfg_val,
-            ch_reg(ch, OFF_CHCFG) as usize
-        );
-        ch_reg(ch, OFF_CHCFG).write_volatile(chcfg_val);
+        crate::mmio::write32(ch_reg(ch, OFF_CHCFG) as usize, chcfg_val);
         log::trace!("dmac: ch{} CHCFG ok", ch);
 
         // 3. DMARS: even channel → bits [15:0], odd channel → bits [31:16]
-        let dmars = dmars_reg(ch);
+        let dmars = dmars_reg(ch) as usize;
         let (shifted, mask) = if ch & 1 == 0 {
             (dmars_val & 0xFFFF, 0xFFFF_0000u32)
         } else {
             ((dmars_val & 0xFFFF) << 16, 0x0000_FFFFu32)
         };
-        log::trace!("dmac: ch{} writing DMARS={:#010x}", ch, dmars as usize);
-        dmars.write_volatile((dmars.read_volatile() & mask) | shifted);
+        crate::mmio::write32(dmars, (crate::mmio::read32(dmars) & mask) | shifted);
         log::trace!("dmac: ch{} DMARS ok", ch);
 
         // 4. NXLA = address of the link descriptor
-        log::trace!(
-            "dmac: ch{} writing NXLA={:#010x}",
-            ch,
-            ch_reg(ch, OFF_NXLA) as usize
-        );
-        ch_reg(ch, OFF_NXLA).write_volatile(descriptor as u32);
+        crate::mmio::write32(ch_reg(ch, OFF_NXLA) as usize, descriptor as u32);
         log::trace!("dmac: ch{} NXLA ok", ch);
     }
 }
@@ -646,5 +634,43 @@ mod tests {
         // Sanity: the start/stop/reset/clear-TC controls don't overlap.
         let all = CHCTRL_SETEN | CHCTRL_CLREN | CHCTRL_SWRST | CHCTRL_CLRTC;
         assert_eq!(all.count_ones(), 4);
+    }
+
+    /// `init_with_link_descriptor` (even channel) writes DCTRL=0, CHCFG from
+    /// descriptor[4], the DMARS low half, and NXLA = descriptor address.
+    #[test]
+    fn init_link_descriptor_even_channel() {
+        crate::mmio::test::reset();
+        // An 8-word link descriptor; word [4] is the CHCFG value.
+        let desc: [u32; 8] = [0, 0, 0, 0, 0xABCD_1234, 0, 0, 0];
+        let ch = 6u8; // even
+        unsafe { init_with_link_descriptor(ch, desc.as_ptr(), 0x00E1) };
+
+        assert_eq!(crate::mmio::test::peek32(dctrl_reg(ch) as usize), 0, "DCTRL cleared");
+        assert_eq!(
+            crate::mmio::test::peek32(ch_reg(ch, OFF_CHCFG) as usize),
+            0xABCD_1234,
+            "CHCFG from desc[4]"
+        );
+        // Even channel → DMARS resource selector in the low 16 bits.
+        assert_eq!(crate::mmio::test::peek32(dmars_reg(ch) as usize), 0x0000_00E1);
+        assert_eq!(
+            crate::mmio::test::peek32(ch_reg(ch, OFF_NXLA) as usize),
+            desc.as_ptr() as u32,
+            "NXLA = descriptor address"
+        );
+    }
+
+    /// Odd channels place the DMARS selector in the high 16 bits, preserving
+    /// the even sibling's low half (they share one 32-bit DMARS word).
+    #[test]
+    fn init_link_descriptor_odd_channel_uses_high_dmars_half() {
+        crate::mmio::test::reset();
+        // Channel 6 (even) and 7 (odd) share dmars_reg.
+        let dmars = dmars_reg(7) as usize;
+        crate::mmio::test::poke32(dmars, 0x0000_00E1); // ch6 already set the low half
+        let desc = [0u32; 8];
+        unsafe { init_with_link_descriptor(7, desc.as_ptr(), 0x00E2) };
+        assert_eq!(crate::mmio::test::peek32(dmars), 0x00E2_00E1, "odd in high, even preserved");
     }
 }
