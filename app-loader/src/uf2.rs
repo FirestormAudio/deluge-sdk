@@ -12,39 +12,26 @@
 //! (256 KB on the S25FL512) in a bitmap, and a sector is erased only the first
 //! time any of its bytes are touched.
 //!
+//! The pure wire-format logic (validation, geometry, block building, the erase
+//! bitmap) lives in the host-testable [`deluge_image::uf2`] crate; this module
+//! is the thin hardware adapter that drives `spibsc` erase/program around it.
+//!
 //! [UF2]: https://github.com/microsoft/uf2
 
+use deluge_image::uf2::{self as wire, Block, EraseMap, Slot};
 use rza1l_hal::spibsc;
 
-/// UF2 block magics.
-const UF2_MAGIC_START0: u32 = 0x0A32_4655; // "UF2\n"
-const UF2_MAGIC_START1: u32 = 0x9E5D_5157;
-const UF2_MAGIC_END: u32 = 0x0AB1_6F30;
+/// Payload bytes per UF2 block when dumping flash (one NOR page per block).
+pub use deluge_image::uf2::DUMP_PAYLOAD;
 
-/// Flag: bit set when word at 0x1C is a familyID (not a file size).
-const UF2_FLAG_FAMILY_PRESENT: u32 = 0x0000_2000;
-/// Flag: block is not for flashing (metadata only) — ignore.
-const UF2_FLAG_NOT_MAIN_FLASH: u32 = 0x0000_0001;
-
-/// Custom UF2 familyID for Deluge SSB firmware images.  RZ/A1L has no registered
-/// family, so the matching `.uf2` generator (see `tools/`) must stamp this id.
-/// Blocks with a *different* family present are ignored (not ours); blocks with
-/// no family are also ignored to avoid programming foreign images.
-pub const UF2_FAMILY_DELUGE: u32 = 0x6E27_5A1C;
-
-/// UF2 block field offsets.
-const OFF_MAGIC0: usize = 0x00;
-const OFF_MAGIC1: usize = 0x04;
-const OFF_FLAGS: usize = 0x08;
-const OFF_TARGET: usize = 0x0C;
-const OFF_PAYLOAD_SIZE: usize = 0x10;
-const OFF_BLOCK_NO: usize = 0x14;
-const OFF_NUM_BLOCKS: usize = 0x18;
-const OFF_FAMILY: usize = 0x1C;
-const OFF_DATA: usize = 0x20;
-const OFF_MAGIC_END: usize = 0x1FC;
-/// Maximum payload bytes a UF2 block may carry.
-const UF2_MAX_PAYLOAD: usize = 476;
+/// Flash geometry of our firmware slot, built from the `spibsc` constants so the
+/// wire-format crate never hardcodes a board address.
+const SLOT: Slot = Slot {
+    flash_base: spibsc::SPI_FLASH_BASE,
+    addr: spibsc::FLASH_SLOT_ADDR,
+    len: spibsc::FLASH_SLOT_LEN,
+    sector_size: spibsc::SECTOR_SIZE,
+};
 
 /// Number of flash sectors (256 KB each) in the app slot.
 const SLOT_SECTORS: usize = (spibsc::FLASH_SLOT_LEN / spibsc::SECTOR_SIZE) as usize;
@@ -64,15 +51,10 @@ pub enum Outcome {
     Error,
 }
 
-#[inline]
-fn le_u32(b: &[u8], off: usize) -> u32 {
-    u32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
-}
-
 /// Stateful UF2 → flash programmer for a single update session.
 pub struct Uf2Programmer {
-    /// Bit set once the corresponding slot sector has been erased.
-    erased: [u8; ERASE_BITMAP_BYTES],
+    /// Per-sector erase-on-first-touch tracker.
+    erased: EraseMap<ERASE_BITMAP_BYTES>,
     /// Count of successfully programmed blocks (for progress).
     blocks_done: u32,
     /// Total blocks in the image (from the last valid block seen).
@@ -82,7 +64,7 @@ pub struct Uf2Programmer {
 impl Uf2Programmer {
     pub const fn new() -> Self {
         Self {
-            erased: [0; ERASE_BITMAP_BYTES],
+            erased: EraseMap::new(),
             blocks_done: 0,
             num_blocks: 0,
         }
@@ -93,18 +75,14 @@ impl Uf2Programmer {
         (self.blocks_done, self.num_blocks)
     }
 
-    /// Erase the flash sectors (256 KB) spanned by `[off, off+len)`
-    /// (flash-relative) that have not yet been erased this session.
+    /// Erase the flash sectors (256 KB) spanned by writing `len` bytes at
+    /// flash-relative offset `off` that have not yet been erased this session.
     fn erase_for(&mut self, off: u32, len: u32) {
-        let first = (off - spibsc::FLASH_SLOT_OFFSET) / spibsc::SECTOR_SIZE;
-        let last = (off + len - 1 - spibsc::FLASH_SLOT_OFFSET) / spibsc::SECTOR_SIZE;
+        let (first, last) = wire::sectors_for(&SLOT, off, len);
         for sector in first..=last {
-            let idx = sector as usize;
-            let (byte, bit) = (idx / 8, idx % 8);
-            if self.erased[byte] & (1 << bit) == 0 {
+            if self.erased.take(sector) {
                 let sector_off = spibsc::FLASH_SLOT_OFFSET + sector * spibsc::SECTOR_SIZE;
                 unsafe { spibsc::erase_sector(sector_off) };
-                self.erased[byte] |= 1 << bit;
             }
         }
     }
@@ -112,48 +90,20 @@ impl Uf2Programmer {
     /// Validate one 512-byte host sector as a UF2 block and, if it targets the
     /// firmware slot, erase-on-first-touch and program its payload.
     pub fn write_block(&mut self, data: &[u8]) -> Outcome {
-        if data.len() < 512 {
-            return Outcome::Ignored;
-        }
-        // Magic check — anything else is FAT metadata or a non-UF2 write.
-        if le_u32(data, OFF_MAGIC0) != UF2_MAGIC_START0
-            || le_u32(data, OFF_MAGIC1) != UF2_MAGIC_START1
-            || le_u32(data, OFF_MAGIC_END) != UF2_MAGIC_END
-        {
-            return Outcome::Ignored;
-        }
+        let block = match wire::classify_block(data, &SLOT) {
+            Block::Ignored => return Outcome::Ignored,
+            Block::Malformed => return Outcome::Error,
+            Block::Valid(b) => b,
+        };
 
-        let flags = le_u32(data, OFF_FLAGS);
-        if flags & UF2_FLAG_NOT_MAIN_FLASH != 0 {
-            return Outcome::Ignored;
-        }
-        // Require a matching familyID so we never program a foreign image.
-        if flags & UF2_FLAG_FAMILY_PRESENT == 0 || le_u32(data, OFF_FAMILY) != UF2_FAMILY_DELUGE {
-            return Outcome::Ignored;
-        }
+        let payload = &data[block.payload.clone()];
+        self.erase_for(block.flash_off, payload.len() as u32);
+        unsafe { spibsc::program(block.flash_off, payload) };
 
-        let target = le_u32(data, OFF_TARGET);
-        let payload = le_u32(data, OFF_PAYLOAD_SIZE) as usize;
-        if payload == 0 || payload > UF2_MAX_PAYLOAD {
-            return Outcome::Error;
-        }
-
-        // Must lie entirely within the firmware slot's memory-mapped window.
-        let slot_lo = spibsc::FLASH_SLOT_ADDR;
-        let slot_hi = spibsc::FLASH_SLOT_ADDR + spibsc::FLASH_SLOT_LEN;
-        if target < slot_lo || target as u64 + payload as u64 > slot_hi as u64 {
-            return Outcome::Ignored;
-        }
-
-        let off = target - spibsc::SPI_FLASH_BASE; // flash-relative
-        self.erase_for(off, payload as u32);
-        unsafe { spibsc::program(off, &data[OFF_DATA..OFF_DATA + payload]) };
-
-        self.num_blocks = le_u32(data, OFF_NUM_BLOCKS);
-        let block_no = le_u32(data, OFF_BLOCK_NO);
+        self.num_blocks = block.num_blocks;
         self.blocks_done = self.blocks_done.saturating_add(1);
 
-        if self.num_blocks != 0 && block_no + 1 == self.num_blocks {
+        if block.is_last() {
             Outcome::Done
         } else {
             Outcome::Programmed
@@ -171,12 +121,9 @@ impl Default for Uf2Programmer {
 // Dump (read-back) helpers — used by ghostfat to synthesize CURRENT.UF2
 // ---------------------------------------------------------------------------
 
-/// Payload bytes per UF2 block when dumping flash (one NOR page per block).
-pub const DUMP_PAYLOAD: u32 = 256;
-
 /// Number of UF2 blocks needed to dump `image_len` bytes.
 pub fn dump_block_count(image_len: u32) -> u32 {
-    image_len.div_ceil(DUMP_PAYLOAD)
+    wire::block_count(image_len)
 }
 
 /// Render UF2 block `index` of a flash dump of `image_len` bytes (starting at
@@ -184,25 +131,15 @@ pub fn dump_block_count(image_len: u32) -> u32 {
 /// memory-mapped window.
 pub fn render_dump_block(index: u32, image_len: u32, out: &mut [u8]) {
     let total = dump_block_count(image_len);
-    out[..512].fill(0);
-
-    let addr = spibsc::FLASH_SLOT_ADDR + index * DUMP_PAYLOAD;
     let off = index * DUMP_PAYLOAD;
-    let payload = DUMP_PAYLOAD.min(image_len.saturating_sub(off));
+    let addr = spibsc::FLASH_SLOT_ADDR + off;
+    let payload_len = DUMP_PAYLOAD.min(image_len.saturating_sub(off)) as usize;
 
-    out[OFF_MAGIC0..OFF_MAGIC0 + 4].copy_from_slice(&UF2_MAGIC_START0.to_le_bytes());
-    out[OFF_MAGIC1..OFF_MAGIC1 + 4].copy_from_slice(&UF2_MAGIC_START1.to_le_bytes());
-    out[OFF_FLAGS..OFF_FLAGS + 4].copy_from_slice(&UF2_FLAG_FAMILY_PRESENT.to_le_bytes());
-    out[OFF_TARGET..OFF_TARGET + 4].copy_from_slice(&addr.to_le_bytes());
-    out[OFF_PAYLOAD_SIZE..OFF_PAYLOAD_SIZE + 4].copy_from_slice(&payload.to_le_bytes());
-    out[OFF_BLOCK_NO..OFF_BLOCK_NO + 4].copy_from_slice(&index.to_le_bytes());
-    out[OFF_NUM_BLOCKS..OFF_NUM_BLOCKS + 4].copy_from_slice(&total.to_le_bytes());
-    out[OFF_FAMILY..OFF_FAMILY + 4].copy_from_slice(&UF2_FAMILY_DELUGE.to_le_bytes());
-
-    // Copy the page payload straight from the memory-mapped flash window.
-    for i in 0..payload as usize {
-        out[OFF_DATA + i] = unsafe { core::ptr::read_volatile((addr as *const u8).add(i)) };
+    // Copy the page payload from the memory-mapped flash window into a staging
+    // buffer, then hand it to the shared block builder.
+    let mut page = [0u8; DUMP_PAYLOAD as usize];
+    for (i, b) in page[..payload_len].iter_mut().enumerate() {
+        *b = unsafe { core::ptr::read_volatile((addr as *const u8).add(i)) };
     }
-
-    out[OFF_MAGIC_END..OFF_MAGIC_END + 4].copy_from_slice(&UF2_MAGIC_END.to_le_bytes());
+    wire::build_block(out, index, total, addr, &page[..payload_len]);
 }

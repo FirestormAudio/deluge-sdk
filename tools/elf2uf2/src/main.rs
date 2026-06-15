@@ -83,7 +83,7 @@ struct Args {
 }
 
 fn run() -> Result<(), String> {
-    let args = parse_args()?;
+    let args = parse_args(std::env::args().skip(1))?;
 
     let elf = std::fs::read(&args.input)
         .map_err(|e| format!("reading {}: {e}", args.input.display()))?;
@@ -301,7 +301,7 @@ fn build_uf2(image: &[u8], base: u32, family: u32) -> Vec<u8> {
 
 // --- arg parsing -----------------------------------------------------------
 
-fn parse_args() -> Result<Args, String> {
+fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut input: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
     let mut base = DEFAULT_BASE;
@@ -309,7 +309,7 @@ fn parse_args() -> Result<Args, String> {
     let mut emit_bin = false;
     let mut skip_fsb_check = false;
 
-    let mut it = std::env::args().skip(1);
+    let mut it = args;
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "-h" | "--help" => {
@@ -397,4 +397,380 @@ fn le32(b: &[u8], o: usize) -> u32 {
 #[inline]
 fn put32(b: &mut [u8], o: usize, v: u32) {
     b[o..o + 4].copy_from_slice(&v.to_le_bytes());
+}
+
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One loadable segment for the ELF builder: physical load address + bytes.
+    struct Seg {
+        paddr: u32,
+        data: Vec<u8>,
+    }
+
+    /// Build a minimal but well-formed ELF32-LE ARM executable carrying the
+    /// given `PT_LOAD` segments. Layout: 52-byte header, then `n` 32-byte
+    /// program headers, then each segment's bytes back to back.
+    fn build_elf(segs: &[Seg]) -> Vec<u8> {
+        const EHSIZE: usize = 52;
+        const PHENTSIZE: usize = 32;
+        let phoff = EHSIZE;
+        let data_off = phoff + segs.len() * PHENTSIZE;
+
+        let total = data_off + segs.iter().map(|s| s.data.len()).sum::<usize>();
+        let mut elf = vec![0u8; total];
+
+        // ELF header.
+        elf[0..4].copy_from_slice(&ELF_MAGIC);
+        elf[4] = ELFCLASS32;
+        elf[5] = ELFDATA2LSB;
+        elf[6] = 1; // EI_VERSION
+        put16(&mut elf, 16, ET_EXEC);
+        put16(&mut elf, 18, EM_ARM);
+        put32(&mut elf, 24, segs.first().map_or(0, |s| s.paddr)); // e_entry
+        put32(&mut elf, 28, phoff as u32);
+        put16(&mut elf, 40, EHSIZE as u16);
+        put16(&mut elf, 42, PHENTSIZE as u16);
+        put16(&mut elf, 44, segs.len() as u16);
+
+        // Program headers + segment bodies.
+        let mut body = data_off;
+        for (i, s) in segs.iter().enumerate() {
+            let ph = phoff + i * PHENTSIZE;
+            put32(&mut elf, ph, PT_LOAD);
+            put32(&mut elf, ph + 4, body as u32); // p_offset
+            put32(&mut elf, ph + 8, s.paddr); // p_vaddr
+            put32(&mut elf, ph + 12, s.paddr); // p_paddr (LMA)
+            put32(&mut elf, ph + 16, s.data.len() as u32); // p_filesz
+            put32(&mut elf, ph + 20, s.data.len() as u32); // p_memsz
+            put32(&mut elf, ph + 24, 5); // p_flags = R+X
+            put32(&mut elf, ph + 28, 4); // p_align
+            elf[body..body + s.data.len()].copy_from_slice(&s.data);
+            body += s.data.len();
+        }
+        elf
+    }
+
+    fn put16(b: &mut [u8], o: usize, v: u16) {
+        b[o..o + 2].copy_from_slice(&v.to_le_bytes());
+    }
+
+    /// Build a flat image with valid FSB metadata for `[base, base+len)`.
+    fn image_with_fsb(base: u32, len: usize) -> Vec<u8> {
+        let mut img = vec![0u8; len];
+        put32(&mut img, META_CODE_START, base);
+        put32(&mut img, META_CODE_END, base + len as u32);
+        put32(&mut img, META_CODE_EXECUTE, base); // entry at start
+        img[META_SIGNATURE..META_SIGNATURE + SIGNATURE.len()].copy_from_slice(SIGNATURE);
+        img
+    }
+
+    // ---- flatten_elf -------------------------------------------------------
+
+    #[test]
+    fn flatten_single_segment() {
+        let elf = build_elf(&[Seg {
+            paddr: 0x0C00_0000,
+            data: vec![1, 2, 3, 4],
+        }]);
+        let (image, base) = flatten_elf(&elf).unwrap();
+        assert_eq!(base, 0x0C00_0000);
+        assert_eq!(image, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn flatten_two_segments_with_gap() {
+        // Segments at base and base+8 leave a 4-byte zero-filled gap between.
+        let elf = build_elf(&[
+            Seg {
+                paddr: 0x0C00_0000,
+                data: vec![0xAA; 4],
+            },
+            Seg {
+                paddr: 0x0C00_0008,
+                data: vec![0xBB; 4],
+            },
+        ]);
+        let (image, base) = flatten_elf(&elf).unwrap();
+        assert_eq!(base, 0x0C00_0000);
+        assert_eq!(image.len(), 12);
+        assert_eq!(&image[0..4], &[0xAA; 4]);
+        assert_eq!(&image[4..8], &[0, 0, 0, 0], "gap must be zero-filled");
+        assert_eq!(&image[8..12], &[0xBB; 4]);
+    }
+
+    #[test]
+    fn flatten_orders_by_lma_not_phdr_order() {
+        // Higher-address segment listed first; image base is still the lowest.
+        let elf = build_elf(&[
+            Seg {
+                paddr: 0x0C00_0008,
+                data: vec![0xBB; 4],
+            },
+            Seg {
+                paddr: 0x0C00_0000,
+                data: vec![0xAA; 4],
+            },
+        ]);
+        let (image, base) = flatten_elf(&elf).unwrap();
+        assert_eq!(base, 0x0C00_0000);
+        assert_eq!(&image[0..4], &[0xAA; 4]);
+        assert_eq!(&image[8..12], &[0xBB; 4]);
+    }
+
+    #[test]
+    fn flatten_rejects_short_file() {
+        assert!(flatten_elf(&[0u8; 8]).is_err());
+    }
+
+    #[test]
+    fn flatten_rejects_bad_magic() {
+        let mut elf = build_elf(&[Seg {
+            paddr: 0,
+            data: vec![0; 4],
+        }]);
+        elf[1] = b'X';
+        assert!(flatten_elf(&elf).unwrap_err().contains("magic"));
+    }
+
+    #[test]
+    fn flatten_rejects_non_32bit_or_big_endian() {
+        let mut elf = build_elf(&[Seg {
+            paddr: 0,
+            data: vec![0; 4],
+        }]);
+        elf[4] = 2; // ELFCLASS64
+        assert!(flatten_elf(&elf).is_err());
+        elf[4] = ELFCLASS32;
+        elf[5] = 2; // ELFDATA2MSB
+        assert!(flatten_elf(&elf).is_err());
+    }
+
+    #[test]
+    fn flatten_rejects_non_exec_and_non_arm() {
+        let mut elf = build_elf(&[Seg {
+            paddr: 0,
+            data: vec![0; 4],
+        }]);
+        put16(&mut elf, 16, 1); // ET_REL
+        assert!(flatten_elf(&elf).unwrap_err().contains("ET_EXEC"));
+        put16(&mut elf, 16, ET_EXEC);
+        put16(&mut elf, 18, 0x3E); // EM_X86_64
+        assert!(flatten_elf(&elf).unwrap_err().contains("EM_ARM"));
+    }
+
+    #[test]
+    fn flatten_skips_bss_only_segment() {
+        // A PT_LOAD with filesz=0 (e.g. .bss) contributes nothing to the image.
+        let mut elf = build_elf(&[
+            Seg {
+                paddr: 0x0C00_0000,
+                data: vec![0x11; 4],
+            },
+            Seg {
+                paddr: 0x0C00_0010,
+                data: vec![],
+            },
+        ]);
+        // The builder set p_memsz=0 too; bump memsz to mimic a real .bss.
+        let ph1 = 52 + 32;
+        put32(&mut elf, ph1 + 20, 0x100);
+        let (image, _) = flatten_elf(&elf).unwrap();
+        assert_eq!(image.len(), 4, "bss-only segment must not extend the image");
+    }
+
+    #[test]
+    fn flatten_rejects_no_loadable_segments() {
+        let elf = build_elf(&[]);
+        assert!(flatten_elf(&elf).is_err());
+    }
+
+    #[test]
+    fn flatten_rejects_segment_past_eof() {
+        let mut elf = build_elf(&[Seg {
+            paddr: 0,
+            data: vec![0; 4],
+        }]);
+        let ph = 52;
+        put32(&mut elf, ph + 16, 0x1000); // p_filesz way past EOF
+        assert!(flatten_elf(&elf).unwrap_err().contains("past end"));
+    }
+
+    // ---- check_fsb_metadata ------------------------------------------------
+
+    #[test]
+    fn fsb_accepts_valid_metadata() {
+        let img = image_with_fsb(0x0C00_0000, 0x200);
+        check_fsb_metadata(&img, 0x0C00_0000, DEFAULT_BASE).unwrap();
+    }
+
+    #[test]
+    fn fsb_rejects_missing_signature() {
+        let mut img = image_with_fsb(0x0C00_0000, 0x200);
+        img[META_SIGNATURE] ^= 0xFF;
+        assert!(check_fsb_metadata(&img, 0x0C00_0000, DEFAULT_BASE)
+            .unwrap_err()
+            .contains("signature"));
+    }
+
+    #[test]
+    fn fsb_rejects_too_small_image() {
+        let img = vec![0u8; META_SIGNATURE]; // can't hold the signature
+        assert!(check_fsb_metadata(&img, 0, DEFAULT_BASE).is_err());
+    }
+
+    #[test]
+    fn fsb_rejects_code_start_mismatch() {
+        let img = image_with_fsb(0x0C00_0000, 0x200);
+        // Image actually loads 0x100 lower than the metadata claims.
+        assert!(check_fsb_metadata(&img, 0x0BFF_FF00, DEFAULT_BASE)
+            .unwrap_err()
+            .contains("code_start"));
+    }
+
+    #[test]
+    fn fsb_rejects_entry_outside_code_range() {
+        let mut img = image_with_fsb(0x0C00_0000, 0x200);
+        put32(&mut img, META_CODE_EXECUTE, 0x0C00_0400); // past code_end
+        assert!(check_fsb_metadata(&img, 0x0C00_0000, DEFAULT_BASE)
+            .unwrap_err()
+            .contains("entry"));
+    }
+
+    #[test]
+    fn fsb_rejects_image_longer_than_coded_span() {
+        let mut img = image_with_fsb(0x0C00_0000, 0x200);
+        // Shrink code_end so the image extends past it.
+        put32(&mut img, META_CODE_END, 0x0C00_0100);
+        assert!(check_fsb_metadata(&img, 0x0C00_0000, DEFAULT_BASE)
+            .unwrap_err()
+            .contains("code_end"));
+    }
+
+    // ---- build_uf2 ---------------------------------------------------------
+
+    #[test]
+    fn uf2_block_count_and_remainder() {
+        // 256 + 1 bytes -> 2 blocks (ceil), last carries one payload byte.
+        let image: Vec<u8> = (0..=256u32).map(|i| i as u8).collect();
+        let uf2 = build_uf2(&image, DEFAULT_BASE, DEFAULT_FAMILY);
+        assert_eq!(uf2.len(), 2 * 512);
+
+        // Block 1 header fields.
+        assert_eq!(le32(&uf2, 512 + 0x00), UF2_MAGIC_START0);
+        assert_eq!(le32(&uf2, 512 + 0x04), UF2_MAGIC_START1);
+        assert_eq!(le32(&uf2, 512 + 0x08), UF2_FLAG_FAMILY_PRESENT);
+        assert_eq!(le32(&uf2, 512 + 0x0C), DEFAULT_BASE + 256); // targetAddr
+        assert_eq!(le32(&uf2, 512 + 0x10), PAYLOAD); // payloadSize (fixed 256)
+        assert_eq!(le32(&uf2, 512 + 0x14), 1); // blockNo
+        assert_eq!(le32(&uf2, 512 + 0x18), 2); // numBlocks
+        assert_eq!(le32(&uf2, 512 + 0x1C), DEFAULT_FAMILY);
+        assert_eq!(le32(&uf2, 512 + 0x1FC), UF2_MAGIC_END);
+
+        // The remainder byte is present; the rest of the payload area is zero.
+        assert_eq!(uf2[512 + 0x20], 256u32 as u8);
+        assert!(uf2[512 + 0x21..512 + 0x20 + PAYLOAD as usize]
+            .iter()
+            .all(|&b| b == 0));
+    }
+
+    #[test]
+    fn uf2_targetaddr_increments_by_payload() {
+        let image = vec![0u8; 256 * 3];
+        let uf2 = build_uf2(&image, DEFAULT_BASE, DEFAULT_FAMILY);
+        assert_eq!(uf2.len(), 3 * 512);
+        for blk in 0..3u32 {
+            let o = blk as usize * 512;
+            assert_eq!(le32(&uf2, o + 0x0C), DEFAULT_BASE + blk * PAYLOAD);
+            assert_eq!(le32(&uf2, o + 0x14), blk);
+            assert_eq!(le32(&uf2, o + 0x18), 3);
+        }
+    }
+
+    // ---- constant sync (mirrors the firmware side) -------------------------
+
+    #[test]
+    fn defaults_match_firmware_constants() {
+        // These must stay in lockstep with rza1l-hal/src/spibsc.rs and
+        // app-loader/src/uf2.rs (asserted again from the firmware side).
+        assert_eq!(DEFAULT_BASE, 0x1810_0000);
+        assert_eq!(SLOT_LEN, 0x0030_0000);
+        assert_eq!(DEFAULT_FAMILY, 0x6E27_5A1C);
+        assert_eq!(PAYLOAD, 256);
+        assert_eq!(SIGNATURE, b".BootLoad_ValidProgramTest.");
+    }
+
+    // ---- arg parsing -------------------------------------------------------
+
+    fn args(v: &[&str]) -> Result<Args, String> {
+        parse_args(v.iter().map(|s| s.to_string()))
+    }
+
+    #[test]
+    fn args_defaults() {
+        let a = args(&["fw.elf"]).unwrap();
+        assert_eq!(a.input, PathBuf::from("fw.elf"));
+        assert_eq!(a.output, PathBuf::from("fw.uf2"));
+        assert_eq!(a.base, DEFAULT_BASE);
+        assert_eq!(a.family, DEFAULT_FAMILY);
+        assert!(!a.emit_bin && !a.skip_fsb_check);
+    }
+
+    #[test]
+    fn args_all_options() {
+        let a = args(&[
+            "in.elf", "-o", "out.uf2", "--base", "0x1000", "--family", "42", "--bin",
+            "--skip-fsb-check",
+        ])
+        .unwrap();
+        assert_eq!(a.output, PathBuf::from("out.uf2"));
+        assert_eq!(a.base, 0x1000);
+        assert_eq!(a.family, 42);
+        assert!(a.emit_bin && a.skip_fsb_check);
+    }
+
+    #[test]
+    fn args_errors() {
+        assert!(args(&[]).is_err(), "missing input");
+        assert!(args(&["a.elf", "b.elf"]).is_err(), "two inputs");
+        assert!(args(&["--frob"]).is_err(), "unknown option");
+        assert!(args(&["a.elf", "-o"]).is_err(), "dangling -o");
+    }
+
+    #[test]
+    fn parse_u32_forms() {
+        assert_eq!(parse_u32("0x1810_0000".replace('_', "").as_str()).unwrap(), 0x1810_0000);
+        assert_eq!(parse_u32("0X10").unwrap(), 16);
+        assert_eq!(parse_u32("4096").unwrap(), 4096);
+        assert!(parse_u32("nope").is_err());
+    }
+
+    #[test]
+    fn default_output_swaps_extension() {
+        assert_eq!(default_output(Path::new("a/b/fw.elf")), PathBuf::from("a/b/fw.uf2"));
+        assert_eq!(default_output(Path::new("fw")), PathBuf::from("fw.uf2"));
+    }
+
+    // ---- end-to-end (in-memory) -------------------------------------------
+
+    #[test]
+    fn elf_to_uf2_pipeline() {
+        // A RAM-linked-style ELF with FSB metadata flattens, validates, wraps.
+        let base = 0x0C00_0000;
+        let image = image_with_fsb(base, 0x200);
+        let elf = build_elf(&[Seg {
+            paddr: base,
+            data: image.clone(),
+        }]);
+
+        let (flat, flat_base) = flatten_elf(&elf).unwrap();
+        assert_eq!(flat, image);
+        assert_eq!(flat_base, base);
+        check_fsb_metadata(&flat, flat_base, DEFAULT_BASE).unwrap();
+
+        let uf2 = build_uf2(&flat, DEFAULT_BASE, DEFAULT_FAMILY);
+        assert_eq!(uf2.len(), 2 * 512); // 0x200 bytes = 2 blocks
+    }
 }

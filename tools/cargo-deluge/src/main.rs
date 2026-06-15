@@ -79,12 +79,7 @@ fn cmd_new(args: &[String]) -> Result<(), String> {
         .iter()
         .find(|a| !a.starts_with('-'))
         .ok_or("`new` requires an app name: cargo deluge new <name>")?;
-    if !name
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        return Err(format!("invalid app name `{name}` (use letters, digits, _ or -)"));
-    }
+    validate_app_name(name)?;
 
     let dir = PathBuf::from(name);
     if dir.exists() {
@@ -104,9 +99,33 @@ fn cmd_new(args: &[String]) -> Result<(), String> {
         }
     };
 
-    let crate_name = name.replace('-', "_");
+    scaffold(&dir, name, &deluge_dep)?;
 
-    write(&dir.join("Cargo.toml"), &cargo_toml(name, &deluge_dep))?;
+    println!("created Deluge app `{name}`");
+    println!("  cd {name}");
+    println!("  cargo deluge run        # build + deploy to your Deluge SD card");
+    Ok(())
+}
+
+/// An app name must be a single path-safe token (letters, digits, `_`, `-`).
+fn validate_app_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("app name must not be empty".to_string());
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(format!("invalid app name `{name}` (use letters, digits, _ or -)"));
+    }
+    Ok(())
+}
+
+/// Write the canonical app file-set into `dir` (already verified not to exist).
+/// Split out from [`cmd_new`] so the full scaffold is testable in a temp dir.
+fn scaffold(dir: &Path, name: &str, deluge_dep: &str) -> Result<(), String> {
+    let crate_name = name.replace('-', "_");
+    write(&dir.join("Cargo.toml"), &cargo_toml(name, deluge_dep))?;
     write(&dir.join("rust-toolchain.toml"), TPL_TOOLCHAIN)?;
     write(&dir.join(".cargo/config.toml"), CARGO_CONFIG)?;
     write(&dir.join("build.rs"), TPL_BUILD_RS)?;
@@ -114,10 +133,6 @@ fn cmd_new(args: &[String]) -> Result<(), String> {
     write(&dir.join("memory_rtt.x"), TPL_MEMORY_RTT_X)?;
     write(&dir.join("src/main.rs"), &main_rs(&crate_name))?;
     write(&dir.join(".gitignore"), "/target\n")?;
-
-    println!("created Deluge app `{name}`");
-    println!("  cd {name}");
-    println!("  cargo deluge run        # build + deploy to your Deluge SD card");
     Ok(())
 }
 
@@ -207,6 +222,12 @@ fn cmd_run(args: &[String]) -> Result<(), String> {
 fn package_name() -> Result<String, String> {
     let toml = fs::read_to_string("Cargo.toml")
         .map_err(|_| "no Cargo.toml in the current directory — run inside an app".to_string())?;
+    parse_package_name(&toml).ok_or_else(|| "could not find package name in Cargo.toml".to_string())
+}
+
+/// Extract `name = "…"` from the `[package]` table of a Cargo manifest.
+/// A `name` key in any other table (e.g. `[[bin]]`) is ignored.
+fn parse_package_name(toml: &str) -> Option<String> {
     let mut in_package = false;
     for line in toml.lines() {
         let t = line.trim();
@@ -218,13 +239,13 @@ fn package_name() -> Result<String, String> {
             if let Some(rest) = t.strip_prefix("name") {
                 if let Some(q1) = rest.find('"') {
                     if let Some(q2) = rest[q1 + 1..].find('"') {
-                        return Ok(rest[q1 + 1..q1 + 1 + q2].to_string());
+                        return Some(rest[q1 + 1..q1 + 1 + q2].to_string());
                     }
                 }
             }
         }
     }
-    Err("could not find package name in Cargo.toml".to_string())
+    None
 }
 
 fn arg_value(args: &[String], flag: &str) -> Option<String> {
@@ -292,6 +313,145 @@ rustflags = [
 build-std = ["core"]
 build-std-features = ["compiler-builtins-mem"]
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    // ---- arg_value ---------------------------------------------------------
+
+    #[test]
+    fn arg_value_finds_and_misses() {
+        let a: Vec<String> = ["run", "--dest", "/mnt/sd", "--release"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(arg_value(&a, "--dest"), Some("/mnt/sd".to_string()));
+        assert_eq!(arg_value(&a, "--missing"), None);
+    }
+
+    #[test]
+    fn arg_value_flag_without_value_is_none() {
+        let a = vec!["--dest".to_string()];
+        assert_eq!(arg_value(&a, "--dest"), None);
+    }
+
+    // ---- validate_app_name -------------------------------------------------
+
+    #[test]
+    fn app_name_accepts_valid() {
+        for n in ["app", "my_app", "my-app", "app123", "A1-b_2"] {
+            assert!(validate_app_name(n).is_ok(), "{n} should be valid");
+        }
+    }
+
+    #[test]
+    fn app_name_rejects_invalid() {
+        for n in ["", "my app", "app/evil", "../esc", "app.rs", "app!"] {
+            assert!(validate_app_name(n).is_err(), "{n:?} should be rejected");
+        }
+    }
+
+    // ---- parse_package_name ------------------------------------------------
+
+    #[test]
+    fn package_name_from_package_table() {
+        let toml = "[package]\nname = \"cool-app\"\nversion = \"0.1.0\"\n";
+        assert_eq!(parse_package_name(toml).as_deref(), Some("cool-app"));
+    }
+
+    #[test]
+    fn package_name_ignores_bin_table_name() {
+        // The [[bin]] name must not shadow the [package] name, even when the
+        // [[bin]] table appears first.
+        let toml = "[[bin]]\nname = \"the-bin\"\n\n[package]\nname = \"the-pkg\"\n";
+        assert_eq!(parse_package_name(toml).as_deref(), Some("the-pkg"));
+    }
+
+    #[test]
+    fn package_name_absent() {
+        assert_eq!(parse_package_name("[dependencies]\nfoo = \"1\"\n"), None);
+    }
+
+    // ---- templates ---------------------------------------------------------
+
+    #[test]
+    fn cargo_toml_template_is_coherent() {
+        let t = cargo_toml("blinky", "deluge = \"0.1\"");
+        assert!(t.contains("name = \"blinky\""));
+        assert!(t.contains("deluge = \"0.1\""));
+        assert!(t.contains("embassy-executor"));
+        assert!(t.contains("rtt = [\"deluge/rtt\"]"));
+        // The parser must be able to read the name back out.
+        assert_eq!(parse_package_name(&t).as_deref(), Some("blinky"));
+    }
+
+    #[test]
+    fn main_rs_template_is_an_app() {
+        let m = main_rs("blinky");
+        assert!(m.contains("#![no_std]"));
+        assert!(m.contains("#![no_main]"));
+        assert!(m.contains("#[deluge::app]"));
+        assert!(m.contains("async fn main"));
+    }
+
+    #[test]
+    fn baked_in_templates_nonempty() {
+        assert!(!TPL_BUILD_RS.is_empty());
+        assert!(!TPL_MEMORY_X.is_empty());
+        assert!(!TPL_MEMORY_RTT_X.is_empty());
+        assert!(!TPL_TOOLCHAIN.is_empty());
+        assert!(TPL_TOOLCHAIN.contains("armv7a-none-eabihf"));
+        assert!(CARGO_CONFIG.contains("build-std"));
+        assert_eq!(TARGET, "armv7a-none-eabihf");
+    }
+
+    // ---- scaffold (full file-set into a temp dir, no chdir) ----------------
+
+    /// Unique temp directory; zero-dependency (no `tempfile` crate), cleaned up
+    /// by the returned guard's `Drop`.
+    struct TmpDir(PathBuf);
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    fn tmpdir() -> TmpDir {
+        static N: AtomicU32 = AtomicU32::new(0);
+        let p = env::temp_dir().join(format!(
+            "cargo-deluge-test-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&p).unwrap();
+        TmpDir(p)
+    }
+
+    #[test]
+    fn scaffold_writes_expected_file_set() {
+        let tmp = tmpdir();
+        let app = tmp.0.join("my-app");
+        scaffold(&app, "my-app", "deluge = \"0.1\"").unwrap();
+
+        for f in [
+            "Cargo.toml",
+            "rust-toolchain.toml",
+            ".cargo/config.toml",
+            "build.rs",
+            "memory.x",
+            "memory_rtt.x",
+            "src/main.rs",
+            ".gitignore",
+        ] {
+            assert!(app.join(f).is_file(), "missing scaffolded file: {f}");
+        }
+
+        let cargo = fs::read_to_string(app.join("Cargo.toml")).unwrap();
+        assert_eq!(parse_package_name(&cargo).as_deref(), Some("my-app"));
+        assert_eq!(fs::read_to_string(app.join(".gitignore")).unwrap(), "/target\n");
+    }
+}
 
 fn main_rs(_crate_name: &str) -> String {
     r#"//! A Deluge app.

@@ -390,3 +390,36 @@ pub unsafe fn program(offset: u32, data: &[u8]) {
         to_read_mode();
     }
 }
+
+#[cfg(all(test, not(target_os = "none")))]
+mod tests {
+    use super::*;
+
+    /// The app-slot flash geometry is the contract shared by three places that
+    /// cannot compile together: this driver (firmware), the on-host `elf2uf2`
+    /// tool, and the `deluge-image` wire-format crate. They each pin the same
+    /// literals; if one changes without the others, a UF2 built by the tool
+    /// would target the wrong flash range — so pin them here too.
+    ///
+    /// Keep in sync with:
+    ///   * `tools/elf2uf2` — `DEFAULT_BASE`, `SLOT_LEN` (+ its `defaults_match_firmware_constants` test)
+    ///   * `crates/deluge-image/src/uf2.rs` — the `DELUGE_SLOT` test fixture
+    #[test]
+    fn app_slot_geometry_is_pinned() {
+        assert_eq!(SPI_FLASH_BASE, 0x1800_0000);
+        assert_eq!(FLASH_SLOT_OFFSET, 0x0010_0000);
+        assert_eq!(FLASH_SLOT_ADDR, 0x1810_0000);
+        assert_eq!(FLASH_SLOT_LEN, 0x0030_0000);
+        assert_eq!(SECTOR_SIZE, 0x0004_0000);
+    }
+
+    /// The slot must be a whole number of erase sectors, and the slot base must
+    /// be sector-aligned so erasing a slot sector never spills into the
+    /// hardware-reserved region (FSB / settings / SSB) below it.
+    #[test]
+    fn slot_is_sector_aligned() {
+        assert_eq!(FLASH_SLOT_OFFSET % SECTOR_SIZE, 0, "slot base must be sector-aligned");
+        assert_eq!(FLASH_SLOT_LEN % SECTOR_SIZE, 0, "slot must be whole sectors");
+        assert_eq!(FLASH_SLOT_LEN / SECTOR_SIZE, 12, "3 MB / 256 KB = 12 sectors");
+    }
+}

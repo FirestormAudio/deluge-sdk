@@ -9,6 +9,7 @@ members = [
   "crates/deluge-fft",
   "app-loader",
   "crates/deluge",
+  "crates/deluge-image",
   "crates/deluge-macros",
   "crates/armv7-dsp-intrinsics",
   "crates/fixedpoint",

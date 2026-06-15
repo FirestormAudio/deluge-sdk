@@ -84,6 +84,7 @@ version = "0.1.0"
 dependencies = [
  "cortex-ar",
  "deluge-bsp",
+ "deluge-image",
  "embassy-executor",
  "embassy-futures",
  "embassy-sync",
@@ -540,6 +541,10 @@ dependencies = [
  "criterion",
  "rustfft",
 ]
+
+[[package]]
+name = "deluge-image"
+version = "0.1.0"
 
 [[package]]
 name = "deluge-macros"

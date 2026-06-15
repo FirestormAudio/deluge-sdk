@@ -38,6 +38,7 @@ cargo test --target "$QEMU" -p deluge-bsp --lib
 cargo test --target "$QEMU" -p embedded-fonts-deluge --lib
 
 echo "==> Host bucket ($HOST)"
+cargo test --target "$HOST" -p deluge-image
 cargo test --target "$HOST" -p deluge-ui-toolkit
 cargo test --target "$HOST" -p deluge-macros
 cargo test --target "$HOST" --manifest-path tools/elf2uf2/Cargo.toml

@@ -15,59 +15,24 @@
 //! they cannot overwrite the bootloader.
 
 use deluge_bsp::fat::{self, FatError, RawFile};
+// The ELF wire-format constants and the pure load-range / staging math live in
+// the host-testable `deluge-image` crate so there is a single implementation
+// (the on-host `elf2uf2` and these unit tests share it — see
+// `crates/deluge-image/src/elf.rs`).
+use deluge_image::elf::{
+    ELF_MAGIC, ELFCLASS32, ELFDATA2LSB, EM_ARM, ET_EXEC, LoadTarget, MAX_PHDRS, PT_LOAD,
+    classify_load_range, le16, le32, mirror_to_phys, sram_stage_addr,
+};
 use embassy_time::{Duration, Timer};
-
-/// ELF magic bytes.
-const ELF_MAGIC: [u8; 4] = [0x7F, b'E', b'L', b'F'];
-/// ELF class: 32-bit.
-const ELFCLASS32: u8 = 1;
-/// ELF data encoding: little-endian.
-const ELFDATA2LSB: u8 = 1;
-/// ELF machine: ARM (Thumb/ARM).
-const EM_ARM: u16 = 0x28;
-/// Program header type: loadable segment.
-const PT_LOAD: u32 = 1;
-
-/// Maximum number of program headers processed.
-const MAX_PHDRS: usize = 8;
 
 /// Chunk size for streamed segment copies (one FAT sector).
 const CHUNK: usize = 512;
 
-// ---------------------------------------------------------------------------
-// Staging constants and types
-// ---------------------------------------------------------------------------
-
-/// Base of the SRAM region that apps are permitted to target.
-const SRAM_LOAD_ORIGIN: u32 = 0x2002_0000;
-
-/// Staging area in SDRAM for SRAM-targeting segments.
-///
-/// A segment intended for SRAM address `p` is written to
-/// `SDRAM_STAGE_BASE + (p - SRAM_LOAD_ORIGIN)` during the load phase.
-/// The trampoline then copies it to `p` after the bootloader's own SRAM
-/// is no longer needed.  The staging window is at most 2.875 MB
-/// (0x0F000000–0x0F2DFFFF inclusive, exclusive end 0x0F2E0000),
-/// safely within the 64 MB SDRAM range.
-const SDRAM_STAGE_BASE: u32 = 0x0F00_0000;
-
-/// Descriptor for one SRAM-targeting `PT_LOAD` segment.
-///
-/// Passed to [`crate::launcher::launch_via_trampoline`] after the ELF load
-/// completes.  Layout is `repr(C)` so the trampoline blob can read it with
-/// plain `ldr` instructions without any offset calculation.
-#[derive(Clone, Copy, Default)]
-#[repr(C)]
-pub struct SramSegDesc {
-    /// Source address (SDRAM staging area).
-    pub src: u32,
-    /// Final SRAM destination address.
-    pub dst: u32,
-    /// Bytes to copy from `src` to `dst`.
-    pub filesz: u32,
-    /// Additional bytes to zero after the copy (`p_memsz - p_filesz`).
-    pub zero_extra: u32,
-}
+/// Descriptor for one SRAM-targeting `PT_LOAD` segment (the trampoline ABI).
+/// Defined in [`deluge_image::elf`] as `SegDesc`; re-exported here under the
+/// loader's historical name so [`crate::launcher`] / [`crate::flashboot`] are
+/// unaffected.
+pub use deluge_image::elf::SegDesc as SramSegDesc;
 
 /// Result returned by a successful [`load_from_sd`] call.
 pub struct LoadResult {
@@ -78,9 +43,6 @@ pub struct LoadResult {
     /// Number of valid entries in `sram_descs`.
     pub n_sram: usize,
 }
-
-/// ELF type: executable file.
-const ET_EXEC: u16 = 2;
 
 /// Errors from the ELF loader.
 #[derive(Debug, Clone)]
@@ -118,65 +80,6 @@ fn read_exact(
         pos += n;
     }
     Ok(())
-}
-
-#[inline]
-fn le16(buf: &[u8], off: usize) -> u16 {
-    u16::from_le_bytes(buf[off..off + 2].try_into().unwrap())
-}
-
-#[inline]
-fn le32(buf: &[u8], off: usize) -> u32 {
-    u32::from_le_bytes(buf[off..off + 4].try_into().unwrap())
-}
-
-/// Resolve an uncached **mirror-alias** load address to the cached physical
-/// address it shadows.
-///
-/// The RZ/A1L exposes non-cacheable mirrors of OCRAM and SDRAM at
-/// `physical + 0x4000_0000` (see the MMU map in `rza1l_hal::mmu`):
-///   * OCRAM mirror `0x6000_0000..0x60A0_0000` ⇒ OCRAM `0x2000_0000..0x20A0_0000`
-///   * SDRAM mirror `0x4C00_0000..0x5000_0000` ⇒ SDRAM `0x0C00_0000..0x1000_0000`
-///
-/// Firmware images intentionally place explicitly non-cacheable sections (the
-/// RTT control block, DMA buffers, …) at these mirror addresses.  For
-/// load-range *classification* and SRAM *staging-offset* maths we must work
-/// with the underlying physical address; the segment is still written through
-/// the original (mirror) address so the application sees the non-cacheable
-/// view it asked for.
-fn mirror_to_phys(addr: u32) -> u32 {
-    const OFF: u32 = 0x4000_0000; // rza1l_hal::UNCACHED_MIRROR_OFFSET
-    if (0x6000_0000..0x60A0_0000).contains(&addr) || (0x4C00_0000..0x5000_0000).contains(&addr) {
-        addr - OFF
-    } else {
-        addr
-    }
-}
-
-/// Classify a `PT_LOAD` target range.
-enum SegTarget {
-    /// Segment targets SDRAM (0x0C000000–0x0EFFFFFF); write directly.
-    Sdram,
-    /// Segment targets upper SRAM (0x20020000–0x202FFFFF); must be staged.
-    Sram,
-}
-
-/// Return the target classification for `addr..addr+len`, or `None` if the
-/// range is outside every permitted region.
-fn classify_load_range(addr: u32, len: u32) -> Option<SegTarget> {
-    if len == 0 {
-        // Empty segments are harmless; treat as SDRAM (no staging needed).
-        return Some(SegTarget::Sdram);
-    }
-    let end = addr.checked_add(len)?;
-    if addr >= 0x0C00_0000 && end <= 0x0F00_0000 {
-        // SDRAM, but must not overlap the staging window itself.
-        return Some(SegTarget::Sdram);
-    }
-    if addr >= 0x2002_0000 && end <= 0x2030_0000 {
-        return Some(SegTarget::Sram);
-    }
-    None
 }
 
 /// Stream-load an ELF32 file from the SD card.
@@ -303,12 +206,9 @@ where
             let target =
                 classify_load_range(p_phys, p_memsz as u32).ok_or(ElfError::BadLoadAddress)?;
             match target {
-                SegTarget::Sdram => (p_paddr, false),
-                SegTarget::Sram => (
-                    // Staging slot is keyed by the physical SRAM offset.
-                    SDRAM_STAGE_BASE + (p_phys - SRAM_LOAD_ORIGIN),
-                    true,
-                ),
+                LoadTarget::Sdram => (p_paddr, false),
+                // Staging slot is keyed by the physical SRAM offset.
+                LoadTarget::Sram => (sram_stage_addr(p_phys), true),
             }
         };
 

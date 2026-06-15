@@ -1,0 +1,15 @@
+[package]
+name = "deluge-image"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Pure firmware-image format logic (UF2 wire format + ELF load classification) shared by the app-loader and host tools."
+
+[lib]
+# Host/QEMU unit tests run via `cargo test` on a non-bare-metal target. The
+# crate is no_std but has no hardware deps, so it builds for the host too.
+test = true
+
+[dependencies]
+# Intentionally none — pure logic, no_std, no hardware deps, so it unit-tests on
+# the host and can be reused by the pure-std host tools without a supply chain.
