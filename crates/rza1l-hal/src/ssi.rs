@@ -638,4 +638,33 @@ mod tests {
         assert_ne!(SSICR_REN, SSICR_TEN);
         assert_eq!(SSICR_REN | SSICR_TEN, 0b11);
     }
+
+    #[test]
+    fn tx_chcfg_encodes_channel_and_direction() {
+        // The DMA channel lands in the low 3 bits; everything else is fixed.
+        assert_eq!(tx_chcfg(6) & 7, 6, "dma channel in low 3 bits");
+        assert_eq!(tx_chcfg(7), tx_chcfg(0) | 7);
+        // TX: destination fixed (DAD) and destination-triggered (REQD).
+        assert_eq!(tx_chcfg(0) & CHCFG_DAD, CHCFG_DAD);
+        assert_eq!(tx_chcfg(0) & CHCFG_REQD, CHCFG_REQD);
+        assert_eq!(tx_chcfg(0) & CHCFG_SAD, 0, "TX source increments");
+    }
+
+    #[test]
+    fn rx_chcfg_is_source_fixed_and_source_triggered() {
+        // RX: source fixed (SAD), source-triggered (REQD clear), dest increments.
+        assert_eq!(rx_chcfg(0) & CHCFG_SAD, CHCFG_SAD);
+        assert_eq!(rx_chcfg(0) & CHCFG_REQD, 0, "RX is source-triggered");
+        assert_eq!(rx_chcfg(0) & CHCFG_DAD, 0, "RX destination increments");
+        assert_eq!(rx_chcfg(5) & 7, 5);
+    }
+
+    #[test]
+    fn tx_and_rx_chcfg_share_format_but_differ_in_direction() {
+        // Both 32-bit burst transfers with high-priority + level trigger.
+        let common = CHCFG_DDS_32BIT | CHCFG_SDS_32BIT | CHCFG_AM_BURST | CHCFG_HIEN | CHCFG_LVL;
+        assert_eq!(tx_chcfg(0) & common, common);
+        assert_eq!(rx_chcfg(0) & common, common);
+        assert_ne!(tx_chcfg(0), rx_chcfg(0), "direction bits differ");
+    }
 }

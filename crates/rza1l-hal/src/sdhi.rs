@@ -1644,4 +1644,28 @@ mod tests {
     fn gic_ids_for_sdhi1() {
         assert_eq!(SDHI1_IRQS, [305, 306, 307]);
     }
+
+    #[test]
+    fn dma_chcfg_direction_encoding() {
+        // TX (mem -> SD_BUF0): destination fixed + destination-triggered.
+        assert_eq!(chcfg_sdhi_tx(0) & CHCFG_DAD, CHCFG_DAD);
+        assert_eq!(chcfg_sdhi_tx(0) & CHCFG_REQD, CHCFG_REQD);
+        assert_eq!(chcfg_sdhi_tx(0) & CHCFG_SAD, 0);
+        // RX (SD_BUF0 -> mem): source fixed, source-triggered (REQD clear).
+        assert_eq!(chcfg_sdhi_rx(0) & CHCFG_SAD, CHCFG_SAD);
+        assert_eq!(chcfg_sdhi_rx(0) & CHCFG_REQD, 0);
+        assert_eq!(chcfg_sdhi_rx(0) & CHCFG_DAD, 0);
+        // DMA channel encoded in the low 3 bits.
+        assert_eq!(chcfg_sdhi_tx(11) & 7, 11 & 7);
+        assert_eq!(chcfg_sdhi_rx(14) & 7, 14 & 7);
+    }
+
+    #[test]
+    fn clock_dividers_are_one_hot_per_trm() {
+        // SD_CLK_CTRL[7:0] is a one-hot divider select (TRM ch.38).
+        assert_eq!(CLK_DIV_512, 0x80); // ~130 kHz identification clock
+        assert_eq!(CLK_DIV_4, 0x01); //  ~16.7 MHz fast mode
+        assert_eq!(CLK_DIV_512.count_ones(), 1);
+        assert_eq!(CLK_DIV_4.count_ones(), 1);
+    }
 }
