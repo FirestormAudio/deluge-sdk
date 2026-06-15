@@ -257,12 +257,12 @@ impl<const PORT: u8, const BIT: u8> embedded_hal::digital::StatefulOutputPin
 {
     #[inline]
     fn is_set_high(&mut self) -> Result<bool, Infallible> {
-        let val = unsafe { core::ptr::read_volatile(p(PORT)) };
+        let val = unsafe { crate::mmio::read16(p(PORT) as usize) };
         Ok(val & (1u16 << BIT) != 0)
     }
     #[inline]
     fn is_set_low(&mut self) -> Result<bool, Infallible> {
-        let val = unsafe { core::ptr::read_volatile(p(PORT)) };
+        let val = unsafe { crate::mmio::read16(p(PORT) as usize) };
         Ok(val & (1u16 << BIT) == 0)
     }
 }
@@ -276,12 +276,12 @@ impl<const PORT: u8, const BIT: u8> embedded_hal::digital::InputPin for Pin<PORT
     fn is_high(&mut self) -> Result<bool, Infallible> {
         // Read PPR (Port Pin Read) — reflects actual pin voltage.
         // p() is the output-latch register and reads back 0 for input-configured pins.
-        let val = unsafe { core::ptr::read_volatile(ppr(PORT)) };
+        let val = unsafe { crate::mmio::read16(ppr(PORT) as usize) };
         Ok(val & (1u16 << BIT) != 0)
     }
     #[inline]
     fn is_low(&mut self) -> Result<bool, Infallible> {
-        let val = unsafe { core::ptr::read_volatile(ppr(PORT)) };
+        let val = unsafe { crate::mmio::read16(ppr(PORT) as usize) };
         Ok(val & (1u16 << BIT) == 0)
     }
 }
@@ -408,5 +408,32 @@ mod tests {
         assert_eq!(mmio::test::peek16(PFC + off), bit, "PFC set");
         assert_eq!(mmio::test::peek16(PMC1 + off), bit, "PMC set (peripheral)");
         assert_eq!(mmio::test::peek16(PIPC1 + off), bit, "PIPC set (hw control)");
+    }
+
+    /// The type-state `Pin` output drives the output-latch bit and reads it
+    /// back, all through the seam.
+    #[test]
+    fn output_pin_set_and_read_back() {
+        use embedded_hal::digital::{OutputPin, StatefulOutputPin};
+        mmio::test::reset();
+        let mut pin: Pin<7, 4, Output> = Pin(core::marker::PhantomData);
+        pin.set_high().unwrap();
+        assert_eq!(mmio::test::peek16(p(7) as usize), 1 << 4);
+        assert!(pin.is_set_high().unwrap());
+        pin.set_low().unwrap();
+        assert!(pin.is_set_low().unwrap());
+        assert_eq!(mmio::test::peek16(p(7) as usize), 0);
+    }
+
+    /// The input `Pin` reads the live pin level from PPR (preloaded here).
+    #[test]
+    fn input_pin_reads_ppr() {
+        use embedded_hal::digital::InputPin;
+        mmio::test::reset();
+        mmio::test::poke16(ppr(3) as usize, 1 << 9);
+        let mut pin: Pin<3, 9, Input> = Pin(core::marker::PhantomData);
+        assert!(pin.is_high().unwrap());
+        let mut other: Pin<3, 8, Input> = Pin(core::marker::PhantomData);
+        assert!(other.is_low().unwrap());
     }
 }
