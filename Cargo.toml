@@ -17,6 +17,7 @@ members = [
   "examples/blinky",
   "examples/oled_hello",
   "examples/oled_menu",
+  "examples/oled_hmenu",
   "examples/input_demo",
   "examples/pad_paint",
   "examples/midi_cv",

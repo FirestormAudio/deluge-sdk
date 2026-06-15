@@ -83,7 +83,7 @@ pub(crate) mod prelude {
 pub mod components;
 pub mod editors;
 pub mod graphics;
-pub mod horizontal_menu;
+pub mod hmenu;
 pub mod icons;
 pub mod menu;
 pub mod params;
@@ -94,10 +94,7 @@ pub mod text;
 pub use components::{
     ADSR, Envelope, EnvelopeStage, ListMenuView, LoopedWaveform, RowIcon, SlicedWaveform, Waveform,
 };
-pub use horizontal_menu::{
-    HorizontalMenu, HorizontalMenuBuilder, HorizontalMenuItem, IconOnly, IconWithLabel, ParamType,
-    Placeholder, TextWithLabel, Value,
-};
+pub use hmenu::HMenu;
 pub use icons::IconData;
 pub use positionable::Positionable;
 pub use primitives::{DottedLine, FilledPolygon};

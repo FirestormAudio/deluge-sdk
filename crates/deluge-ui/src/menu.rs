@@ -56,8 +56,12 @@ pub enum MenuInput {
     /// Nothing happened this frame.
     #[default]
     None,
-    /// Select-encoder turned by `n` detents (signed).
+    /// Move the selection by `n` detents (vertical: row; horizontal: column).
     Turn(i32),
+    /// Change the focused value directly by `n` detents — no edit mode. Lets a
+    /// second control (a gold knob, or the select encoder in an [`HMenu`]) edit
+    /// the focused parameter while [`Turn`](MenuInput::Turn) moves the selection.
+    Edit(i32),
     /// Select-encoder / select-button pressed.
     Press,
     /// Back / cancel.
@@ -99,6 +103,19 @@ impl MenuState {
     /// Set the focused row directly (e.g. host-driven external selection).
     pub fn set_cursor(&mut self, cursor: usize) {
         self.cursor = cursor as u16;
+    }
+
+    /// Index of the first visible row/column.
+    pub fn scroll(&self) -> usize {
+        self.scroll as usize
+    }
+
+    pub(crate) fn set_scroll(&mut self, scroll: usize) {
+        self.scroll = scroll as u16;
+    }
+
+    pub(crate) fn set_rows_last(&mut self, n: u16) {
+        self.rows_last = n;
     }
 
     /// Current drilldown depth (0 = root).
@@ -214,8 +231,8 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> Menu<'a, D> {
                     state.cursor = (state.cursor as i32 + n).max(0) as u16;
                     pending = MenuInput::None;
                 }
-                // Press is resolved against the focused widget during the pass.
-                MenuInput::Press | MenuInput::None => {}
+                // Press and Edit are resolved against the focused widget in the pass.
+                MenuInput::Press | MenuInput::Edit(_) | MenuInput::None => {}
             }
         }
 
@@ -344,10 +361,17 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> Menu<'a, D> {
             return resp;
         };
         resp.focused = focused;
-        if focused && self.pending == MenuInput::Press {
-            *value = !*value;
-            resp.changed = true;
-            self.pending = MenuInput::None;
+        if focused {
+            let flip = match self.pending {
+                MenuInput::Press => true,
+                MenuInput::Edit(n) => n != 0,
+                _ => false,
+            };
+            if flip {
+                *value = !*value;
+                resp.changed = true;
+                self.pending = MenuInput::None;
+            }
         }
         let icon: &'static icons::IconData = if *value {
             &icons::CHECKED_BOX
@@ -367,14 +391,11 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> Menu<'a, D> {
         resp.focused = focused;
         if focused {
             self.edit_press();
-            if self.state.editing {
-                if let MenuInput::Turn(n) = self.pending {
-                    let nv = (*value + n).clamp(*range.start(), *range.end());
-                    if nv != *value {
-                        *value = nv;
-                        resp.changed = true;
-                    }
-                    self.pending = MenuInput::None;
+            if let Some(n) = self.take_value_delta() {
+                let nv = (*value + n).clamp(*range.start(), *range.end());
+                if nv != *value {
+                    *value = nv;
+                    resp.changed = true;
                 }
             }
         }
@@ -393,15 +414,12 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> Menu<'a, D> {
         resp.focused = focused;
         if focused {
             self.edit_press();
-            if self.state.editing {
-                if let MenuInput::Turn(n) = self.pending {
-                    let step = (*range.end() - *range.start()) / 64.0;
-                    let nv = (*value + n as f32 * step).clamp(*range.start(), *range.end());
-                    if nv != *value {
-                        *value = nv;
-                        resp.changed = true;
-                    }
-                    self.pending = MenuInput::None;
+            if let Some(n) = self.take_value_delta() {
+                let step = (*range.end() - *range.start()) / 64.0;
+                let nv = (*value + n as f32 * step).clamp(*range.start(), *range.end());
+                if nv != *value {
+                    *value = nv;
+                    resp.changed = true;
                 }
             }
         }
@@ -420,19 +438,16 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> Menu<'a, D> {
         resp.focused = focused;
         if focused {
             self.edit_press();
-            if self.state.editing {
-                if let MenuInput::Turn(n) = self.pending {
-                    let variants = E::variants();
-                    if !variants.is_empty() {
-                        let cur = variants.iter().position(|v| v == value).unwrap_or(0) as i32;
-                        let len = variants.len() as i32;
-                        let next = (cur + n).rem_euclid(len) as usize;
-                        if variants[next] != *value {
-                            *value = variants[next];
-                            resp.changed = true;
-                        }
+            if let Some(n) = self.take_value_delta() {
+                let variants = E::variants();
+                if !variants.is_empty() {
+                    let cur = variants.iter().position(|v| v == value).unwrap_or(0) as i32;
+                    let len = variants.len() as i32;
+                    let next = (cur + n).rem_euclid(len) as usize;
+                    if variants[next] != *value {
+                        *value = variants[next];
+                        resp.changed = true;
                     }
-                    self.pending = MenuInput::None;
                 }
             }
         }
@@ -483,6 +498,20 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> Menu<'a, D> {
             self.state.editing = true;
             self.pending = MenuInput::None;
         }
+    }
+
+    /// Detents to apply to the focused value this frame (consuming the input):
+    /// `Edit(n)` always, or `Turn(n)` while in edit mode.
+    fn take_value_delta(&mut self) -> Option<i32> {
+        let delta = match self.pending {
+            MenuInput::Edit(n) => Some(n),
+            MenuInput::Turn(n) if self.state.editing => Some(n),
+            _ => None,
+        };
+        if delta.is_some() {
+            self.pending = MenuInput::None;
+        }
+        delta
     }
 
     /// Finish the frame: draw the scrollbar (matching the rows just drawn), then
@@ -661,6 +690,24 @@ mod tests {
         frame(&mut st, &mut s, MenuInput::Turn(1));
         assert_eq!(s.freq, 150);
         assert_eq!(st.cursor(), 1);
+    }
+
+    #[test]
+    fn edit_changes_focused_value_without_press() {
+        let mut st = MenuState::new();
+        let mut s = S {
+            freq: 100,
+            ..S::default()
+        };
+        frame(&mut st, &mut s, MenuInput::None);
+        // Focused on FREQ (row 0): Edit applies directly, no Press/edit-mode.
+        frame(&mut st, &mut s, MenuInput::Edit(25));
+        assert_eq!(s.freq, 125);
+        assert!(!st.is_editing());
+        // Move to WAVE (row 2: FREQ, MONO, WAVE, ADVANCED) and Edit-cycle directly.
+        frame(&mut st, &mut s, MenuInput::Turn(2));
+        frame(&mut st, &mut s, MenuInput::Edit(1));
+        assert_eq!(s.wave, Wave::Saw);
     }
 
     #[test]

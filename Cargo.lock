@@ -1357,6 +1357,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "oled_hmenu"
+version = "0.1.0"
+dependencies = [
+ "deluge",
+ "deluge-ui-toolkit",
+ "embassy-executor",
+]
+
+[[package]]
 name = "oled_menu"
 version = "0.1.0"
 dependencies = [
