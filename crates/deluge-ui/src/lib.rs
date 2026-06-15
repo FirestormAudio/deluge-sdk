@@ -112,10 +112,11 @@ pub use editors::{
     BasicEditor, BipolarValueEditor, FloatEditor, TextValueEditor, UnipolarValueEditor,
 };
 
-/// Display dimensions
+/// Display width in pixels.
 ///
-/// The Deluge OLED is physically 128×64 with a 128×48 framebuffer,
-/// but the faceplate hides the top 5 rows.  Only 43 rows are visible.
+/// This toolkit is display-agnostic (it renders onto any
+/// `DrawTarget<Color = BinaryColor>`), so it does **not** hardcode the panel
+/// height or the Deluge faceplate cutoff. On the SDK that hardware fact lives in
+/// `deluge::Oled::VISIBLE_TOP` / `VISIBLE_HEIGHT` (= `deluge_bsp::oled`); pass the
+/// top offset via [`menu::MenuStyle::top_inset`].
 pub const DISPLAY_WIDTH: u32 = 128;
-pub const DISPLAY_HEIGHT: u32 = 43;
-pub const DISPLAY_BUFFER_SIZE: usize = (DISPLAY_WIDTH * DISPLAY_HEIGHT / 8) as usize;

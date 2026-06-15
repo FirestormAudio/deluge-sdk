@@ -17,11 +17,25 @@ use embedded_graphics_core::pixelcolor::BinaryColor;
 /// whole `embedded-graphics` ecosystem (text, fonts, shapes) draws straight onto
 /// it; [`clear`](Oled::clear) / [`text`](Oled::text) cover the common cases
 /// without pulling that in.
+///
+/// # Visible area
+///
+/// The draw surface is the full `128 × 48` panel, but the **top
+/// [`VISIBLE_TOP`](Oled::VISIBLE_TOP) rows are hidden behind the faceplate** — only
+/// [`VISIBLE_HEIGHT`](Oled::VISIBLE_HEIGHT) rows (`43`) are actually visible. Offset
+/// content down by `VISIBLE_TOP` to keep it on-screen (the menu toolkit's
+/// `MenuStyle::top_inset` does this).
 pub struct Oled {
     fb: FrameBuffer,
 }
 
 impl Oled {
+    /// Rows hidden behind the faceplate at the top of the panel; offset drawing
+    /// down by this much to keep it visible. See [`deluge_bsp::oled::VISIBLE_TOP`].
+    pub const VISIBLE_TOP: usize = oled::VISIBLE_TOP;
+    /// Visible pixel rows (`48` panel − [`VISIBLE_TOP`](Oled::VISIBLE_TOP) = `43`).
+    pub const VISIBLE_HEIGHT: usize = oled::VISIBLE_HEIGHT;
+
     /// Internal; apps obtain the display via [`Deluge::oled`](crate::Deluge::oled).
     pub(crate) fn new() -> Self {
         Self {

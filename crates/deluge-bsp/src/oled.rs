@@ -92,6 +92,17 @@ pub const PAGES: usize = HEIGHT / 8; // = 6
 /// Total frame buffer size in bytes.
 pub const FRAME_BYTES: usize = PAGES * WIDTH; // = 768
 
+/// Pixel rows at the top of the panel hidden behind the faceplate.
+///
+/// This is the bezel, **distinct** from `FIRST_PAGE` below: that offset accounts
+/// for the 48-row panel sitting in the SSD1309's 64-row RAM, whereas this is the
+/// physical cover over the panel. Of the [`HEIGHT`] rows driven, the top
+/// `VISIBLE_TOP` are covered, leaving [`VISIBLE_HEIGHT`] visible. Drawing code
+/// should offset content down by this much (e.g. the menu's `top_inset`).
+pub const VISIBLE_TOP: usize = 5;
+/// Visible pixel rows: the [`HEIGHT`] panel minus the [`VISIBLE_TOP`] bezel rows.
+pub const VISIBLE_HEIGHT: usize = HEIGHT - VISIBLE_TOP; // = 43
+
 /// First SSD1309 page that maps to display row 0.
 ///
 /// On a 128×64 controller driving a 48-line panel the top 16 lines (pages 0–1)

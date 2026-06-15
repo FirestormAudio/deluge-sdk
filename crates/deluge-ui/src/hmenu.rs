@@ -42,7 +42,6 @@ use crate::{DISPLAY_WIDTH, Positionable};
 const COLS: usize = 4;
 
 // Layout (before `top_inset`).
-const TITLE_H: i32 = 14;
 const UNDERLINE_Y: i32 = 11;
 const PARAM_TOP: i32 = 16;
 const PARAM_H: i32 = 16;
@@ -208,7 +207,7 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> HMenu<'a, D> {
     }
 
     /// Finish the frame: clamp the selected column and slide the column window.
-    pub fn end(mut self) {
+    pub fn end(self) {
         let n = self.cols;
         let max_visible = self.max_visible() as u16;
         let cursor = self.state.cursor().min(n.saturating_sub(1) as usize);

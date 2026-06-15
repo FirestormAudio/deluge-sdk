@@ -136,9 +136,11 @@ pub struct MenuStyle {
     pub title_font: Font,
     /// Font for item rows.
     pub item_font: Font,
-    /// Pixels to push all content down, to clear the faceplate-hidden top rows.
-    /// Default 5 (Deluge 128×48 panel shows the bottom 128×43); set 0 if the
-    /// target is already the visible area (e.g. spark's 128×43 `FrameBuf`).
+    /// Pixels to push all content down, to clear any faceplate-hidden top rows.
+    /// Defaults to **0** (this crate is display-agnostic). On the Deluge SDK set
+    /// it to `deluge::Oled::VISIBLE_TOP` (= 5) so content lands in the visible
+    /// `128×43`; leave it 0 when the target is already the visible area (e.g.
+    /// spark's `128×43` `FrameBuf`).
     pub top_inset: i32,
     /// Rows visible at once.
     pub max_visible: usize,
@@ -149,7 +151,7 @@ impl Default for MenuStyle {
         Self {
             title_font: Font::MetricBold9px,
             item_font: Font::FontApple,
-            top_inset: 5,
+            top_inset: 0,
             max_visible: 3,
         }
     }
