@@ -788,4 +788,32 @@ mod tests {
         assert_eq!(st.cursor(), 4);
         assert_eq!(st.scroll, 2); // window [2..5] keeps row 4 visible
     }
+
+    /// Render a full frame to a real framebuffer (not the null target) and check
+    /// the immediate-mode pipeline actually lights pixels: the title text, its
+    /// underline, and the focused-row highlight bar.
+    #[test]
+    fn render_smoke_draws_pixels() {
+        use embedded_graphics_simulator::SimulatorDisplay;
+
+        let mut st = MenuState::new();
+        let mut s = S::default();
+        let style = MenuStyle::default();
+        let mut d: SimulatorDisplay<BinaryColor> =
+            SimulatorDisplay::new(Size::new(DISPLAY_WIDTH, 48));
+
+        let mut ui = Menu::begin(&mut d, &mut st, MenuInput::None, &style);
+        ui.title("SOUND");
+        ui.int("FREQ", &mut s.freq, 20..=20000);
+        ui.toggle("MONO", &mut s.mono);
+        ui.end();
+
+        // Count lit pixels — a blank screen would mean the pipeline drew nothing.
+        let lit = d
+            .bounding_box()
+            .points()
+            .filter(|&p| d.get_pixel(p) == BinaryColor::On)
+            .count();
+        assert!(lit > 20, "expected the menu to light real pixels, got {lit}");
+    }
 }
