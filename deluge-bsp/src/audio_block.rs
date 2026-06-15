@@ -13,7 +13,6 @@
 
 #![cfg(target_os = "none")]
 
-use crate::scux_dvu_path;
 use rza1l_hal::ssi;
 
 /// Codec sample rate.
@@ -25,7 +24,11 @@ pub const BLOCK_FRAMES: usize = 128;
 /// How far ahead of the TX DMA read head we keep the write head, in frames.
 /// ~11.6 ms — absorbs cadence jitter / SCUX FFD burst DMA. (Round-trip latency
 /// ≈ this + one block.)
+#[cfg(not(feature = "audio-irq"))]
 const TX_WRITE_AHEAD_FRAMES: usize = 512;
+/// Tighter lead for the IRQ clock (codec-locked, so less jitter to absorb).
+#[cfg(feature = "audio-irq")]
+const TX_WRITE_AHEAD_FRAMES: usize = 256;
 
 /// Overrun margin: if available input exceeds `RX_FRAMES - GUARD_FRAMES` the
 /// read head has been lapped by the DMA, so re-anchor.
@@ -78,18 +81,18 @@ fn rx_head_off() -> usize {
 }
 
 fn tx_head_off() -> usize {
-    let start = scux_dvu_path::tx_buf_start();
-    let cur = scux_dvu_path::tx_current_ptr();
+    let start = ssi::tx_buf_start();
+    let cur = ssi::tx_current_ptr();
     // CRSA can briefly read one-past-the-end at the DMA link-descriptor reload;
     // wrap into range so the lead calculation never sees a spurious value.
-    (unsafe { cur.offset_from(start) } as usize) % scux_dvu_path::DVU_PATH_BUF_LEN
+    (unsafe { cur.offset_from(start) } as usize) % ssi::TX_BUF_LEN
 }
 
 /// Prime the whole TX ring with dither so the codec hears no startup burst and
 /// does not auto-mute before the first processed block lands.
 pub fn prime_tx() {
-    let start = scux_dvu_path::tx_buf_start();
-    let end = scux_dvu_path::tx_buf_end();
+    let start = ssi::tx_buf_start();
+    let end = ssi::tx_buf_end();
     let mut lfsr: u32 = 0xACE1;
     let mut p = start;
     while p < end {
@@ -114,8 +117,7 @@ impl BlockState {
     /// Anchor at the current DMA heads: start reading where RX is now, and write
     /// `TX_WRITE_AHEAD_FRAMES` ahead of the TX read head (frame-aligned).
     pub fn new() -> Self {
-        let tx_wr =
-            ((tx_head_off() + TX_WRITE_AHEAD_FRAMES * 2) % scux_dvu_path::DVU_PATH_BUF_LEN) & !1;
+        let tx_wr = ((tx_head_off() + TX_WRITE_AHEAD_FRAMES * 2) % ssi::TX_BUF_LEN) & !1;
         Self {
             rx_rd: rx_head_off() & !1,
             tx_wr,
@@ -161,15 +163,16 @@ impl BlockState {
     /// Write `inp` to the TX ring ahead of the read head (f32→i32 saturating +
     /// dither), advancing the write head; re-anchors if the TX DMA caught up.
     pub fn write_output_block(&mut self, inp: &[Frame]) {
-        let len = scux_dvu_path::DVU_PATH_BUF_LEN;
+        let len = ssi::TX_BUF_LEN;
         let dma = tx_head_off();
-        let ahead = (self.tx_wr + len - dma) % len;
-        if ahead < TX_WRITE_AHEAD_FRAMES {
-            // (slots) DMA caught up — re-anchor the lead, frame-aligned.
+        // Lead, in frames (2 i32 slots per frame).
+        let ahead_frames = ((self.tx_wr + len - dma) % len) / 2;
+        if ahead_frames < TX_WRITE_AHEAD_FRAMES / 2 {
+            // TX DMA caught up — re-anchor the lead, frame-aligned.
             self.tx_wr = ((dma + TX_WRITE_AHEAD_FRAMES * 2) % len) & !1;
         }
 
-        let base = scux_dvu_path::tx_buf_start();
+        let base = ssi::tx_buf_start();
         let mut p = self.tx_wr;
         for fr in inp.iter() {
             let l = f32_to_i32(fr.l).saturating_add(dither_sample(&mut self.lfsr));
@@ -188,4 +191,12 @@ impl Default for BlockState {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Await the next RX block completion interrupt (v2 IRQ clock). Recurring; call
+/// in a loop. Requires `init_block_irq` + `register_block_irq` (done by
+/// `audio::init_direct` under the `audio-irq` feature).
+#[cfg(feature = "audio-irq")]
+pub async fn wait_block() {
+    rza1l_hal::dmac::wait_block(ssi::rx_dma_ch()).await;
 }

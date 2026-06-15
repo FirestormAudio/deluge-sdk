@@ -24,6 +24,9 @@ embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
 
 [features]
 default = []
+## Use the per-block RX DMA interrupt clock for `dlg.audio()` (drift-free, lower
+## latency) instead of the default poll loop. Same `process()` API.
+audio-irq = ["deluge-bsp/audio-irq"]
 ## Enable RTT (SEGGER Real-Time Transfer) debug logging. Initialises the RTT
 ## logger in the `#[deluge::app]` runtime and turns on RTT in the HAL/BSP.
 ## Off by default so a minimal app does not pull in the RTT control block.

@@ -10,6 +10,12 @@ license.workspace = true
 # because the `test` crate requires std.
 test = false
 
+[features]
+default = []
+## Drive `audio::init_direct` from a per-block RX DMA interrupt (the audio SDK's
+## v2 cadence) instead of the default poll loop. Selected by `deluge/audio-irq`.
+audio-irq = []
+
 [dependencies]
 rza1l-hal = { path = "../rza1l-hal" }
 embedded-sdmmc = { version = "0.9", default-features = false, features = ["log"] }

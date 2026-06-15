@@ -21,7 +21,7 @@
 //! directly via `SSICTRL.SSI012TEN`.  SSI0 RX DMA (ch 7) is started as usual.
 
 use crate::scux_dvu_path;
-use rza1l_hal::{gpio, ostm};
+use rza1l_hal::{gpio, ostm, ssi};
 
 /// Port and pin of the codec hardware-enable line.
 const CODEC_PORT: u8 = 6;
@@ -66,5 +66,44 @@ pub unsafe fn init() {
         // ── Assert CODEC_POWER — codec begins normal operation ───────────────────
         gpio::write(CODEC_PORT, CODEC_PIN, true);
         log::debug!("audio: CODEC_POWER asserted, codec active");
+    }
+}
+
+/// Like [`init`] but brings the codec up on the **direct SSI TX+RX DMA path**,
+/// bypassing SCUX. Use this for same-rate (44.1 kHz) DSP — SCUX is only needed
+/// when the internal rate differs from the codec or for USB rate conversion.
+///
+/// Identical pin-mux + codec-power sequence as [`init`], but drives SSIF0 TX from
+/// the SSI TX DMA ([`ssi::init`]) instead of the SCUX DVU path. Leaves [`init`] /
+/// [`scux_dvu_path`] untouched for the USB-audio firmware.
+///
+/// # Safety
+/// Same contract as [`init`]: call once, after `stb::init()` + OSTM running.
+pub unsafe fn init_direct() {
+    unsafe {
+        log::debug!("audio: pin-mux SSI0 (direct, no SCUX)");
+        gpio::set_pin_mux(7, 11, 6); // AUDIO_XOUT
+        gpio::set_pin_mux(6, 8, 3); // SSITXD0
+        gpio::set_pin_mux(6, 9, 3); // SSISCK0
+        gpio::set_pin_mux(6, 10, 3); // SSIWS0
+        gpio::set_pin_mux(6, 11, 3); // SSIRXD0
+
+        gpio::set_as_output(CODEC_PORT, CODEC_PIN);
+        gpio::write(CODEC_PORT, CODEC_PIN, false);
+
+        // Direct SSI0 TX+RX DMA (ch 6/7) — no SCUX.
+        #[cfg(not(feature = "audio-irq"))]
+        ssi::init(&crate::system::SSI_CONFIG);
+        // v2: RX as a per-block descriptor ring with a completion IRQ. Register
+        // the block handler before starting the ring DMA.
+        #[cfg(feature = "audio-irq")]
+        {
+            rza1l_hal::dmac::register_block_irq(crate::system::SSI_CONFIG.rx_dma_ch);
+            ssi::init_block_irq(&crate::system::SSI_CONFIG);
+        }
+
+        ostm::delay_ms(CODEC_POWER_DELAY_MS);
+        gpio::write(CODEC_PORT, CODEC_PIN, true);
+        log::debug!("audio: CODEC_POWER asserted (direct SSI path)");
     }
 }

@@ -375,6 +375,92 @@ pub unsafe fn init(cfg: &SsiConfig) {
     }
 }
 
+/// RX block size (stereo frames) for [`init_block_irq`]: the RX DMA fires its
+/// completion interrupt every this-many frames.
+pub const RX_IRQ_BLOCK_FRAMES: usize = 128;
+
+/// Number of descriptors in the RX block-IRQ ring (tiles `RX_BUF`).
+const RX_RING_DESCS: usize = RX_FRAMES / RX_IRQ_BLOCK_FRAMES;
+
+/// Descriptor ring for the block-IRQ RX path (one per [`RX_IRQ_BLOCK_FRAMES`]).
+static mut RX_RING: [LinkDesc; RX_RING_DESCS] = [const { LinkDesc([0u32; 8]) }; RX_RING_DESCS];
+
+/// Like [`init`] but the RX DMA uses a ring of [`RX_RING_DESCS`] descriptors
+/// (each [`RX_IRQ_BLOCK_FRAMES`] long, with the END interrupt **enabled**) that
+/// tile the *same* contiguous `RX_BUF`. The RX DMAINT therefore fires once per
+/// block instead of once per full buffer, giving an interrupt-driven block clock
+/// ([`crate::dmac::register_block_irq`] / [`crate::dmac::wait_block`]).
+///
+/// Because the descriptors tile one contiguous buffer, `rx_current_ptr` (CRDA)
+/// still sweeps linearly — existing readers are unaffected. TX is the same single
+/// self-referential descriptor as [`init`].
+///
+/// # Safety
+/// Same contract as [`init`]; call exactly one of `init` / `init_rx_only` /
+/// `init_block_irq`.
+pub unsafe fn init_block_irq(cfg: &SsiConfig) {
+    unsafe {
+        TX_DMA_CH_ACTIVE.store(cfg.tx_dma_ch, core::sync::atomic::Ordering::Relaxed);
+        RX_DMA_CH_ACTIVE.store(cfg.rx_dma_ch, core::sync::atomic::Ordering::Relaxed);
+
+        // ── TX: single self-referential descriptor (as in `init`). ────────────
+        let tx_desc_u = (core::ptr::addr_of!(TX_DESC) as usize + UNCACHED_MIRROR_OFFSET) as *mut u32;
+        tx_desc_u
+            .add(1)
+            .write_volatile(core::ptr::addr_of!(TX_BUF.0[0]) as u32);
+        tx_desc_u.add(4).write_volatile(tx_chcfg(cfg.tx_dma_ch));
+        tx_desc_u.add(7).write_volatile(tx_desc_u as u32);
+
+        // ── RX: ring of block-sized descriptors tiling RX_BUF. ────────────────
+        let chunk_slots = RX_IRQ_BLOCK_FRAMES * 2; // i32 slots per block
+        let chunk_bytes = (chunk_slots * core::mem::size_of::<i32>()) as u32;
+        for i in 0..RX_RING_DESCS {
+            let d = (core::ptr::addr_of!(RX_RING[i]) as usize + UNCACHED_MIRROR_OFFSET) as *mut u32;
+            let next = (core::ptr::addr_of!(RX_RING[(i + 1) % RX_RING_DESCS]) as usize
+                + UNCACHED_MIRROR_OFFSET) as u32;
+            d.add(0).write_volatile(DESC_HEADER);
+            d.add(1).write_volatile((SSI0_BASE + SSIFRDR_OFF) as u32); // src = SSIFRDR (fixed)
+            d.add(2)
+                .write_volatile(core::ptr::addr_of!(RX_BUF.0[i * chunk_slots]) as u32); // dst slice
+            d.add(3).write_volatile(chunk_bytes);
+            d.add(4).write_volatile(rx_chcfg(cfg.rx_dma_ch)); // DEM=0 → per-descriptor END IRQ
+            d.add(5).write_volatile(0);
+            d.add(6).write_volatile(0);
+            d.add(7).write_volatile(next); // NXLA → next descriptor (loops)
+        }
+        let rx_ring_head =
+            (core::ptr::addr_of!(RX_RING[0]) as usize + UNCACHED_MIRROR_OFFSET) as *const u32;
+
+        // ── SSI0 software reset + register config (identical to `init`). ──────
+        let swrstcr = SWRSTCR1 as *mut u8;
+        let reset_bit = 1u8 << (6 - SSI_CH);
+        swrstcr.write_volatile(swrstcr.read_volatile() | reset_bit);
+        let _ = swrstcr.read_volatile();
+        swrstcr.write_volatile(swrstcr.read_volatile() & !reset_bit);
+        let _ = swrstcr.read_volatile();
+
+        ssi_reg(SSITDMR_OFF).write_volatile(SSITDMR_CONT);
+        ssi_reg(SSICR_OFF).write_volatile(cfg.ssicr);
+        ssi_reg(SSIFCR_OFF).write_volatile(SSIFCR_INIT);
+
+        // ── Connect DMA: TX single descriptor, RX descriptor ring. ───────────
+        dmac::init_with_link_descriptor(cfg.tx_dma_ch, tx_desc_u as *const u32, DMARS_SSI0_TX);
+        dmac::init_with_link_descriptor(cfg.rx_dma_ch, rx_ring_head, DMARS_SSI0_RX);
+        dmac::channel_start(cfg.tx_dma_ch);
+        dmac::channel_start(cfg.rx_dma_ch);
+
+        // ── Release FIFOs + enable TX/RX (identical to `init`). ──────────────
+        let fcr = ssi_reg(SSIFCR_OFF);
+        fcr.write_volatile(fcr.read_volatile() & !SSIFCR_TFRST);
+        fcr.write_volatile(fcr.read_volatile() | SSIFCR_TIE);
+        fcr.write_volatile(fcr.read_volatile() & !SSIFCR_RFRST);
+        fcr.write_volatile(fcr.read_volatile() | SSIFCR_RIE);
+        let cr = ssi_reg(SSICR_OFF);
+        cr.write_volatile(cr.read_volatile() | SSICR_TEN | SSICR_REN);
+        log::debug!("ssi: TX + block-IRQ RX ({} descs) streaming", RX_RING_DESCS);
+    }
+}
+
 /// Initialise SSI0 **receive only** — used when the SCUX DVU path owns the
 /// SSIF0 transmitter.
 ///

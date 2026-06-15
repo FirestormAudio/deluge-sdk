@@ -239,6 +239,7 @@ pub unsafe fn current_dst(ch: u8) -> u32 {
 // 41–56 for channels 0–15).
 
 use core::future::poll_fn;
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::Poll;
 use embassy_sync::waitqueue::AtomicWaker;
 
@@ -519,3 +520,67 @@ static DMA_INT_HANDLERS: [HandlerFn; 16] = [
     dma_int_0, dma_int_1, dma_int_2, dma_int_3, dma_int_4, dma_int_5, dma_int_6, dma_int_7,
     dma_int_8, dma_int_9, dma_int_10, dma_int_11, dma_int_12, dma_int_13, dma_int_14, dma_int_15,
 ];
+
+// ── Recurring per-block (descriptor-ring) interrupt support ────────────────────
+//
+// For a channel running a ring of link descriptors (e.g. the SSI RX block ring),
+// each descriptor completion raises DMAINT. Unlike the one-shot path, the ISR must
+// clear TC (CHCTRL.CLRTC — *without* SWRST, so the ring keeps running) to deassert
+// / re-arm the interrupt, then signal a per-channel "block ready" flag the audio
+// loop awaits via [`wait_block`].
+
+/// Per-channel "a block completed" flag, set by the block ISR, consumed by
+/// [`wait_block`].
+static DMAC_BLOCK_READY: [AtomicBool; 16] = [const { AtomicBool::new(false) }; 16];
+
+/// Block-ring ISR body: clear TC to re-arm (channel keeps running), flag the
+/// block, and wake the awaiter.
+fn on_block_int(ch: u8) {
+    // CHCTRL bits are write-1-to-trigger; write a clean value (not RMW).
+    unsafe { ch_reg(ch, OFF_CHCTRL).write_volatile(CHCTRL_CLRTC) };
+    DMAC_BLOCK_READY[ch as usize].store(true, Ordering::Release);
+    DMAC_WAKERS[ch as usize].wake();
+}
+
+macro_rules! block_handlers {
+    ($($name:ident = $ch:literal),* $(,)?) => {
+        $( fn $name() { on_block_int($ch); } )*
+        static DMA_BLOCK_HANDLERS: [HandlerFn; 16] = [ $($name),* ];
+    };
+}
+block_handlers!(
+    dbi_0 = 0, dbi_1 = 1, dbi_2 = 2, dbi_3 = 3, dbi_4 = 4, dbi_5 = 5, dbi_6 = 6, dbi_7 = 7,
+    dbi_8 = 8, dbi_9 = 9, dbi_10 = 10, dbi_11 = 11, dbi_12 = 12, dbi_13 = 13, dbi_14 = 14,
+    dbi_15 = 15,
+);
+
+/// Register the GIC handler for a channel running a **descriptor ring** with
+/// per-descriptor END interrupts. The handler clears TC each block (re-arming the
+/// running ring) and signals [`wait_block`].
+///
+/// # Safety
+/// Writes the GIC handler table / distributor; the channel must use a ring whose
+/// descriptors have the END interrupt enabled (DEM=0).
+pub unsafe fn register_block_irq(ch: u8) {
+    unsafe {
+        use crate::gic;
+        let id = DMAINT_BASE + ch as u16;
+        gic::register(id, DMA_BLOCK_HANDLERS[ch as usize]);
+        gic::set_priority(id, DMAC_IRQ_PRIORITY);
+        gic::enable(id);
+    }
+}
+
+/// Await the next per-block END interrupt on a ring channel (see
+/// [`register_block_irq`]). Recurring: call it in a loop.
+pub async fn wait_block(ch: u8) {
+    poll_fn(|cx| {
+        DMAC_WAKERS[ch as usize].register(cx.waker());
+        if DMAC_BLOCK_READY[ch as usize].swap(false, Ordering::AcqRel) {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    })
+    .await
+}

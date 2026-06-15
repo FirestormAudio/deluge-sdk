@@ -3,6 +3,7 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use deluge_bsp::audio_block::{self, BlockState};
+#[cfg(not(feature = "audio-irq"))]
 use embassy_time::{Duration, Ticker};
 
 /// One stereo audio frame; samples in `[-1.0, 1.0]`. `l` = left, `r` = right.
@@ -13,10 +14,11 @@ fn ensure_init() {
     if DONE.swap(true, Ordering::Relaxed) {
         return;
     }
-    // SAFETY: runs once. Brings up the whole codec path (SSI RX DMA + SCUX → SSIF0
-    // TX + codec power); blocks ~5 ms internally. Acquire `audio()` before the
-    // main loop. Owns the codec — incompatible with the USB UAC2 device tasks.
-    unsafe { deluge_bsp::audio::init() };
+    // SAFETY: runs once. Brings up the codec on the direct SSI TX+RX DMA path
+    // (no SCUX — that's only for rate conversion); blocks ~5 ms internally.
+    // Acquire `audio()` before the main loop. Owns the codec — incompatible with
+    // the USB UAC2 device tasks.
+    unsafe { deluge_bsp::audio::init_direct() };
 }
 
 /// The codec audio path, taken once from [`Deluge::audio`](crate::Deluge::audio).
@@ -53,20 +55,34 @@ impl Audio {
         let mut state = BlockState::new();
         let mut block = [StereoFrame::default(); audio_block::BLOCK_FRAMES];
 
-        // Pace at the block period; the codec crystal is the effective master
+        // v1: Ticker-paced poll loop. The codec crystal is the effective master
         // (try_read_block skips on underrun / re-anchors on overrun), so OSTM vs
         // codec drift costs at most an occasional one-block glitch.
-        let period_us =
-            (audio_block::BLOCK_FRAMES as u64 * 1_000_000) / audio_block::SAMPLE_RATE_HZ as u64;
-        let mut tick = Ticker::every(Duration::from_micros(period_us));
-
-        loop {
-            tick.next().await;
-            if !state.try_read_block(&mut block) {
-                continue; // not enough input yet — try next tick
+        #[cfg(not(feature = "audio-irq"))]
+        {
+            let period_us =
+                (audio_block::BLOCK_FRAMES as u64 * 1_000_000) / audio_block::SAMPLE_RATE_HZ as u64;
+            let mut tick = Ticker::every(Duration::from_micros(period_us));
+            loop {
+                tick.next().await;
+                if !state.try_read_block(&mut block) {
+                    continue; // not enough input yet — try next tick
+                }
+                f(&mut block);
+                state.write_output_block(&block);
             }
-            f(&mut block);
-            state.write_output_block(&block);
+        }
+
+        // v2: per-block RX DMA interrupt clock — codec-locked, drift-free.
+        #[cfg(feature = "audio-irq")]
+        loop {
+            audio_block::wait_block().await;
+            // Drain every completed block (usually one) so a missed wake can't
+            // back the read head up.
+            while state.try_read_block(&mut block) {
+                f(&mut block);
+                state.write_output_block(&block);
+            }
         }
     }
 }
