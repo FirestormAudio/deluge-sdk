@@ -209,6 +209,7 @@ impl Font {
     {
         let descriptors = self.descriptors();
         let mut x_offset = 0;
+        let mut first = true;
 
         // Convert to uppercase since the font only has uppercase glyphs
         for ch in text.chars() {
@@ -225,6 +226,12 @@ impl Font {
                 continue;
             }
 
+            // Inter-glyph spacing goes *between* glyphs (before each non-first),
+            // so the returned advance equals `text_width_with_spacing` exactly —
+            // no trailing gap. (Glyph positions are unchanged.)
+            if !first {
+                x_offset += spacing;
+            }
             let descriptor = &descriptors[char_index];
             let glyph_width = self.draw_glyph_colored(
                 target,
@@ -233,7 +240,8 @@ impl Font {
                 color,
             )?;
 
-            x_offset += glyph_width + spacing;
+            x_offset += glyph_width;
+            first = false;
         }
 
         Ok(x_offset)
@@ -338,5 +346,103 @@ mod tests {
         // Space character is first (index 0)
         let space_desc = METRIC_BOLD_9PX_DESCRIPTORS[0];
         assert_eq!(space_desc.w_px, 3); // Space is 3 pixels wide in the 9px font
+    }
+
+    const ALL_FONTS: [Font; 5] = [
+        Font::Font5px,
+        Font::FontApple,
+        Font::MetricBold9px,
+        Font::MetricBold13px,
+        Font::MetricBold20px,
+    ];
+
+    #[test]
+    fn every_font_has_sane_metrics() {
+        for f in ALL_FONTS {
+            assert!(!f.bitmap().is_empty(), "{f:?} bitmap");
+            assert!(!f.descriptors().is_empty(), "{f:?} descriptors");
+            assert!(f.height() > 0, "{f:?} height");
+            assert!(f.baseline() <= f.height(), "{f:?} baseline within height");
+            // Space (index 0) must exist and have a non-zero advance.
+            assert!(f.descriptors()[0].w_px > 0, "{f:?} space width");
+        }
+    }
+
+    #[test]
+    fn text_width_sums_glyph_advances_plus_spacing() {
+        let f = Font::MetricBold9px;
+        let d = f.descriptors();
+        let w = |c: char| d[(c as usize) - (' ' as usize)].w_px as i32;
+        // Empty string is zero; a single glyph has no inter-glyph spacing.
+        assert_eq!(f.text_width(""), 0);
+        assert_eq!(f.text_width("A"), w('A'));
+        // Two glyphs: widths + one spacing gap (default spacing = 1).
+        assert_eq!(f.text_width("AB"), w('A') + w('B') + 1);
+        // Custom spacing scales with (n-1) gaps; spacing 0 = pure glyph widths.
+        assert_eq!(f.text_width_with_spacing("ABC", 0), w('A') + w('B') + w('C'));
+        assert_eq!(
+            f.text_width_with_spacing("ABC", 4),
+            w('A') + w('B') + w('C') + 2 * 4
+        );
+    }
+
+    #[test]
+    fn lowercase_folds_to_uppercase() {
+        for f in ALL_FONTS {
+            assert_eq!(f.text_width("abc"), f.text_width("ABC"), "{f:?}");
+        }
+    }
+
+    #[test]
+    fn fonts_are_proportional_not_monospace() {
+        // A proportional font has glyphs of differing widths (e.g. 'I' vs 'W').
+        for f in [Font::FontApple, Font::MetricBold9px, Font::MetricBold20px] {
+            assert!(
+                f.text_width("I") < f.text_width("W"),
+                "{f:?} should be variable-width"
+            );
+        }
+    }
+
+    /// A `DrawTarget` that counts lit pixels, so we can confirm the renderer
+    /// actually drew something and that `draw_text`'s advance matches the
+    /// measured `text_width`.
+    #[cfg(feature = "embedded-graphics")]
+    struct CountTarget {
+        lit: usize,
+    }
+    #[cfg(feature = "embedded-graphics")]
+    impl embedded_graphics::geometry::Dimensions for CountTarget {
+        fn bounding_box(&self) -> embedded_graphics::primitives::Rectangle {
+            embedded_graphics::primitives::Rectangle::new(Point::zero(), Size::new(256, 64))
+        }
+    }
+    #[cfg(feature = "embedded-graphics")]
+    impl DrawTarget for CountTarget {
+        type Color = BinaryColor;
+        type Error = core::convert::Infallible;
+        fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+        where
+            I: IntoIterator<Item = embedded_graphics::Pixel<BinaryColor>>,
+        {
+            self.lit += pixels.into_iter().filter(|p| p.1 == BinaryColor::On).count();
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "embedded-graphics")]
+    #[test]
+    fn draw_text_advance_matches_measured_width() {
+        let f = Font::MetricBold9px;
+        let mut t = CountTarget { lit: 0 };
+        let advance = f.draw_text(&mut t, "HELLO", Point::new(0, 8)).unwrap();
+        // The drawn advance is exactly what text_width reports.
+        assert_eq!(advance, f.text_width("HELLO"));
+        assert!(t.lit > 0, "the renderer drew glyph pixels");
+        // Drawing only spaces advances the cursor but lights nothing.
+        let mut blank = CountTarget { lit: 0 };
+        let sp = f.draw_text(&mut blank, "   ", Point::new(0, 8)).unwrap();
+        assert_eq!(sp, f.text_width("   "));
+        assert_eq!(blank.lit, 0, "spaces draw no pixels");
     }
 }
