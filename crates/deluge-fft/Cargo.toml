@@ -18,6 +18,11 @@ approx = "0.5"
 criterion = { version = "0.8", features = ["html_reports"] }
 # Reference implementation to compare against.
 rustfft = "6"
+# Cross-crate DSP-pipeline integration test (tests/dsp_pipeline.rs): quantise +
+# fixed-point gain feeding the FFT. armv7-dsp-intrinsics needs `nightly` for the
+# real DSP-instruction path on the QEMU ARM target.
+fixedpoint = { workspace = true }
+armv7-dsp-intrinsics = { workspace = true, features = ["nightly"] }
 
 [[bench]]
 name = "fft_bench"

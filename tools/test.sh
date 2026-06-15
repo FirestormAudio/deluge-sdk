@@ -32,7 +32,8 @@ HOST=x86_64-unknown-linux-gnu
 echo "==> QEMU ARM bucket ($QEMU)"
 cargo test --target "$QEMU" -p fixedpoint --lib
 cargo test --target "$QEMU" -p armv7-dsp-intrinsics --features nightly --lib
-cargo test --target "$QEMU" -p deluge-fft --features test-utils --lib
+# No --lib: also runs the cross-crate dsp_pipeline integration test.
+cargo test --target "$QEMU" -p deluge-fft --features test-utils
 cargo test --target "$QEMU" -p rza1l-hal --lib
 cargo test --target "$QEMU" -p deluge-bsp --lib
 cargo test --target "$QEMU" -p embedded-fonts-deluge --lib

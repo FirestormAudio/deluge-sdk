@@ -572,7 +572,9 @@ name = "deluge-fft"
 version = "0.1.0"
 dependencies = [
  "approx",
+ "armv7-dsp-intrinsics",
  "criterion",
+ "fixedpoint",
  "rustfft",
 ]
 
