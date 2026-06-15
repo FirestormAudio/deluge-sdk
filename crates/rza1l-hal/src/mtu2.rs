@@ -151,25 +151,23 @@ fn tpsc(ch: u8, prescaler: u16) -> u8 {
     }
 }
 
+// Register access goes through the MMIO seam so init/arm sequences are testable
+// (real volatile on firmware, a shadow + log under test).
 #[inline(always)]
 unsafe fn rd8(addr: usize) -> u8 {
-    unsafe { core::ptr::read_volatile(addr as *const u8) }
+    unsafe { crate::mmio::read8(addr) }
 }
 #[inline(always)]
 unsafe fn wr8(addr: usize, val: u8) {
-    unsafe {
-        core::ptr::write_volatile(addr as *mut u8, val);
-    }
+    unsafe { crate::mmio::write8(addr, val) }
 }
 #[inline(always)]
 unsafe fn rd16(addr: usize) -> u16 {
-    unsafe { core::ptr::read_volatile(addr as *const u16) }
+    unsafe { crate::mmio::read16(addr) }
 }
 #[inline(always)]
 unsafe fn wr16(addr: usize, val: u16) {
-    unsafe {
-        core::ptr::write_volatile(addr as *mut u16, val);
-    }
+    unsafe { crate::mmio::write16(addr, val) }
 }
 
 // ---------------------------------------------------------------------------
@@ -210,9 +208,7 @@ pub unsafe fn start_free_running(ch: u8, prescaler: u16) {
         }
 
         // Stop the channel while we configure TCR.
-        let tstr = TSTR as *mut u8;
-        let val = tstr.read_volatile();
-        tstr.write_volatile(val & !CST[ch as usize]);
+        wr8(TSTR, rd8(TSTR) & !CST[ch as usize]);
 
         // TCR: TPSC only, CCLR = 0 (counter not cleared on any match).
         wr8(TCR[ch as usize], tpsc(ch, prescaler));
@@ -221,8 +217,7 @@ pub unsafe fn start_free_running(ch: u8, prescaler: u16) {
         wr8(TIER[ch as usize], 0);
 
         // Start.
-        let val = tstr.read_volatile();
-        tstr.write_volatile(val | CST[ch as usize]);
+        wr8(TSTR, rd8(TSTR) | CST[ch as usize]);
     }
 }
 
@@ -237,8 +232,7 @@ pub unsafe fn stop(ch: u8) {
         if ch > 4 {
             return;
         }
-        let tstr = TSTR as *mut u8;
-        tstr.write_volatile(tstr.read_volatile() & !CST[ch as usize]);
+        wr8(TSTR, rd8(TSTR) & !CST[ch as usize]);
     }
 }
 
@@ -281,8 +275,7 @@ pub unsafe fn setup_one_shot(ch: u8, prescaler: u16, handler: crate::gic::Handle
         }
 
         // Stop channel.
-        let tstr = TSTR as *mut u8;
-        tstr.write_volatile(tstr.read_volatile() & !CST[ch as usize]);
+        wr8(TSTR, rd8(TSTR) & !CST[ch as usize]);
 
         // TCR: prescaler + CCLR = 0b001 (clear TCNT on TGRA match).
         wr8(TCR[ch as usize], tpsc(ch, prescaler) | (1 << 5));
@@ -316,8 +309,7 @@ pub unsafe fn arm(ch: u8, tgra: u16) {
         }
 
         // Stop while reconfiguring.
-        let tstr = TSTR as *mut u8;
-        tstr.write_volatile(tstr.read_volatile() & !CST[ch as usize]);
+        wr8(TSTR, rd8(TSTR) & !CST[ch as usize]);
 
         // Write compare value then reset counter.
         wr16(TGRA[ch as usize], tgra);
@@ -333,7 +325,7 @@ pub unsafe fn arm(ch: u8, tgra: u16) {
         wr8(TIER[ch as usize], 1); // TGIEA = 1
 
         // Start.
-        tstr.write_volatile(tstr.read_volatile() | CST[ch as usize]);
+        wr8(TSTR, rd8(TSTR) | CST[ch as usize]);
     }
 }
 
@@ -380,8 +372,7 @@ pub unsafe fn disarm(ch: u8) {
         wr8(TIER[ch as usize], 0);
 
         // Stop the counter.
-        let tstr = TSTR as *mut u8;
-        tstr.write_volatile(tstr.read_volatile() & !CST[ch as usize]);
+        wr8(TSTR, rd8(TSTR) & !CST[ch as usize]);
 
         // Mask the GIC source.
         crate::gic::disable(TGIA_IRQ[ch as usize]);
@@ -442,5 +433,37 @@ mod tests {
         // (See the deluge-clocks notes: P0phi ~= 33.064 MHz, not 33.33.)
         assert_eq!(MTU2_P0_HZ, 33_064_062);
         assert_eq!(TGIA_IRQ.len(), 5);
+    }
+
+    // ── register-effect tests via the MMIO seam ─────────────────────────────
+    use crate::mmio;
+
+    #[test]
+    fn start_free_running_configures_tcr_and_sets_cst() {
+        mmio::test::reset();
+        let ch = 2u8;
+        unsafe { start_free_running(ch, 16) };
+        // TCR holds the prescaler code for /16 (= 0b010).
+        assert_eq!(mmio::test::peek8(TCR[ch as usize]), tpsc(ch, 16));
+        assert_eq!(mmio::test::peek8(TIER[ch as usize]), 0, "compare-match IRQ off");
+        // The channel's CST start bit is set in TSTR.
+        assert_eq!(mmio::test::peek8(TSTR) & CST[ch as usize], CST[ch as usize]);
+    }
+
+    #[test]
+    fn stop_clears_only_this_channels_cst_bit() {
+        mmio::test::reset();
+        // Pretend channels 1 and 3 are both running.
+        mmio::test::poke8(TSTR, CST[1] | CST[3]);
+        unsafe { stop(3) };
+        assert_eq!(mmio::test::peek8(TSTR), CST[1], "ch1 still running, ch3 stopped");
+    }
+
+    #[test]
+    fn out_of_range_channel_is_a_noop() {
+        mmio::test::reset();
+        unsafe { start_free_running(9, 1) };
+        unsafe { stop(9) };
+        assert!(mmio::test::log().is_empty(), "ch>4 must touch no registers");
     }
 }
