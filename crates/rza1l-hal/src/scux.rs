@@ -1733,4 +1733,67 @@ mod tests {
             assert_eq!(ffu(ch + 1, 0) as usize - ffu(ch, 0) as usize, FFU_STRIDE);
         }
     }
+
+    #[test]
+    fn intifs_unity_is_q22_one_not_the_old_16x_bug() {
+        // INTIFS is Q22: unity (Fin==Fout) must be exactly 2^22 = 0x0040_0000.
+        // A previous hand-written table used 0x0400_0000 (2^26, 16× too large) —
+        // guard against that regression.
+        assert_eq!(intifs(44100, 44100), 0x0040_0000);
+        assert_eq!(intifs(48000, 48000), 0x0040_0000);
+        assert_eq!(INTIFS_44100_TO_44100, 0x0040_0000);
+        assert_ne!(INTIFS_44100_TO_44100, 0x0400_0000, "must not be 16× too large");
+    }
+
+    #[test]
+    fn intifs_integer_ratios_are_exact() {
+        // 2:1 downsample → 2 × 2^22 = 2^23.
+        assert_eq!(intifs(88200, 44100), 0x0080_0000);
+        assert_eq!(intifs(96000, 48000), 0x0080_0000);
+        assert_eq!(INTIFS_88200_TO_44100, 0x0080_0000);
+        // Fin < Fout → ratio below unity.
+        assert!(intifs(44100, 48000) < 0x0040_0000);
+        // Defensive: divide-by-zero guard.
+        assert_eq!(intifs(48000, 0), 0);
+    }
+
+    #[test]
+    fn intifs_matches_q22_formula() {
+        for (fin, fout) in [(32000u32, 44100u32), (44100, 48000), (96000, 44100)] {
+            let expected = (((fin as u64) << 22) / fout as u64) as u32;
+            assert_eq!(intifs(fin, fout), expected, "{fin}->{fout}");
+        }
+    }
+
+    #[test]
+    fn ffd_and_ffu_chcfg_direction_and_channel() {
+        // FFD (CPU→SCUX): destination fixed (DAD) + dest-triggered (REQD).
+        assert_eq!(ffd_chcfg(0) & CHCFG_DAD, CHCFG_DAD);
+        assert_eq!(ffd_chcfg(0) & CHCFG_REQD, CHCFG_REQD);
+        // FFU (SCUX→CPU): source fixed (SAD) + completion interrupt (DEM).
+        assert_eq!(ffu_chcfg(0) & CHCFG_SAD, CHCFG_SAD);
+        assert_eq!(ffu_chcfg(0) & CHCFG_DEM, CHCFG_DEM);
+        assert_eq!(ffu_chcfg(0) & CHCFG_REQD, 0, "FFU is source-triggered");
+        // Channel encoded in low 3 bits.
+        assert_eq!(ffd_chcfg(5) & 7, 5);
+        assert_eq!(ffu_chcfg(3) & 7, 3);
+        assert_eq!(ffd_chcfg(7), ffd_chcfg(0) | 7);
+    }
+
+    #[test]
+    fn audio_info_encodes_channels_and_otbl() {
+        // STEREO_24: 2 channels, OTBL=0 for 24-bit → reg = 2.
+        assert_eq!(AudioInfo::STEREO_24.channels, 2);
+        assert_eq!(AudioInfo::STEREO_24.to_reg(), 2);
+        // CHNUM is the actual count (not count−1).
+        let mono = AudioInfo { channels: 1, depth: BitDepth::B24 };
+        assert_eq!(mono.to_reg() & 0xFFFF, 1);
+    }
+
+    #[test]
+    fn vol_register_offsets_are_4_apart() {
+        assert_eq!(vol_off(0), VOL0R_OFF);
+        assert_eq!(vol_off(1), VOL0R_OFF + 4);
+        assert_eq!(vol_off(7), VOL0R_OFF + 28);
+    }
 }
