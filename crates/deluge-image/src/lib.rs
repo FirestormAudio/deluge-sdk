@@ -13,4 +13,5 @@
 #![cfg_attr(not(test), no_std)]
 
 pub mod elf;
+pub mod fat;
 pub mod uf2;

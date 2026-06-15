@@ -13,3 +13,9 @@ test = true
 [dependencies]
 # Intentionally none — pure logic, no_std, no hardware deps, so it unit-tests on
 # the host and can be reused by the pure-std host tools without a supply chain.
+
+[dev-dependencies]
+# Host-only: an independent FAT implementation used to prove a real OS would
+# mount the synthesized ghost-FAT volume and read CURRENT.UF2 back. Not pulled
+# into the firmware build (dev-deps are test-only and non-transitive).
+fatfs = "0.3"
