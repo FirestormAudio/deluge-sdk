@@ -51,6 +51,9 @@ jobs:
             cargo build-fw
           fi
 
+      - name: Build examples (compile-proves the facade + #[deluge::app] macro)
+        run: ./tools/build-examples.sh
+
       - name: Set artifact name
         id: set-artifact
         run: echo "name=firmware-${{ inputs.build-type }}" >> "$GITHUB_OUTPUT"
