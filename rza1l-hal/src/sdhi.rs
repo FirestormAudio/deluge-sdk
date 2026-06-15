@@ -104,8 +104,10 @@ pub const INFO1_DET_CD: u16 = 0x0018;
 /// Card currently present — SD_CD level (1 = SD_CD held low = card inserted).
 /// Use this for steady-state presence queries; INFO1_INS_CD is only for edge events.
 pub const INFO1_CD_LEVEL: u16 = 0x0020;
-/// Write-protect — SD_WP level (INFO7).  Per the TRM: 1 = SD_WP held low =
-/// card's lock tab engaged (read-only); 0 = SD_WP high = writable.
+/// Write-protect — SD_WP level (INFO7).  Per the TRM the bit reflects the pin:
+/// 1 = SD_WP held low, 0 = SD_WP high.  The mapping from that level to "write
+/// protected" is board-specific — on the Deluge it is inverted (see
+/// [`card_write_protected`]).
 pub const INFO1_WP: u16 = 0x0080;
 
 // ---------------------------------------------------------------------------
@@ -1221,17 +1223,19 @@ pub unsafe fn card_inserted(port: u8) -> bool {
 
 /// Return `true` if the card's write-protect (lock) tab is engaged (read-only).
 ///
-/// Reads SD_INFO1 bit 7 (INFO7 = SD_WP level).  Mirrors the Renesas
-/// `_sd_iswp`: bit 7 set ⇒ SD_WP low ⇒ write protected.  Only meaningful when
-/// SD_WP is wired to the SDHI (the Deluge's full-size SD socket wires it to the
-/// lock tab); a socket without a WP switch reads as not-protected.
+/// Reads SD_INFO1 bit 7 (INFO7 = SD_WP level).  **The Deluge socket inverts the
+/// usual polarity**: per the RZ/A1 manual INFO7 = 1 means the `SD_WP` pin is low,
+/// which a standard pulled-up socket asserts when the lock tab is engaged — but
+/// on the Deluge board the engaged tab drives `SD_WP` *high* (INFO7 = 0).  This
+/// was confirmed empirically with known locked/unlocked cards (`wp-probe`
+/// firmware), so here a **clear** INFO7 means write-protected.
 ///
 /// # Safety
 /// Reads SDHI INFO1 register.
 pub unsafe fn card_write_protected(port: u8) -> bool {
     unsafe {
         let base = port_base(port);
-        reg16(base, OFF_INFO1).read_volatile() & INFO1_WP != 0
+        reg16(base, OFF_INFO1).read_volatile() & INFO1_WP == 0
     }
 }
 

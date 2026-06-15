@@ -1738,6 +1738,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "wp-probe"
+version = "0.1.0"
+dependencies = [
+ "cortex-ar",
+ "deluge-bsp",
+ "embassy-executor",
+ "embassy-futures",
+ "embassy-sync",
+ "embassy-time",
+ "log",
+ "rtt-target",
+ "rza1l-hal",
+]
+
+[[package]]
 name = "zerocopy"
 version = "0.8.52"
 source = "registry+https://github.com/rust-lang/crates.io-index"
