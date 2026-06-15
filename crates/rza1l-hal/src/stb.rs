@@ -68,61 +68,35 @@ pub struct StbConfig {
 /// # Safety
 /// Writes to memory-mapped CPG registers.
 pub unsafe fn init(config: &StbConfig) {
+    use crate::mmio;
     unsafe {
         log::debug!("stb: enabling module clocks");
-        wr8(STBCR2, config.stbcr2);
-        let _: u8 = rd8(STBCR2); // dummy read
-
-        wr8(STBCR3, config.stbcr3);
-        let _: u8 = rd8(STBCR3);
-
-        wr8(STBCR4, config.stbcr4);
-        let _: u8 = rd8(STBCR4);
-
-        wr8(STBCR5, config.stbcr5);
-        let _: u8 = rd8(STBCR5);
-
-        wr8(STBCR6, config.stbcr6);
-        let _: u8 = rd8(STBCR6);
-
-        wr8(STBCR7, config.stbcr7);
-        let _: u8 = rd8(STBCR7);
-
-        wr8(STBCR8, config.stbcr8);
-        let _: u8 = rd8(STBCR8);
-
-        wr8(STBCR9, config.stbcr9);
-        let _: u8 = rd8(STBCR9);
-
-        wr8(STBCR10, config.stbcr10);
-        let _: u8 = rd8(STBCR10);
-
-        wr8(STBCR11, config.stbcr11);
-        let _: u8 = rd8(STBCR11);
-
-        wr8(STBCR12, config.stbcr12);
-        let _: u8 = rd8(STBCR12);
+        // Each register is written then immediately read back; the dummy read
+        // flushes the write buffer before the next access (HW manual §10).
+        for &(addr, val) in &[
+            (STBCR2, config.stbcr2),
+            (STBCR3, config.stbcr3),
+            (STBCR4, config.stbcr4),
+            (STBCR5, config.stbcr5),
+            (STBCR6, config.stbcr6),
+            (STBCR7, config.stbcr7),
+            (STBCR8, config.stbcr8),
+            (STBCR9, config.stbcr9),
+            (STBCR10, config.stbcr10),
+            (STBCR11, config.stbcr11),
+            (STBCR12, config.stbcr12),
+        ] {
+            mmio::write8(addr, val);
+            let _ = mmio::read8(addr); // dummy read
+        }
         log::debug!("stb: done (STBCR2-12 written)");
     }
 }
 
-#[inline(always)]
-unsafe fn wr8(addr: usize, val: u8) {
-    unsafe {
-        core::ptr::write_volatile(addr as *mut u8, val);
-    }
-}
-
-#[inline(always)]
-unsafe fn rd8(addr: usize) -> u8 {
-    unsafe { core::ptr::read_volatile(addr as *const u8) }
-}
-
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
-    use super::{
-        STBCR2, STBCR3, STBCR4, STBCR5, STBCR6, STBCR7, STBCR8, STBCR9, STBCR10, STBCR11, STBCR12,
-    };
+    use super::*;
+    use crate::mmio;
 
     /// Verify every STBCRn address against the RZ/A1L HW Manual §10 table.
     /// CPG base = 0xFCFE_0010 (FRQCR offset from module base 0xFCFE_0000).
@@ -172,5 +146,63 @@ mod tests {
     fn stbcr5_enables_ostm() {
         let val: u8 = 0b11111100;
         assert_eq!(val & 0x03, 0, "OSTM0/OSTM1 bits should be 0 (enabled)");
+    }
+
+    /// Drive `init` through the MMIO seam and assert the exact register-write
+    /// sequence: STBCR2..12 each written with its config byte, in order.
+    #[test]
+    fn init_writes_every_stbcr_in_order() {
+        mmio::test::reset();
+        let cfg = StbConfig {
+            stbcr2: 0x02,
+            stbcr3: 0x03,
+            stbcr4: 0x04,
+            stbcr5: 0x05,
+            stbcr6: 0x06,
+            stbcr7: 0x07,
+            stbcr8: 0x08,
+            stbcr9: 0x09,
+            stbcr10: 0x0A,
+            stbcr11: 0x0B,
+            stbcr12: 0x0C,
+        };
+        unsafe { init(&cfg) };
+
+        assert_eq!(
+            mmio::test::writes(),
+            [
+                (STBCR2, 0x02),
+                (STBCR3, 0x03),
+                (STBCR4, 0x04),
+                (STBCR5, 0x05),
+                (STBCR6, 0x06),
+                (STBCR7, 0x07),
+                (STBCR8, 0x08),
+                (STBCR9, 0x09),
+                (STBCR10, 0x0A),
+                (STBCR11, 0x0B),
+                (STBCR12, 0x0C),
+            ]
+        );
+    }
+
+    /// Every write must be followed by a read-back of the *same* address (the
+    /// HW-mandated dummy read that flushes the write buffer).
+    #[test]
+    fn each_write_is_followed_by_a_dummy_read_of_same_reg() {
+        mmio::test::reset();
+        let cfg = StbConfig {
+            stbcr2: 1, stbcr3: 1, stbcr4: 1, stbcr5: 1, stbcr6: 1, stbcr7: 1,
+            stbcr8: 1, stbcr9: 1, stbcr10: 1, stbcr11: 1, stbcr12: 1,
+        };
+        unsafe { init(&cfg) };
+
+        let log = mmio::test::log();
+        assert_eq!(log.len(), 22, "11 writes + 11 dummy reads");
+        for pair in log.chunks(2) {
+            assert!(pair[0].write && !pair[1].write, "write then read");
+            assert_eq!(pair[0].addr, pair[1].addr, "dummy read targets the written reg");
+            assert_eq!(pair[0].width, 1, "STBCR is 8-bit");
+        }
     }
 }

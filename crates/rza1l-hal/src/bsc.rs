@@ -43,12 +43,6 @@ const BCR_16BIT_1IDLE: u32 = 0x1000_0C00;
 // CSxWCR (non-SDRAM): setup 1.5 cyc, access 6 wait, teardown 0.5 cyc.
 const WCR_6WAIT: u32 = 0x0000_0B40;
 
-#[inline(always)]
-unsafe fn wr32(addr: usize, val: u32) {
-    unsafe {
-        core::ptr::write_volatile(addr as *mut u32, val);
-    }
-}
 
 /// Configure CS0 for 16-bit external bus access.
 ///
@@ -64,8 +58,8 @@ unsafe fn wr32(addr: usize, val: u32) {
 /// Writes to memory-mapped BSC registers.
 pub unsafe fn init_cs0() {
     unsafe {
-        wr32(CS0BCR, BCR_16BIT_1IDLE);
-        wr32(CS0WCR, WCR_6WAIT);
+        crate::mmio::write32(CS0BCR, BCR_16BIT_1IDLE);
+        crate::mmio::write32(CS0WCR, WCR_6WAIT);
     }
 }
 
@@ -78,7 +72,45 @@ pub unsafe fn init_cs0() {
 /// Writes to memory-mapped BSC registers.
 pub unsafe fn init_cs1() {
     unsafe {
-        wr32(CS1BCR, BCR_16BIT_1IDLE);
-        wr32(CS1WCR, WCR_6WAIT);
+        crate::mmio::write32(CS1BCR, BCR_16BIT_1IDLE);
+        crate::mmio::write32(CS1WCR, WCR_6WAIT);
+    }
+}
+
+#[cfg(all(test, not(target_os = "none")))]
+mod tests {
+    use super::*;
+    use crate::mmio;
+
+    #[test]
+    fn register_addresses() {
+        // BSC CSn timing registers (HW manual ch.8): BCR pairs then WCR pairs.
+        assert_eq!(CS0BCR, 0x3FFF_C004);
+        assert_eq!(CS1BCR, 0x3FFF_C008);
+        assert_eq!(CS0WCR, 0x3FFF_C028);
+        assert_eq!(CS1WCR, 0x3FFF_C02C);
+    }
+
+    #[test]
+    fn init_cs0_writes_bcr_then_wcr() {
+        mmio::test::reset();
+        unsafe { init_cs0() };
+        assert_eq!(
+            mmio::test::writes(),
+            [(CS0BCR, BCR_16BIT_1IDLE), (CS0WCR, WCR_6WAIT)],
+        );
+        // 16-bit bus width (IW=0x1) + 6 wait states encoded in the timing words.
+        assert_eq!(BCR_16BIT_1IDLE, 0x1000_0C00);
+        assert_eq!(WCR_6WAIT, 0x0000_0B40);
+    }
+
+    #[test]
+    fn init_cs1_targets_cs1_registers() {
+        mmio::test::reset();
+        unsafe { init_cs1() };
+        assert_eq!(
+            mmio::test::writes(),
+            [(CS1BCR, BCR_16BIT_1IDLE), (CS1WCR, WCR_6WAIT)],
+        );
     }
 }

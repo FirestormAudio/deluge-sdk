@@ -24,6 +24,9 @@ pub mod gic;
 /// Pure memory-system math (cache-line ranges + MMU section table) used by the
 /// bare-metal-only `cache`/`mmu` modules; non-gated so it unit-tests on host.
 pub mod memmap;
+/// MMIO seam: real volatile access on firmware, a shadow + access log under
+/// test, so register write *sequences* can be asserted on the host.
+pub mod mmio;
 #[cfg(target_os = "none")]
 pub mod mmu;
 pub mod mtu2;
