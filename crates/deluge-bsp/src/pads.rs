@@ -57,3 +57,65 @@ pub fn pad_id_from_xy(x: u8, y: u8) -> u8 {
         (y + 8) * 9 + (x - 1) / 2
     }
 }
+
+#[cfg(all(test, not(target_os = "none")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn xy_to_id_known_points() {
+        // Even columns fill the low half (ids 0..72); odd columns the high half.
+        assert_eq!(pad_id_from_xy(0, 0), 0);
+        assert_eq!(pad_id_from_xy(2, 0), 1);
+        assert_eq!(pad_id_from_xy(16, 0), 8);
+        assert_eq!(pad_id_from_xy(1, 0), 72);
+        assert_eq!(pad_id_from_xy(17, 7), 143);
+    }
+
+    #[test]
+    fn xy_to_id_is_inverse_of_pic_pad_coords() {
+        // Every grid cell must round-trip through both mappings.
+        for y in 0..8u8 {
+            for x in 0..18u8 {
+                let id = pad_id_from_xy(x, y);
+                assert!(id < 144, "id in range for ({x},{y})");
+                assert_eq!(crate::pic::pad_coords(id), (x, y), "round-trip ({x},{y})");
+            }
+        }
+    }
+
+    #[test]
+    fn xy_to_id_is_a_bijection_over_the_grid() {
+        let mut seen = [false; 144];
+        for y in 0..8u8 {
+            for x in 0..18u8 {
+                let id = pad_id_from_xy(x, y) as usize;
+                assert!(!seen[id], "id {id} produced twice");
+                seen[id] = true;
+            }
+        }
+        assert!(seen.iter().all(|&s| s), "all 144 ids are covered");
+    }
+
+    /// Single owner of the shared `PAD_BITS` state (other tests must not touch
+    /// it, so the parallel test runner can't race here).
+    #[test]
+    fn pad_state_set_get_invert() {
+        pad_set_all(false);
+        assert!(!pad_get(0) && !pad_get(143));
+        assert!(pad_toggle(5), "toggle lights the pad");
+        assert!(pad_get(5));
+        assert!(!pad_toggle(5), "toggle again clears it");
+
+        pad_set_all(true);
+        assert!(pad_get(0) && pad_get(143));
+        // The top 16 bits of the last word are unused and must stay clear.
+        assert_eq!(PAD_BITS[4].load(Ordering::Relaxed) & 0xFFFF_0000, 0);
+
+        pad_invert_all();
+        assert!(!pad_get(0) && !pad_get(143));
+        assert_eq!(PAD_BITS[4].load(Ordering::Relaxed) & 0xFFFF_0000, 0);
+
+        pad_set_all(false); // leave clean
+    }
+}

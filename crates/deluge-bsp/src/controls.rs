@@ -75,3 +75,69 @@ pub mod knob {
     pub const MOD_0: u8 = 0;
     pub const MOD_1: u8 = 1;
 }
+
+#[cfg(all(test, not(target_os = "none")))]
+mod tests {
+    use super::*;
+
+    /// DelugeFirmware derives raw button IDs as `9 * (y + 16) + x - 144`
+    /// (kDisplayHeight = 8). Verify the ENCODER_FUNCTION_* table against it.
+    fn raw_id(x: u8, y: u8) -> u8 {
+        (9 * (y as u16 + 16) + x as u16 - 144) as u8
+    }
+
+    #[test]
+    fn encoder_function_ids_match_the_formula() {
+        assert_eq!(button::ENCODER_FUNCTION_0, raw_id(1, 0));
+        assert_eq!(button::ENCODER_FUNCTION_4, raw_id(2, 0));
+        assert_eq!(button::ENCODER_FUNCTION_1, raw_id(1, 1));
+        assert_eq!(button::ENCODER_FUNCTION_5, raw_id(2, 1));
+        assert_eq!(button::ENCODER_FUNCTION_2, raw_id(1, 2));
+        assert_eq!(button::ENCODER_FUNCTION_6, raw_id(2, 2));
+        assert_eq!(button::ENCODER_FUNCTION_3, raw_id(1, 3));
+        assert_eq!(button::ENCODER_FUNCTION_7, raw_id(2, 3));
+    }
+
+    #[test]
+    fn all_button_ids_are_in_range_and_unique() {
+        let buttons = [
+            button::ENCODER_FUNCTION_0, button::ENCODER_FUNCTION_4,
+            button::ENCODER_FUNCTION_1, button::ENCODER_FUNCTION_5,
+            button::ENCODER_FUNCTION_2, button::ENCODER_FUNCTION_6,
+            button::ENCODER_FUNCTION_3, button::ENCODER_FUNCTION_7,
+            button::AFFECT_ENTIRE, button::SYNTH, button::SCALE_MODE, button::LEARN,
+            button::SHIFT, button::SESSION_VIEW, button::KIT, button::LOAD, button::BACK,
+            button::TRIPLETS, button::CLIP_VIEW, button::MIDI, button::CROSS_SCREEN_EDIT,
+            button::SYNC_SCALING, button::RECORD, button::KEYBOARD, button::CV, button::SAVE,
+            button::TAP_TEMPO, button::PLAY,
+        ];
+        let mut seen = [false; 36];
+        for &b in &buttons {
+            assert!(b <= 35, "button id {b} out of 0..=35");
+            assert!(!seen[b as usize], "duplicate button id {b}");
+            seen[b as usize] = true;
+        }
+    }
+
+    #[test]
+    fn encoder_buttons_are_disjoint_from_buttons() {
+        // The six shaft-click IDs are reported separately and must not collide
+        // with any named front-panel button.
+        let shaft = [
+            encoder_button::SCROLL_Y, encoder_button::SCROLL_X, encoder_button::TEMPO,
+            encoder_button::MOD_0, encoder_button::MOD_1, encoder_button::SELECT,
+        ];
+        assert_eq!(shaft, [0, 9, 13, 18, 27, 31]);
+        // Encoder *rotation* IDs are a separate 0..=5 space.
+        let rot = [
+            encoder::SCROLL_X, encoder::TEMPO, encoder::MOD_0,
+            encoder::MOD_1, encoder::SCROLL_Y, encoder::SELECT,
+        ];
+        let mut seen = [false; 6];
+        for &r in &rot {
+            assert!(!seen[r as usize], "duplicate encoder id {r}");
+            seen[r as usize] = true;
+        }
+        assert!(seen.iter().all(|&s| s), "encoder ids cover 0..=5");
+    }
+}
