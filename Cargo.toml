@@ -16,6 +16,7 @@ members = [
   "crates/deluge-ui",
   "examples/blinky",
   "examples/oled_hello",
+  "examples/oled_menu",
   "examples/input_demo",
   "examples/pad_paint",
   "examples/midi_cv",

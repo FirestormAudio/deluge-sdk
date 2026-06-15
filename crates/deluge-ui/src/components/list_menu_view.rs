@@ -8,7 +8,7 @@
 //!
 //! ```text
 //!  y=0   ┌─────────────────────────────────────────┐
-//!  y=1   │  Title (drawn by caller via render_title)│
+//!  y=1   │  Title (drawn by caller)                │
 //! y=11   ├─────────────────────────────────────────┤
 //! y=14   │  Item 0                             [▶] │
 //! y=23   │  ██ Item 1 (selected, inverted)     [▶] │
