@@ -9,9 +9,9 @@ name = "demo-firmware"
 test = false
 
 [dependencies]
-deluge = { path = "../../deluge" }
-rza1l-hal = { path = "../../rza1l-hal" }
-deluge-bsp = { path = "../../deluge-bsp" }
+deluge = { path = "../../crates/deluge" }
+rza1l-hal = { path = "../../crates/rza1l-hal" }
+deluge-bsp = { path = "../../crates/deluge-bsp" }
 cortex-ar = { workspace = true }
 embassy-executor = { workspace = true, features = ["nightly", "platform-cortex-ar", "executor-thread"] }
 embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
@@ -21,7 +21,7 @@ embassy-usb-driver = { workspace = true }
 embassy-usb-host = { workspace = true }
 log = { workspace = true }
 embassy-futures = { workspace = true }
-deluge-fft = { path = "../../deluge-fft" }
+deluge-fft = { path = "../../crates/deluge-fft" }
 
 [features]
 ## Enable RTT (SEGGER Real-Time Transfer) debug logging. The SDK's

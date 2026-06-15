@@ -17,9 +17,9 @@ libraries and the on-board app loader.
 | [`firmwares/controller-firmware`](firmwares/controller-firmware/) | `deluge-controller` firmware — USB host/CDC controller build |
 | [`firmwares/msc-firmware`](firmwares/msc-firmware/) | USB Mass Storage Class firmware build |
 | [`app-loader`](app-loader/) | Second-stage bootloader / app loader — OLED file selector, SD-card ELF + USB UF2 flashing |
-| [`rza1l-hal`](rza1l-hal/) | Register-level HAL for the RZ/A1L SoC (MMU, caches, GIC, timers, DMA, RSPI, SSI, SCUX, SDHI, …) |
-| [`deluge-bsp`](deluge-bsp/) | Board support package — SDRAM, audio codec, OLED, PIC co-processor, CV/gate, MIDI, SD card, USB |
-| [`deluge-fft`](deluge-fft/) | `no_std` FFT library with RZ/A1L-tuned radix-4/8 paths and a real-FFT spectrum analyser |
+| [`crates/rza1l-hal`](crates/rza1l-hal/) | Register-level HAL for the RZ/A1L SoC (MMU, caches, GIC, timers, DMA, RSPI, SSI, SCUX, SDHI, …) |
+| [`crates/deluge-bsp`](crates/deluge-bsp/) | Board support package — SDRAM, audio codec, OLED, PIC co-processor, CV/gate, MIDI, SD card, USB |
+| [`crates/deluge-fft`](crates/deluge-fft/) | `no_std` FFT library with RZ/A1L-tuned radix-4/8 paths and a real-FFT spectrum analyser |
 
 ---
 

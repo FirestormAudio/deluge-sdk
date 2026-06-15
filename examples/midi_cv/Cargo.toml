@@ -10,7 +10,7 @@ name = "midi_cv"
 test = false
 
 [dependencies]
-deluge = { path = "../../deluge" }
+deluge = { path = "../../crates/deluge" }
 embassy-executor = { workspace = true, features = [
     "nightly",
     "platform-cortex-ar",

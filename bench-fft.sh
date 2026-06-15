@@ -19,7 +19,7 @@
 #   apt install qemu-user gcc-arm-linux-gnueabihf
 
 set -euo pipefail
-MANIFEST="$(dirname "$0")/deluge-fft/Cargo.toml"
+MANIFEST="$(dirname "$0")/crates/deluge-fft/Cargo.toml"
 MODE="${1:-all}"
 
 run_native() {

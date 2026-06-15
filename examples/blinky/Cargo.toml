@@ -10,7 +10,7 @@ name = "blinky"
 test = false
 
 [dependencies]
-deluge = { path = "../../deluge" }
+deluge = { path = "../../crates/deluge" }
 # embassy-executor is a direct dependency because the `#[deluge::app]` expansion
 # uses `#[embassy_executor::task]`, whose generated code references the
 # `embassy_executor` crate by name.

@@ -11,7 +11,7 @@ test = false
 
 [dependencies]
 # `usb-log` routes the `log` crate to a USB CDC-ACM serial port on the host.
-deluge = { path = "../../deluge", features = ["usb-log"] }
+deluge = { path = "../../crates/deluge", features = ["usb-log"] }
 embassy-executor = { workspace = true, features = [
     "nightly",
     "platform-cortex-ar",

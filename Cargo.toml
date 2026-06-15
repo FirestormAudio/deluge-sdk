@@ -1,5 +1,5 @@
 [workspace]
-members = ["firmwares/demo-firmware", "firmwares/controller-firmware", "firmwares/msc-firmware", "firmwares/wp-probe", "rza1l-hal", "deluge-bsp", "deluge-fft", "app-loader", "deluge", "deluge-macros", "examples/blinky", "examples/oled_hello", "examples/input_demo", "examples/pad_paint", "examples/midi_cv", "examples/sd_demo", "examples/audio_passthru", "examples/audio_passthru_irq", "examples/button_leds", "examples/usb_log"]
+members = ["firmwares/demo-firmware", "firmwares/controller-firmware", "firmwares/msc-firmware", "firmwares/wp-probe", "crates/rza1l-hal", "crates/deluge-bsp", "crates/deluge-fft", "app-loader", "crates/deluge", "crates/deluge-macros", "examples/blinky", "examples/oled_hello", "examples/input_demo", "examples/pad_paint", "examples/midi_cv", "examples/sd_demo", "examples/audio_passthru", "examples/audio_passthru_irq", "examples/button_leds", "examples/usb_log"]
 # Host-side tooling: built for the host triple, not the embedded armv7a target,
 # so it must not be a member of this no_std cross-compiled workspace.
 exclude = ["tools/elf2uf2", "tools/cargo-deluge"]
