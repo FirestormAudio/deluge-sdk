@@ -1695,3 +1695,42 @@ pub unsafe fn stop() {
 pub fn ffd_dma_ch(ffd_ch: u8) -> u8 {
     FFD_DMA_CH_STORED[ffd_ch as usize].load(core::sync::atomic::Ordering::Relaxed)
 }
+
+#[cfg(all(test, not(target_os = "none")))]
+mod tests {
+    use super::*;
+
+    // SCUX_BASE = 0xE820_8000. Each sub-block (IPC/OPC/FFD/FFU) is a bank of
+    // per-channel register windows STRIDE bytes apart.
+    #[test]
+    fn block_bases_match_datasheet_offsets() {
+        assert_eq!(IPC_BASE, 0xE820_8000);
+        assert_eq!(OPC_BASE, 0xE820_8400);
+        assert_eq!(FFD_BASE, 0xE820_8800);
+        assert_eq!(FFU_BASE, 0xE820_8C00);
+    }
+
+    #[test]
+    fn channel_addressing_is_base_plus_stride_plus_offset() {
+        assert_eq!(ipc(0, IPCIR_OFF) as usize, 0xE820_8000);
+        assert_eq!(ipc(1, IPCIR_OFF) as usize, 0xE820_8100);
+        assert_eq!(ipc(2, IPSLR_OFF) as usize, 0xE820_8200 + 0x04);
+
+        assert_eq!(opc(0, OPCIR_OFF) as usize, 0xE820_8400);
+        assert_eq!(opc(3, OPSLR_OFF) as usize, 0xE820_8400 + 3 * 0x100 + 0x04);
+
+        assert_eq!(ffd(0, FFDIR_OFF) as usize, 0xE820_8800);
+        assert_eq!(ffd(3, FFDPR_OFF) as usize, 0xE820_8800 + 3 * 0x100 + 0x0C);
+
+        assert_eq!(ffu(0, FFUIR_OFF) as usize, 0xE820_8C00);
+        assert_eq!(ffu(2, FUAIR_OFF) as usize, 0xE820_8C00 + 2 * 0x100 + 0x04);
+    }
+
+    #[test]
+    fn per_channel_windows_do_not_overlap() {
+        for ch in 0..3u8 {
+            assert_eq!(ffd(ch + 1, 0) as usize - ffd(ch, 0) as usize, FFD_STRIDE);
+            assert_eq!(ffu(ch + 1, 0) as usize - ffu(ch, 0) as usize, FFU_STRIDE);
+        }
+    }
+}

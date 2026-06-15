@@ -53,6 +53,23 @@ const OSTM_IRQ_PRIORITY: u8 = 14;
 const OSTM_PER_US_NUM: u64 = 21_161;
 const OSTM_PER_US_DEN: u64 = 640;
 
+/// Convert a raw OSTM0 tick count to Embassy µs ticks (`ticks × 640 / 21161`).
+/// The multiply overflows u64 only after ~28 years of uptime at 33.064 MHz.
+#[inline]
+fn ostm_ticks_to_us(ticks: u64) -> u64 {
+    ticks * OSTM_PER_US_DEN / OSTM_PER_US_NUM
+}
+
+/// Convert an Embassy µs delta to OSTM0 ticks, rounding **up** so a short
+/// alarm never fires early (`ceil(delta_us × 21161 / 640)`). Saturating to
+/// avoid overflow; callers clamp the result to the OSTM 32-bit counter range.
+#[inline]
+fn us_to_ostm_ticks(delta_us: u64) -> u64 {
+    delta_us
+        .saturating_mul(OSTM_PER_US_NUM)
+        .div_ceil(OSTM_PER_US_DEN)
+}
+
 // ---------------------------------------------------------------------------
 // Overflow counter
 // ---------------------------------------------------------------------------
@@ -110,10 +127,7 @@ impl OstmDriver {
         let delta_us = at - now;
         // Clamp to u32 range (~128 s); if the alarm is farther out it will
         // be re-armed after the intermediate ISR fires.
-        let delta_ostm = (delta_us
-            .saturating_mul(OSTM_PER_US_NUM)
-            .div_ceil(OSTM_PER_US_DEN))
-        .min(u32::MAX as u64) as u32;
+        let delta_ostm = us_to_ostm_ticks(delta_us).min(u32::MAX as u64) as u32;
 
         if delta_ostm == 0 {
             return false;
@@ -210,5 +224,52 @@ pub unsafe fn init() {
         gic::set_priority(OSTM1_IRQ, OSTM_IRQ_PRIORITY);
         gic::enable(OSTM0_IRQ);
         // OSTM1 will be enabled by try_set_alarm when needed.
+    }
+}
+
+#[cfg(all(test, not(target_os = "none")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tick_ratio_reflects_deluge_p0_clock() {
+        // P0phi = 33,064,062.5 Hz => 21161/640 OSTM ticks per microsecond.
+        // (The earlier 33-ticks/us truncation caused ~0.2% clock drift.)
+        assert_eq!(OSTM_PER_US_NUM, 21_161);
+        assert_eq!(OSTM_PER_US_DEN, 640);
+        // The rational is 33.0640625 ticks/us — verify to 4 dp.
+        let ratio = OSTM_PER_US_NUM as f64 / OSTM_PER_US_DEN as f64;
+        assert!((ratio - 33.0640625).abs() < 1e-9);
+    }
+
+    #[test]
+    fn ticks_to_us_uses_the_rational_not_33() {
+        // One second of OSTM ticks = 33,064,062 (floor) -> ~1e6 us.
+        let one_second_ticks = 33_064_062u64;
+        let us = ostm_ticks_to_us(one_second_ticks);
+        // Within 1 us of a million (floor division).
+        assert!((999_999..=1_000_000).contains(&us), "got {us}");
+        // A naive /33 would give 1_001_941 us — a 0.19% error we must avoid.
+        assert!(us < 1_001_000);
+    }
+
+    #[test]
+    fn us_to_ticks_rounds_up_so_alarms_never_fire_early() {
+        // 1 us must round up to at least 1 tick, never 0.
+        assert!(us_to_ostm_ticks(1) >= 1);
+        // ceil: 640 us = exactly 21161 ticks; 641 us strictly more.
+        assert_eq!(us_to_ostm_ticks(640), 21_161);
+        assert!(us_to_ostm_ticks(641) > 21_161);
+        // 0 us -> 0 ticks.
+        assert_eq!(us_to_ostm_ticks(0), 0);
+    }
+
+    #[test]
+    fn conversions_round_trip_within_one_us() {
+        for &us in &[1u64, 1000, 1_000_000, 5_000_000] {
+            let ticks = us_to_ostm_ticks(us);
+            let back = ostm_ticks_to_us(ticks);
+            assert!(back >= us && back <= us + 1, "us={us} back={back}");
+        }
     }
 }

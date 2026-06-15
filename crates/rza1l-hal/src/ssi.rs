@@ -610,3 +610,32 @@ pub fn rx_dma_ch() -> u8 {
 pub fn tx_dma_ch() -> u8 {
     TX_DMA_CH_ACTIVE.load(core::sync::atomic::Ordering::Relaxed)
 }
+
+#[cfg(all(test, not(target_os = "none")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn buffer_lengths_are_stereo_interleaved() {
+        // Buffers hold L+R per frame, so the sample length is 2x the frame count.
+        assert_eq!(TX_BUF_LEN, TX_FRAMES * 2);
+        assert_eq!(RX_BUF_LEN, RX_FRAMES * 2);
+        // RX is double-buffered relative to TX in this design.
+        assert_eq!(RX_FRAMES, TX_FRAMES * 2);
+    }
+
+    #[test]
+    fn fifo_init_composes_reset_and_trigger_bits() {
+        // INIT resets both FIFOs and sets the 4-stage trigger thresholds.
+        assert_eq!(SSIFCR_INIT, SSIFCR_TFRST | SSIFCR_RFRST | SSIFCR_TTRG_4 | SSIFCR_RTRG_4);
+        assert_eq!(SSIFCR_TTRG_4, 0x80);
+        assert_eq!(SSIFCR_RTRG_4, 0x20);
+        assert_eq!(SSIFCR_INIT, 0xA3);
+    }
+
+    #[test]
+    fn control_enable_bits_are_distinct() {
+        assert_ne!(SSICR_REN, SSICR_TEN);
+        assert_eq!(SSICR_REN | SSICR_TEN, 0b11);
+    }
+}

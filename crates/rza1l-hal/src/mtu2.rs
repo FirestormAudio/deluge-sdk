@@ -387,3 +387,60 @@ pub unsafe fn disarm(ch: u8) {
         crate::gic::disable(TGIA_IRQ[ch as usize]);
     }
 }
+
+#[cfg(all(test, not(target_os = "none")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tpsc_common_prescalers() {
+        // 1/4/16/64 are valid on every channel and encode identically.
+        for ch in 0..5u8 {
+            assert_eq!(tpsc(ch, 1), 0b000);
+            assert_eq!(tpsc(ch, 4), 0b001);
+            assert_eq!(tpsc(ch, 16), 0b010);
+            assert_eq!(tpsc(ch, 64), 0b011);
+        }
+    }
+
+    #[test]
+    fn tpsc_channel_specific_prescalers() {
+        // /256: ch1 -> 0b110; ch3,4 -> 0b100; others invalid.
+        assert_eq!(tpsc(1, 256), 0b110);
+        assert_eq!(tpsc(3, 256), 0b100);
+        assert_eq!(tpsc(4, 256), 0b100);
+        // /1024: ch2 -> 0b111; ch3,4 -> 0b101.
+        assert_eq!(tpsc(2, 1024), 0b111);
+        assert_eq!(tpsc(3, 1024), 0b101);
+        assert_eq!(tpsc(4, 1024), 0b101);
+    }
+
+    #[test]
+    fn tpsc_invalid_combinations_fall_back_to_div1() {
+        // /256 not available on ch0/ch2; /1024 not on ch0/ch1; bogus values too.
+        assert_eq!(tpsc(0, 256), 0b000);
+        assert_eq!(tpsc(2, 256), 0b000);
+        assert_eq!(tpsc(0, 1024), 0b000);
+        assert_eq!(tpsc(1, 1024), 0b000);
+        assert_eq!(tpsc(0, 3), 0b000);
+    }
+
+    #[test]
+    fn channel_start_bits_are_unique() {
+        // TSTR CST bits must be one-hot and distinct per channel.
+        let mut seen = 0u8;
+        for &b in CST.iter() {
+            assert_eq!(b.count_ones(), 1, "each CST bit is one-hot");
+            assert_eq!(seen & b, 0, "CST bits must not overlap");
+            seen |= b;
+        }
+    }
+
+    #[test]
+    fn p0_clock_matches_deluge_extal() {
+        // 13.2256 MHz EXTAL -> P0phi = 13_225_625 * 30 / 12 = 33_064_062.5 Hz.
+        // (See the deluge-clocks notes: P0phi ~= 33.064 MHz, not 33.33.)
+        assert_eq!(MTU2_P0_HZ, 33_064_062);
+        assert_eq!(TGIA_IRQ.len(), 5);
+    }
+}

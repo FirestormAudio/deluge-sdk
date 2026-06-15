@@ -584,3 +584,67 @@ pub async fn wait_block(ch: u8) {
     })
     .await
 }
+
+#[cfg(all(test, not(target_os = "none")))]
+mod tests {
+    use super::*;
+
+    // DMAC_BASE = 0xE820_0000. Channels 0–7 are 64 bytes apart from the base;
+    // channels 8–15 sit 0x200 higher (a register gap), i.e. base+0x400 for ch8.
+    #[test]
+    fn ch_base_layout() {
+        assert_eq!(ch_base(0) as usize, 0xE820_0000);
+        assert_eq!(ch_base(1) as usize, 0xE820_0040);
+        assert_eq!(ch_base(7) as usize, 0xE820_01C0);
+        // The 0x200 gap kicks in at channel 8.
+        assert_eq!(ch_base(8) as usize, 0xE820_0400);
+        assert_eq!(ch_base(9) as usize, 0xE820_0440);
+        assert_eq!(ch_base(15) as usize, 0xE820_05C0);
+    }
+
+    #[test]
+    fn ch_base_stride_is_uniform_within_each_group() {
+        for ch in 0..7u8 {
+            assert_eq!(ch_base(ch + 1) - ch_base(ch), 64);
+        }
+        for ch in 8..15u8 {
+            assert_eq!(ch_base(ch + 1) - ch_base(ch), 64);
+        }
+    }
+
+    #[test]
+    fn ch_reg_adds_offset() {
+        assert_eq!(ch_reg(0, OFF_CHCFG) as usize, 0xE820_0000 + 0x2C);
+        assert_eq!(ch_reg(8, OFF_NXLA) as usize, 0xE820_0400 + 0x38);
+        assert_eq!(ch_reg(5, OFF_CHSTAT) as usize, ch_base(5) + OFF_CHSTAT);
+    }
+
+    #[test]
+    fn dctrl_selects_group_register() {
+        // Channels 0–7 share one DCTRL; 8–15 share another.
+        for ch in 0..8u8 {
+            assert_eq!(dctrl_reg(ch) as usize, 0xE820_0300);
+        }
+        for ch in 8..16u8 {
+            assert_eq!(dctrl_reg(ch) as usize, 0xE820_0700);
+        }
+    }
+
+    #[test]
+    fn dmars_register_is_shared_per_channel_pair() {
+        // DMARS holds two channels' resource selectors per 32-bit word.
+        assert_eq!(dmars_reg(0) as usize, 0xFCFE_1000);
+        assert_eq!(dmars_reg(1) as usize, 0xFCFE_1000);
+        assert_eq!(dmars_reg(2) as usize, 0xFCFE_1004);
+        assert_eq!(dmars_reg(3) as usize, 0xFCFE_1004);
+        assert_eq!(dmars_reg(14) as usize, 0xFCFE_101C);
+        assert_eq!(dmars_reg(15) as usize, 0xFCFE_101C);
+    }
+
+    #[test]
+    fn chctrl_bits_are_distinct() {
+        // Sanity: the start/stop/reset/clear-TC controls don't overlap.
+        let all = CHCTRL_SETEN | CHCTRL_CLREN | CHCTRL_SWRST | CHCTRL_CLRTC;
+        assert_eq!(all.count_ones(), 4);
+    }
+}

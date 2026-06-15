@@ -139,3 +139,54 @@ pub static SRAM: CsHeap = CsHeap::empty();
 /// `Box::new_in` / `Vec::try_reserve` to panic). There is no silent UB, but
 /// any allocation attempt before `init` will fail at runtime.
 pub static SDRAM: CsHeap = CsHeap::empty();
+
+#[cfg(all(test, not(target_os = "none")))]
+mod tests {
+    use super::*;
+    use core::alloc::Layout;
+
+    #[test]
+    fn empty_heap_reports_zero() {
+        let h = CsHeap::empty();
+        assert_eq!(h.size(), 0);
+        assert_eq!(h.used(), 0);
+        assert_eq!(h.free(), 0);
+        assert_eq!(h.bottom(), 0);
+    }
+
+    #[test]
+    fn init_then_allocate_and_free_tracks_usage() {
+        // Back the arena with an owned, sufficiently-aligned buffer.
+        let mut buf = vec![0u8; 8192];
+        let start = buf.as_mut_ptr();
+        let h = CsHeap::empty();
+        unsafe { h.init(start, buf.len()) };
+
+        assert_eq!(h.size(), 8192);
+        assert_eq!(h.used(), 0);
+        assert_eq!(h.free(), 8192);
+        assert!(h.bottom() != 0, "bottom is set after init");
+
+        let layout = Layout::from_size_align(256, 8).unwrap();
+        let p = h.allocate(layout).expect("allocation within an 8 KB arena");
+        assert!(h.used() >= 256, "used grows by at least the request");
+        assert!(h.free() <= 8192 - 256);
+
+        // Returned region is inside the arena.
+        let addr = p.as_ptr() as *mut u8 as usize;
+        assert!(addr >= h.bottom() && addr < h.bottom() + h.size());
+
+        unsafe { h.deallocate(p.cast::<u8>(), layout) };
+        assert_eq!(h.used(), 0, "freeing returns the arena to empty");
+    }
+
+    #[test]
+    fn allocation_failure_when_arena_exhausted() {
+        let mut buf = vec![0u8; 1024];
+        let h = CsHeap::empty();
+        unsafe { h.init(buf.as_mut_ptr(), buf.len()) };
+        // Requesting far more than the arena holds must fail, not panic/UB.
+        let too_big = Layout::from_size_align(64 * 1024, 8).unwrap();
+        assert!(h.allocate(too_big).is_err());
+    }
+}
