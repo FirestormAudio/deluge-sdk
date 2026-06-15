@@ -12,3 +12,9 @@ proc-macro = true
 syn = { version = "2", features = ["full"] }
 quote = "1"
 proc-macro2 = "1"
+
+[dev-dependencies]
+# Host-only: compile-fail tests asserting #[deluge::app] rejects bad input with
+# good diagnostics. The error cases emit `compile_error!` before any expansion,
+# so they need no embedded deps and produce stable stderr.
+trybuild = "1"
