@@ -14,6 +14,9 @@ pub mod controls;
 pub mod cv_gate;
 #[cfg(target_os = "none")]
 pub mod encoder;
+/// Pure quadrature detent accumulation used by the bare-metal `encoder` driver;
+/// non-gated so it unit-tests on the host.
+pub mod encoder_detent;
 // `fat` builds on `sd`, and `midi_gate` pulls in `cortex_ar` — both depend on
 // items only available on the bare-metal target, so they are excluded from the
 // host/QEMU test build (the pure-logic modules below still compile there).
@@ -26,6 +29,9 @@ pub mod oled;
 pub mod pads;
 pub mod pic;
 pub mod rgb;
+/// Pure audio sample-format conversion + dither used by the bare-metal
+/// `audio_block` ring driver; non-gated so it unit-tests on the host.
+pub mod sample_fmt;
 pub mod scux_dvu_path;
 pub mod scux_src_path;
 pub mod scux_usb_tx_path;

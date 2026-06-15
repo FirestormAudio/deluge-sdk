@@ -26,23 +26,8 @@ pub static ENCODER_WAKER: AtomicWaker = AtomicWaker::new();
 #[inline]
 pub fn take_detents(encoder_index: usize, edge_accumulator: &mut i8) -> i8 {
     let delta = ENCODER_DELTAS[encoder_index].swap(0, Ordering::Relaxed);
-    if delta == 0 {
-        return 0;
-    }
-
-    *edge_accumulator = edge_accumulator.saturating_add(delta);
-
-    let mut detents = 0;
-    while *edge_accumulator > 1 {
-        *edge_accumulator -= 2;
-        detents += 1;
-    }
-    while *edge_accumulator < -1 {
-        *edge_accumulator += 2;
-        detents -= 1;
-    }
-
-    detents
+    // Pure edge→detent accumulation lives in `crate::encoder_detent` (host-tested).
+    crate::encoder_detent::accumulate_detents(delta, edge_accumulator)
 }
 
 fn enc_irq_handler(enc_idx: usize, irq_pin: u8, companion: u8, irq_num: u8, invert: bool) {

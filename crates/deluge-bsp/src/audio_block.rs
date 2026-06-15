@@ -43,33 +43,9 @@ pub struct Frame {
     pub r: f32,
 }
 
-// ── Format conversion (scalar; no NEON so app crates need no feature gates) ─────
-
-/// i32 MSB-aligned (full 32-bit range) → `[-1.0, 1.0)`.
-#[inline]
-fn i32_to_f32(s: i32) -> f32 {
-    s as f32 * (1.0 / 2_147_483_648.0)
-}
-
-/// `f32` → i32 MSB-aligned, clamped (clamp-before-cast avoids the sign-flip a
-/// raw cast would give past full scale; `2^31 - 1` avoids overflow at `+1.0`).
-#[inline]
-fn f32_to_i32(x: f32) -> i32 {
-    (x.clamp(-1.0, 1.0) * 2_147_483_647.0) as i32
-}
-
-/// ±16-LSB (of 24-bit) LFSR dither, mixed into every output sample so sustained
-/// silence doesn't trip the codec's ~8192-identical-sample auto-mute. Ported
-/// verbatim from the firmware's `dither_sample`.
-#[inline]
-fn dither_sample(lfsr: &mut u32) -> i32 {
-    let bit = *lfsr & 1;
-    *lfsr >>= 1;
-    if bit != 0 {
-        *lfsr ^= 0xB400;
-    }
-    ((*lfsr & 0x1F) as i32 - 0x10) << 8
-}
+// Pure format conversion + dither live in `crate::sample_fmt` (host-tested);
+// import them so the call sites below are unchanged.
+use crate::sample_fmt::{dither_sample, f32_to_i32, i32_to_f32};
 
 // ── DMA head offsets (slot = one i32; 2 slots per stereo frame) ────────────────
 
