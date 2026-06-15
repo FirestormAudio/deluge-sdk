@@ -1,0 +1,17 @@
+[package]
+name = "deluge-ui-toolkit"
+version = "0.1.0"
+edition = "2024"
+authors = ["Firestorm Community"]
+description = "Graphics toolkit for Deluge 128×48 horizontal monochrome OLED display"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/FirestormAudio/deluge-embassy"
+build = "build.rs"
+
+[dependencies]
+# Display rendering for 128×48 OLED. Drawing goes through embedded-graphics
+# `DrawTarget`s (the SDK's `Oled` is one), so no framebuffer wrapper is needed.
+embedded-graphics = "0.8"
+embedded-fonts-deluge.workspace = true
+# no_std-compatible floating-point math (sin, cos, round, exp, ceil, …)
+libm = { version = "0.2", default-features = false }

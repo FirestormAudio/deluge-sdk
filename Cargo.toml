@@ -12,6 +12,8 @@ members = [
   "crates/deluge-macros",
   "crates/armv7-dsp-intrinsics",
   "crates/fixedpoint",
+  "crates/deluge-fonts",
+  "crates/deluge-ui",
   "examples/blinky",
   "examples/oled_hello",
   "examples/input_demo",
@@ -57,6 +59,11 @@ gdbstub = { version = "0.7" }
 # Deluge's Cortex-A9, so the DSP intrinsics map straight onto the hardware.
 armv7-dsp-intrinsics = { path = "crates/armv7-dsp-intrinsics" }
 fixedpoint = { path = "crates/fixedpoint" }
+
+# Vendored from `spark` (GPL-3.0-or-later — kept as standalone crates apps opt
+# into; the permissive `deluge` facade must NOT depend on these).
+embedded-fonts-deluge = { path = "crates/deluge-fonts" }
+deluge-ui-toolkit = { path = "crates/deluge-ui" }
 
 [profile.release]
 opt-level = "s"
