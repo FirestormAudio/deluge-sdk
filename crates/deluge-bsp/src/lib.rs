@@ -14,8 +14,13 @@ pub mod controls;
 pub mod cv_gate;
 #[cfg(target_os = "none")]
 pub mod encoder;
+// `fat` builds on `sd`, and `midi_gate` pulls in `cortex_ar` — both depend on
+// items only available on the bare-metal target, so they are excluded from the
+// host/QEMU test build (the pure-logic modules below still compile there).
+#[cfg(target_os = "none")]
 pub mod fat;
 pub mod jacks;
+#[cfg(target_os = "none")]
 pub mod midi_gate;
 pub mod oled;
 pub mod pads;
@@ -24,12 +29,14 @@ pub mod rgb;
 pub mod scux_dvu_path;
 pub mod scux_src_path;
 pub mod scux_usb_tx_path;
+#[cfg(target_os = "none")]
 pub mod sd;
 pub mod sdram;
 pub mod system;
 #[cfg(target_os = "none")]
 pub mod trigger_clock;
 pub mod uart;
+#[cfg(target_os = "none")]
 pub mod usb;
 
 // RSPI0 arbitration between the OLED DMA path and the CV DAC now lives in

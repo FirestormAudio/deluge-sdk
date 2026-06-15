@@ -46,7 +46,9 @@
 //! oled::send_frame(&fb).await;
 //! ```
 
+#[cfg(target_os = "none")]
 use rza1l_hal::UNCACHED_MIRROR_OFFSET;
+#[cfg(target_os = "none")]
 use rza1l_hal::dmac;
 
 #[cfg(target_os = "none")]

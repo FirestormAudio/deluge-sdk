@@ -87,6 +87,38 @@ aliases — always use them instead of bare `cargo build` so the required
 
 ---
 
+## Testing
+
+The default `armv7a-none-eabihf` target is bare-metal (no `std`), so the test
+harness can't build there. Tests instead run on two host-side targets:
+
+- **QEMU ARM** (`armv7-unknown-linux-gnueabihf`, under `qemu-arm`) — crates that
+  use ARM inline asm or ARM/NEON intrinsics (`rza1l-hal`, `deluge-bsp`,
+  `fixedpoint`, `armv7-dsp-intrinsics`, `deluge-fft`).
+- **Host** (`x86_64-unknown-linux-gnu`) — pure-logic / std crates and ones whose
+  dev-deps don't cross-compile to ARM (`deluge-ui-toolkit`, host tools).
+
+Run everything with one command:
+
+```sh
+./tools/test.sh
+```
+
+Prerequisites (one-time):
+
+```sh
+rustup target add armv7-unknown-linux-gnueabihf x86_64-unknown-linux-gnu
+# Debian/Ubuntu:
+sudo apt-get install qemu-user gcc-arm-linux-gnueabihf
+# Arch:
+sudo pacman -S qemu-user-static arm-linux-gnueabihf-gcc
+```
+
+The `qemu-arm` runner and ARM cross-linker are wired up in `.cargo/config.toml`.
+CI runs the same script (`.github/workflows/test.yml`).
+
+---
+
 ## Debugging
 
 Two probe backends are supported: J-Link (stable, recommended) and a custom

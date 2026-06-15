@@ -37,7 +37,14 @@
 //! - **Rust-style aliases** (e.g., `saturating_add`, `mul_high`) - idiomatic Rust naming
 
 #![no_std]
-#![cfg_attr(feature = "nightly", feature(stdarch_arm_dsp))]
+// `core::arch::arm` DSP intrinsics (`__qadd`, `__smmul`, …) are gated behind
+// both unstable features in current nightlies — the DSP intrinsics were folded
+// in under the same gate as the NEON ones. Both are needed for the `nightly`
+// (intrinsic) path; the default path uses inline asm and needs neither.
+#![cfg_attr(
+    feature = "nightly",
+    feature(stdarch_arm_dsp, stdarch_arm_neon_intrinsics)
+)]
 
 // ============================================================================
 // Saturating Arithmetic

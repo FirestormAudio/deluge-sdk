@@ -13,3 +13,7 @@ jobs:
     with:
       build-type: release
       retention-days: 7
+
+  tests:
+    name: Tests
+    uses: ./.github/workflows/test.yml

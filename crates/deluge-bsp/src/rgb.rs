@@ -8,6 +8,7 @@
 //! stays in the app, and the ergonomic capability wrapper lives in the `deluge`
 //! SDK.
 
+#[cfg(target_os = "none")]
 use crate::pic;
 
 /// Pad columns (16 main + 2 sidebar).
