@@ -33,6 +33,7 @@ pub use deluge_macros::app;
 mod audio;
 mod cv_gate;
 mod input;
+mod leds;
 mod midi;
 mod oled;
 mod pads;
@@ -42,11 +43,16 @@ mod sync_led;
 pub use audio::{Audio, StereoFrame};
 pub use cv_gate::{Cv, Gate};
 pub use input::{Event, Input};
+pub use leds::Leds;
 pub use midi::Midi;
 pub use oled::Oled;
 pub use pads::{Color, Pads};
 pub use sd::Sd;
 pub use sync_led::SyncLed;
+
+/// Named button / encoder / knob ids — match them against [`Event`], e.g.
+/// `Event::Button { id, .. } if id == controls::button::PLAY`.
+pub use deluge_bsp::controls;
 
 /// Filesystem error from [`Sd`] read/write operations.
 pub use deluge_bsp::fat::FatError;
@@ -162,6 +168,25 @@ impl Deluge {
         Input::new()
     }
 
+    /// Take the button/indicator LEDs and gold-knob rings. Takeable once.
+    ///
+    /// ```ignore
+    /// let mut leds = dlg.leds().await;
+    /// leds.on(controls::button::PLAY).await;
+    /// ```
+    ///
+    /// `async` (brings up + waits for the PIC the LEDs ride on). See [`Leds`].
+    pub async fn leds(&self) -> Leds {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static TAKEN: AtomicBool = AtomicBool::new(false);
+        if TAKEN.swap(true, Ordering::Relaxed) {
+            panic!("Deluge::leds() called more than once");
+        }
+        pic_service::ensure_started(self.spawner);
+        deluge_bsp::pic::wait_ready().await;
+        Leds::new()
+    }
+
     /// Take ownership of the RGB pad grid (18 × 8).
     ///
     /// ```ignore
@@ -260,8 +285,10 @@ impl Deluge {
 /// Convenient glob import for app authors: `use deluge::prelude::*;`.
 pub mod prelude {
     pub use crate::app;
+    pub use crate::controls;
     pub use crate::{
-        Audio, Color, Cv, Deluge, Event, Gate, Input, Midi, Oled, Pads, Sd, StereoFrame, SyncLed,
+        Audio, Color, Cv, Deluge, Event, Gate, Input, Leds, Midi, Oled, Pads, Sd, StereoFrame,
+        SyncLed,
     };
     pub use log::{debug, error, info, warn};
 }

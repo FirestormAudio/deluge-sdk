@@ -12,18 +12,32 @@ pub struct Color {
 
 impl Color {
     /// All channels off.
-    pub const BLACK: Color = Color { r: 0, g: 0, b: 0 };
+    pub const BLACK: Color = Color::rgb(0, 0, 0);
     /// Full white.
-    pub const WHITE: Color = Color {
-        r: 255,
-        g: 255,
-        b: 255,
-    };
+    pub const WHITE: Color = Color::rgb(255, 255, 255);
+    pub const RED: Color = Color::rgb(255, 0, 0);
+    pub const GREEN: Color = Color::rgb(0, 255, 0);
+    pub const BLUE: Color = Color::rgb(0, 0, 255);
+    pub const YELLOW: Color = Color::rgb(255, 255, 0);
+    pub const CYAN: Color = Color::rgb(0, 255, 255);
+    pub const MAGENTA: Color = Color::rgb(255, 0, 255);
+    pub const ORANGE: Color = Color::rgb(255, 96, 0);
 
     /// A colour from raw 8-bit channels.
     #[inline]
     pub const fn rgb(r: u8, g: u8, b: u8) -> Color {
         Color { r, g, b }
+    }
+
+    /// Scale all channels by `factor`/255 (brightness). `255` = unchanged,
+    /// `0` = off, `128` ≈ half.
+    #[inline]
+    pub const fn scale(self, factor: u8) -> Color {
+        Color {
+            r: ((self.r as u16 * factor as u16) / 255) as u8,
+            g: ((self.g as u16 * factor as u16) / 255) as u8,
+            b: ((self.b as u16 * factor as u16) / 255) as u8,
+        }
     }
 
     /// A colour from hue/saturation/value, each 0–255 (`h` wraps the colour
@@ -85,6 +99,16 @@ impl Pads {
     #[inline]
     pub fn clear(&mut self) {
         self.leds.clear();
+    }
+
+    /// Set every pad to `color` (next [`flush`](Pads::flush)).
+    pub fn fill(&mut self, color: Color) {
+        let rgb = color.to_rgb();
+        for x in 0..Self::COLS {
+            for y in 0..Self::ROWS {
+                self.leds.set(x, y, rgb);
+            }
+        }
     }
 
     /// Push the buffer to the pad LEDs (only changed columns are sent).

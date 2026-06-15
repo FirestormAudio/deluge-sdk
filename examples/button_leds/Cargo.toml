@@ -1,0 +1,23 @@
+[package]
+name = "button_leds"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Deluge SDK example: light each button's indicator LED while held."
+
+[[bin]]
+name = "button_leds"
+test = false
+
+[dependencies]
+deluge = { path = "../../deluge" }
+embassy-executor = { workspace = true, features = [
+    "nightly",
+    "platform-cortex-ar",
+    "executor-thread",
+] }
+
+[features]
+default = []
+## Opt-in RTT (SEGGER) logging over a debug probe.
+rtt = ["deluge/rtt"]
