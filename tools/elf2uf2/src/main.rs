@@ -773,4 +773,70 @@ mod tests {
         let uf2 = build_uf2(&flat, DEFAULT_BASE, DEFAULT_FAMILY);
         assert_eq!(uf2.len(), 2 * 512); // 0x200 bytes = 2 blocks
     }
+
+    /// Cross-tool round-trip (plan §5.1): every block `elf2uf2` emits must be
+    /// accepted by the *firmware's* UF2 classifier (`deluge_image::uf2`, the same
+    /// logic the on-device `app-loader::uf2::Uf2Programmer` runs) and reassemble
+    /// back to the original image — and the erase-on-first-touch bookkeeping must
+    /// be order-independent / idempotent.
+    #[test]
+    fn elf2uf2_output_round_trips_through_app_loader_classifier() {
+        use deluge_image::uf2 as wire;
+
+        // An image spanning several flash pages and >1 erase sector.
+        let len = (wire::DUMP_PAYLOAD as usize) * 5 + 17;
+        let image: Vec<u8> = (0..len).map(|i| (i.wrapping_mul(31) + 7) as u8).collect();
+        let uf2 = build_uf2(&image, DEFAULT_BASE, DEFAULT_FAMILY);
+
+        // The Deluge flash slot geometry the programmer targets (must match the
+        // firmware-side spibsc constants, which elf2uf2's defaults mirror).
+        let slot = wire::Slot {
+            flash_base: 0x1800_0000,
+            addr: DEFAULT_BASE,
+            len: SLOT_LEN,
+            sector_size: 0x0004_0000,
+        };
+        assert_eq!(DEFAULT_FAMILY, wire::FAMILY_DELUGE, "family ids must agree");
+
+        // Feed the blocks in a scrambled, duplicated order — the programmer must
+        // be order-independent and resends must be idempotent.
+        let blocks: Vec<&[u8]> = uf2.chunks(wire::BLOCK_SIZE).collect();
+        let order = [3usize, 0, 5, 5, 1, 4, 0, 2, 3];
+
+        // The last block is zero-padded to a full payload (elf2uf2 always stamps
+        // payloadSize = 256), so the programmed region is num_blocks * payload —
+        // the firmware writes the padding into the (larger) flash slot too.
+        let mut rebuilt = vec![0u8; blocks.len() * wire::DUMP_PAYLOAD as usize];
+        let mut erase = wire::EraseMap::<2>::new();
+        let mut erases = 0usize;
+        let mut last_blocks = 0u32;
+
+        for &i in &order {
+            match wire::classify_block(blocks[i], &slot) {
+                wire::Block::Valid(v) => {
+                    let (first, last) = wire::sectors_for(&slot, v.flash_off, v.payload.len() as u32);
+                    for s in first..=last {
+                        if erase.take(s) {
+                            erases += 1;
+                        }
+                    }
+                    let dst = (v.target - slot.addr) as usize;
+                    let bytes = &blocks[i][v.payload.clone()];
+                    rebuilt[dst..dst + bytes.len()].copy_from_slice(bytes);
+                    last_blocks = v.num_blocks;
+                }
+                other => panic!("block {i} rejected by firmware classifier: {other:?}"),
+            }
+        }
+
+        assert_eq!(&rebuilt[..image.len()], &image[..], "image bytes round-trip");
+        assert!(
+            rebuilt[image.len()..].iter().all(|&b| b == 0),
+            "last block is zero-padded"
+        );
+        assert_eq!(last_blocks as usize, blocks.len(), "num_blocks header matches");
+        // All payloads land in the first 256 KB sector → erased exactly once,
+        // despite the out-of-order, duplicated feed.
+        assert_eq!(erases, 1, "erase-on-first-touch is order-independent");
+    }
 }
