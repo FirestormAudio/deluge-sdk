@@ -10,6 +10,8 @@ members = [
   "app-loader",
   "crates/deluge",
   "crates/deluge-macros",
+  "crates/armv7-dsp-intrinsics",
+  "crates/fixedpoint",
   "examples/blinky",
   "examples/oled_hello",
   "examples/input_demo",
@@ -50,6 +52,11 @@ log = { version = "0.4", features = ["release_max_level_off"] }
 rtt-target = { version = "0.6", features = ["log"] }
 
 gdbstub = { version = "0.7" }
+
+# Vendored from the `spark` repo (MIT/Apache). Fixed-point DSP math; ARMv7 = the
+# Deluge's Cortex-A9, so the DSP intrinsics map straight onto the hardware.
+armv7-dsp-intrinsics = { path = "crates/armv7-dsp-intrinsics" }
+fixedpoint = { path = "crates/fixedpoint" }
 
 [profile.release]
 opt-level = "s"

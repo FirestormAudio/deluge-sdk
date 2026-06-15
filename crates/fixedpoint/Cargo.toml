@@ -1,0 +1,16 @@
+[package]
+name = "fixedpoint"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Type-safe fixed-point arithmetic library"
+
+[dependencies]
+armv7-dsp-intrinsics.workspace = true
+
+[dev-dependencies]
+proptest = "1.5"
+
+[lib]
+name = "fixedpoint"
+path = "src/lib.rs"
