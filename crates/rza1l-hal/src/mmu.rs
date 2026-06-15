@@ -28,31 +28,12 @@ use core::arch::asm;
 // (bits [1:0] = 0b10 → section entry; AP=b11 full access; Domain=15)
 // ---------------------------------------------------------------------------
 
-/// Strongly-ordered memory (device I/O). TEX=000, C=0, B=0.
-pub const PARA_STRONGLY_ORDERED: u32 = 0x0DE2;
-/// Normal non-cached.  TEX=001, C=0, B=0 → inner/outer non-cacheable normal memory.
-/// (The bit encoding: AP[2:0]=b011=full access, Domain=15, nG=1, S=1, TEX=001, C=0, B=0.)
-pub const PARA_NORMAL_NOT_CACHE: u32 = 0x1DE2;
-/// Normal write-back, write-allocate (fully cached). TEX=001, C=1, B=1.
-pub const PARA_NORMAL_CACHE: u32 = 0x1DEE;
-
-// ---------------------------------------------------------------------------
-// Area table — (size_in_mb, attribute) pairs, low address → high address.
-// ---------------------------------------------------------------------------
-const AREAS: &[(u32, u32)] = &[
-    (128, PARA_NORMAL_CACHE),      // area  0  CS0/CS1 NOR flash
-    (128, PARA_NORMAL_CACHE),      // area  1  CS2/CS3 SDRAM
-    (128, PARA_STRONGLY_ORDERED),  // area  2  CS4/CS5
-    (128, PARA_NORMAL_CACHE),      // area  3  SPI / SPI2 serial flash
-    (10, PARA_NORMAL_CACHE),       // area  4  internal SRAM (3 MB phys + guard)
-    (502, PARA_STRONGLY_ORDERED),  // area  5  I/O area 1
-    (128, PARA_NORMAL_NOT_CACHE),  // area  6  CS0/CS1 mirror
-    (128, PARA_NORMAL_NOT_CACHE),  // area  7  CS2/CS3 mirror (SDRAM mirror)
-    (128, PARA_STRONGLY_ORDERED),  // area  8  CS4/CS5 mirror
-    (128, PARA_NORMAL_NOT_CACHE),  // area  9  SPI mirror
-    (10, PARA_NORMAL_NOT_CACHE), // area 10  SRAM mirror (0x60020000 is first valid byte; 0x60000000-0x6001FFFF reserved)
-    (2550, PARA_STRONGLY_ORDERED), // area 11  I/O area 2
-];
+// The section-attribute constants and the area table live in the host-tested
+// `crate::memmap` module (single source of truth, validated against the RZ/A1L
+// address map). Re-export the attrs so `mmu::PARA_*` keeps working.
+pub use crate::memmap::{
+    AREAS, PARA_NORMAL_CACHE, PARA_NORMAL_NOT_CACHE, PARA_STRONGLY_ORDERED, ttb_section_descriptor,
+};
 
 // ---------------------------------------------------------------------------
 // Translation table storage — must be 16 KB aligned (== its own size)
@@ -94,7 +75,7 @@ pub unsafe fn init_and_enable() {
         let mut idx: u32 = 0;
         for &(size_mb, attr) in AREAS {
             for _ in 0..size_mb {
-                let descriptor = (idx << 20) | attr;
+                let descriptor = ttb_section_descriptor(idx, attr);
                 table_ptr.add(idx as usize).write_volatile(descriptor);
                 idx += 1;
             }
@@ -194,7 +175,7 @@ pub unsafe fn invalidate_tlb_all() {
 pub unsafe fn update_section(pa: u32, attr: u32) {
     unsafe {
         let idx = (pa >> 20) as usize;
-        let descriptor = (pa & 0xFFF0_0000) | (attr & 0x000F_FFFF);
+        let descriptor = ttb_section_descriptor(pa >> 20, attr);
         // SAFETY: TTB is a flat 4096-entry table; idx is always in [0, 4095].
         let entry_ptr = (core::ptr::addr_of_mut!(TTB) as *mut u32).add(idx);
         entry_ptr.write_volatile(descriptor);

@@ -21,6 +21,9 @@ pub mod bsc;
 pub mod cache;
 pub mod dmac;
 pub mod gic;
+/// Pure memory-system math (cache-line ranges + MMU section table) used by the
+/// bare-metal-only `cache`/`mmu` modules; non-gated so it unit-tests on host.
+pub mod memmap;
 #[cfg(target_os = "none")]
 pub mod mmu;
 pub mod mtu2;

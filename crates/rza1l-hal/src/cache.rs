@@ -297,10 +297,8 @@ pub unsafe fn l1_i_invalidate_all() {
 //   DCCMVAC  (c7, c10, 1) — clean D-cache line by MVA to PoC
 //   DCCIMVAC (c7, c14, 1) — clean and invalidate D-cache line by MVA to PoC
 //
-// Cortex-A9 L1 D-cache line size is fixed at 32 bytes.
-
-/// Cortex-A9 L1 D-cache line size in bytes (fixed for this SoC).
-const L1_LINE_BYTES: usize = 32;
+// Cortex-A9 L1 D-cache line size is fixed at 32 bytes. The line/range math
+// lives in `crate::memmap` (host-tested); this module only issues the CP15 ops.
 
 /// Invalidate D-cache lines that cover the address range `[start, end)`.
 ///
@@ -320,32 +318,24 @@ const L1_LINE_BYTES: usize = 32;
 /// this.  Still, the caller must ensure no other thread is concurrently
 /// writing to the same cache lines.
 pub unsafe fn dma_inv_range(start: usize, end: usize) {
+    // The range/line planning is pure and lives in `memmap` (host-tested).
+    let plan = crate::memmap::dma_inv_plan(start, end);
     unsafe {
-        const MASK: usize = L1_LINE_BYTES - 1;
-
-        let mut first = start & !MASK; // round start DOWN to line boundary
-        let last = end & !MASK; // round end DOWN to line boundary
-
-        // If start is unaligned, clean+inv the first partial line so that any
-        // dirty data before *start* within the line is preserved.
-        if start & MASK != 0 {
+        // Clean+invalidate the partial boundary lines (preserves dirty data
+        // adjacent to the requested region within those lines).
+        if let Some(line) = plan.clean_inv_first {
             asm!("mcr p15, 0, {0}, c7, c14, 1",
-                 in(reg) first as u32, options(nomem, nostack)); // DCCIMVAC
+                 in(reg) line as u32, options(nomem, nostack)); // DCCIMVAC
+        }
+        if let Some(line) = plan.clean_inv_last {
+            asm!("mcr p15, 0, {0}, c7, c14, 1",
+                 in(reg) line as u32, options(nomem, nostack)); // DCCIMVAC
         }
 
-        // If end is unaligned, clean+inv the last partial line so that dirty
-        // data after *end* within the line is preserved.  This line is NOT
-        // re-invalidated by the main loop (the loop stops at < last).
-        if end & MASK != 0 {
-            asm!("mcr p15, 0, {0}, c7, c14, 1",
-                 in(reg) last as u32, options(nomem, nostack)); // DCCIMVAC
-        }
-
-        // Invalidate all full lines in [first, last).
-        while first < last {
+        // Plain-invalidate all full interior lines.
+        for line in plan.inv_lines() {
             asm!("mcr p15, 0, {0}, c7, c6, 1",
-                 in(reg) first as u32, options(nomem, nostack)); // DCIMVAC
-            first += L1_LINE_BYTES;
+                 in(reg) line as u32, options(nomem, nostack)); // DCIMVAC
         }
 
         asm!("dsb", options(nostack));
@@ -363,11 +353,9 @@ pub unsafe fn dma_inv_range(start: usize, end: usize) {
 /// another DMA simultaneously.
 pub unsafe fn dma_clean_range(start: usize, end: usize) {
     unsafe {
-        let mut addr = start & !(L1_LINE_BYTES - 1);
-        while addr < end {
+        for addr in crate::memmap::cache_lines(start, end) {
             asm!("mcr p15, 0, {0}, c7, c10, 1",
                  in(reg) addr as u32, options(nomem, nostack)); // DCCMVAC
-            addr += L1_LINE_BYTES;
         }
         asm!("dsb", options(nostack));
     }
@@ -385,11 +373,9 @@ pub unsafe fn dma_clean_range(start: usize, end: usize) {
 /// Issues DCCIMVAC per cache line + DSB.
 pub unsafe fn dma_clean_inv_range(start: usize, end: usize) {
     unsafe {
-        let mut addr = start & !(L1_LINE_BYTES - 1);
-        while addr < end {
+        for addr in crate::memmap::cache_lines(start, end) {
             asm!("mcr p15, 0, {0}, c7, c14, 1",
                  in(reg) addr as u32, options(nomem, nostack)); // DCCIMVAC
-            addr += L1_LINE_BYTES;
         }
         asm!("dsb", options(nostack));
     }
