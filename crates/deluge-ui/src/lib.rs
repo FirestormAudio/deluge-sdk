@@ -39,7 +39,8 @@
 //! menu.render(&mut oled.translated(Point::new(0, 5)))?;  // +5 px: skip hidden rows
 //! oled.flush().await;
 //! ```
-#![no_std]
+// `no_std` for the embedded target; host unit tests link std for the harness.
+#![cfg_attr(not(test), no_std)]
 extern crate alloc;
 
 /// Re-export alloc items so every sub-module can `use crate::prelude::*`.
@@ -101,7 +102,7 @@ pub use icons::IconData;
 pub use positionable::Positionable;
 pub use primitives::{DottedLine, FilledPolygon};
 
-pub use menu::{ListMenu, ListMenuItem, Menu, MenuListBuilder, MenuNavigator, ValueMenu};
+pub use menu::{Menu, MenuEnum, MenuInput, MenuState, MenuStyle, Response};
 
 pub use text::{
     Font, TextStyle, VariFont, VariTextStyle, VariTextStyleBuilder,

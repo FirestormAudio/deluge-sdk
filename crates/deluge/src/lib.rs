@@ -27,8 +27,50 @@
 #![no_std]
 // The internal PIC service uses `#[embassy_executor::task]`, which needs this.
 #![feature(impl_trait_in_assoc_type)]
+// The optional global allocator delegates to the HAL's allocator-api heap.
+#![cfg_attr(feature = "alloc", feature(allocator_api))]
 
 pub use deluge_macros::app;
+
+/// Optional global allocator, enabled by the `alloc` feature.
+///
+/// Registers the HAL's on-chip **SRAM** heap as `#[global_allocator]`, so `alloc`
+/// collections (`String`, `Vec`, `format!`, …) work. The heap is brought up by
+/// the `#[deluge::app]` runtime before any app code runs. Apps that draw with the
+/// (GPL) `deluge-ui-toolkit` need this.
+///
+/// SRAM (not SDRAM) backs the global heap on purpose: the large external SDRAM
+/// is reserved for bulk audio buffers (samples, delay lines), which apps allocate
+/// explicitly via [`rza1l_hal::allocator::SDRAM`]. The default SDK stays
+/// allocator-free and apps choose the arena per allocation.
+#[cfg(feature = "alloc")]
+mod global_alloc {
+    use core::alloc::{Allocator, GlobalAlloc, Layout};
+    use core::ptr::{self, NonNull};
+
+    struct SramGlobal;
+
+    // SAFETY: delegates to `rza1l_hal::allocator::SRAM`, a critical-section
+    // guarded heap initialised once during platform bring-up.
+    unsafe impl GlobalAlloc for SramGlobal {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            match rza1l_hal::allocator::SRAM.allocate(layout) {
+                Ok(p) => p.as_ptr().cast(),
+                Err(_) => ptr::null_mut(),
+            }
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            if let Some(nn) = NonNull::new(ptr) {
+                // SAFETY: `ptr`/`layout` come from a prior `alloc` on this heap.
+                unsafe { rza1l_hal::allocator::SRAM.deallocate(nn, layout) };
+            }
+        }
+    }
+
+    #[global_allocator]
+    static GLOBAL: SramGlobal = SramGlobal;
+}
 
 mod audio;
 mod clock;

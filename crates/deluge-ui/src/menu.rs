@@ -1,558 +1,742 @@
-//! Menu system for parameter presentation
+//! Immediate-mode menu system for the Deluge OLED.
 //!
-//! Provides a menu builder and rendering system for displaying parameters
-//! on the Deluge OLED display.
+//! egui / Dear-ImGui style: there is no retained widget tree. Each frame the app
+//! feeds one input event, builds the screen with calls like [`Menu::int`] /
+//! [`Menu::toggle`] / [`Menu::submenu`], and the bindings are plain `&mut field`
+//! references — so the view always reflects the model because it is redrawn from
+//! the source of truth every frame.
+//!
+//! The only retained state is [`MenuState`] (cursor / scroll / drilldown path),
+//! which the **app owns**: maker apps let [`MenuInput`] mutate it; a host like
+//! spark can drive `cursor`/`path` externally instead.
+//!
+//! ```ignore
+//! let mut ui = Menu::begin(&mut oled, &mut nav, input, &style);
+//! ui.title("SOUND");
+//! ui.int("FREQ", &mut s.freq, 20..=20000);
+//! ui.toggle("MONO", &mut s.mono);
+//! ui.enumv("WAVE", &mut s.wave);
+//! ui.submenu("ADVANCED", |ui| {
+//!     ui.float("DRIVE", &mut s.drive, 0.0..=1.0);
+//! });
+//! ui.end();
+//! ```
 
-use crate::prelude::*;
+use core::fmt::Write as _;
+use core::ops::RangeInclusive;
 
 use embedded_graphics::{
     pixelcolor::BinaryColor,
     prelude::*,
     primitives::{Line, PrimitiveStyle, Rectangle, StyledDrawable},
-    text::Alignment,
 };
+use heapless::String as HString;
 
 use crate::{
-    DISPLAY_WIDTH,
-    horizontal_menu::HorizontalMenu,
-    icons,
+    DISPLAY_WIDTH, icons,
     primitives::Icon,
     text::{Font, TextStyle, draw_text},
 };
 
-#[derive(Debug, Clone)]
-pub enum Menu {
-    List(ListMenu),
-    Value(ValueMenu),
-    Horizontal(HorizontalMenu),
+/// Maximum drilldown depth (submenu nesting).
+const MAX_DEPTH: usize = 8;
+
+// Layout constants (matching the Deluge firmware menu), before `top_inset`.
+const TITLE_H: i32 = 14;
+const ITEM_H: i32 = 9;
+const PAD_X: i32 = 3;
+const UNDERLINE_Y: i32 = 11;
+const SCROLLBAR_W: i32 = 4;
+const ICON_MARGIN_R: i32 = 10; // right edge → icon left
+
+/// One input step for a frame, mapped by the caller from `deluge::Event`
+/// (or spark's `UIEvent`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MenuInput {
+    /// Nothing happened this frame.
+    #[default]
+    None,
+    /// Select-encoder turned by `n` detents (signed).
+    Turn(i32),
+    /// Select-encoder / select-button pressed.
+    Press,
+    /// Back / cancel.
+    Back,
 }
 
-/// Value menu for editing a single parameter
-#[derive(Debug, Clone)]
-pub struct ValueMenu {
-    title: String,
-    // Add value editing fields as needed
+/// Per-widget result (egui-style).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Response {
+    /// The bound value was changed this frame.
+    pub changed: bool,
+    /// This widget is the focused row.
+    pub focused: bool,
+    /// A submenu was entered this frame.
+    pub entered: bool,
 }
 
-impl ValueMenu {
-    /// Create a new value menu
-    pub fn new(title: String) -> Self {
+/// Retained navigation state, owned by the app (≈ 24 bytes, no alloc).
+#[derive(Clone, Debug, Default)]
+pub struct MenuState {
+    cursor: u16,
+    scroll: u16,
+    path: heapless::Vec<u16, MAX_DEPTH>,
+    rows_last: u16,
+    editing: bool,
+}
+
+impl MenuState {
+    /// A fresh state at the root screen.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Focused row index on the active screen.
+    pub fn cursor(&self) -> usize {
+        self.cursor as usize
+    }
+
+    /// Set the focused row directly (e.g. host-driven external selection).
+    pub fn set_cursor(&mut self, cursor: usize) {
+        self.cursor = cursor as u16;
+    }
+
+    /// Current drilldown depth (0 = root).
+    pub fn depth(&self) -> usize {
+        self.path.len()
+    }
+
+    /// Whether the focused value is in edit mode.
+    pub fn is_editing(&self) -> bool {
+        self.editing
+    }
+}
+
+/// Visual style + layout for a menu.
+#[derive(Clone, Copy, Debug)]
+pub struct MenuStyle {
+    /// Font for the screen title.
+    pub title_font: Font,
+    /// Font for item rows.
+    pub item_font: Font,
+    /// Pixels to push all content down, to clear the faceplate-hidden top rows.
+    /// Default 5 (Deluge 128×48 panel shows the bottom 128×43); set 0 if the
+    /// target is already the visible area (e.g. spark's 128×43 `FrameBuf`).
+    pub top_inset: i32,
+    /// Rows visible at once.
+    pub max_visible: usize,
+}
+
+impl Default for MenuStyle {
+    fn default() -> Self {
         Self {
-            title,
-            // Initialize other fields as needed
-        }
-    }
-
-    /// Get the title
-    pub fn title(&self) -> &str {
-        &self.title
-    }
-}
-
-/// Menu item types
-#[derive(Debug, Clone)]
-pub enum ListMenuItem {
-    TextOnly {
-        label: &'static str,
-    },
-    TextWithIconLeft {
-        icon: &'static icons::IconData,
-        label: &'static str,
-    },
-    TextWithIconRight {
-        icon: &'static icons::IconData,
-        label: &'static str,
-    },
-}
-
-impl ListMenuItem {
-    /// Get the label text
-    pub fn label(&self) -> &str {
-        match self {
-            ListMenuItem::TextOnly { label } => label,
-            ListMenuItem::TextWithIconLeft { label, .. } => label,
-            ListMenuItem::TextWithIconRight { label, .. } => label,
+            title_font: Font::MetricBold9px,
+            item_font: Font::FontApple,
+            top_inset: 5,
+            max_visible: 3,
         }
     }
 }
 
-const MAX_VISIBLE_ITEMS: usize = 3;
-
-/// Menu display state - just for rendering a single menu screen
-#[derive(Debug, Clone)]
-pub struct ListMenu {
-    title: String,
-    items: Vec<ListMenuItem>,
-    selected_index: usize,
-    scroll_offset: usize,
-}
-
-impl ListMenu {
-    /// Create a new menu display
-    pub fn new(title: String, items: Vec<ListMenuItem>, selected_index: usize) -> Self {
-        let mut menu = Self {
-            title,
-            items,
-            selected_index,
-            scroll_offset: 0,
-        };
-        menu.update_scroll();
-        menu
-    }
-
-    /// Get the title
-    pub fn title(&self) -> &str {
-        &self.title
-    }
-
-    /// Get current items
-    pub fn items(&self) -> &[ListMenuItem] {
-        &self.items
-    }
-
-    /// Get selected index
-    pub fn selected_index(&self) -> usize {
-        self.selected_index
-    }
-
-    /// Update scroll offset to keep selection visible
-    fn update_scroll(&mut self) {
-        if self.selected_index < self.scroll_offset {
-            self.scroll_offset = self.selected_index;
-        } else if self.selected_index >= self.scroll_offset + MAX_VISIBLE_ITEMS {
-            self.scroll_offset = self.selected_index - MAX_VISIBLE_ITEMS + 1;
-        }
-    }
-
-    /// Render the menu to a display
-    pub fn render<D>(&self, display: &mut D) -> Result<(), D::Error>
+/// An enum that can be cycled through in a menu (`ui.enumv`).
+pub trait MenuEnum: Copy + PartialEq {
+    /// All selectable variants, in cycle order.
+    fn variants() -> &'static [Self]
     where
-        D: DrawTarget<Color = BinaryColor>,
-    {
-        // Deluge menu layout constants (matching actual Deluge firmware)
-        const TITLE_HEIGHT: u32 = 14; // First row for title
-        const ITEM_HEIGHT: u32 = 9; // 11 pixels per menu item (kTextSpacingY in firmware)
-        const TEXT_PADDING_X: i32 = 3; // kTextSpacingX in firmware
-        const TEXT_PADDING_Y: i32 = 1; // Vertical padding within item
-        const SCROLLBAR_WIDTH: i32 = 4; // Scrollbar width in pixels
+        Self: Sized;
+    /// Display name of this variant.
+    fn name(&self) -> &'static str;
+}
 
-        // Draw title (Deluge style: normal text with underline, not inverted)
-        // Matches Canvas::drawScreenTitle() from deluge firmware
-        let title_style = TextStyle::new(Font::MetricBold9px)
-            .with_alignment(Alignment::Left)
-            .with_color(BinaryColor::On);
-        draw_text(
-            display,
-            &self.title,
-            Point::new(TEXT_PADDING_X, 1),
-            title_style,
-        )?;
+/// What a row draws on its right side.
+enum Right<'a> {
+    None,
+    Text(&'a str),
+    Icon(&'static icons::IconData),
+}
 
-        // Draw horizontal line under title (at y=11 in firmware)
-        Line::new(Point::new(0, 11), Point::new(DISPLAY_WIDTH as i32 - 1, 11))
-            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-            .draw(display)?;
+/// Immediate-mode menu builder for one frame.
+///
+/// Construct with [`Menu::begin`], emit widgets, then call [`Menu::end`].
+pub struct Menu<'a, D: DrawTarget<Color = BinaryColor>> {
+    d: &'a mut D,
+    state: &'a mut MenuState,
+    style: &'a MenuStyle,
+    /// Input still to be applied to the focused widget during the pass
+    /// (`Press` while navigating, or `Turn` while editing). Navigation that
+    /// needs no widget context (cursor move, back) is applied in `begin`.
+    pending: MenuInput,
+    /// Snapshot of `state.path.len()` taken at `begin`; path edits this frame
+    /// take effect next frame so a drilldown never renders a mixed screen.
+    active_depth: usize,
+    /// Current walk depth.
+    depth: usize,
+    /// Sibling index within the current depth (advances for every widget).
+    idx: usize,
+    /// Number of rows on the active screen this frame.
+    active_rows: u16,
+    /// Whether a scrollbar is shown (decided from last frame's row count).
+    scrollbar: bool,
+}
 
-        // Calculate content width (reserve space for scrollbar if needed)
-        let has_scrollbar = self.items.len() > MAX_VISIBLE_ITEMS;
-        let content_width = if has_scrollbar {
-            DISPLAY_WIDTH - SCROLLBAR_WIDTH as u32
+impl<'a, D: DrawTarget<Color = BinaryColor>> Menu<'a, D> {
+    /// Begin a frame. Applies navigation input and prepares the scroll window.
+    pub fn begin(
+        d: &'a mut D,
+        state: &'a mut MenuState,
+        input: MenuInput,
+        style: &'a MenuStyle,
+    ) -> Self {
+        let max_visible = style.max_visible.max(1);
+        let mut pending = input;
+
+        if state.editing {
+            // In edit mode, Press/Back leave it; Turn is applied to the value.
+            match input {
+                MenuInput::Press | MenuInput::Back => {
+                    state.editing = false;
+                    pending = MenuInput::None;
+                }
+                _ => {}
+            }
         } else {
-            DISPLAY_WIDTH
+            match input {
+                MenuInput::Back => {
+                    if let Some(idx) = state.path.pop() {
+                        state.cursor = idx;
+                    }
+                    pending = MenuInput::None;
+                }
+                MenuInput::Turn(n) => {
+                    // Apply the delta now; the cursor is clamped to the real row
+                    // count in `end`, so a turn right after a screen change can't
+                    // over-move against a stale count.
+                    state.cursor = (state.cursor as i32 + n).max(0) as u16;
+                    pending = MenuInput::None;
+                }
+                // Press is resolved against the focused widget during the pass.
+                MenuInput::Press | MenuInput::None => {}
+            }
+        }
+
+        let scrollbar = state.rows_last as usize > max_visible;
+        let active_depth = state.path.len();
+
+        Self {
+            d,
+            state,
+            style,
+            pending,
+            active_depth,
+            depth: 0,
+            idx: 0,
+            active_rows: 0,
+            scrollbar,
+        }
+    }
+
+    fn content_width(&self) -> i32 {
+        if self.scrollbar {
+            DISPLAY_WIDTH as i32 - SCROLLBAR_W
+        } else {
+            DISPLAY_WIDTH as i32
+        }
+    }
+
+    /// Draw the screen title + underline (only on the active screen).
+    pub fn title(&mut self, text: &str) {
+        if self.depth == self.active_depth {
+            self.draw_header(text);
+        }
+    }
+
+    fn draw_header(&mut self, text: &str) {
+        let inset = self.style.top_inset;
+        let style = TextStyle::new(self.style.title_font).with_color(BinaryColor::On);
+        let _ = draw_text(self.d, text, Point::new(PAD_X, inset + 1), style);
+        let _ = Line::new(
+            Point::new(0, inset + UNDERLINE_Y),
+            Point::new(DISPLAY_WIDTH as i32 - 1, inset + UNDERLINE_Y),
+        )
+        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+        .draw(self.d);
+    }
+
+    /// Advance the sibling counter and, when on the active screen, return this
+    /// row's index and whether it is focused. Returns `None` off the active
+    /// screen (the widget should then do nothing but the counter still moves so
+    /// drilldown path indices stay consistent across depths).
+    fn begin_row(&mut self) -> Option<(usize, bool)> {
+        let my = self.idx;
+        self.idx += 1;
+        if self.depth != self.active_depth {
+            return None;
+        }
+        self.active_rows = self.idx as u16;
+        Some((my, my == self.state.cursor as usize))
+    }
+
+    fn row_visible(&self, i: usize) -> Option<i32> {
+        let max_visible = self.style.max_visible.max(1);
+        let scroll = self.state.scroll as usize;
+        if i < scroll || i >= scroll + max_visible {
+            return None;
+        }
+        Some(self.style.top_inset + TITLE_H + (i - scroll) as i32 * ITEM_H)
+    }
+
+    /// Draw one row (label left, optional right element), highlighting if focused.
+    fn draw_row(&mut self, i: usize, label: &str, right: Right<'_>, focused: bool) {
+        let Some(y) = self.row_visible(i) else {
+            return;
+        };
+        let content_w = self.content_width();
+
+        if focused {
+            let _ = Rectangle::new(Point::new(0, y - 1), Size::new(content_w as u32, ITEM_H as u32))
+                .draw_styled(&PrimitiveStyle::with_fill(BinaryColor::On), self.d);
+        }
+        let color = if focused {
+            BinaryColor::Off
+        } else {
+            BinaryColor::On
         };
 
-        // Draw menu items (Deluge style: 3 items visible at a time)
-        let visible_end = (self.scroll_offset + MAX_VISIBLE_ITEMS).min(self.items.len());
-        for (idx, item) in self.items[self.scroll_offset..visible_end]
-            .iter()
-            .enumerate()
+        let label_style = TextStyle::new(self.style.item_font).with_color(color);
+        let _ = draw_text(self.d, label, Point::new(PAD_X, y), label_style);
+
+        match right {
+            Right::None => {}
+            Right::Text(s) => {
+                let style = TextStyle::new(self.style.item_font)
+                    .with_alignment(embedded_graphics::text::Alignment::Right)
+                    .with_color(color);
+                let _ = draw_text(self.d, s, Point::new(content_w - PAD_X, y), style);
+            }
+            Right::Icon(icon) => {
+                let icon_x = content_w - ICON_MARGIN_R;
+                let _ = Icon::new(icon, Point::new(icon_x, y))
+                    .with_color(color)
+                    .draw(self.d);
+            }
+        }
+    }
+
+    /// A plain selectable row. `Response::changed` is set when it is activated.
+    pub fn entry(&mut self, label: &str) -> Response {
+        let mut resp = Response::default();
+        let Some((i, focused)) = self.begin_row() else {
+            return resp;
+        };
+        resp.focused = focused;
+        if focused && self.pending == MenuInput::Press {
+            resp.changed = true;
+            self.pending = MenuInput::None;
+        }
+        self.draw_row(i, label, Right::None, focused);
+        resp
+    }
+
+    /// A boolean toggle. Pressing it flips the value.
+    pub fn toggle(&mut self, label: &str, value: &mut bool) -> Response {
+        let mut resp = Response::default();
+        let Some((i, focused)) = self.begin_row() else {
+            return resp;
+        };
+        resp.focused = focused;
+        if focused && self.pending == MenuInput::Press {
+            *value = !*value;
+            resp.changed = true;
+            self.pending = MenuInput::None;
+        }
+        let icon: &'static icons::IconData = if *value {
+            &icons::CHECKED_BOX
+        } else {
+            &icons::UNCHECKED_BOX
+        };
+        self.draw_row(i, label, Right::Icon(icon), focused);
+        resp
+    }
+
+    /// An integer value. Press to edit, then turn to change (clamped to `range`).
+    pub fn int(&mut self, label: &str, value: &mut i32, range: RangeInclusive<i32>) -> Response {
+        let mut resp = Response::default();
+        let Some((i, focused)) = self.begin_row() else {
+            return resp;
+        };
+        resp.focused = focused;
+        if focused {
+            self.edit_press();
+            if self.state.editing {
+                if let MenuInput::Turn(n) = self.pending {
+                    let nv = (*value + n).clamp(*range.start(), *range.end());
+                    if nv != *value {
+                        *value = nv;
+                        resp.changed = true;
+                    }
+                    self.pending = MenuInput::None;
+                }
+            }
+        }
+        let mut buf: HString<12> = HString::new();
+        let _ = write!(buf, "{}", *value);
+        self.draw_row(i, label, Right::Text(&buf), focused);
+        resp
+    }
+
+    /// A float value, edited in 1/64 steps of the range.
+    pub fn float(&mut self, label: &str, value: &mut f32, range: RangeInclusive<f32>) -> Response {
+        let mut resp = Response::default();
+        let Some((i, focused)) = self.begin_row() else {
+            return resp;
+        };
+        resp.focused = focused;
+        if focused {
+            self.edit_press();
+            if self.state.editing {
+                if let MenuInput::Turn(n) = self.pending {
+                    let step = (*range.end() - *range.start()) / 64.0;
+                    let nv = (*value + n as f32 * step).clamp(*range.start(), *range.end());
+                    if nv != *value {
+                        *value = nv;
+                        resp.changed = true;
+                    }
+                    self.pending = MenuInput::None;
+                }
+            }
+        }
+        let mut buf: HString<16> = HString::new();
+        let _ = write!(buf, "{:.2}", *value);
+        self.draw_row(i, label, Right::Text(&buf), focused);
+        resp
+    }
+
+    /// An enum value, cycled through [`MenuEnum::variants`] when editing.
+    pub fn enumv<E: MenuEnum + 'static>(&mut self, label: &str, value: &mut E) -> Response {
+        let mut resp = Response::default();
+        let Some((i, focused)) = self.begin_row() else {
+            return resp;
+        };
+        resp.focused = focused;
+        if focused {
+            self.edit_press();
+            if self.state.editing {
+                if let MenuInput::Turn(n) = self.pending {
+                    let variants = E::variants();
+                    if !variants.is_empty() {
+                        let cur = variants.iter().position(|v| v == value).unwrap_or(0) as i32;
+                        let len = variants.len() as i32;
+                        let next = (cur + n).rem_euclid(len) as usize;
+                        if variants[next] != *value {
+                            *value = variants[next];
+                            resp.changed = true;
+                        }
+                    }
+                    self.pending = MenuInput::None;
+                }
+            }
+        }
+        self.draw_row(i, label, Right::Text(value.name()), focused);
+        resp
+    }
+
+    /// A drilldown submenu. `body` is the child screen, run only once the
+    /// submenu has been entered (its rows replace the parent's).
+    pub fn submenu(&mut self, label: &str, body: impl FnOnce(&mut Self)) -> Response {
+        let my = self.idx;
+        self.idx += 1;
+        let mut resp = Response::default();
+
+        if self.depth == self.active_depth {
+            // Drawn as a row on the current screen.
+            self.active_rows = self.idx as u16;
+            let focused = my == self.state.cursor as usize;
+            resp.focused = focused;
+            if focused && self.pending == MenuInput::Press {
+                // Take effect next frame (active_depth is snapshotted).
+                let _ = self.state.path.push(my as u16);
+                self.state.cursor = 0;
+                self.state.scroll = 0;
+                self.state.editing = false;
+                self.pending = MenuInput::None;
+                resp.entered = true;
+            }
+            self.draw_row(my, label, Right::Icon(&icons::SUBMENU_ARROW), focused);
+        } else if self.depth < self.active_depth
+            && self.state.path.get(self.depth).copied() == Some(my as u16)
         {
-            let global_idx = self.scroll_offset + idx;
-            let y = TITLE_HEIGHT as i32 + (idx as i32 * ITEM_HEIGHT as i32); // + TEXT_PADDING_Y;
-            let is_selected = global_idx == self.selected_index;
-
-            // Deluge style: Only invert background when item is selected
-            // (both in navigation mode and editing mode)
-            if is_selected {
-                Rectangle::new(
-                    Point::new(0, y - TEXT_PADDING_Y),
-                    Size::new(content_width, ITEM_HEIGHT),
-                )
-                .draw_styled(&PrimitiveStyle::with_fill(BinaryColor::On), display)?;
-            }
-
-            // Inverted colors for selected item (black text on white background)
-            let text_color = if is_selected {
-                BinaryColor::Off
-            } else {
-                BinaryColor::On
-            };
-
-            // Draw label (left-aligned)
-            let label_style = TextStyle::new(Font::FontApple).with_color(text_color);
-            draw_text(
-                display,
-                item.label(),
-                Point::new(TEXT_PADDING_X, y),
-                label_style,
-            )?;
-
-            // Draw value/type indicator (right side) - matches renderSubmenuItemTypeForOled()
-            // Icon position calculation from firmware: OLED_MAIN_WIDTH_PIXELS - kSubmenuIconSpacingX - 3
-            const ICON_SPACING_X: i32 = 7; // kSubmenuIconSpacingX from firmware
-            let content_right_edge = content_width as i32;
-            let icon_x = content_right_edge - ICON_SPACING_X - 3;
-
-            match item {
-                ListMenuItem::TextWithIconRight { icon, .. } => {
-                    // Icon on the right (e.g., submenu arrow, checkbox)
-                    Icon::new(icon, Point::new(icon_x, y))
-                        .with_color(text_color)
-                        .draw(display)?;
-                }
-                ListMenuItem::TextWithIconLeft { icon, .. } => {
-                    // Icon on the left side
-                    let icon_x = TEXT_PADDING_X;
-                    Icon::new(icon, Point::new(icon_x, y))
-                        .with_color(text_color)
-                        .draw(display)?;
-                }
-                ListMenuItem::TextOnly { .. } => {
-                    // Plain text item, no icons
-                }
-            }
+            // On the path to the active screen: descend and render the child.
+            let saved = self.idx;
+            self.depth += 1;
+            self.idx = 0;
+            self.draw_header(label); // child screen is auto-titled with the submenu label
+            body(self);
+            self.depth -= 1;
+            self.idx = saved;
         }
-
-        // Draw scrollbar if there are more items than can be displayed
-        if self.items.len() > MAX_VISIBLE_ITEMS {
-            self.draw_scrollbar(display, TITLE_HEIGHT, ITEM_HEIGHT, SCROLLBAR_WIDTH)?;
-        }
-
-        Ok(())
+        resp
     }
 
-    /// Draw the scrollbar indicator
-    fn draw_scrollbar<D>(
-        &self,
-        display: &mut D,
-        title_height: u32,
-        item_height: u32,
-        _scrollbar_width: i32,
-    ) -> Result<(), D::Error>
-    where
-        D: DrawTarget<Color = BinaryColor>,
-    {
-        // Calculate scrollbar dimensions
-        let content_start_y = title_height as i32;
-        let content_height = (MAX_VISIBLE_ITEMS as u32 * item_height) as i32;
+    /// If the focused value row is pressed, enter edit mode for it.
+    fn edit_press(&mut self) {
+        if !self.state.editing && self.pending == MenuInput::Press {
+            self.state.editing = true;
+            self.pending = MenuInput::None;
+        }
+    }
 
-        // Calculate scrollbar position as a ratio
-        let total_items = self.items.len() as f32;
-        let visible_items = MAX_VISIBLE_ITEMS as f32;
-        let scroll_ratio = self.scroll_offset as f32 / (total_items - visible_items);
+    /// Finish the frame: draw the scrollbar (matching the rows just drawn), then
+    /// clamp the cursor to the real row count and recompute the scroll window for
+    /// next frame.
+    pub fn end(mut self) {
+        let max_visible = self.style.max_visible.max(1);
+        let n = self.active_rows;
 
-        // Calculate indicator height (proportional to visible items / total items)
-        let indicator_height = ((visible_items / total_items) * content_height as f32) as i32;
-        let indicator_height = indicator_height.max(3); // Minimum height of 3 pixels
+        // Scrollbar uses the scroll value the rows were drawn with.
+        if n as usize > max_visible {
+            self.draw_scrollbar();
+        }
 
-        // Calculate indicator position
-        let scrollable_height = content_height - indicator_height;
-        let indicator_y = content_start_y + (scrollable_height as f32 * scroll_ratio) as i32;
+        // Clamp focus to this frame's actual rows, then slide the window.
+        let cursor = self.state.cursor.min(n.saturating_sub(1));
+        self.state.cursor = cursor;
+        if n as usize <= max_visible {
+            self.state.scroll = 0;
+        } else if cursor < self.state.scroll {
+            self.state.scroll = cursor;
+        } else if cursor >= self.state.scroll + max_visible as u16 {
+            self.state.scroll = cursor + 1 - max_visible as u16;
+        }
+        self.state.rows_last = n;
+    }
 
-        // Scrollbar x position - moved one pixel to the right
-        // Column 0 (empty): DISPLAY_WIDTH - 4
-        // Column 1 (track): DISPLAY_WIDTH - 3
-        // Columns 2-3 (indicator): DISPLAY_WIDTH - 2, DISPLAY_WIDTH - 1
-        let scrollbar_x = DISPLAY_WIDTH as i32 - 2; // Start at column 1 (track position)
+    fn draw_scrollbar(&mut self) {
+        let inset = self.style.top_inset;
+        let max_visible = self.style.max_visible.max(1);
+        let total = self.active_rows as f32;
+        let visible = max_visible as f32;
+        let track_top = inset + TITLE_H;
+        let track_h = max_visible as i32 * ITEM_H;
 
-        // Draw the position indicator as a 3-pixel wide hollow rectangle
-        // The indicator includes the track line plus 2 pixels to the right
-        let indicator_rect = Rectangle::new(
-            Point::new(scrollbar_x - 1, indicator_y),
-            Size::new(3, indicator_height as u32),
-        );
-        indicator_rect
+        let ratio = self.state.scroll as f32 / (total - visible).max(1.0);
+        let ind_h = (((visible / total) * track_h as f32) as i32).max(3);
+        let ind_y = track_top + ((track_h - ind_h) as f32 * ratio) as i32;
+
+        let x = DISPLAY_WIDTH as i32 - 2;
+        let _ = Rectangle::new(Point::new(x - 1, ind_y), Size::new(3, ind_h as u32))
             .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-            .draw(display)?;
-
-        // Draw the scrollbar track lines (above and below the indicator)
-        // Top track line (from content start to top of indicator)
-        if indicator_y > content_start_y {
-            Line::new(
-                Point::new(scrollbar_x, content_start_y),
-                Point::new(scrollbar_x, indicator_y - 1),
-            )
-            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-            .draw(display)?;
-        }
-
-        // Bottom track line (from bottom of indicator to content end)
-        let indicator_bottom = indicator_y + indicator_height;
-        let content_bottom = content_start_y + content_height - 1;
-        if indicator_bottom < content_bottom {
-            Line::new(
-                Point::new(scrollbar_x, indicator_bottom),
-                Point::new(scrollbar_x, content_bottom),
-            )
-            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-            .draw(display)?;
-        }
-
-        Ok(())
-    }
-}
-
-/// Menu navigator - manages menu state and navigation including submenu stack
-pub struct MenuNavigator {
-    current_menu: Menu,
-    menu_stack: Vec<Menu>,
-}
-
-impl MenuNavigator {
-    /// Create a new menu navigator with a list menu
-    pub fn new(title: impl Into<String>, items: Vec<ListMenuItem>) -> Self {
-        Self {
-            current_menu: Menu::List(ListMenu::new(title.into(), items, 0)),
-            menu_stack: Vec::new(),
-        }
-    }
-
-    /// Get the current menu
-    pub fn current_menu(&self) -> &Menu {
-        &self.current_menu
-    }
-
-    /// Get the title of the current menu
-    pub fn title(&self) -> &str {
-        match &self.current_menu {
-            Menu::List(list) => list.title(),
-            Menu::Value(value) => value.title(),
-            Menu::Horizontal(hmenu) => hmenu.title(),
-        }
-    }
-
-    /// Get current items (only valid for List menus)
-    pub fn items(&self) -> &[ListMenuItem] {
-        match &self.current_menu {
-            Menu::List(list) => list.items(),
-            _ => &[],
-        }
-    }
-
-    /// Get selected index (only valid for List menus)
-    pub fn selected_index(&self) -> usize {
-        match &self.current_menu {
-            Menu::List(list) => list.selected_index(),
-            _ => 0,
-        }
-    }
-
-    /// Navigate up in menu
-    pub fn move_up(&mut self) {
-        if let Menu::List(list) = &mut self.current_menu {
-            if list.selected_index > 0 {
-                list.selected_index -= 1;
-                list.update_scroll();
-            }
-        }
-    }
-
-    /// Navigate down in menu
-    pub fn move_down(&mut self) {
-        if let Menu::List(list) = &mut self.current_menu {
-            if list.selected_index < list.items.len().saturating_sub(1) {
-                list.selected_index += 1;
-                list.update_scroll();
-            }
-        }
-    }
-
-    /// Get the currently selected item (only valid for List menus)
-    pub fn selected_item(&self) -> Option<&ListMenuItem> {
-        match &self.current_menu {
-            Menu::List(list) => list.items.get(list.selected_index),
-            _ => None,
-        }
-    }
-
-    /// Go back (exit submenu if in one)
-    pub fn back(&mut self) {
-        if let Some(previous_menu) = self.menu_stack.pop() {
-            self.current_menu = previous_menu;
-        }
-    }
-
-    /// Push current menu and navigate to a new menu (list, value, or horizontal)
-    pub fn push_menu(&mut self, menu: Menu) {
-        self.menu_stack.push(self.current_menu.clone());
-        self.current_menu = menu;
-    }
-
-    /// Convenience method: Push a list submenu
-    pub fn push_submenu(&mut self, title: String, items: Vec<ListMenuItem>) {
-        let submenu = Menu::List(ListMenu::new(title, items, 0));
-        self.push_menu(submenu);
-    }
-
-    /// Convenience method: Push a value editing menu (leaf node)
-    pub fn push_value_menu(&mut self, title: String) {
-        let value_menu = Menu::Value(ValueMenu::new(title));
-        self.push_menu(value_menu);
-    }
-
-    /// Convenience method: Push a horizontal menu (leaf node)
-    pub fn push_horizontal_menu(&mut self, horizontal_menu: HorizontalMenu) {
-        let menu = Menu::Horizontal(horizontal_menu);
-        self.push_menu(menu);
-    }
-
-    /// Get mutable access to the items (only valid for List menus)
-    pub fn items_mut(&mut self) -> Option<&mut [ListMenuItem]> {
-        match &mut self.current_menu {
-            Menu::List(list) => Some(&mut list.items),
-            _ => None,
-        }
-    }
-
-    /// Check if we're at the root menu (no parent menus in stack)
-    pub fn is_root(&self) -> bool {
-        self.menu_stack.is_empty()
-    }
-
-    /// Get a MenuList for rendering (only valid for List menus)
-    pub fn as_menu(&self) -> Option<ListMenu> {
-        match &self.current_menu {
-            Menu::List(list) => Some(list.clone()),
-            _ => None,
-        }
-    }
-
-    /// Get the current menu for rendering (handles all menu types)
-    pub fn as_current_menu(&self) -> &Menu {
-        &self.current_menu
-    }
-}
-
-/// Fluent builder for menu navigators
-pub struct MenuListBuilder {
-    title: String,
-    items: Vec<ListMenuItem>,
-}
-
-impl MenuListBuilder {
-    /// Create a new menu builder
-    pub fn new(title: impl Into<String>) -> Self {
-        Self {
-            title: title.into(),
-            items: Vec::new(),
-        }
-    }
-
-    /// Add a boolean parameter
-    pub fn add_bool(mut self, label: &'static str, value: bool) -> Self {
-        self.items.push(ListMenuItem::TextWithIconRight {
-            icon: if value {
-                &icons::CHECKED_BOX
-            } else {
-                &icons::UNCHECKED_BOX
-            },
-            label,
-        });
-        self
-    }
-
-    /// Add a submenu entry (just displays name, navigation handled separately)
-    pub fn add_submenu(mut self, label: &'static str) -> Self {
-        self.items.push(ListMenuItem::TextWithIconRight {
-            icon: &icons::SUBMENU_ARROW,
-            label,
-        });
-        self
-    }
-
-    pub fn add_entry(mut self, label: &'static str) -> Self {
-        self.items.push(ListMenuItem::TextOnly { label });
-        self
-    }
-
-    pub fn add_entry_with_icon_left(
-        mut self,
-        icon: &'static icons::IconData,
-        label: &'static str,
-    ) -> Self {
-        self.items
-            .push(ListMenuItem::TextWithIconLeft { icon, label });
-        self
-    }
-
-    pub fn add_entry_with_icon_right(
-        mut self,
-        icon: &'static icons::IconData,
-        label: &'static str,
-    ) -> Self {
-        self.items
-            .push(ListMenuItem::TextWithIconRight { icon, label });
-        self
-    }
-
-    /// Build the menu navigator
-    pub fn build(self) -> MenuNavigator {
-        MenuNavigator::new(self.title, self.items)
+            .draw(self.d);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::convert::Infallible;
+    use embedded_graphics::primitives::Rectangle;
 
-    #[test]
-    fn test_menu_builder() {
-        let nav = MenuListBuilder::new("TEST")
-            .add_submenu("Volume")
-            .add_bool("Mute", false)
-            .build();
+    /// A `DrawTarget` that discards everything — these tests assert state
+    /// transitions, not pixels.
+    struct NullTarget;
 
-        assert_eq!(nav.title(), "TEST");
-        assert_eq!(nav.items().len(), 2);
-        assert_eq!(nav.selected_index(), 0);
+    impl Dimensions for NullTarget {
+        fn bounding_box(&self) -> Rectangle {
+            Rectangle::new(Point::zero(), Size::new(DISPLAY_WIDTH, 48))
+        }
+    }
+    impl DrawTarget for NullTarget {
+        type Color = BinaryColor;
+        type Error = Infallible;
+        fn draw_iter<I>(&mut self, _: I) -> Result<(), Infallible>
+        where
+            I: IntoIterator<Item = Pixel<BinaryColor>>,
+        {
+            Ok(())
+        }
     }
 
-    #[test]
-    fn test_menu_navigation() {
-        let mut nav = MenuListBuilder::new("TEST")
-            .add_submenu("A")
-            .add_submenu("B")
-            .build();
-
-        assert_eq!(nav.selected_index(), 0);
-        nav.move_down();
-        assert_eq!(nav.selected_index(), 1);
-        nav.move_up();
-        assert_eq!(nav.selected_index(), 0);
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Wave {
+        Sine,
+        Saw,
+        Square,
+    }
+    impl MenuEnum for Wave {
+        fn variants() -> &'static [Self] {
+            &[Wave::Sine, Wave::Saw, Wave::Square]
+        }
+        fn name(&self) -> &'static str {
+            match self {
+                Wave::Sine => "SINE",
+                Wave::Saw => "SAW",
+                Wave::Square => "SQUARE",
+            }
+        }
     }
 
-    #[test]
-    fn test_menu_select() {
-        let nav = MenuListBuilder::new("TEST")
-            .add_submenu("Volume")
-            .add_submenu("Save")
-            .build();
-
-        // Application would check selected_item() to determine what action to take
-        let item = nav.selected_item();
-        assert!(item.is_some());
-        assert_eq!(item.unwrap().label(), "Volume");
+    #[derive(Default)]
+    struct S {
+        freq: i32,
+        mono: bool,
+        wave: Wave,
+        drive: f32,
+    }
+    impl Default for Wave {
+        fn default() -> Self {
+            Wave::Sine
+        }
     }
 
-    #[test]
-    fn test_menu_item_label() {
-        let item = ListMenuItem::TextOnly { label: "Test" };
-        assert_eq!(item.label(), "Test");
-
-        let item = ListMenuItem::TextWithIconRight {
-            icon: &icons::SUBMENU_ARROW,
-            label: "Test",
+    /// Run one frame with the standard 4-item menu (incl. a submenu).
+    fn frame(state: &mut MenuState, s: &mut S, input: MenuInput) {
+        let mut d = NullTarget;
+        let style = MenuStyle {
+            top_inset: 0,
+            ..Default::default()
         };
-        assert_eq!(item.label(), "Test");
+        let mut ui = Menu::begin(&mut d, state, input, &style);
+        ui.title("SOUND");
+        ui.int("FREQ", &mut s.freq, 20..=20000);
+        ui.toggle("MONO", &mut s.mono);
+        ui.enumv("WAVE", &mut s.wave);
+        ui.submenu("ADVANCED", |ui| {
+            ui.title("ADVANCED");
+            ui.float("DRIVE", &mut s.drive, 0.0..=1.0);
+        });
+        ui.end();
+    }
+
+    #[test]
+    fn cursor_moves_and_clamps() {
+        let mut st = MenuState::new();
+        let mut s = S::default();
+        // First frame establishes rows_last = 4.
+        frame(&mut st, &mut s, MenuInput::None);
+        assert_eq!(st.cursor(), 0);
+        frame(&mut st, &mut s, MenuInput::Turn(1));
+        assert_eq!(st.cursor(), 1);
+        frame(&mut st, &mut s, MenuInput::Turn(2));
+        assert_eq!(st.cursor(), 3);
+        // Clamp at the last row (4 rows → max index 3).
+        frame(&mut st, &mut s, MenuInput::Turn(5));
+        assert_eq!(st.cursor(), 3);
+        frame(&mut st, &mut s, MenuInput::Turn(-10));
+        assert_eq!(st.cursor(), 0);
+    }
+
+    #[test]
+    fn toggle_flips_on_press() {
+        let mut st = MenuState::new();
+        let mut s = S::default();
+        frame(&mut st, &mut s, MenuInput::None); // rows_last
+        frame(&mut st, &mut s, MenuInput::Turn(1)); // focus MONO (row 1)
+        assert!(!s.mono);
+        frame(&mut st, &mut s, MenuInput::Press);
+        assert!(s.mono);
+        frame(&mut st, &mut s, MenuInput::Press);
+        assert!(!s.mono);
+    }
+
+    #[test]
+    fn int_edits_only_after_press_and_clamps() {
+        let mut st = MenuState::new();
+        let mut s = S {
+            freq: 100,
+            ..S::default()
+        };
+        frame(&mut st, &mut s, MenuInput::None);
+        // Focused on FREQ (row 0). Turn before pressing just moves the cursor.
+        frame(&mut st, &mut s, MenuInput::Turn(1));
+        assert_eq!(s.freq, 100);
+        assert_eq!(st.cursor(), 1);
+        // Back to row 0 and enter edit mode.
+        frame(&mut st, &mut s, MenuInput::Turn(-1));
+        frame(&mut st, &mut s, MenuInput::Press);
+        assert!(st.is_editing());
+        frame(&mut st, &mut s, MenuInput::Turn(50));
+        assert_eq!(s.freq, 150);
+        // Press again leaves edit mode; turns move the cursor again.
+        frame(&mut st, &mut s, MenuInput::Press);
+        assert!(!st.is_editing());
+        frame(&mut st, &mut s, MenuInput::Turn(1));
+        assert_eq!(s.freq, 150);
+        assert_eq!(st.cursor(), 1);
+    }
+
+    #[test]
+    fn enum_cycles_when_editing() {
+        let mut st = MenuState::new();
+        let mut s = S::default();
+        frame(&mut st, &mut s, MenuInput::None);
+        frame(&mut st, &mut s, MenuInput::Turn(2)); // focus WAVE (row 2)
+        frame(&mut st, &mut s, MenuInput::Press); // edit
+        frame(&mut st, &mut s, MenuInput::Turn(1));
+        assert_eq!(s.wave, Wave::Saw);
+        frame(&mut st, &mut s, MenuInput::Turn(1));
+        assert_eq!(s.wave, Wave::Square);
+        frame(&mut st, &mut s, MenuInput::Turn(1)); // wraps
+        assert_eq!(s.wave, Wave::Sine);
+    }
+
+    #[test]
+    fn submenu_enter_and_back() {
+        let mut st = MenuState::new();
+        let mut s = S {
+            drive: 0.5,
+            ..S::default()
+        };
+        frame(&mut st, &mut s, MenuInput::None);
+        frame(&mut st, &mut s, MenuInput::Turn(3)); // focus ADVANCED (row 3)
+        assert_eq!(st.depth(), 0);
+        frame(&mut st, &mut s, MenuInput::Press); // enter (takes effect: path pushed)
+        assert_eq!(st.depth(), 1);
+        assert_eq!(st.cursor(), 0); // child cursor reset
+        // Child screen has one row (DRIVE). Edit it.
+        frame(&mut st, &mut s, MenuInput::Press);
+        frame(&mut st, &mut s, MenuInput::Turn(1));
+        assert!(s.drive > 0.5);
+        // Exit edit, then Back leaves the submenu.
+        frame(&mut st, &mut s, MenuInput::Press);
+        frame(&mut st, &mut s, MenuInput::Back);
+        assert_eq!(st.depth(), 0);
+        assert_eq!(st.cursor(), 3); // focus returns to the submenu row
+    }
+
+    #[test]
+    fn child_screen_rows_only() {
+        // While in the submenu, only the child's rows are counted (1), so the
+        // cursor cannot land on a parent row.
+        let mut st = MenuState::new();
+        let mut s = S::default();
+        frame(&mut st, &mut s, MenuInput::None);
+        frame(&mut st, &mut s, MenuInput::Turn(3));
+        frame(&mut st, &mut s, MenuInput::Press); // enter ADVANCED
+        frame(&mut st, &mut s, MenuInput::Turn(5)); // try to move down
+        assert_eq!(st.cursor(), 0); // only 1 child row → clamped to 0
+    }
+
+    #[test]
+    fn scroll_follows_cursor() {
+        // A 6-item menu (no submenu) to exercise the 3-row window.
+        fn frame6(state: &mut MenuState, input: MenuInput) {
+            let mut d = NullTarget;
+            let style = MenuStyle {
+                top_inset: 0,
+                ..Default::default()
+            };
+            let mut ui = Menu::begin(&mut d, state, input, &style);
+            ui.title("LIST");
+            for i in 0..6 {
+                let _ = ui.entry(["A", "B", "C", "D", "E", "F"][i]);
+            }
+            ui.end();
+        }
+        let mut st = MenuState::new();
+        frame6(&mut st, MenuInput::None);
+        for _ in 0..4 {
+            frame6(&mut st, MenuInput::Turn(1));
+        }
+        assert_eq!(st.cursor(), 4);
+        assert_eq!(st.scroll, 2); // window [2..5] keeps row 4 visible
     }
 }
