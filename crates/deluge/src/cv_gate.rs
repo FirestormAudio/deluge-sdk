@@ -3,8 +3,9 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 /// Bring up the CV DAC + gate GPIOs once (RSPI0 wiring, gate lines, MAX5136
-/// linearity init, CV zeroed). Shared by [`Cv`] and [`Gate`].
-fn ensure_init() {
+/// linearity init, CV zeroed). Shared by [`Cv`], [`Gate`], and
+/// [`ClockOut`](crate::ClockOut) (which pulses a gate line).
+pub(crate) fn ensure_init() {
     static DONE: AtomicBool = AtomicBool::new(false);
     if DONE.swap(true, Ordering::Relaxed) {
         return;

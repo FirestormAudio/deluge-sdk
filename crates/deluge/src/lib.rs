@@ -31,8 +31,10 @@
 pub use deluge_macros::app;
 
 mod audio;
+mod clock;
 mod cv_gate;
 mod input;
+mod jacks;
 mod leds;
 mod midi;
 mod oled;
@@ -43,8 +45,10 @@ mod sync_led;
 #[cfg(feature = "usb-log")]
 mod usb_debug;
 pub use audio::{Audio, StereoFrame};
+pub use clock::{ClockIn, ClockOut};
 pub use cv_gate::{Cv, Gate};
 pub use input::{Event, Input};
+pub use jacks::Jacks;
 pub use leds::Leds;
 pub use midi::Midi;
 pub use oled::Oled;
@@ -234,6 +238,66 @@ impl Deluge {
         Gate::new()
     }
 
+    /// Take the analog trigger-clock **input** jack. Takeable once.
+    ///
+    /// ```ignore
+    /// let mut clk = dlg.clock_in();
+    /// loop {
+    ///     if let Some(dt) = clk.tick().await {
+    ///         info!("clock interval: {} ms", dt.as_millis());
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// Registers the trigger-clock interrupt on first use. See [`ClockIn`].
+    pub fn clock_in(&self) -> ClockIn {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static TAKEN: AtomicBool = AtomicBool::new(false);
+        if TAKEN.swap(true, Ordering::Relaxed) {
+            panic!("Deluge::clock_in() called more than once");
+        }
+        ClockIn::new()
+    }
+
+    /// Take a software clock **output** on gate channel `gate_ch`. Takeable once.
+    ///
+    /// There is no dedicated clock-out jack: this pulses one of the V-trig gate
+    /// outputs, so don't also drive `gate_ch` through [`gate`](Deluge::gate).
+    ///
+    /// ```ignore
+    /// let mut clk = dlg.clock_out(0);
+    /// clk.run(ClockOut::period_from_bpm(120.0, 24)).await
+    /// ```
+    ///
+    /// See [`ClockOut`].
+    pub fn clock_out(&self, gate_ch: u8) -> ClockOut {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static TAKEN: AtomicBool = AtomicBool::new(false);
+        if TAKEN.swap(true, Ordering::Relaxed) {
+            panic!("Deluge::clock_out() called more than once");
+        }
+        ClockOut::new(gate_ch)
+    }
+
+    /// Take the audio jack-detect inputs + speaker-amplifier control. Takeable
+    /// once.
+    ///
+    /// ```ignore
+    /// let mut jacks = dlg.jacks();
+    /// if jacks.headphone() { /* … */ }
+    /// jacks.apply_speaker_mute(); // standard mute policy
+    /// ```
+    ///
+    /// See [`Jacks`].
+    pub fn jacks(&self) -> Jacks {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static TAKEN: AtomicBool = AtomicBool::new(false);
+        if TAKEN.swap(true, Ordering::Relaxed) {
+            panic!("Deluge::jacks() called more than once");
+        }
+        Jacks::new()
+    }
+
     /// Take the DIN MIDI port. Takeable once. See [`Midi`].
     pub fn midi(&self) -> Midi {
         use core::sync::atomic::{AtomicBool, Ordering};
@@ -289,8 +353,8 @@ pub mod prelude {
     pub use crate::app;
     pub use crate::controls;
     pub use crate::{
-        Audio, Color, Cv, Deluge, Event, Gate, Input, Leds, Midi, Oled, Pads, Sd, StereoFrame,
-        SyncLed,
+        Audio, ClockIn, ClockOut, Color, Cv, Deluge, Event, Gate, Input, Jacks, Leds, Midi, Oled,
+        Pads, Sd, StereoFrame, SyncLed,
     };
     pub use log::{debug, error, info, warn};
 }

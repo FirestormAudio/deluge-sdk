@@ -1,0 +1,25 @@
+[package]
+name = "clock_jacks"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Deluge SDK example: clock-in/out + jack detection."
+
+[[bin]]
+name = "clock_jacks"
+test = false
+
+[dependencies]
+deluge = { path = "../../crates/deluge" }
+embassy-executor = { workspace = true, features = [
+    "nightly",
+    "platform-cortex-ar",
+    "executor-thread",
+] }
+embassy-futures = { workspace = true }
+embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
+
+[features]
+default = []
+## Opt-in RTT (SEGGER) logging over a debug probe.
+rtt = ["deluge/rtt"]

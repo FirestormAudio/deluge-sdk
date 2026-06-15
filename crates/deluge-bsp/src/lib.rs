@@ -15,6 +15,7 @@ pub mod cv_gate;
 #[cfg(target_os = "none")]
 pub mod encoder;
 pub mod fat;
+pub mod jacks;
 pub mod midi_gate;
 pub mod oled;
 pub mod pads;
