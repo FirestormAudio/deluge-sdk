@@ -224,6 +224,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "bootloader-flasher"
+version = "0.1.0"
+dependencies = [
+ "cortex-ar",
+ "deluge-bsp",
+ "embassy-executor",
+ "embassy-futures",
+ "embassy-sync",
+ "embassy-time",
+ "log",
+ "rtt-target",
+ "rza1l-hal",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

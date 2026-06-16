@@ -5,6 +5,7 @@ members = [
   "firmwares/msc-firmware",
   "firmwares/wp-probe",
   "firmwares/trace-selftest",
+  "firmwares/bootloader-flasher",
   "crates/rza1l-hal",
   "crates/deluge-bsp",
   "crates/deluge-fft",

@@ -20,3 +20,4 @@ Thumbs.db
 vendor/
 docs/
 **target/
+/rtt-flasher.log

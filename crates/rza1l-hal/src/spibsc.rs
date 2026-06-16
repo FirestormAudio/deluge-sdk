@@ -190,6 +190,23 @@ fn write_allowed(offset: u32, len: u32) -> bool {
     if !writable(offset, len) {
         return false;
     }
+    in_chip(offset, len)
+}
+
+/// `true` if `[offset, offset+len)` is non-empty and lies inside the physically
+/// present flash (using the cached [`chip_capacity`]) — **without** the
+/// writable-window restriction of [`writable`].
+///
+/// This is the only guard kept on the `unlock-bootloader` forced path: it still
+/// prevents an out-of-range offset from wrapping (modulo the chip size) onto a
+/// low sector — the failure that once erased the FSB — but it deliberately does
+/// *not* protect the FSB / device-settings / SSB regions, because the whole point
+/// of the forced path is to (re)write them from a JTAG-loaded recovery tool.
+#[inline]
+fn in_chip(offset: u32, len: u32) -> bool {
+    if len == 0 {
+        return false;
+    }
     let cap = CHIP_CAPACITY.load(Ordering::Relaxed);
     cap != 0 && (offset as u64 + len as u64) <= cap as u64
 }
@@ -408,8 +425,17 @@ unsafe fn clear_status() {
 /// Erase the 256 KB sector at sector-aligned `offset`.  Assumes manual mode is
 /// already active.  Refuses anything outside the app slot — the single choke
 /// point for every erase path.
-unsafe fn erase_sector_at(offset: u32) {
-    if !write_allowed(offset, SECTOR_SIZE) {
+///
+/// `allow_protected` (only ever `true` on the feature-gated forced path) relaxes
+/// the writable-window check to a chip-bounds check, so a recovery tool can erase
+/// the FSB / SSB; the anti-aliasing chip-size bound is kept either way.
+unsafe fn erase_sector_at(offset: u32, allow_protected: bool) {
+    let ok = if allow_protected {
+        in_chip(offset, SECTOR_SIZE)
+    } else {
+        write_allowed(offset, SECTOR_SIZE)
+    };
+    if !ok {
         debug_assert!(false, "spibsc: refused erase outside writable/in-chip range");
         return;
     }
@@ -436,11 +462,19 @@ unsafe fn erase_sector_at(offset: u32) {
 /// Mirrors the Renesas `R_SFLASH_ByteProgram` sequence: a command+address
 /// transfer with SSL kept, then data transfers in 32/16/8-bit units with the
 /// datum MSB-aligned in `SMWDR0`, SSL negated on the last unit.
-unsafe fn program_page_manual(offset: u32, data: &[u8]) {
+///
+/// `allow_protected` (only ever `true` on the feature-gated forced path) relaxes
+/// the writable-window check to a chip-bounds check; see [`erase_sector_at`].
+unsafe fn program_page_manual(offset: u32, data: &[u8], allow_protected: bool) {
     if data.is_empty() {
         return;
     }
-    if !write_allowed(offset, data.len() as u32) {
+    let ok = if allow_protected {
+        in_chip(offset, data.len() as u32)
+    } else {
+        write_allowed(offset, data.len() as u32)
+    };
+    if !ok {
         debug_assert!(false, "spibsc: refused program outside writable/in-chip range");
         return;
     }
@@ -507,8 +541,12 @@ unsafe fn program_page_manual(offset: u32, data: &[u8]) {
 pub fn read_id() -> [u8; 3] {
     critical_section::with(|_| unsafe {
         to_manual();
-        // Command + a single 32-bit read in one SSL assertion; the four received
-        // bytes land MSB-first in SMRDR0 (`[31:24]` = first byte).
+        // Command + a single 32-bit read in one SSL assertion. For a 32-bit
+        // SPIDE unit the bytes are little-endian within SMRDR0 — the first byte
+        // received off the wire is in `[7:0]` — mirroring the `from_le_bytes`
+        // packing the program path uses for a 32-bit write unit. (This differs
+        // from an 8-bit SPIDE read, where the lone byte is MSB-aligned at
+        // `[31:24]`; see `read_status`.)
         wr32(SMCMR, CMD_RDID << 16);
         wr32(SMADR, 0);
         wr32(SMENR, SMENR_CDE | SMENR_SPIDE_32);
@@ -517,7 +555,9 @@ pub fn read_id() -> [u8; 3] {
         let _ = wait_tend();
         let v = rd32(SMRDR0);
         to_read_mode();
-        [(v >> 24) as u8, (v >> 16) as u8, (v >> 8) as u8]
+        // [manufacturer, memory type, density] in wire order = the three lowest
+        // bytes of the little-endian word.
+        [v as u8, (v >> 8) as u8, (v >> 16) as u8]
     })
 }
 
@@ -546,7 +586,7 @@ pub unsafe fn erase_sector(offset: u32) {
     // Interrupts masked for the whole manual-mode window (see module docs).
     critical_section::with(|_| unsafe {
         to_manual();
-        erase_sector_at(offset & !(SECTOR_SIZE - 1));
+        erase_sector_at(offset & !(SECTOR_SIZE - 1), false);
         to_read_mode();
     });
 }
@@ -563,7 +603,7 @@ pub unsafe fn erase_range(offset: u32, len: u32) {
         let end = offset + len;
         to_manual();
         while addr < end {
-            erase_sector_at(addr);
+            erase_sector_at(addr, false);
             addr += SECTOR_SIZE;
         }
         to_read_mode();
@@ -580,7 +620,7 @@ pub unsafe fn program_page(offset: u32, data: &[u8]) {
     // Interrupts masked for the whole manual-mode window (see module docs).
     critical_section::with(|_| unsafe {
         to_manual();
-        program_page_manual(offset, data);
+        program_page_manual(offset, data, false);
         to_read_mode();
     });
 }
@@ -600,7 +640,65 @@ pub unsafe fn program(offset: u32, data: &[u8]) {
         while !rest.is_empty() {
             let page_room = PAGE - (addr as usize & (PAGE - 1));
             let chunk = core::cmp::min(page_room, rest.len());
-            program_page_manual(addr, &rest[..chunk]);
+            program_page_manual(addr, &rest[..chunk], false);
+            addr += chunk as u32;
+            rest = &rest[chunk..];
+        }
+        to_read_mode();
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Forced (unlocked) writes — recovery tooling only
+// ---------------------------------------------------------------------------
+//
+// These bypass the writable-window guard ([`writable`]) so a JTAG-loaded recovery
+// program can (re)write the protected low regions — the FSB, the device-settings
+// sector, and the SSB — which the normal API refuses.  They are gated behind the
+// `unlock-bootloader` cargo feature so the capability cannot be linked into normal
+// firmware (or the app-loader) by accident.  The anti-aliasing chip-bounds check
+// ([`in_chip`]) is retained: that is what prevents an out-of-range offset from
+// wrapping onto a low sector, and dropping it is what once erased the FSB.
+
+/// Erase every 256 KB sector touched by `[offset, offset+len)` (flash-relative),
+/// **including the protected FSB / settings / SSB regions**.
+///
+/// # Safety
+/// See [`erase_sector`].  In addition, this can erase the first-stage bootloader
+/// and brick the device until reflashed over JTAG/SPI — only call from a recovery
+/// tool that is itself running from SRAM (never from flash).
+#[cfg(feature = "unlock-bootloader")]
+pub unsafe fn force_erase_range(offset: u32, len: u32) {
+    chip_capacity(); // probe chip size before manual mode (see `erase_sector`)
+    critical_section::with(|_| unsafe {
+        let mut addr = offset & !(SECTOR_SIZE - 1);
+        let end = offset + len;
+        to_manual();
+        while addr < end {
+            erase_sector_at(addr, true);
+            addr += SECTOR_SIZE;
+        }
+        to_read_mode();
+    });
+}
+
+/// Program an arbitrary-length buffer at `offset` (flash-relative), splitting it
+/// into [`PAGE`]-bounded writes, **including the protected FSB / settings / SSB
+/// regions**.  The target range must already be erased.
+///
+/// # Safety
+/// See [`force_erase_range`].
+#[cfg(feature = "unlock-bootloader")]
+pub unsafe fn force_program(offset: u32, data: &[u8]) {
+    chip_capacity(); // probe chip size before manual mode (see `erase_sector`)
+    critical_section::with(|_| unsafe {
+        to_manual();
+        let mut addr = offset;
+        let mut rest = data;
+        while !rest.is_empty() {
+            let page_room = PAGE - (addr as usize & (PAGE - 1));
+            let chunk = core::cmp::min(page_room, rest.len());
+            program_page_manual(addr, &rest[..chunk], true);
             addr += chunk as u32;
             rest = &rest[chunk..];
         }
@@ -686,5 +784,37 @@ mod tests {
         assert!(!writable(SETTINGS_SECTOR_OFFSET, SECTOR_SIZE + 1));
         assert!(!writable(SETTINGS_SECTOR_OFFSET + SECTOR_SIZE, PAGE as u32));
         assert!(!writable(0, 0), "zero-length is never writable");
+    }
+
+    /// The forced (`unlock-bootloader`) path drops the writable-window guard but
+    /// keeps the chip-bounds guard.  `in_chip` must therefore accept the FSB
+    /// sector (which `writable` rejects) yet still reject anything that would
+    /// reach past the physical chip end — the anti-aliasing protection that must
+    /// never be lost, even on the recovery path.
+    #[test]
+    fn in_chip_allows_fsb_but_keeps_chip_bounds() {
+        // Prime the cached capacity to the real 4 MB part (RDID is unavailable on
+        // the host); restore it afterwards so test ordering can't leak state.
+        let saved = CHIP_CAPACITY.load(Ordering::Relaxed);
+        CHIP_CAPACITY.store(FLASH_SIZE, Ordering::Relaxed);
+
+        // FSB sector: blocked by the normal guard, allowed by the forced guard.
+        assert!(!writable(0, SECTOR_SIZE), "FSB stays protected on the normal path");
+        assert!(in_chip(0, SECTOR_SIZE), "forced path may erase the FSB sector");
+        // SSB region too.
+        assert!(in_chip(0x0008_0000, SECTOR_SIZE));
+
+        // Chip bounds are still enforced: the last in-chip byte is fine, one past
+        // the end is not, and a wrap-prone offset at the chip end is refused.
+        assert!(in_chip(FLASH_SIZE - SECTOR_SIZE, SECTOR_SIZE));
+        assert!(!in_chip(FLASH_SIZE - SECTOR_SIZE, SECTOR_SIZE + 1));
+        assert!(!in_chip(FLASH_SIZE, PAGE as u32));
+        assert!(!in_chip(0, 0), "zero-length is never writable");
+
+        // An unprobed/implausible capacity (0) refuses every forced write.
+        CHIP_CAPACITY.store(0, Ordering::Relaxed);
+        assert!(!in_chip(0, SECTOR_SIZE), "unknown capacity refuses forced writes");
+
+        CHIP_CAPACITY.store(saved, Ordering::Relaxed);
     }
 }
