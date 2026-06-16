@@ -10,4 +10,13 @@ name = "cargo-deluge"
 path = "src/main.rs"
 
 [dependencies]
-# Intentionally none — pure std so it builds offline with no supply chain.
+# A cross-platform serial port can't be opened portably from pure std, so the
+# USB upload path (`cargo deluge run`) needs this. It is the only dependency; the
+# wire-format CRC is hand-rolled (and pinned by a test against the device's
+# `deluge-image::crc32`), so there is no shared-crate coupling.
+serialport = "4"
+
+[dev-dependencies]
+# Cross-check the hand-rolled framing CRC against the on-device implementation so
+# the two ends can never drift.
+deluge-image = { path = "../../crates/deluge-image" }

@@ -16,10 +16,12 @@
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
 
+mod devupload;
 mod elf;
 mod file_browser;
 mod flashboot;
 mod launcher;
+mod settings;
 mod ui;
 mod usbmsc;
 
@@ -29,6 +31,10 @@ const BOOT_COUNTDOWN_SECS: u8 = 5;
 
 /// Label for the synthetic menu entry that enters SD-card USB mass-storage mode.
 const DATA_MENU_LABEL: &[u8] = b"DATA TRANSFER";
+
+/// Labels for the synthetic dev-mode toggle entry (reflects the current state).
+const DEV_MODE_ON_LABEL: &[u8] = b"DEV MODE: ON";
+const DEV_MODE_OFF_LABEL: &[u8] = b"DEV MODE: OFF";
 
 use core::mem::MaybeUninit;
 use core::sync::atomic::AtomicBool;
@@ -162,7 +168,7 @@ async fn pic_rx_task() {
 /// hardware to be *quiet*: no DMA channel still transferring into RAM, no timer
 /// or GIC source able to fire.  The critical one is the SCIF1/PIC circular
 /// receive DMA — see the call site.
-unsafe fn quiesce_for_handoff() {
+pub(crate) unsafe fn quiesce_for_handoff() {
     unsafe {
         // Stop every DMA channel (covers PIC RX/TX, SD, and OLED channels).
         for ch in 0..16u8 {
@@ -183,8 +189,16 @@ unsafe fn quiesce_for_handoff() {
 /// Must be called while interrupts, the executor, and `pic_rx_task` are still
 /// live: `send_frame` awaits the OLED DMA-completion IRQ and the PIC chip-select
 /// echo, so it cannot complete once the machine has been quiesced for handoff.
-async fn blank_oled() {
+pub(crate) async fn blank_oled() {
     oled::send_frame(&oled::FrameBuffer::new()).await;
+}
+
+/// Write `byte` as two uppercase hex digits into `out[..2]` (for on-OLED
+/// diagnostics, since the loader has no other display channel by default).
+fn hex2(out: &mut [u8], byte: u8) {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    out[0] = HEX[(byte >> 4) as usize];
+    out[1] = HEX[(byte & 0xF) as usize];
 }
 
 /// Store a selected SD `/APPS` ELF into the flash app slot.
@@ -291,6 +305,11 @@ async fn boot_task(spawner: Spawner) {
     // write-to-flash also returns here, so the menu is rebuilt from fresh state
     // (re-probing the flash slot and re-listing the SD card).
     loop {
+        // Read persisted settings each pass so a DEV MODE toggle takes effect on
+        // the very next menu rebuild (dev mode adds a background USB listener and
+        // disables the auto-boot countdown).
+        let cfg = settings::read();
+
         // Probe the on-flash firmware slot.  Independent of the SD card, so a
         // unit with valid flash firmware can boot with no card inserted.
         let flash_img = flashboot::probe();
@@ -326,7 +345,7 @@ async fn boot_task(spawner: Spawner) {
         };
 
         // Build the menu: on-flash firmware (default) + SD `/APPS/` images, then
-        // a trailing "DATA TRANSFER" entry.
+        // trailing "DATA TRANSFER" and "DEV MODE" entries.
         let has_flash = flash_img.is_some();
         let flash_offset = has_flash as usize;
         let sd_count = sd_listing.as_ref().map_or(0, |(_, _, e)| e.len());
@@ -341,9 +360,10 @@ async fn boot_task(spawner: Spawner) {
         // sees an empty drive.  This also guarantees the menu always has ≥1
         // entry.
         let data_idx = boot_total; // DATA TRANSFER follows the boot targets
-        let menu_total = boot_total + 1;
+        let dev_idx = boot_total + 1; // DEV MODE toggle follows DATA TRANSFER
+        let menu_total = boot_total + 2;
 
-        let mut name_refs = [b"".as_slice(); file_browser::MAX_APPS + 2];
+        let mut name_refs = [b"".as_slice(); file_browser::MAX_APPS + 3];
         if has_flash {
             name_refs[0] = b"BOOT FLASH";
         }
@@ -353,22 +373,62 @@ async fn boot_task(spawner: Spawner) {
             }
         }
         name_refs[data_idx] = DATA_MENU_LABEL;
+        name_refs[dev_idx] = if cfg.dev_mode {
+            DEV_MODE_ON_LABEL
+        } else {
+            DEV_MODE_OFF_LABEL
+        };
 
         info!(
-            "Boot menu: {} boot entry(ies) (flash={})",
-            boot_total, has_flash
+            "Boot menu: {} boot entry(ies) (flash={}, dev_mode={})",
+            boot_total, has_flash, cfg.dev_mode
         );
 
-        // Countdown auto-boots the default only when there is a real boot target.
-        let countdown = if boot_total >= 1 {
-            BOOT_COUNTDOWN_SECS
-        } else {
+        // Countdown auto-boots the default only when there is a real boot target
+        // — and never in dev mode, where the unit waits indefinitely for either a
+        // menu selection or a USB upload.
+        let countdown = if cfg.dev_mode || boot_total == 0 {
             0
+        } else {
+            BOOT_COUNTDOWN_SECS
+        };
+
+        // In dev mode, race the menu selector against the background USB upload
+        // listener: whichever resolves first wins.  The listener only ever
+        // "returns" by loading and launching a received image (it never hands a
+        // value back), so the menu branch is the only one that yields a selection
+        // here.  Outside dev mode, just run the selector.
+        //
+        // Crucially, bring the USB device up *before* `run_selector` starts
+        // drawing: USB bring-up reconfigures interrupts/clocks, and doing that
+        // while an OLED frame DMA + PIC handshake is in flight can wedge the
+        // display so the menu never redraws (the proven `usbmsc` path builds USB
+        // before starting its OLED loop for the same reason).
+        let selection = if cfg.dev_mode {
+            use embassy_futures::select::{Either, select};
+            let listener = devupload::prepare();
+            match select(
+                ui::run_selector(&name_refs[..menu_total], 0, countdown),
+                listener.run(),
+            )
+            .await
+            {
+                Either::First(sel) => sel,
+                Either::Second(never) => never,
+            }
+        } else {
+            ui::run_selector(&name_refs[..menu_total], 0, countdown).await
         };
         let ui::Selection {
             index: selected,
             long_press,
-        } = ui::run_selector(&name_refs[..menu_total], 0, countdown).await;
+        } = selection;
+
+        // The menu branch won (or dev mode is off): if a CDC listener was brought
+        // up, tear it down so the port is free for a later DATA TRANSFER MSC init.
+        if cfg.dev_mode {
+            unsafe { rza1l_hal::usb::disconnect(0) };
+        }
 
         // ---- Long-press on an SD `/APPS` ELF: store it to the flash slot ----
         // Only SD ELF entries are stored to flash; long-pressing the existing
@@ -392,6 +452,53 @@ async fn boot_task(spawner: Spawner) {
                 drop(entries);
             }
             drop(vm);
+            continue;
+        }
+
+        // ---- DEV MODE toggle (persists to flash, rebuilds the menu) ----
+        // The only user-facing control for dev mode: flip the flag, persist it,
+        // and `continue` so the next pass re-reads it (updating the label, the
+        // countdown, and whether the USB listener runs).  Nothing is launched.
+        if selected == dev_idx {
+            let new_cfg = settings::Settings {
+                dev_mode: !cfg.dev_mode,
+            };
+            info!("Dev mode: {} -> {}", cfg.dev_mode, new_cfg.dev_mode);
+            // Close FAT handles before touching the flash bus (the settings write
+            // leaves memory-mapped read mode, like the app-slot store).
+            if let Some((volume, _, entries)) = sd_listing {
+                let _ = vm.close_volume(volume);
+                drop(entries);
+            }
+            drop(vm);
+            let ok = unsafe { settings::write(&new_cfg).await };
+            if ok {
+                ui::show_message(
+                    b"DEV MODE",
+                    if new_cfg.dev_mode { b"ON" } else { b"OFF" },
+                )
+                .await;
+                embassy_time::Timer::after(embassy_time::Duration::from_millis(700)).await;
+            } else {
+                // The flash write didn't stick (the device stays responsive
+                // thanks to the bounded SPIBSC waits). Show the JEDEC ID and
+                // status register so the failure can be diagnosed: ID `01 02 20`
+                // confirms manual-mode works; status `BP[2:0]` (bits 2-4) set
+                // means the settings sector is write-protected.
+                let id = rza1l_hal::spibsc::read_id();
+                let sr = rza1l_hal::spibsc::read_status_reg();
+                error!(
+                    "Dev-mode flash write failed: JEDEC={:02x} {:02x} {:02x}, SR={:#04x}",
+                    id[0], id[1], id[2], sr
+                );
+                let mut line = *b"ID...... SR..";
+                hex2(&mut line[3..5], id[0]);
+                hex2(&mut line[5..7], id[1]);
+                hex2(&mut line[7..9], id[2]);
+                hex2(&mut line[11..13], sr);
+                ui::show_message(b"FLASH WRITE FAIL", &line).await;
+                embassy_time::Timer::after(embassy_time::Duration::from_secs(4)).await;
+            }
             continue;
         }
 

@@ -20,7 +20,8 @@ use deluge_bsp::fat::{self, FatError, RawFile};
 // implementation (see `crates/deluge-image/src/elf.rs`).
 use deluge_image::elf::{
     ELF_MAGIC, ELFCLASS32, ELFDATA2LSB, EM_ARM, ET_EXEC, LoadTarget, MAX_PHDRS, PT_LOAD,
-    classify_load_range, le16, le32, mirror_to_phys, sram_stage_addr,
+    PlanError, SegmentPlacement, classify_load_range, le16, le32, mirror_to_phys, parse_load_plan,
+    place_segment, sram_stage_addr,
 };
 use rza1l_hal::spibsc;
 use embassy_time::{Duration, Timer};
@@ -67,6 +68,19 @@ pub enum ElfError {
 impl From<FatError> for ElfError {
     fn from(e: FatError) -> Self {
         ElfError::Io(e)
+    }
+}
+
+impl From<PlanError> for ElfError {
+    fn from(e: PlanError) -> Self {
+        match e {
+            PlanError::BadMagic => ElfError::BadMagic,
+            PlanError::WrongFormat => ElfError::WrongFormat,
+            PlanError::BadLoadAddress => ElfError::BadLoadAddress,
+            // A truncated image / short program-header table is an I/O-shaped
+            // failure the slice loader maps to its EOF variant.
+            PlanError::Truncated => ElfError::UnexpectedEof,
+        }
     }
 }
 
@@ -191,30 +205,19 @@ where
             return Err(ElfError::WrongFormat);
         }
 
-        // Skip segments that target data-retention RAM (0x20000000-0x2001FFFF).
-        // That region is reserved for the trampoline, and applications
-        // place only self-zeroed BSS there (e.g. the community firmware's
-        // `.frunk_bss` @ 0x20000000).  Writing it would corrupt the running
-        // trampoline; the app's own startup zeroes it after handoff.
-        if (0x2000_0000..0x2002_0000).contains(&mirror_to_phys(p_paddr)) {
-            continue;
-        }
-
-        // Classify against the *physical* address (resolving any uncached
-        // mirror alias), but keep writing through `p_paddr` so a segment that
-        // asked for the non-cacheable view (e.g. the RTT buffer at 0x602b0000)
-        // still lands there.
-        let p_phys = mirror_to_phys(p_paddr);
-
-        // Validate target address and determine where to write.
-        let (write_addr, is_sram) = {
-            let target =
-                classify_load_range(p_phys, p_memsz as u32).ok_or(ElfError::BadLoadAddress)?;
-            match target {
-                LoadTarget::Sdram => (p_paddr, false),
-                // Staging slot is keyed by the physical SRAM offset.
-                LoadTarget::Sram => (sram_stage_addr(p_phys), true),
-            }
+        // Classify and place the segment via the shared host-tested decision
+        // (same one `load_from_slice` and the USB dev-upload path use), so the
+        // FAT and slice loaders can never drift on where a segment may land:
+        //   * data-retention RAM (0x20000000-0x2001FFFF) is skipped — reserved
+        //     for the trampoline; the app's own startup zeroes any BSS there;
+        //   * SDRAM targets are written through `p_paddr` (so a segment that
+        //     asked for the uncached mirror still lands there);
+        //   * SRAM targets are staged in SDRAM, keyed by the physical offset.
+        let (write_addr, is_sram) = match place_segment(p_paddr, p_memsz as u32)
+            .map_err(|()| ElfError::BadLoadAddress)?
+        {
+            SegmentPlacement::Skip => continue,
+            SegmentPlacement::Write { write_addr, sram } => (write_addr, sram),
         };
 
         vm.file_seek_from_start(file, p_offset)?;
@@ -270,6 +273,59 @@ where
 
     Ok(LoadResult {
         entry: e_entry,
+        sram_descs,
+        n_sram,
+    })
+}
+
+/// Load an ELF32 image that is already fully present in memory (the USB
+/// dev-upload path), mirroring [`load_from_sd_with_progress`] but copying each
+/// segment's bytes from `elf[p_offset..]` instead of streaming from FAT.
+///
+/// The parsing, bounds-checking and per-segment placement are the host-tested
+/// [`parse_load_plan`] (shared address math with the FAT path); this function
+/// only performs the raw memory writes the plan describes:
+/// - **SDRAM targets** are written to their final addresses directly;
+/// - **SRAM targets** are written to the SDRAM staging window, and a
+///   [`SramSegDesc`] is recorded so the caller can drive
+///   [`crate::launcher::launch_via_trampoline`].
+///
+/// # Safety
+/// Writes physical RAM derived from the image's program headers. Each
+/// destination range is validated by [`parse_load_plan`] before any write, but
+/// the caller must ensure no live data occupies the SDRAM staging window
+/// (`0x0F000000+`) or the SDRAM load region — true during the boot menu, like the
+/// SD ELF loader. `elf` must remain valid for the duration of the call and must
+/// not overlap any segment's destination (the dev-upload receiver stages the raw
+/// image high in SDRAM, clear of both windows).
+pub unsafe fn load_from_slice(elf: &[u8]) -> Result<LoadResult, ElfError> {
+    let plan = parse_load_plan(elf).map_err(ElfError::from)?;
+
+    let mut sram_descs = [SramSegDesc::default(); MAX_PHDRS];
+    let mut n_sram = 0usize;
+
+    for op in &plan.ops[..plan.n_ops] {
+        let src = unsafe { elf.as_ptr().add(op.src_off as usize) };
+        let dst = op.write_addr as *mut u8;
+        unsafe {
+            core::ptr::copy_nonoverlapping(src, dst, op.filesz as usize);
+            if op.zero_extra > 0 {
+                core::ptr::write_bytes(dst.add(op.filesz as usize), 0, op.zero_extra as usize);
+            }
+        }
+        if op.sram {
+            sram_descs[n_sram] = SramSegDesc {
+                src: op.write_addr,
+                dst: op.final_dst,
+                filesz: op.filesz,
+                zero_extra: op.zero_extra,
+            };
+            n_sram += 1;
+        }
+    }
+
+    Ok(LoadResult {
+        entry: plan.entry,
         sram_descs,
         n_sram,
     })

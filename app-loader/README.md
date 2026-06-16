@@ -4,7 +4,8 @@ Second-stage bootloader / **app loader** for the [Synthstrom Deluge] (RZ/A1L).
 The Deluge first-stage bootloader loads this image from SPI flash into SRAM at
 `0x20020000`; the app loader then picks and launches an application firmware
 image from the SD card or on-board flash, can store an SD app into the on-board
-flash slot, and provides a USB data-transfer mode.
+flash slot, accepts a direct USB upload in **dev mode**, and provides a USB
+data-transfer mode.
 
 | | |
 |---|---|
@@ -25,9 +26,35 @@ flash slot, and provides a USB data-transfer mode.
    ELF, load its `PT_LOAD` segments to their physical addresses, flush all
    caches, and branch to `e_entry`.
 
-The menu also exposes one synthetic entry:
+The menu also exposes two synthetic entries:
 
 - **`DATA TRANSFER`** — expose the raw SD card over USB Mass Storage.
+- **`DEV MODE: ON` / `DEV MODE: OFF`** — toggle the persistent dev-mode flag
+  (see below). Selecting it flips the flag, saves it to flash, and rebuilds the
+  menu; nothing is launched.
+
+### Dev mode (USB upload-and-run)
+
+Dev mode is a **persistent, default-off** setting stored in the SPI-flash
+**settings sector** (`0x40_0000`, one 256 KB sector above the app slot, outside
+the FSB / settings / SSB / app-slot regions — see the `spibsc` flash map and the
+second `writable()` window that guards it). Because it survives reboots and is
+independent of the SD card, a stock unit never accepts firmware over USB until
+the user explicitly turns it on.
+
+While dev mode is **on**, the loader:
+
+- runs a USB **CDC-ACM upload listener** in the background alongside the boot
+  menu (`src/devupload.rs`) — there is no separate "upload mode" to enter; and
+- **disables the auto-boot countdown**, so the unit waits indefinitely on the
+  menu for either a selection or an upload.
+
+When the host (`cargo deluge run`) pushes a framed ELF
+(`DLUP | version | flags | len | crc32 | <ELF>`), the listener streams it into a
+high-SDRAM scratch window, validates the CRC, loads its `PT_LOAD` segments to RAM
+(`elf::load_from_slice`), and launches it — exactly like the SD `/APPS/` path, but
+sourced from USB and with no SD shuffling. A menu selection while listening tears
+the CDC device down first so a later `DATA TRANSFER` MSC init has the port free.
 
 ### Store an app to flash
 
@@ -44,7 +71,9 @@ boot it with no SD card present. Only fully SRAM-linked images can be stored.
 
 | Module | Role |
 |--------|------|
-| [`elf`](src/elf.rs) | Streaming ELF32-LE loader for ARM firmware images + flatten-to-flash-staging |
+| [`elf`](src/elf.rs) | Streaming ELF32-LE loader for ARM firmware images, slice loader (`load_from_slice`) + flatten-to-flash-staging |
+| [`devupload`](src/devupload.rs) | Dev-mode USB CDC upload listener: receive a framed ELF, load it to RAM, and launch |
+| [`settings`](src/settings.rs) | Persistent dev-mode flag in the SPI-flash settings sector (format in `deluge-image`) |
 | [`file_browser`](src/file_browser.rs) | Enumerates loadable ELF images from `/APPS` on the SD card |
 | [`flashboot`](src/flashboot.rs) | Probes/launches a firmware image stored in SPI flash, and programs the flash slot |
 | [`launcher`](src/launcher.rs) | Cache flush + branch-to-application handoff |

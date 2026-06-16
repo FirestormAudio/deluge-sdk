@@ -156,6 +156,12 @@ git clone -b trace-a9 https://github.com/stellar-aria/probe-rs
 cargo install --path probe-rs/probe-rs-tools --locked
 ```
 
+> **Ergonomic front-end:** `cargo deluge debug` and `cargo deluge trace` build the
+> current app and wrap the commands below with the chip preset to `R7S721020`
+> (and the right `--decode`/`--flow`/`--elf` flags), so you don't retype them.
+> Anything after a `--` is passed straight through to `probe-rs`. They are pure
+> probe-rs-fork wrappers — independent of dev mode and the app-loader.
+
 **Flash and run** (streams RTT to the terminal):
 
 ```sh

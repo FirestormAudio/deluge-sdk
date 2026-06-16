@@ -220,6 +220,15 @@ pub async fn run_selector(
     const ENC: usize = deluge_bsp::controls::encoder::SELECT as usize;
 
     loop {
+        // While a USB upload owns the OLED (dev mode), stand down: don't draw and
+        // don't act on input, so the upload progress bar isn't fought over and a
+        // stray encoder bump can't abort the transfer.  Resumes if the upload is
+        // rejected; a successful one launches and never returns.
+        if UPLOAD_ACTIVE.load(Ordering::Acquire) {
+            embassy_time::Timer::after(embassy_time::Duration::from_millis(16)).await;
+            continue;
+        }
+
         // Remaining seconds for the title bar (rounds up so it ends on "1S").
         let remaining = if countdown_active {
             let left = countdown.checked_sub(start.elapsed()).unwrap_or_default();
@@ -301,6 +310,14 @@ pub async fn run_selector(
 /// Pumped by `pic_rx_task` in `main.rs` (set on `ButtonPress`, cleared on
 /// `ButtonRelease`); the selector and prompts derive press/hold edges from it.
 pub static SELECT_DOWN: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Set by [`crate::devupload`] once an upload header has arrived, to claim the
+/// OLED. While set, [`run_selector`] stops drawing *and* stops acting on input,
+/// so the upload progress bar isn't fought over and an accidental encoder bump
+/// can't abort an in-flight upload. Cleared again only if the upload is rejected
+/// (a successful one launches and never returns).
+pub static UPLOAD_ACTIVE: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
 /// Modal YES/NO prompt asking whether to write `label` to the flash slot.
