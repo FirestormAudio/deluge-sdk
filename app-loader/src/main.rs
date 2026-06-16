@@ -19,18 +19,13 @@
 mod elf;
 mod file_browser;
 mod flashboot;
-mod ghostfat;
 mod launcher;
-mod uf2;
 mod ui;
 mod usbmsc;
 
 /// Seconds the GRUB-style boot menu counts down before auto-booting the default
 /// entry (the on-flash firmware when present).
 const BOOT_COUNTDOWN_SECS: u8 = 5;
-
-/// Label for the synthetic menu entry that enters USB UF2 update mode.
-const UF2_MENU_LABEL: &[u8] = b"UPDATE FW";
 
 /// Label for the synthetic menu entry that enters SD-card USB mass-storage mode.
 const DATA_MENU_LABEL: &[u8] = b"DATA TRANSFER";
@@ -143,8 +138,13 @@ async fn pic_rx_task() {
         match parser.push(byte) {
             Some(Event::OledSelected) => pic::notify_oled_selected(),
             Some(Event::OledDeselected) => pic::notify_oled_deselected(),
+            // Track the SELECT button held-state so the selector can tell a
+            // short tap (confirm) from a long-press (write-to-flash).
             Some(Event::ButtonPress { id }) if id == controls::encoder_button::SELECT => {
-                ui::CONFIRM.store(true, Ordering::Release)
+                ui::SELECT_DOWN.store(true, Ordering::Release)
+            }
+            Some(Event::ButtonRelease { id }) if id == controls::encoder_button::SELECT => {
+                ui::SELECT_DOWN.store(false, Ordering::Release)
             }
             // BACK exits an active USB mode back to the boot menu.
             Some(Event::ButtonPress { id }) if id == controls::button::BACK => {
@@ -187,6 +187,84 @@ async fn blank_oled() {
     oled::send_frame(&oled::FrameBuffer::new()).await;
 }
 
+/// Store a selected SD `/APPS` ELF into the flash app slot.
+///
+/// Opens the file, flattens its `PT_LOAD` segments into the SDRAM staging window
+/// ([`elf::flatten_to_flash_staging`]), then validates + programs it into the
+/// slot ([`flashboot::store_image_to_slot`]).  Progress and the final result are
+/// shown on the OLED.  On success the next boot-menu pass re-probes the slot and
+/// the image appears as the default `BOOT FLASH` entry — no extra wiring needed.
+///
+/// Returns to the menu on any error; the slot is only ever touched after the
+/// image passes FSB validation, so a bad ELF cannot brick an existing image.
+async fn write_app_to_flash(
+    vm: &mut deluge_bsp::fat::DelugeVolumeManager,
+    root: deluge_bsp::fat::RawDirectory,
+    entry: &deluge_bsp::fat::DirEntry,
+    label: &[u8],
+) {
+    use embassy_time::{Duration, Timer};
+
+    ui::show_progress(label, 0).await;
+
+    let file = match file_browser::open_app(vm, root, entry) {
+        Ok(f) => f,
+        Err(e) => {
+            error!("Flash store: open failed: {:?}", e);
+            ui::show_message(b"FLASH ERROR", b"OPEN FAILED").await;
+            Timer::after(Duration::from_secs(2)).await;
+            return;
+        }
+    };
+
+    // Flatten the ELF into SDRAM staging — first half of the progress bar.
+    let stage = match unsafe {
+        elf::flatten_to_flash_staging(vm, file, |done, total| async move {
+            let pct = done.saturating_mul(50).checked_div(total).unwrap_or(50) as u8;
+            ui::show_progress(label, pct).await;
+        })
+        .await
+    } {
+        Ok(s) => s,
+        Err(e) => {
+            let line2: &[u8] = match e {
+                elf::ElfError::BadMagic => b"BAD MAGIC",
+                elf::ElfError::WrongFormat => b"WRONG FORMAT",
+                elf::ElfError::NotFlashable => b"NOT FLASHABLE",
+                elf::ElfError::TooLarge => b"TOO LARGE",
+                _ => b"SEE LOG",
+            };
+            error!("Flash store: flatten failed: {:?}", e);
+            let _ = vm.close_file(file);
+            ui::show_message(b"FLASH ERROR", line2).await;
+            Timer::after(Duration::from_secs(2)).await;
+            return;
+        }
+    };
+
+    let _ = vm.close_file(file);
+
+    // Validate + program into the flash slot — second half of the progress bar.
+    match unsafe {
+        flashboot::store_image_to_slot(&stage, |done, total| async move {
+            let pct = 50 + done.saturating_mul(50).checked_div(total).unwrap_or(50) as u8;
+            ui::show_progress(label, pct.min(100)).await;
+        })
+        .await
+    } {
+        Ok(()) => {
+            info!("Flash store: programmed {} bytes into the slot", stage.len);
+            ui::show_message(b"FLASHED OK", b"NOW DEFAULT").await;
+            Timer::after(Duration::from_secs(2)).await;
+        }
+        Err(e) => {
+            error!("Flash store: image rejected: {:?}", e);
+            ui::show_message(b"FLASH ERROR", b"BAD IMAGE").await;
+            Timer::after(Duration::from_secs(2)).await;
+        }
+    }
+}
+
 #[embassy_executor::task]
 async fn boot_task(spawner: Spawner) {
     // Global IRQs must be unmasked *before* the first interrupt-driven await.
@@ -208,15 +286,10 @@ async fn boot_task(spawner: Spawner) {
     oled::init().await;
     info!("OLED: ready");
 
-    // Boot menu loop.  A bootable selection launches and never returns; the USB
-    // modes (UF2 update / DATA TRANSFER) return here when BACK is pressed, so the
-    // menu is rebuilt from fresh state (re-probing flash and re-listing the SD).
-    //
-    // `first_pass` gates the "nothing bootable → auto-enter UF2" shortcut to the
-    // very first iteration only.  Otherwise, exiting UF2 with BACK on a unit with
-    // no flash image and no usable card would immediately re-enter UF2, trapping
-    // the user in an "INIT SD… ↔ UF2" flicker with no way out.
-    let mut first_pass = true;
+    // Boot menu loop.  A bootable selection launches and never returns; the
+    // DATA TRANSFER USB mode returns here when BACK is pressed, and a
+    // write-to-flash also returns here, so the menu is rebuilt from fresh state
+    // (re-probing the flash slot and re-listing the SD card).
     loop {
         // Probe the on-flash firmware slot.  Independent of the SD card, so a
         // unit with valid flash firmware can boot with no card inserted.
@@ -253,13 +326,11 @@ async fn boot_task(spawner: Spawner) {
         };
 
         // Build the menu: on-flash firmware (default) + SD `/APPS/` images, then
-        // a trailing "UPDATE FW" entry and, when a card is present, a "DATA
-        // TRANSFER" entry.
+        // a trailing "DATA TRANSFER" entry.
         let has_flash = flash_img.is_some();
         let flash_offset = has_flash as usize;
         let sd_count = sd_listing.as_ref().map_or(0, |(_, _, e)| e.len());
         let boot_total = flash_offset + sd_count; // real boot targets
-        let uf2_idx = boot_total; // UF2 entry follows the boot targets
         // DATA TRANSFER only needs a *card*, not a working filesystem, and the
         // Deluge's card-detect pin is unreliable (it reads "no card" even with
         // one inserted — see the SSB RTT logs), so gating on detection hides the
@@ -267,13 +338,12 @@ async fn boot_task(spawner: Spawner) {
         // SdBlock backend retries `sd::init` on demand when the host probes it,
         // so an unformatted/corrupt/initially-unresponsive card can still be
         // accessed or reformatted from the host; with no card the host simply
-        // sees an empty drive.  This also guarantees the menu always has ≥2
-        // entries, so it never silently auto-enters UF2.
-        let show_data = true;
-        let data_idx = uf2_idx + 1; // always valid (`show_data` is always true)
-        let menu_total = boot_total + 1 + show_data as usize;
+        // sees an empty drive.  This also guarantees the menu always has ≥1
+        // entry.
+        let data_idx = boot_total; // DATA TRANSFER follows the boot targets
+        let menu_total = boot_total + 1;
 
-        let mut name_refs = [b"".as_slice(); file_browser::MAX_APPS + 3];
+        let mut name_refs = [b"".as_slice(); file_browser::MAX_APPS + 2];
         if has_flash {
             name_refs[0] = b"BOOT FLASH";
         }
@@ -282,47 +352,51 @@ async fn boot_task(spawner: Spawner) {
                 name_refs[flash_offset + i] = entries.display_name(i);
             }
         }
-        name_refs[uf2_idx] = UF2_MENU_LABEL;
-        if show_data {
-            name_refs[data_idx] = DATA_MENU_LABEL;
-        }
+        name_refs[data_idx] = DATA_MENU_LABEL;
 
         info!(
-            "Boot menu: {} boot entry(ies) (flash={}, data={})",
-            boot_total, has_flash, show_data
+            "Boot menu: {} boot entry(ies) (flash={})",
+            boot_total, has_flash
         );
 
-        // Countdown auto-boots the default only when there is a real boot target;
-        // a single entry (UF2 only — no card, no flash) is entered immediately.
+        // Countdown auto-boots the default only when there is a real boot target.
         let countdown = if boot_total >= 1 {
             BOOT_COUNTDOWN_SECS
         } else {
             0
         };
-        let selected = if menu_total == 1 && first_pass {
-            warn!("Nothing to boot — entering UF2 update mode");
-            uf2_idx
-        } else {
-            ui::run_selector(&name_refs[..menu_total], 0, countdown).await
-        };
-        first_pass = false;
+        let ui::Selection {
+            index: selected,
+            long_press,
+        } = ui::run_selector(&name_refs[..menu_total], 0, countdown).await;
 
-        // ---- UF2 update mode (returns on BACK) ----
-        if selected == uf2_idx {
-            // USB needs the GIC/timers/DMA running, so do NOT quiesce; just
-            // release the FAT handles opened for the menu.
+        // ---- Long-press on an SD `/APPS` ELF: store it to the flash slot ----
+        // Only SD ELF entries are stored to flash; long-pressing the existing
+        // FLASH entry or DATA TRANSFER does nothing special (falls through to
+        // the normal short-press handling below).
+        let is_sd_entry = selected < data_idx && !(has_flash && selected == 0);
+        if long_press && is_sd_entry {
+            let (root, selected_entry, label) = {
+                let (_, root, entries) =
+                    sd_listing.as_ref().expect("sd listing present for SD entry");
+                let sd_idx = selected - flash_offset;
+                (*root, entries.get(sd_idx).clone(), entries.display_name(sd_idx))
+            };
+            if ui::confirm_write_to_flash(label).await {
+                write_app_to_flash(&mut vm, root, &selected_entry, label).await;
+            }
+            // Whether confirmed, cancelled, or failed, rebuild the menu so a
+            // freshly-stored image shows up as the default FLASH entry.
             if let Some((volume, _, entries)) = sd_listing {
                 let _ = vm.close_volume(volume);
                 drop(entries);
             }
             drop(vm);
-            let image_len = flash_img.map_or(0, |i| i.code_end - i.code_start);
-            usbmsc::run_uf2_mode(image_len).await;
             continue;
         }
 
         // ---- DATA TRANSFER mode (returns on BACK) ----
-        if show_data && selected == data_idx {
+        if selected == data_idx {
             if let Some((volume, _, entries)) = sd_listing {
                 let _ = vm.close_volume(volume);
                 drop(entries);

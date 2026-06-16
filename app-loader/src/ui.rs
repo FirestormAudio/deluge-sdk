@@ -169,16 +169,37 @@ fn draw_scrollbar(fb: &mut FrameBuffer, total: usize, scroll: usize) {
     }
 }
 
+/// Hold time (ms) that distinguishes a long-press of SELECT from a short tap.
+const LONG_PRESS_MS: u64 = 700;
+
+/// Outcome of a confirmed selector entry.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Selection {
+    /// Highlighted entry index.
+    pub index: usize,
+    /// `true` if the entry was confirmed with a long-press (hold ≥
+    /// [`LONG_PRESS_MS`]) rather than a short tap.
+    pub long_press: bool,
+}
+
 /// Run the interactive GRUB-style boot selector.
 ///
 /// `entries` is a slice of byte-string labels.  The cursor starts on
 /// `default_idx`.  When `countdown_secs > 0` a visible countdown runs and the
 /// default entry auto-boots on expiry; turning the encoder cancels the countdown
-/// and hands control to the user.  Pressing the SELECT encoder button confirms
-/// the highlighted entry at any time.  Returns the chosen index.
+/// and hands control to the user.
+///
+/// Pressing the SELECT encoder button confirms the highlighted entry: a short
+/// tap returns `long_press = false`; holding it for ≥ [`LONG_PRESS_MS`] returns
+/// `long_press = true` as soon as the threshold elapses (fire-on-hold), so the
+/// user gets feedback without waiting for release.
 ///
 /// Must be called from an Embassy task after `oled::init()` has completed.
-pub async fn run_selector(entries: &[&[u8]], default_idx: usize, countdown_secs: u8) -> usize {
+pub async fn run_selector(
+    entries: &[&[u8]],
+    default_idx: usize,
+    countdown_secs: u8,
+) -> Selection {
     use embassy_time::{Duration, Instant, Timer};
 
     let mut cursor: usize = default_idx.min(entries.len().saturating_sub(1));
@@ -189,6 +210,11 @@ pub async fn run_selector(entries: &[&[u8]], default_idx: usize, countdown_secs:
     let mut countdown_active = countdown_secs > 0;
     let start = Instant::now();
     let countdown = Duration::from_secs(countdown_secs as u64);
+
+    // SELECT-button hold tracking.  `press_at` is `Some` while the button is
+    // held; on the rising edge we record when, and once the hold crosses the
+    // long-press threshold we fire immediately.
+    let mut press_at: Option<Instant> = None;
 
     // Use the SELECT encoder for scrolling in the bootloader selector.
     const ENC: usize = deluge_bsp::controls::encoder::SELECT as usize;
@@ -233,25 +259,100 @@ pub async fn run_selector(entries: &[&[u8]], default_idx: usize, countdown_secs:
             }
         }
 
-        // Check confirm signal from the PIC button task (set by pic_rx_task
-        // in main.rs on the SELECT encoder press).
-        if CONFIRM.load(Ordering::Acquire) {
-            CONFIRM.store(false, Ordering::Release);
-            return cursor;
+        // SELECT button edge handling (state pumped by pic_rx_task in main.rs).
+        let down = SELECT_DOWN.load(Ordering::Acquire);
+        match (press_at, down) {
+            (None, true) => {
+                // Rising edge: a press began. Any press cancels the countdown.
+                countdown_active = false;
+                press_at = Some(Instant::now());
+            }
+            (Some(at), true) => {
+                // Still held — fire as soon as it becomes a long-press.
+                if at.elapsed() >= Duration::from_millis(LONG_PRESS_MS) {
+                    return Selection {
+                        index: cursor,
+                        long_press: true,
+                    };
+                }
+            }
+            (Some(_), false) => {
+                // Falling edge before the threshold: a short tap = confirm.
+                return Selection {
+                    index: cursor,
+                    long_press: false,
+                };
+            }
+            (None, false) => {}
         }
 
         // Auto-boot the default entry when the countdown expires.
         if countdown_active && start.elapsed() >= countdown {
-            return default_idx.min(entries.len().saturating_sub(1));
+            return Selection {
+                index: default_idx.min(entries.len().saturating_sub(1)),
+                long_press: false,
+            };
         }
     }
 }
 
-/// Set this to `true` from outside the UI task to confirm the current selection.
+/// Tracks whether the SELECT encoder button is currently held.
 ///
-/// The main task should set this when it receives a button-press event from
-/// the PIC (e.g. encoder 0 push, or any top-row button).
-pub static CONFIRM: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// Pumped by `pic_rx_task` in `main.rs` (set on `ButtonPress`, cleared on
+/// `ButtonRelease`); the selector and prompts derive press/hold edges from it.
+pub static SELECT_DOWN: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Modal YES/NO prompt asking whether to write `label` to the flash slot.
+///
+/// Returns `true` only if the user selects YES.  The cursor defaults to NO (the
+/// safe choice); the SELECT encoder scrolls between YES/NO and a press confirms.
+/// Waits for the button to be released first so the long-press that opened this
+/// prompt isn't immediately consumed as the confirmation.
+pub async fn confirm_write_to_flash(label: &[u8]) -> bool {
+    use embassy_time::{Duration, Timer};
+
+    const ENC: usize = deluge_bsp::controls::encoder::SELECT as usize;
+    let mut edge_acc: i8 = 0;
+    let mut yes = false; // false = NO (default), true = YES
+
+    // Let go of the opening long-press before we accept a confirmation.
+    while SELECT_DOWN.load(Ordering::Acquire) {
+        Timer::after(Duration::from_millis(16)).await;
+    }
+    let mut press_seen = false;
+
+    loop {
+        let mut fb = FrameBuffer::new();
+        fb.fill(0x00);
+
+        let title = b"WRITE TO FLASH?";
+        let tx = (WIDTH.saturating_sub(title.len() * 6)) / 2;
+        draw_str(&mut fb, tx, TOP_PAD, title);
+
+        let lx = (WIDTH.saturating_sub(label.len() * 6)) / 2;
+        draw_str(&mut fb, lx, TOP_PAD + 14, label);
+
+        // YES / NO row with a leading marker on the active option.
+        let row = TOP_PAD + 28;
+        draw_str(&mut fb, 16, row, if yes { b">YES" } else { b" YES" });
+        draw_str(&mut fb, 76, row, if yes { b" NO" } else { b">NO" });
+        oled::send_frame(&fb).await;
+
+        Timer::after(Duration::from_millis(16)).await;
+
+        if deluge_bsp::encoder::take_detents(ENC, &mut edge_acc) != 0 {
+            yes = !yes;
+        }
+
+        // Confirm on a fresh press (rising edge after release).
+        let down = SELECT_DOWN.load(Ordering::Acquire);
+        if down && !press_seen {
+            return yes;
+        }
+        press_seen = down;
+    }
+}
 
 /// Display a static error or status message centred on the OLED.
 pub async fn show_message(line1: &[u8], line2: &[u8]) {

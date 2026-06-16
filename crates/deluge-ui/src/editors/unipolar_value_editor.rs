@@ -74,9 +74,10 @@ impl Drawable for UnipolarValueEditor<'_> {
             .with_alignment(embedded_graphics::text::Alignment::Center);
         draw_text(display, self.display_text, Point::new(64, 15), style)?;
 
-        // Bar fill (left-to-right proportional)
-        let bar_width = (BAR_RIGHT - BAR_LEFT) as f32;
-        let fill_width = (self.value * bar_width) as i32;
+        // Bar fill (left-to-right proportional), clamped to the inner width
+        // between the 1 px outline walls so it never overflows the right edge.
+        let inner = (BAR_RIGHT - BAR_LEFT - 2).max(0);
+        let fill_width = ((self.value * inner as f32) as i32).clamp(0, inner);
         if fill_width > 0 {
             Rectangle::new(
                 Point::new(BAR_LEFT + 1, BAR_Y + 1),
@@ -86,7 +87,7 @@ impl Drawable for UnipolarValueEditor<'_> {
             .draw(display)?;
         }
 
-        // Bar outline
+        // Bar outline (plain rectangle)
         Rectangle::new(
             Point::new(BAR_LEFT, BAR_Y),
             Size::new((BAR_RIGHT - BAR_LEFT) as u32, BAR_H as u32),

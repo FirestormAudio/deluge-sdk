@@ -4,6 +4,7 @@ members = [
   "firmwares/controller-firmware",
   "firmwares/msc-firmware",
   "firmwares/wp-probe",
+  "firmwares/trace-selftest",
   "crates/rza1l-hal",
   "crates/deluge-bsp",
   "crates/deluge-fft",
@@ -31,7 +32,7 @@ members = [
 ]
 # Host-side tooling: built for the host triple, not the embedded armv7a target,
 # so it must not be a member of this no_std cross-compiled workspace.
-exclude = ["tools/elf2uf2", "tools/cargo-deluge"]
+exclude = ["tools/cargo-deluge"]
 resolver = "2"
 
 [workspace.package]

@@ -152,6 +152,91 @@ pub fn sram_stage_addr(dst: u32) -> u32 {
     SDRAM_STAGE_BASE + (dst - SRAM_LOAD_ORIGIN)
 }
 
+// --- FSB metadata --------------------------------------------------------
+
+/// Image offsets of the first-stage-bootloader (FSB) metadata words, emitted by
+/// `rza1l-hal/src/startup.rs` just past the eight-entry vector table.
+pub const FSB_CODE_START: usize = 0x20;
+/// Offset of the `code_end` word (one past the last image byte).
+pub const FSB_CODE_END: usize = 0x24;
+/// Offset of the `code_execute` (entry point) word.
+pub const FSB_CODE_EXECUTE: usize = 0x28;
+/// Offset of the validity signature.
+pub const FSB_SIGNATURE_OFF: usize = 0x2C;
+/// Signature string a bootable image carries at [`FSB_SIGNATURE_OFF`].
+pub const FSB_SIGNATURE: &[u8] = b".BootLoad_ValidProgramTest.";
+
+/// Validated FSB metadata read from a flat firmware image.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct FsbMeta {
+    /// Load address of image byte 0.
+    pub code_start: u32,
+    /// One past the last image byte (linker `end`, 64 KB-rounded).
+    pub code_end: u32,
+    /// Entry point.
+    pub entry: u32,
+}
+
+/// Why [`validate_fsb_metadata`] rejected a flattened image.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FsbError {
+    /// Image is shorter than the metadata block at `+0x2C`.
+    TooSmall,
+    /// The `.BootLoad_ValidProgramTest.` signature is absent at `+0x2C`.
+    BadSignature,
+    /// `code_start` disagrees with the image's lowest load address.
+    CodeStartMismatch,
+    /// `code_end <= code_start`.
+    BadCodeEnd,
+    /// Entry point is outside `code_start..code_end`.
+    EntryOutOfRange,
+    /// Flat image extends past the span the FSB will copy (`code_end`).
+    ImageTooLong,
+}
+
+/// Validate the FSB metadata embedded in a flattened (`objcopy -O binary`-style)
+/// firmware image, the same checks the on-flash boot path applies before it will
+/// copy and jump.  Catching a bad image here means it is refused *before* the
+/// flash slot is erased, instead of silently failing to boot.
+///
+/// `image_base` is the lowest load address (LMA) of the flattened image — byte 0
+/// of `image` — which must equal the metadata's `code_start`.
+pub fn validate_fsb_metadata(image: &[u8], image_base: u32) -> Result<FsbMeta, FsbError> {
+    if image.len() < FSB_SIGNATURE_OFF + FSB_SIGNATURE.len() {
+        return Err(FsbError::TooSmall);
+    }
+    if &image[FSB_SIGNATURE_OFF..FSB_SIGNATURE_OFF + FSB_SIGNATURE.len()] != FSB_SIGNATURE {
+        return Err(FsbError::BadSignature);
+    }
+
+    let code_start = le32(image, FSB_CODE_START);
+    let code_end = le32(image, FSB_CODE_END);
+    let entry = le32(image, FSB_CODE_EXECUTE);
+
+    // Byte 0 of the image *is* code_start, so the metadata must agree with the
+    // actual lowest LMA the linker emitted.
+    if code_start != image_base {
+        return Err(FsbError::CodeStartMismatch);
+    }
+    if code_end <= code_start {
+        return Err(FsbError::BadCodeEnd);
+    }
+    if entry < code_start || entry >= code_end {
+        return Err(FsbError::EntryOutOfRange);
+    }
+    // The flat image must fit inside the span the FSB copies. It is normally
+    // *shorter* (code_end is 64 KB-rounded); only a longer image is a real bug.
+    if image.len() > (code_end - code_start) as usize {
+        return Err(FsbError::ImageTooLong);
+    }
+
+    Ok(FsbMeta {
+        code_start,
+        code_end,
+        entry,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,6 +339,63 @@ mod tests {
         // The whole SRAM region stays inside SDRAM (staging window ≤ ~2.875 MB).
         let top = sram_stage_addr(SRAM_HI - 1);
         assert!(top < 0x1000_0000, "staging must stay within 64 MB SDRAM");
+    }
+
+    /// Build a minimal flat image carrying valid FSB metadata.
+    fn fsb_image(code_start: u32, code_end: u32, entry: u32, len: usize) -> Vec<u8> {
+        let mut img = vec![0u8; len.max(FSB_SIGNATURE_OFF + FSB_SIGNATURE.len())];
+        img[FSB_CODE_START..FSB_CODE_START + 4].copy_from_slice(&code_start.to_le_bytes());
+        img[FSB_CODE_END..FSB_CODE_END + 4].copy_from_slice(&code_end.to_le_bytes());
+        img[FSB_CODE_EXECUTE..FSB_CODE_EXECUTE + 4].copy_from_slice(&entry.to_le_bytes());
+        img[FSB_SIGNATURE_OFF..FSB_SIGNATURE_OFF + FSB_SIGNATURE.len()]
+            .copy_from_slice(FSB_SIGNATURE);
+        img
+    }
+
+    #[test]
+    fn fsb_accepts_well_formed_image() {
+        let img = fsb_image(0x2002_0000, 0x2003_0000, 0x2002_0100, 0x800);
+        assert_eq!(
+            validate_fsb_metadata(&img, 0x2002_0000),
+            Ok(FsbMeta {
+                code_start: 0x2002_0000,
+                code_end: 0x2003_0000,
+                entry: 0x2002_0100,
+            })
+        );
+    }
+
+    #[test]
+    fn fsb_rejects_bad_images() {
+        // Too short to hold the metadata block.
+        assert_eq!(validate_fsb_metadata(&[0u8; 16], 0), Err(FsbError::TooSmall));
+
+        // Missing signature.
+        let mut img = fsb_image(0x2002_0000, 0x2003_0000, 0x2002_0100, 0x800);
+        img[FSB_SIGNATURE_OFF] = 0;
+        assert_eq!(validate_fsb_metadata(&img, 0x2002_0000), Err(FsbError::BadSignature));
+
+        // code_start disagrees with the image's lowest load address.
+        let img = fsb_image(0x2002_0000, 0x2003_0000, 0x2002_0100, 0x800);
+        assert_eq!(
+            validate_fsb_metadata(&img, 0x2002_1000),
+            Err(FsbError::CodeStartMismatch)
+        );
+
+        // code_end <= code_start.
+        let img = fsb_image(0x2002_0000, 0x2002_0000, 0x2002_0000, 0x800);
+        assert_eq!(validate_fsb_metadata(&img, 0x2002_0000), Err(FsbError::BadCodeEnd));
+
+        // Entry outside code_start..code_end.
+        let img = fsb_image(0x2002_0000, 0x2003_0000, 0x2003_0000, 0x800);
+        assert_eq!(
+            validate_fsb_metadata(&img, 0x2002_0000),
+            Err(FsbError::EntryOutOfRange)
+        );
+
+        // Flat image longer than code_end - code_start.
+        let img = fsb_image(0x2002_0000, 0x2002_0100, 0x2002_0000, 0x800);
+        assert_eq!(validate_fsb_metadata(&img, 0x2002_0000), Err(FsbError::ImageTooLong));
     }
 
     #[test]

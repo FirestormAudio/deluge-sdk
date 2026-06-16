@@ -106,7 +106,7 @@ impl Drawable for BipolarValueEditor<'_> {
             .draw(display)?;
         }
 
-        // Bar outline
+        // Bar outline (plain rectangle)
         Rectangle::new(
             Point::new(BAR_LEFT, BAR_Y),
             Size::new((BAR_RIGHT - BAR_LEFT) as u32, BAR_H as u32),

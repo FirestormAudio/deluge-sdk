@@ -16,13 +16,13 @@
 
 use deluge_bsp::fat::{self, FatError, RawFile};
 // The ELF wire-format constants and the pure load-range / staging math live in
-// the host-testable `deluge-image` crate so there is a single implementation
-// (the on-host `elf2uf2` and these unit tests share it — see
-// `crates/deluge-image/src/elf.rs`).
+// the host-testable `deluge-image` crate so there is a single host-tested
+// implementation (see `crates/deluge-image/src/elf.rs`).
 use deluge_image::elf::{
     ELF_MAGIC, ELFCLASS32, ELFDATA2LSB, EM_ARM, ET_EXEC, LoadTarget, MAX_PHDRS, PT_LOAD,
     classify_load_range, le16, le32, mirror_to_phys, sram_stage_addr,
 };
+use rza1l_hal::spibsc;
 use embassy_time::{Duration, Timer};
 
 /// Chunk size for streamed segment copies (one FAT sector).
@@ -57,6 +57,11 @@ pub enum ElfError {
     Io(#[allow(dead_code)] FatError),
     /// `read` returned 0 before the segment was fully copied.
     UnexpectedEof,
+    /// A `PT_LOAD` segment targets a region other than upper SRAM, so the image
+    /// cannot be stored as a single-descriptor flash-boot image.
+    NotFlashable,
+    /// The flattened image is larger than the flash app slot.
+    TooLarge,
 }
 
 impl From<FatError> for ElfError {
@@ -267,5 +272,163 @@ where
         entry: e_entry,
         sram_descs,
         n_sram,
+    })
+}
+
+/// A flat firmware image staged in the SDRAM staging window, ready to be
+/// programmed into the flash app slot.
+pub struct FlashStage {
+    /// Pointer to image byte 0 inside the SDRAM staging window.
+    pub ptr: *const u8,
+    /// Flattened image length in bytes (`hi - lo` of the SRAM `PT_LOAD` LMAs).
+    pub len: usize,
+    /// Lowest load address (LMA) of the image — equals the FSB `code_start`.
+    pub code_start: u32,
+}
+
+/// Stream an ELF32 file from the SD card and flatten its `PT_LOAD` segments into
+/// a contiguous raw image in the SDRAM staging window — the same `.bin` layout
+/// `objcopy -O binary` produces, which the on-flash boot path
+/// ([`crate::flashboot`]) expects.
+///
+/// Only firmware that is **fully SRAM-linked** can be stored to flash: the
+/// flash-boot path reconstructs the image with a single trampoline descriptor
+/// (`slot -> code_start`), so a segment outside upper SRAM (e.g. an SDRAM
+/// segment) cannot be carried and is rejected with [`ElfError::NotFlashable`].
+///
+/// Inter-segment gaps are zero-filled to match the host flattener. The returned
+/// [`FlashStage`] points into the staging window; the caller programs it into
+/// the slot (see [`crate::flashboot::store_image_to_slot`]).
+///
+/// # Safety
+/// Writes the SDRAM staging window (`0x0F000000+`); the caller must ensure no
+/// live data occupies it (true during the boot menu, like the SD ELF loader).
+pub async unsafe fn flatten_to_flash_staging<F, Fut>(
+    vm: &mut fat::DelugeVolumeManager,
+    file: RawFile,
+    mut on_progress: F,
+) -> Result<FlashStage, ElfError>
+where
+    F: FnMut(u32, u32) -> Fut,
+    Fut: core::future::Future<Output = ()>,
+{
+    // 1. Read and validate the 52-byte ELF header (same checks as the loader).
+    let mut hdr = [0u8; 52];
+    read_exact(vm, file, &mut hdr)?;
+    if hdr[0..4] != ELF_MAGIC {
+        return Err(ElfError::BadMagic);
+    }
+    if hdr[4] != ELFCLASS32 || hdr[5] != ELFDATA2LSB {
+        return Err(ElfError::WrongFormat);
+    }
+    if le16(&hdr, 16) != ET_EXEC || le16(&hdr, 18) != EM_ARM {
+        return Err(ElfError::WrongFormat);
+    }
+
+    let e_phoff = le32(&hdr, 28);
+    let e_phentsize = le16(&hdr, 42) as usize;
+    let e_phnum = le16(&hdr, 44) as usize;
+    if e_phentsize != 32 || e_phnum > MAX_PHDRS {
+        return Err(ElfError::WrongFormat);
+    }
+
+    // 2. Read all program headers.
+    vm.file_seek_from_start(file, e_phoff)?;
+    let mut phdr_buf = [0u8; MAX_PHDRS * 32];
+    read_exact(vm, file, &mut phdr_buf[..e_phnum * 32])?;
+
+    // 3. First pass: classify every loadable segment, require SRAM, and compute
+    //    the flattened image bounds [lo, hi) plus the total bytes to stream.
+    let mut lo = u32::MAX;
+    let mut hi = 0u32;
+    let mut total_bytes = 0u32;
+    let mut have_content = false;
+    for i in 0..e_phnum {
+        let ph = &phdr_buf[i * 32..][..32];
+        if le32(ph, 0) != PT_LOAD {
+            continue;
+        }
+        let p_filesz = le32(ph, 16);
+        if p_filesz == 0 {
+            continue; // .bss-only segment: nothing to flash.
+        }
+        let p_phys = mirror_to_phys(le32(ph, 12));
+        if classify_load_range(p_phys, p_filesz) != Some(LoadTarget::Sram) {
+            return Err(ElfError::NotFlashable);
+        }
+        lo = lo.min(p_phys);
+        hi = hi.max(p_phys + p_filesz);
+        total_bytes = total_bytes.saturating_add(p_filesz);
+        have_content = true;
+    }
+    if !have_content {
+        return Err(ElfError::WrongFormat);
+    }
+
+    let image_len = (hi - lo) as usize;
+    if image_len as u32 > spibsc::FLASH_SLOT_LEN {
+        return Err(ElfError::TooLarge);
+    }
+
+    // Image byte 0 lands at the staging address of the lowest LMA.
+    let stage_base = sram_stage_addr(lo);
+    // Zero the staging image so inter-segment gaps read as 0x00, matching
+    // `objcopy -O binary` (the SDRAM window may hold stale bytes).
+    unsafe { core::ptr::write_bytes(stage_base as *mut u8, 0, image_len) };
+
+    // 4. Second pass: stream each segment's file bytes into staging.
+    let mut chunk_buf = [0u8; CHUNK];
+    let mut copied: u32 = 0;
+    let mut last_percent: u8 = if total_bytes == 0 { 100 } else { 0 };
+    on_progress(0, total_bytes).await;
+
+    for i in 0..e_phnum {
+        let ph = &phdr_buf[i * 32..][..32];
+        if le32(ph, 0) != PT_LOAD {
+            continue;
+        }
+        let p_offset = le32(ph, 4);
+        let p_filesz = le32(ph, 16) as usize;
+        if p_filesz == 0 {
+            continue;
+        }
+        let p_phys = mirror_to_phys(le32(ph, 12));
+        let mut dst = sram_stage_addr(p_phys) as *mut u8;
+
+        vm.file_seek_from_start(file, p_offset)?;
+        let mut remaining = p_filesz;
+        unsafe {
+            while remaining > 0 {
+                let want = remaining.min(CHUNK);
+                let n = vm.read(file, &mut chunk_buf[..want])?;
+                if n == 0 {
+                    return Err(ElfError::UnexpectedEof);
+                }
+                core::ptr::copy_nonoverlapping(chunk_buf.as_ptr(), dst, n);
+                dst = dst.add(n);
+                remaining -= n;
+
+                copied = copied.saturating_add(n as u32);
+                let percent = copied
+                    .saturating_mul(100)
+                    .checked_div(total_bytes)
+                    .unwrap_or(100) as u8;
+                if percent != last_percent {
+                    on_progress(copied, total_bytes).await;
+                    last_percent = percent;
+                    Timer::after(Duration::from_millis(0)).await;
+                }
+            }
+        }
+    }
+
+    if last_percent < 100 {
+        on_progress(total_bytes, total_bytes).await;
+    }
+
+    Ok(FlashStage {
+        ptr: stage_base as *const u8,
+        len: image_len,
+        code_start: lo,
     })
 }

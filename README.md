@@ -4,6 +4,11 @@ Demo Rust firmware for the [Synthstrom Deluge], built on
 [Embassy] and targeting the onboard Renesas RZ/A1L (ARM Cortex-A9,
 R7S721001).
 
+> **Writing an app?** Start with the [Getting started guide](docs/getting-started.md)
+> — toolchain setup, `cargo deluge`, and a tour of every capability. For Embassy
+> tasks, interrupts, the HAL/BSP, and Cortex-A9 trace tooling, see the
+> [Advanced developer guide](docs/advanced-guide.md).
+
 ---
 
 ## Repository layout
@@ -16,7 +21,7 @@ libraries and the on-board app loader.
 | [`firmwares/demo-firmware`](firmwares/demo-firmware/) | Top-level demo firmware — Embassy executor, USB stack, audio, task orchestration |
 | [`firmwares/controller-firmware`](firmwares/controller-firmware/) | `deluge-controller` firmware — USB host/CDC controller build |
 | [`firmwares/msc-firmware`](firmwares/msc-firmware/) | USB Mass Storage Class firmware build |
-| [`app-loader`](app-loader/) | Second-stage bootloader / app loader — OLED file selector, SD-card ELF + USB UF2 flashing |
+| [`app-loader`](app-loader/) | Second-stage bootloader / app loader — OLED boot menu, SD-card ELF launch, long-press "write to flash" to store an app in the flash app slot, USB DATA TRANSFER |
 | [`crates/rza1l-hal`](crates/rza1l-hal/) | Register-level HAL for the RZ/A1L SoC (MMU, caches, GIC, timers, DMA, RSPI, SSI, SCUX, SDHI, …) |
 | [`crates/deluge-bsp`](crates/deluge-bsp/) | Board support package — SDRAM, audio codec, OLED, PIC co-processor, CV/gate, MIDI, SD card, USB |
 | [`crates/deluge-fft`](crates/deluge-fft/) | `no_std` FFT library with RZ/A1L-tuned radix-4/8 paths and a real-FFT spectrum analyser |
@@ -143,13 +148,12 @@ the Cortex-Debug terminal.
 
 A fork of probe-rs with Cortex-A9 PTM/ETF trace support for the RZ/A1L is
 available at [`stellar-aria/probe-rs`][probe-rs-fork], `trace-a9` branch.
-A vendored copy is kept in [`tools/probe-rs/`](tools/probe-rs/).
 
 Build and install from the fork:
 
 ```sh
-cd ~/GitHub/probe-rs          # or tools/probe-rs/
-cargo install --path probe-rs-tools --locked
+git clone -b trace-a9 https://github.com/stellar-aria/probe-rs
+cargo install --path probe-rs/probe-rs-tools --locked
 ```
 
 **Flash and run** (streams RTT to the terminal):

@@ -10,5 +10,4 @@ name = "cargo-deluge"
 path = "src/main.rs"
 
 [dependencies]
-# Intentionally none — pure std so it builds offline with no supply chain
-# (mirrors tools/elf2uf2).
+# Intentionally none — pure std so it builds offline with no supply chain.

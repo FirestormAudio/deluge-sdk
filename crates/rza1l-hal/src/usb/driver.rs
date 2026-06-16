@@ -220,7 +220,7 @@ impl Rusb1Driver {
             // A fresh device-mode bring-up re-enumerates from scratch and the
             // embassy-usb Builder re-allocates every endpoint.  Reset this
             // port's pipe / packet-buffer allocator so repeated bring-ups (e.g.
-            // the SSB entering UF2 / DATA TRANSFER more than once) start from a
+            // the SSB entering DATA TRANSFER more than once) start from a
             // clean slate instead of leaking pipes until `alloc_endpoint`
             // fails with `EndpointAllocError`.
             critical_section::with(|cs| {

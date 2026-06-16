@@ -3,8 +3,8 @@
 Second-stage bootloader / **app loader** for the [Synthstrom Deluge] (RZ/A1L).
 The Deluge first-stage bootloader loads this image from SPI flash into SRAM at
 `0x20020000`; the app loader then picks and launches an application firmware
-image from the SD card or on-board flash, and provides USB firmware-update and
-data-transfer modes.
+image from the SD card or on-board flash, can store an SD app into the on-board
+flash slot, and provides a USB data-transfer mode.
 
 | | |
 |---|---|
@@ -19,15 +19,24 @@ data-transfer modes.
 2. Mount the SD card's first FAT volume.
 3. Enumerate ELF application images from `/APPS/` on the card.
 4. Present a GRUB-style boot menu on the OLED with encoder-wheel selection and a
-   `BOOT_COUNTDOWN_SECS` (5 s) auto-boot of the default entry; if only a single
-   image exists it auto-launches.
-5. Stream the selected ELF, load its `PT_LOAD` segments to their physical
-   addresses, flush all caches, and branch to `e_entry`.
+   `BOOT_COUNTDOWN_SECS` (5 s) auto-boot of the default entry. A valid on-flash
+   image is listed first (`BOOT FLASH`) and is the auto-boot default.
+5. **Short-press** SELECT to launch the highlighted entry: stream the selected
+   ELF, load its `PT_LOAD` segments to their physical addresses, flush all
+   caches, and branch to `e_entry`.
 
-The menu also exposes two synthetic entries:
+The menu also exposes one synthetic entry:
 
-- **`UPDATE FW`** — enter USB UF2 firmware-update mode.
 - **`DATA TRANSFER`** — expose the raw SD card over USB Mass Storage.
+
+### Store an app to flash
+
+**Long-press** SELECT on an SD `/APPS` ELF entry to pop up a `WRITE TO FLASH?`
+prompt. Choosing `YES` flattens the ELF into a flat `.bin`, validates its FSB
+metadata, and programs it into the flash app slot (`0x100000`, above the FSB /
+settings / SSB, which the `spibsc` `writable()` guard physically protects). The
+stored image then becomes the first/default `BOOT FLASH` entry and the unit can
+boot it with no SD card present. Only fully SRAM-linked images can be stored.
 
 ## Modules
 
@@ -35,14 +44,12 @@ The menu also exposes two synthetic entries:
 
 | Module | Role |
 |--------|------|
-| [`elf`](src/elf.rs) | Minimal streaming ELF32-LE loader for ARM firmware images |
+| [`elf`](src/elf.rs) | Streaming ELF32-LE loader for ARM firmware images + flatten-to-flash-staging |
 | [`file_browser`](src/file_browser.rs) | Enumerates loadable ELF images from `/APPS` on the SD card |
-| [`flashboot`](src/flashboot.rs) | Launches a firmware image stored in SPI flash (in addition to SD `/APPS/`) |
+| [`flashboot`](src/flashboot.rs) | Probes/launches a firmware image stored in SPI flash, and programs the flash slot |
 | [`launcher`](src/launcher.rs) | Cache flush + branch-to-application handoff |
-| [`ui`](src/ui.rs) | OLED + encoder file-selector / boot menu (128×48) |
-| [`ghostfat`](src/ghostfat.rs) | Synthesized FAT16 volume backing the UF2 update drive |
-| [`uf2`](src/uf2.rs) | UF2 block parsing + SPI-flash programming |
-| [`usbmsc`](src/usbmsc.rs) | USB MSC modes — UF2 update (ghostfat) and raw-SD data transfer |
+| [`ui`](src/ui.rs) | OLED + encoder boot menu (128×48), long-press detection, `WRITE TO FLASH?` prompt |
+| [`usbmsc`](src/usbmsc.rs) | USB MSC DATA TRANSFER mode (raw SD card) |
 
 ## Building
 
@@ -54,8 +61,8 @@ Run from the workspace root (aliases in `.cargo/config.toml` supply the required
 | `cargo build-app-loader` | `target/armv7a-none-eabihf/debug/app-loader` (debug ELF) |
 | `cargo build-app-loader-bin` | `target/armv7a-none-eabihf/release/app-loader.bin` (raw flashing binary) |
 
-The on-card ELF / USB UF2 toolchain is in [`tools/uf2/`](../tools/uf2/) and
-[`tools/elf2uf2/`](../tools/elf2uf2/). See the [workspace README](../README.md)
-for flashing and debugging.
+SD `/APPS` images are ordinary RAM-linked firmware ELFs (the same ones the
+`firmwares/` builds and `cargo deluge` produce). See the
+[workspace README](../README.md) for flashing and debugging.
 
 [Synthstrom Deluge]: https://synthstrom.com/product/deluge/

@@ -29,7 +29,7 @@ use embedded_graphics::{
     text::Alignment,
 };
 
-use crate::menu::{MenuInput, MenuState, MenuStyle, Response};
+use crate::menu::{MenuInput, MenuState, MenuStyle, Response, apply_turn};
 use crate::params::{
     Attack, BipolarBar, HighPassFilter, LengthSlider, LowPassFilter, Pan, Percent, Release, Slider,
     UnipolarBar, UnipolarKnob,
@@ -43,11 +43,68 @@ const COLS: usize = 4;
 
 // Layout (before `top_inset`).
 const UNDERLINE_Y: i32 = 11;
-const PARAM_TOP: i32 = 16;
-const PARAM_H: i32 = 16;
 const LABEL_Y: i32 = 34;
 const LABEL_H: i32 = 9;
 const BAR_H: u32 = 7;
+
+/// A pixel-discarding [`DrawTarget`] that records the vertical extent (top and
+/// bottom lit rows) of what a widget draws.
+///
+/// Lets `place` center a widget by its *actual ink*, not its
+/// [`OriginDimensions::size`] — whose bounding box often includes blank padding
+/// around the drawn content (a knob arc, the pan cylinder), which would
+/// otherwise leave the visible pixels off-centre.
+struct InkBounds {
+    min_x: i32,
+    max_x: i32,
+    min_y: i32,
+    max_y: i32,
+    any: bool,
+}
+
+impl InkBounds {
+    /// Ink extent `(min_x, max_x, min_y, max_y)` of `p` (drawn at its current
+    /// origin), or `None` if it draws nothing.
+    fn of<P: Drawable<Color = BinaryColor>>(p: &P) -> Option<(i32, i32, i32, i32)> {
+        let mut b = InkBounds {
+            min_x: i32::MAX,
+            max_x: i32::MIN,
+            min_y: i32::MAX,
+            max_y: i32::MIN,
+            any: false,
+        };
+        let _ = p.draw(&mut b);
+        b.any.then_some((b.min_x, b.max_x, b.min_y, b.max_y))
+    }
+}
+
+impl Dimensions for InkBounds {
+    fn bounding_box(&self) -> Rectangle {
+        // Large enough that no column widget clips while being measured.
+        Rectangle::new(Point::new(0, 0), Size::new(1024, 1024))
+    }
+}
+
+impl DrawTarget for InkBounds {
+    type Color = BinaryColor;
+    type Error = core::convert::Infallible;
+
+    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = Pixel<Self::Color>>,
+    {
+        for Pixel(p, c) in pixels {
+            if c == BinaryColor::On {
+                self.any = true;
+                self.min_x = self.min_x.min(p.x);
+                self.max_x = self.max_x.max(p.x);
+                self.min_y = self.min_y.min(p.y);
+                self.max_y = self.max_y.max(p.y);
+            }
+        }
+        Ok(())
+    }
+}
 
 /// Immediate-mode horizontal param menu for one frame.
 pub struct HMenu<'a, D: DrawTarget<Color = BinaryColor>> {
@@ -73,7 +130,11 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> HMenu<'a, D> {
         let mut pending = input;
         match input {
             MenuInput::Turn(n) => {
-                state.set_cursor((state.cursor() as i32 + n).max(0) as usize);
+                // Clamp to the current column count now (not only in `end`) so a
+                // turn past the last column doesn't move the selection off-screen
+                // for a frame and then skip to the second-to-last on reverse.
+                let cursor = apply_turn(state.cursor() as u16, n, state.rows_last());
+                state.set_cursor(cursor as usize);
                 pending = MenuInput::None;
             }
             // No drilldown in v1; Edit/Press flow to the focused column.
@@ -148,17 +209,54 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> HMenu<'a, D> {
         (slot_x, focused, changed)
     }
 
-    /// Center a param visualization in its column's param area and draw it.
-    fn place<P>(&mut self, p: P, slot_x: i32)
+    /// Place a value-driven param visualization in its column, centred on
+    /// **both** axes by its *actual drawn pixels*: horizontally within the column
+    /// slot, vertically within the band between the underline and the label.
+    ///
+    /// `make(t)` builds the widget at a normalised value `t`; `live` is the value
+    /// to draw, and `[lo, hi]` are its extremes. Centring by
+    /// [`OriginDimensions::size`] doesn't work — the bounding boxes include blank
+    /// padding (the knob arc, the pan cylinder). But centring by the *live* ink
+    /// doesn't either: the value-dependent part (knob pointer, fill, …) changes
+    /// the ink each frame, so the centre would drift as the value changes.
+    /// Instead we centre by the **union of the ink at both extremes**, which
+    /// bounds the full range of motion and is identical every frame — so the
+    /// widget stays put while only its indicator moves.
+    fn place<P>(&mut self, slot_x: i32, live: f32, lo: f32, hi: f32, make: impl Fn(f32) -> P)
     where
-        P: Positionable + OriginDimensions,
+        P: Positionable + OriginDimensions + Drawable<Color = BinaryColor>,
     {
         let inset = self.style.top_inset;
         let col_w = self.col_w();
-        let sz = p.size();
-        let x = slot_x + (col_w - sz.width as i32) / 2;
-        let y = inset + PARAM_TOP + (PARAM_H - sz.height as i32) / 2;
-        let _ = p.with_position(Point::new(x, y)).draw(self.d);
+
+        // Centres to align the ink to: the column's horizontal mid-point, and the
+        // mid-point of the vertical band between the underline and the label.
+        let col_center = slot_x + col_w / 2;
+        let band_center = (inset + UNDERLINE_Y + 1 + inset + LABEL_Y - 2) / 2;
+
+        // Value-independent layout: union the ink at both value extremes.
+        let (mut min_x, mut max_x, mut min_y, mut max_y) = (i32::MAX, i32::MIN, i32::MAX, i32::MIN);
+        for t in [lo, hi] {
+            let probe = make(t).with_position(Point::new(0, 0));
+            if let Some((a, b, c, d)) = InkBounds::of(&probe) {
+                min_x = min_x.min(a);
+                max_x = max_x.max(b);
+                min_y = min_y.min(c);
+                max_y = max_y.max(d);
+            }
+        }
+        let widget = make(live);
+        if min_x > max_x {
+            // Both extremes drew nothing — fall back to the bounding box.
+            let sz = widget.size();
+            min_x = 0;
+            max_x = sz.width as i32 - 1;
+            min_y = 0;
+            max_y = sz.height as i32 - 1;
+        }
+        let x = col_center - (min_x + max_x) / 2;
+        let y = band_center - (min_y + max_y) / 2;
+        let _ = widget.with_position(Point::new(x, y)).draw(self.d);
     }
 
     /// Draw the column label, inverted on a fill when focused.
@@ -233,7 +331,8 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> HMenu<'a, D> {
     pub fn knob(&mut self, label: &str, value: &mut f32, range: RangeInclusive<f32>) -> Response {
         let (slot, focused, changed) = self.column_common(value, &range);
         if let Some(x) = slot {
-            self.place(UnipolarKnob::new(Self::norm_unipolar(*value, &range)), x);
+            let live = Self::norm_unipolar(*value, &range);
+            self.place(x, live, 0.0, 1.0, UnipolarKnob::new);
             self.label(x, label, focused);
         }
         Response {
@@ -247,10 +346,8 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> HMenu<'a, D> {
     pub fn slider(&mut self, label: &str, value: &mut f32, range: RangeInclusive<f32>) -> Response {
         let (slot, focused, changed) = self.column_common(value, &range);
         if let Some(x) = slot {
-            self.place(
-                Slider::new(Point::zero(), Self::norm_unipolar(*value, &range)),
-                x,
-            );
+            let live = Self::norm_unipolar(*value, &range);
+            self.place(x, live, 0.0, 1.0, |t| Slider::new(Point::zero(), t));
             self.label(x, label, focused);
         }
         Response {
@@ -270,10 +367,8 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> HMenu<'a, D> {
         let (slot, focused, changed) = self.column_common(value, &range);
         if let Some(x) = slot {
             let size = self.bar_size();
-            self.place(
-                UnipolarBar::new(Point::zero(), size, Self::norm_unipolar(*value, &range)),
-                x,
-            );
+            let live = Self::norm_unipolar(*value, &range);
+            self.place(x, live, 0.0, 1.0, |t| UnipolarBar::new(Point::zero(), size, t));
             self.label(x, label, focused);
         }
         Response {
@@ -288,10 +383,8 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> HMenu<'a, D> {
         let (slot, focused, changed) = self.column_common(value, &range);
         if let Some(x) = slot {
             let size = self.bar_size();
-            self.place(
-                BipolarBar::new(Point::zero(), size, Self::norm_bipolar(*value, &range)),
-                x,
-            );
+            let live = Self::norm_bipolar(*value, &range);
+            self.place(x, live, -1.0, 1.0, |t| BipolarBar::new(Point::zero(), size, t));
             self.label(x, label, focused);
         }
         Response {
@@ -305,7 +398,8 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> HMenu<'a, D> {
     pub fn pan(&mut self, label: &str, value: &mut f32, range: RangeInclusive<f32>) -> Response {
         let (slot, focused, changed) = self.column_common(value, &range);
         if let Some(x) = slot {
-            self.place(Pan::new(Point::zero(), Self::norm_bipolar(*value, &range)), x);
+            let live = Self::norm_bipolar(*value, &range);
+            self.place(x, live, -1.0, 1.0, |t| Pan::new(Point::zero(), t));
             self.label(x, label, focused);
         }
         Response {
@@ -319,10 +413,8 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> HMenu<'a, D> {
     pub fn lpf(&mut self, label: &str, value: &mut f32, range: RangeInclusive<f32>) -> Response {
         let (slot, focused, changed) = self.column_common(value, &range);
         if let Some(x) = slot {
-            self.place(
-                LowPassFilter::new(Point::zero(), Self::norm_unipolar(*value, &range)),
-                x,
-            );
+            let live = Self::norm_unipolar(*value, &range);
+            self.place(x, live, 0.0, 1.0, |t| LowPassFilter::new(Point::zero(), t));
             self.label(x, label, focused);
         }
         Response {
@@ -336,10 +428,8 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> HMenu<'a, D> {
     pub fn hpf(&mut self, label: &str, value: &mut f32, range: RangeInclusive<f32>) -> Response {
         let (slot, focused, changed) = self.column_common(value, &range);
         if let Some(x) = slot {
-            self.place(
-                HighPassFilter::new(Point::zero(), Self::norm_unipolar(*value, &range)),
-                x,
-            );
+            let live = Self::norm_unipolar(*value, &range);
+            self.place(x, live, 0.0, 1.0, |t| HighPassFilter::new(Point::zero(), t));
             self.label(x, label, focused);
         }
         Response {
@@ -353,10 +443,8 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> HMenu<'a, D> {
     pub fn percent(&mut self, label: &str, value: &mut f32, range: RangeInclusive<f32>) -> Response {
         let (slot, focused, changed) = self.column_common(value, &range);
         if let Some(x) = slot {
-            self.place(
-                Percent::new(Point::zero(), Self::norm_unipolar(*value, &range)),
-                x,
-            );
+            let live = Self::norm_unipolar(*value, &range);
+            self.place(x, live, 0.0, 1.0, |t| Percent::new(Point::zero(), t));
             self.label(x, label, focused);
         }
         Response {
@@ -370,7 +458,8 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> HMenu<'a, D> {
     pub fn attack(&mut self, label: &str, value: &mut f32, range: RangeInclusive<f32>) -> Response {
         let (slot, focused, changed) = self.column_common(value, &range);
         if let Some(x) = slot {
-            self.place(Attack::new(Point::zero(), Self::norm_unipolar(*value, &range)), x);
+            let live = Self::norm_unipolar(*value, &range);
+            self.place(x, live, 0.0, 1.0, |t| Attack::new(Point::zero(), t));
             self.label(x, label, focused);
         }
         Response {
@@ -384,10 +473,8 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> HMenu<'a, D> {
     pub fn release(&mut self, label: &str, value: &mut f32, range: RangeInclusive<f32>) -> Response {
         let (slot, focused, changed) = self.column_common(value, &range);
         if let Some(x) = slot {
-            self.place(
-                Release::new(Point::zero(), Self::norm_unipolar(*value, &range)),
-                x,
-            );
+            let live = Self::norm_unipolar(*value, &range);
+            self.place(x, live, 0.0, 1.0, |t| Release::new(Point::zero(), t));
             self.label(x, label, focused);
         }
         Response {
@@ -401,10 +488,10 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> HMenu<'a, D> {
     pub fn length(&mut self, label: &str, value: &mut f32, range: RangeInclusive<f32>) -> Response {
         let (slot, focused, changed) = self.column_common(value, &range);
         if let Some(x) = slot {
-            self.place(
-                LengthSlider::new(Point::zero(), Self::norm_unipolar(*value, &range), true),
-                x,
-            );
+            let live = Self::norm_unipolar(*value, &range);
+            self.place(x, live, 0.0, 1.0, |t| {
+                LengthSlider::new(Point::zero(), t, true)
+            });
             self.label(x, label, focused);
         }
         Response {

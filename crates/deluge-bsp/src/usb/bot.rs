@@ -11,8 +11,8 @@
 //! implemented; unknown opcodes are failed with ILLEGAL REQUEST sense.
 //!
 //! The storage medium is abstracted by [`BlockDevice`], so the same protocol
-//! code drives both the SD-card MSC firmware and the SSB's synthesized UF2
-//! "ghost" filesystem.  [`run`] owns the bulk endpoints and the bounce buffers
+//! code drives the SD-card MSC firmware and the SSB's DATA TRANSFER mode.
+//! [`run`] owns the bulk endpoints and the bounce buffers
 //! and overlaps the storage transfer with the USB transfer (one bank streams
 //! over USB while the other is filled/drained by the device).
 

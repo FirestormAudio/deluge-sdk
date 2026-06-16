@@ -70,21 +70,28 @@ async fn main(dlg: Deluge) {
 
     let mut menu_input = MenuInput::None;
     loop {
-        // Rebuild the whole screen from `app`.
+        // Rebuild the whole screen from `app`. `show` runs the closure twice
+        // (count, then draw) so the layout is correct on the very first frame.
         oled.clear();
-        {
-            let mut ui = Menu::begin(&mut oled, &mut nav, menu_input, &style);
+        Menu::show(&mut oled, &mut nav, menu_input, &style, |ui| {
             ui.title("SOUND");
-            ui.int("FREQ", &mut app.freq, 20..=20000);
+            ui.int_value("FREQ", &mut app.freq, "Hz");
             ui.enumv("WAVE", &mut app.wave);
             ui.toggle("MONO", &mut app.mono);
             ui.submenu("ADVANCED", |ui| {
                 ui.float("DRIVE", &mut app.drive, 0.0..=1.0);
                 ui.int("BRIGHT", &mut app.brightness, 0..=15);
             });
-            ui.end();
-        }
+        });
         oled.flush().await;
+
+        // A press that entered a submenu or opened a value editor changes what
+        // renders next frame (the transition is applied during the draw pass).
+        // Redraw it immediately instead of waiting for the next input.
+        if nav.needs_redraw() {
+            menu_input = MenuInput::None;
+            continue;
+        }
 
         // Wait for the next event the menu cares about, mapping it to MenuInput.
         menu_input = loop {

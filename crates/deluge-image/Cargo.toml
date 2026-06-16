@@ -3,7 +3,7 @@ name = "deluge-image"
 version = "0.1.0"
 edition = "2024"
 license.workspace = true
-description = "Pure firmware-image format logic (UF2 wire format + ELF load classification) shared by the app-loader and host tools."
+description = "Pure firmware-image format logic (ELF load classification + FSB metadata validation) shared by the app-loader."
 
 [lib]
 # Host/QEMU unit tests run via `cargo test` on a non-bare-metal target. The
@@ -12,10 +12,4 @@ test = true
 
 [dependencies]
 # Intentionally none — pure logic, no_std, no hardware deps, so it unit-tests on
-# the host and can be reused by the pure-std host tools without a supply chain.
-
-[dev-dependencies]
-# Host-only: an independent FAT implementation used to prove a real OS would
-# mount the synthesized ghost-FAT volume and read CURRENT.UF2 back. Not pulled
-# into the firmware build (dev-deps are test-only and non-transitive).
-fatfs = "0.3"
+# the host without a supply chain.

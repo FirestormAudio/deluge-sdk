@@ -66,7 +66,7 @@ pub const SPI_FLASH_BASE: u32 = 0x1800_0000;
 ///   * sectors 2-3 `0x80000..0x100000` — second-stage bootloader (SSB); the FSB
 ///     loads the SSB from `0x80000`
 ///
-/// The bootable app sits **above** the SSB so a UF2 update can never touch the
+/// The bootable app sits **above** the SSB so storing an app can never touch the
 /// FSB, the settings, or the SSB itself.  `0x100000` is 256 KB-aligned, so
 /// erasing a slot sector never spills into the reserved region below.
 pub const FLASH_SLOT_OFFSET: u32 = 0x0010_0000; // 1 MB
@@ -395,15 +395,10 @@ pub unsafe fn program(offset: u32, data: &[u8]) {
 mod tests {
     use super::*;
 
-    /// The app-slot flash geometry is the contract shared by three places that
-    /// cannot compile together: this driver (firmware), the on-host `elf2uf2`
-    /// tool, and the `deluge-image` wire-format crate. They each pin the same
-    /// literals; if one changes without the others, a UF2 built by the tool
-    /// would target the wrong flash range — so pin them here too.
-    ///
-    /// Keep in sync with:
-    ///   * `tools/elf2uf2` — `DEFAULT_BASE`, `SLOT_LEN` (+ its `defaults_match_firmware_constants` test)
-    ///   * `crates/deluge-image/src/uf2.rs` — the `DELUGE_SLOT` test fixture
+    /// The app-slot flash geometry is the contract the app-loader relies on when
+    /// it erases/programs a stored image into the slot and when the FSB copies it
+    /// back into SRAM. If these literals change, the flash-store path and the
+    /// boot-from-flash path must agree — so pin them here.
     #[test]
     fn app_slot_geometry_is_pinned() {
         assert_eq!(SPI_FLASH_BASE, 0x1800_0000);

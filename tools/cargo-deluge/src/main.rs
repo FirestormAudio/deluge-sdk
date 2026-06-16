@@ -1,8 +1,7 @@
 //! `cargo deluge` — build and scaffold Deluge SDK apps.
 //!
 //! A thin host-side cargo subcommand so app authors never touch `-Zbuild-std`,
-//! linker flags, or the embedded target triple. Pure std, no dependencies (like
-//! `tools/elf2uf2`).
+//! linker flags, or the embedded target triple. Pure std, no dependencies.
 //!
 //! Subcommands:
 //! - `cargo deluge new <name>`  — scaffold a new app crate.

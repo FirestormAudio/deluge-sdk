@@ -16,7 +16,7 @@ embedded-fonts-deluge.workspace = true
 # no_std-compatible floating-point math (sin, cos, round, exp, ceil, …)
 libm = { version = "0.2", default-features = false }
 # Alloc-free fixed-capacity nav path + value formatting in the immediate-mode menu.
-heapless = "0.8"
+heapless = "0.9"
 
 [dev-dependencies]
 # Headless SimulatorDisplay for render-smoke tests (no SDL2 — default features off).

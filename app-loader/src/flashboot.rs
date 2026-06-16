@@ -23,9 +23,10 @@
 //! existing trampoline ([`crate::launcher::launch_via_trampoline`]) to copy
 //! `code_start..code_end` from flash into SRAM and jump to `code_execute`.
 
+use deluge_image::elf::{FsbError, validate_fsb_metadata};
 use rza1l_hal::spibsc;
 
-use crate::elf::SramSegDesc;
+use crate::elf::{FlashStage, SramSegDesc};
 
 /// Offsets of the FSB metadata words from the image base.
 const META_CODE_START: u32 = 0x20;
@@ -114,4 +115,50 @@ impl FlashImage {
             zero_extra: 0,
         }
     }
+}
+
+/// Program a flattened firmware image (staged in SDRAM by
+/// [`crate::elf::flatten_to_flash_staging`]) into the flash app slot.
+///
+/// The image's FSB metadata is validated **before** any erase, so an image the
+/// boot path would reject is refused without touching the slot — it can never
+/// brick an existing stored image. After a successful return the next
+/// [`probe`] sees the new image (`spibsc::program` flushes the read cache).
+///
+/// # Safety
+/// Erases and programs the flash app slot; no code may run from flash during the
+/// call. Safe here because the SSB executes from SRAM. Reads the staging window
+/// via `stage.ptr` for `stage.len` bytes, which the caller must keep valid.
+pub async unsafe fn store_image_to_slot<F, Fut>(
+    stage: &FlashStage,
+    mut on_progress: F,
+) -> Result<(), FsbError>
+where
+    F: FnMut(u32, u32) -> Fut,
+    Fut: core::future::Future<Output = ()>,
+{
+    let image = unsafe { core::slice::from_raw_parts(stage.ptr, stage.len) };
+
+    // Validate before erasing so a bad image cannot brick the slot.
+    validate_fsb_metadata(image, stage.code_start)?;
+
+    let len = stage.len as u32;
+    on_progress(0, len).await;
+
+    // Erase every 256 KB sector the image spans.
+    unsafe { spibsc::erase_range(spibsc::FLASH_SLOT_OFFSET, len) };
+
+    // Program in chunks so the OLED can show progress. `spibsc::program`
+    // internally splits each call into ≤256-byte page writes and restores
+    // memory-mapped read mode (flushing the read cache) when it returns.
+    const CHUNK: usize = 0x1000; // 4 KB
+    let mut off = 0usize;
+    while off < image.len() {
+        let n = CHUNK.min(image.len() - off);
+        unsafe { spibsc::program(spibsc::FLASH_SLOT_OFFSET + off as u32, &image[off..off + n]) };
+        off += n;
+        on_progress(off as u32, len).await;
+    }
+
+    Ok(())
 }

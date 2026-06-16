@@ -92,7 +92,8 @@ pub mod primitives;
 pub mod text;
 
 pub use components::{
-    ADSR, Envelope, EnvelopeStage, ListMenuView, LoopedWaveform, RowIcon, SlicedWaveform, Waveform,
+    ADSR, Envelope, EnvelopeStage, ListMenuView, LoopedWaveform, RowIcon, Scrollbar, SlicedWaveform,
+    Waveform,
 };
 pub use hmenu::HMenu;
 pub use icons::IconData;
