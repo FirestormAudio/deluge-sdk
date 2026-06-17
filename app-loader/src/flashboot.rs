@@ -139,6 +139,17 @@ where
 {
     let image = unsafe { core::slice::from_raw_parts(stage.ptr, stage.len) };
 
+    // Reject anything that would overrun the slot *before* erasing.  The
+    // per-sector/page guards in `spibsc` already refuse writes past the slot, but
+    // they do so silently (a too-large image would erase + program up to the slot
+    // boundary and drop the rest), leaving a truncated, unbootable image with no
+    // error surfaced.  Catch the misfit here so the slot is never touched and the
+    // caller sees a clear failure.  (The SD flatten path also checks this against
+    // the staging buffer; this is the choke point that owns the slot invariant.)
+    if stage.len as u32 > spibsc::FLASH_SLOT_LEN {
+        return Err(FsbError::TooLargeForSlot);
+    }
+
     // Validate before erasing so a bad image cannot brick the slot.
     validate_fsb_metadata(image, stage.code_start)?;
 

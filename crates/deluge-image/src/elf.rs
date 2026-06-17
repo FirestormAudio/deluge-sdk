@@ -381,6 +381,10 @@ pub enum FsbError {
     EntryOutOfRange,
     /// Flat image extends past the span the FSB will copy (`code_end`).
     ImageTooLong,
+    /// Flat image is larger than the destination flash app slot, so it cannot be
+    /// programmed without overrunning the slot.  Raised by the slot-store path,
+    /// which knows the slot length; [`validate_fsb_metadata`] never returns it.
+    TooLargeForSlot,
 }
 
 /// Validate the FSB metadata embedded in a flattened (`objcopy -O binary`-style)
