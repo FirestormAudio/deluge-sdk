@@ -182,6 +182,15 @@ async unsafe fn send_acmd(acmd: u16, arg: u32) -> Result<(), SdError> {
 pub async fn init() -> Result<(), SdError> {
     log::debug!("sd: init port {}", SD_PORT);
     CARD_READY.store(false, Ordering::Release);
+    // Reset the cached RCA to 0 *before* re-identifying.  During identification
+    // the card sits in idle/ready state with RCA = 0, so the CMD55 that prefixes
+    // ACMD41 must be addressed to RCA 0 (see `send_acmd`).  On a cold boot the
+    // static is already 0, but on a re-init (e.g. returning from USB mass-storage
+    // mode) it still holds the *previous* session's RCA from CMD3 — CMD55 would
+    // then address a card that no longer answers to it, so every attempt returns
+    // ResponseTimeout and the card looks dead.  Clearing it here makes re-init
+    // behave exactly like the first boot.
+    CARD_RCA.store(0, Ordering::Release);
 
     // ---- Bring up the SDHI controller + pins (once) ----
     unsafe {
@@ -452,16 +461,23 @@ pub async fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> Result<(), Sd
             let cmd = if chunk > 1 { CMD18_MULTI } else { CMD17 };
             sdhi::set_block_count(SD_PORT, chunk);
             sdhi::set_arg(SD_PORT, chunk_addr);
-            sdhi::read_blocks_dma(SD_PORT, cmd, dma_ptr, chunk, SD_DMA_RX_CH).await?;
+            let xfer = sdhi::read_blocks_dma(SD_PORT, cmd, dma_ptr, chunk, SD_DMA_RX_CH).await;
             // CMD18 (READ_MULTIPLE_BLOCK) runs in extended mode with auto-CMD12
             // disabled (CMD18 | 0x7C00, [15:14]=01), so the card keeps streaming
             // data until it receives STOP_TRANSMISSION.  The SD_STOP SEC bit only
             // bounds how many blocks the *controller* clocks in — it does not stop
-            // the *card*.  Issue CMD12 manually (matching the vendor driver), or
-            // the card stays busy and the next command collides and fails.
-            if chunk > 1 {
-                sdhi::stop_transfer(SD_PORT).await?;
-            }
+            // the *card*.  Issue CMD12 manually (matching the vendor driver) —
+            // and do it **even if the data phase failed**, or a bailed-out
+            // multi-block read leaves the card streaming and the next command (or
+            // the next sd::init) times out.  Propagate the transfer error first
+            // since it's the more relevant failure, then any stop error.
+            let stop = if chunk > 1 {
+                sdhi::stop_transfer(SD_PORT).await
+            } else {
+                Ok(())
+            };
+            xfer?;
+            stop?;
             let chunk_bytes = (chunk as usize) * 512;
             buf[buf_offset..buf_offset + chunk_bytes]
                 .copy_from_slice(core::slice::from_raw_parts(dma_ptr, chunk_bytes));
@@ -654,13 +670,18 @@ impl embedded_sdmmc::BlockDevice for DelugeBlockDevice {
                 sdhi::set_block_count(SD_PORT, count);
                 sdhi::set_arg(SD_PORT, addr);
                 sdhi::send_cmd(SD_PORT, cmd).await?;
-                sdhi::read_blocks_sw(SD_PORT, ptr, count).await?;
+                let xfer = sdhi::read_blocks_sw(SD_PORT, ptr, count).await;
                 // CMD18 multi-block read leaves auto-CMD12 disabled (see
-                // `read_sectors`); stop the card explicitly so the next command
-                // doesn't collide with the still-streaming data phase.
-                if count > 1 {
-                    sdhi::stop_transfer(SD_PORT).await?;
-                }
+                // `read_sectors`); stop the card explicitly — even if the data
+                // phase failed — so a bailed-out read never leaves the card
+                // streaming into the next command or the next sd::init.
+                let stop = if count > 1 {
+                    sdhi::stop_transfer(SD_PORT).await
+                } else {
+                    Ok(())
+                };
+                xfer?;
+                stop?;
                 Ok::<(), SdhiError>(())
             }
         })

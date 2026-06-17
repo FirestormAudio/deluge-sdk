@@ -304,6 +304,12 @@ async fn boot_task(spawner: Spawner) {
     // DATA TRANSFER USB mode returns here when BACK is pressed, and a
     // write-to-flash also returns here, so the menu is rebuilt from fresh state
     // (re-probing the flash slot and re-listing the SD card).
+    //
+    // Only the very first pass shows the "DELUGE BOOT / INIT SD..." splash:
+    // re-showing it when returning from a USB mode or a DEV MODE toggle looks
+    // like the unit rebooted instead of simply going back to the menu.  Later
+    // passes rebuild quietly and let `run_selector` redraw the menu directly.
+    let mut first_pass = true;
     loop {
         // Read persisted settings each pass so a DEV MODE toggle takes effect on
         // the very next menu rebuild (dev mode adds a background USB listener and
@@ -317,7 +323,10 @@ async fn boot_task(spawner: Spawner) {
             info!("Flash: valid firmware image present in slot");
         }
 
-        ui::show_message(b"DELUGE BOOT", b"INIT SD...").await;
+        if first_pass {
+            ui::show_message(b"DELUGE BOOT", b"INIT SD...").await;
+        }
+        first_pass = false;
 
         // Try the SD card.  A missing/failed card is not fatal.
         let sd_ok = match sd::init().await {
