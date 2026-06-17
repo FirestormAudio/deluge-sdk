@@ -1,9 +1,14 @@
 [package]
 name = "deluge"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "User-friendly SDK for building apps on the Synthstrom Deluge."
+categories = ["embedded", "no-std", "hardware-support"]
+keywords = ["deluge", "synthstrom", "embassy", "rza1", "embedded"]
 
 [dependencies]
 deluge-macros = { path = "../deluge-macros" }

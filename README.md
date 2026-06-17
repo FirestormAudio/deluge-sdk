@@ -43,8 +43,10 @@ Apps are **ELF binaries that run from RAM**, loaded by the on-device app-loader
 either straight over USB (dev mode) or from the `/APPS/` folder on the SD card.
 That means:
 
-- **You can't brick the device.** Nothing your app does touches flash;
-  power-cycle to recover.
+- **You can't brick the device.** Nothing your *app* does touches flash;
+  power-cycle to recover. (The exceptions are the deliberate flashing tools —
+  the app-loader install step and the `bootloader-flasher` recovery firmware —
+  which do write flash by design; see [Device setup](docs/device-setup.md).)
 - **Iteration is push-to-run.** With **dev mode** on, `cargo deluge run` uploads
   the ELF over USB and the loader launches it from RAM — no SD shuffling, no
   debug probe.

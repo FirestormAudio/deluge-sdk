@@ -1,8 +1,12 @@
 [package]
 name = "deluge-bsp"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Board support package for the Synthstrom Deluge (peripherals, PIC, OLED, SD)."
 
 [lib]
 # Unit tests (in #[cfg(all(test, not(target_os="none")))]) run natively via

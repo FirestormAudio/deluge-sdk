@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Canonical test runner for the deluge-embassy workspace.
+# Canonical test runner for the deluge-sdk workspace.
 #
 # Tests fall into two buckets, split by hard toolchain constraints:
 #
@@ -30,7 +30,7 @@ QEMU=armv7-unknown-linux-gnueabihf
 HOST=x86_64-unknown-linux-gnu
 
 echo "==> QEMU ARM bucket ($QEMU)"
-cargo test --target "$QEMU" -p fixedpoint --lib
+cargo test --target "$QEMU" -p deluge-fixedpoint --lib
 cargo test --target "$QEMU" -p armv7-dsp-intrinsics --features nightly --lib
 # No --lib: also runs the cross-crate dsp_pipeline integration test.
 cargo test --target "$QEMU" -p deluge-fft --features test-utils

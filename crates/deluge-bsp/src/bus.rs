@@ -21,7 +21,8 @@
 //! reconfigure only when the mode actually changes — arbitration and mode
 //! correctness become unforgettable instead of documented.
 //!
-//! See `docs/deluge-sdk.md` §6a.
+//! See the Advanced developer guide (`docs/advanced-guide.md`, §7 — *Dropping
+//! down to the BSP & HAL*) for the RSPI0 arbitration design.
 
 #![cfg(target_os = "none")]
 
@@ -105,7 +106,7 @@ impl Rspi0 {
 ///
 /// `CriticalSectionRawMutex` (not an async-only raw mutex) is deliberate: it
 /// lets [`steal_rspi0`] and [`try_lock_rspi0`] work outside the executor (boot,
-/// and a future panic handler — see `docs/deluge-sdk.md` §9).
+/// and a future panic handler).
 static RSPI0: Mutex<CriticalSectionRawMutex, Rspi0> = Mutex::new(Rspi0 { mode: Mode::Unknown });
 
 /// Type of the guard returned by [`lock_rspi0`].

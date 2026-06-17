@@ -13,7 +13,7 @@ pub(crate) fn ensure_init() {
     // SAFETY: runs once. Configures GPIO + RSPI0 and runs the DAC's ~10 ms
     // linearity init (poll-based delays). Acquire CV/gate before entering a
     // loop that also drives the OLED, so this one-time RSPI0 setup can't race an
-    // in-flight OLED transfer (see docs/deluge-sdk.md §6a).
+    // in-flight OLED transfer (see docs/advanced-guide.md §7).
     unsafe { deluge_bsp::cv_gate::init() };
 }
 

@@ -6,8 +6,9 @@
 *.jdebug.user
 /JLinkLog.log
 
-# IDE configs
-.vscode/
+# IDE configs — track the shared debug launch config, ignore everything else
+.vscode/*
+!.vscode/launch.json
 .idea/
 *.srctrl*
 
@@ -17,7 +18,7 @@
 # Windows
 Thumbs.db
 
+# Vendored build inputs (large SVD + rbsp tree) — fetched, not committed
 vendor/
-docs/
 **target/
 /rtt-flasher.log

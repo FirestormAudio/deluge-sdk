@@ -1,8 +1,11 @@
 [package]
 name = "deluge-image"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Pure firmware-image format logic (ELF load classification + FSB metadata validation) shared by the app-loader."
 
 [lib]

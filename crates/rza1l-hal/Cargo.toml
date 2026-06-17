@@ -1,8 +1,14 @@
 [package]
 name = "rza1l-hal"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Embassy HAL for the Renesas RZ/A1L (ARM Cortex-A9, R7S721001)."
+categories = ["embedded", "no-std", "hardware-support"]
+keywords = ["rza1", "renesas", "cortex-a9", "embassy", "hal"]
 
 [lib]
 # Unit tests (in #[cfg(all(test, not(target_os="none")))]) run natively via

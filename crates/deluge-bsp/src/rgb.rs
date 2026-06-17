@@ -83,7 +83,8 @@ impl PadLeds {
     ///
     /// Sends only the column-pairs that changed since the last flush, then
     /// triggers the PIC's display refresh. All traffic goes over the serialized
-    /// PIC transport (see `docs/deluge-sdk.md` §6a).
+    /// PIC transport (see the Advanced developer guide, `docs/advanced-guide.md`
+    /// §7 — *Dropping down to the BSP & HAL*).
     pub async fn flush(&mut self) {
         for pair in 0..PAIRS {
             let colours = self.pack_pair(pair);

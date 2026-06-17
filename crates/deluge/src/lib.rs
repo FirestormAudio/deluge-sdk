@@ -22,7 +22,8 @@
 //! }
 //! ```
 //!
-//! See `docs/deluge-sdk.md` for the design.
+//! See the [Advanced developer guide](https://github.com/FirestormAudio/deluge-sdk/blob/main/docs/advanced-guide.md)
+//! for the architecture and internals.
 
 #![no_std]
 // The internal PIC service uses `#[embassy_executor::task]`, which needs this.
@@ -119,10 +120,10 @@ pub use rza1l_hal;
 
 /// The app capability handle, passed to `#[deluge::app] async fn main`.
 ///
-/// For now it carries the Embassy [`Spawner`](embassy_executor::Spawner) so an
-/// app can spawn its own background tasks. The ergonomic capability accessors
-/// (`oled()`, `input()`, `pads()`, …) land in later milestones; see
-/// `docs/deluge-sdk.md` §6.
+/// It carries the Embassy [`Spawner`](embassy_executor::Spawner) for spawning
+/// background tasks, and exposes the capability accessors ([`oled`](Self::oled),
+/// [`input`](Self::input), [`pads`](Self::pads), …) that hand out one peripheral
+/// at a time.
 pub struct Deluge {
     spawner: embassy_executor::Spawner,
 }
@@ -520,7 +521,7 @@ pub mod __rt {
     /// Masks interrupts, logs via RTT (if enabled), draws `APP PANIC` + the panic
     /// location to the OLED (best-effort, via the blocking panic path — no-op if
     /// the OLED was never brought up), then strobes the SYNC LED forever so a
-    /// probe-less user sees the crash. See `docs/deluge-sdk.md` §9.
+    /// probe-less user sees the crash.
     pub fn panic(info: &core::panic::PanicInfo) -> ! {
         // Stop the world: no more ISRs or task switches.
         cortex_ar::interrupt::disable();

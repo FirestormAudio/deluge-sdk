@@ -291,8 +291,9 @@ pub async fn init() {
 // This is *per-command* exclusion, which is sufficient: RSPI0 (OLED pixel data)
 // is a physically separate bus, and no PIC command other than SELECT/DESELECT
 // (248/249) touches the OLED chip-select — so pad-LED traffic arriving between
-// an OLED select and deselect cannot corrupt a frame. See `docs/deluge-sdk.md`
-// §6a.
+// an OLED select and deselect cannot corrupt a frame. See the Advanced
+// developer guide (`docs/advanced-guide.md`, §7 — *Dropping down to the BSP &
+// HAL*).
 
 /// Serializes the PIC UART so concurrent senders cannot interleave their bytes.
 /// Held only for the duration of a single command.

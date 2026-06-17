@@ -1,8 +1,13 @@
 [package]
 name = "deluge-macros"
-version = "0.1.0"
+version.workspace = true
+# Pinned to 2021 (not the workspace 2024): proc-macro expansion is edition-
+# sensitive and this crate is validated against 2021.
 edition = "2021"
+authors.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Procedural macros for the Deluge SDK (#[deluge::app])."
 
 [lib]

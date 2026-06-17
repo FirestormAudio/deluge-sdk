@@ -1,4 +1,5 @@
 [package]
+publish = false  # binary crate — not for crates.io
 name = "oled_hmenu"
 version = "0.1.0"
 edition = "2024"

@@ -5,7 +5,7 @@ edition = "2024"
 authors = ["Firestorm Community"]
 description = "Graphics toolkit for Deluge 128×48 horizontal monochrome OLED display"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/FirestormAudio/deluge-embassy"
+repository = "https://github.com/FirestormAudio/deluge-sdk"
 build = "build.rs"
 
 [dependencies]

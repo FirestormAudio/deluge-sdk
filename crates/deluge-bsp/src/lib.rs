@@ -47,4 +47,5 @@ pub mod usb;
 
 // RSPI0 arbitration between the OLED DMA path and the CV DAC now lives in
 // [`bus`] as an owned, mutex-guarded resource (replacing the former
-// `RSPI0_DMA_ACTIVE` spin-flag). See `docs/deluge-sdk.md` §6a.
+// `RSPI0_DMA_ACTIVE` spin-flag). See the Advanced developer guide
+// (`docs/advanced-guide.md`, §7 — *Dropping down to the BSP & HAL*).

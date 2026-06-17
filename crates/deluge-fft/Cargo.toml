@@ -1,8 +1,14 @@
 [package]
 name = "deluge-fft"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Portable-SIMD, no-std, const-generic FFT for the Deluge SDK audio pipeline."
+categories = ["embedded", "no-std", "mathematics"]
+keywords = ["fft", "dsp", "no-std", "simd"]
 
 [features]
 default = []
