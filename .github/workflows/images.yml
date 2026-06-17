@@ -1,0 +1,62 @@
+name: Images
+
+# Builds the device images and uploads each as an artifact. Reusable (called
+# from ci.yml) and runnable on demand.
+#
+# The app-loader is the second-stage bootloader, flashed to SPI flash, so it is
+# emitted as a raw `.bin`. The firmwares are RAM-linked ELFs that the app-loader
+# loads (from the SD card or over USB), so they are emitted as ELFs.
+
+on:
+  workflow_call:
+    inputs:
+      retention-days:
+        default: 7
+        type: number
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # app-loader → flashed to SPI flash, emit a raw .bin.
+          - name: app-loader
+            cmd: cargo build-app-loader-bin
+            artifact: target/armv7a-none-eabihf/release/app-loader.bin
+          # firmwares → loaded as ELF by the app-loader, emit the release ELF.
+          - name: demo-firmware
+            cmd: cargo build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p demo-firmware
+            artifact: target/armv7a-none-eabihf/release/demo-firmware
+          - name: controller-firmware
+            cmd: cargo build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p deluge-controller
+            artifact: target/armv7a-none-eabihf/release/deluge-controller
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          targets: armv7a-none-eabihf
+          components: rust-src,llvm-tools-preview
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-binutils
+        if: matrix.name == 'app-loader' # only the .bin (objcopy) leg needs it
+        run: cargo install cargo-binutils --locked
+
+      - name: Build ${{ matrix.name }}
+        run: ${{ matrix.cmd }}
+
+      - name: Upload ${{ matrix.name }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: image-${{ matrix.name }}
+          path: ${{ matrix.artifact }}
+          retention-days: ${{ inputs.retention-days }}

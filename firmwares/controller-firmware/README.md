@@ -37,8 +37,20 @@ Run from the workspace root:
 | Command | Output |
 |---------|--------|
 | `cargo build-fw -p deluge-controller` | `target/armv7a-none-eabihf/debug/deluge-controller` (debug ELF) |
-| `cargo build-controller-bin` | `target/armv7a-none-eabihf/release/deluge-controller.bin` (raw flashing binary) |
+| `cargo build-controller-bin` | `target/armv7a-none-eabihf/release/deluge-controller.bin` (raw image — flash as the device firmware) |
 
-See the [workspace README](../../README.md) for flashing and debugging.
+## Running
+
+A complete device firmware, RAM-linked at SRAM `0x20020000` — the same
+second-stage window the app-loader uses. Either:
+
+- **Run the ELF over a probe** — J-Link / `probe-rs` load and run it; see the
+  [workspace README → Debugging](../../README.md#debugging).
+- **Flash the `.bin` as the device firmware** — installed the same way as the
+  app-loader, so the unit boots straight into it; see the
+  [Device setup guide](../../docs/device-setup.md).
+
+Either way, drive it from the host over CDC-ACM (the host owns illumination and
+the display; the Deluge forwards input and renders host frames).
 
 [Synthstrom Deluge]: https://synthstrom.com/product/deluge/

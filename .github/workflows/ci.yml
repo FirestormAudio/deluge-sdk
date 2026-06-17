@@ -7,11 +7,14 @@ on:
   workflow_dispatch:
 
 jobs:
-  firmware:
-    name: Firmware
-    uses: ./.github/workflows/firmware.yml
+  examples:
+    name: Examples
+    uses: ./.github/workflows/examples.yml
+
+  images:
+    name: Images
+    uses: ./.github/workflows/images.yml
     with:
-      build-type: release
       retention-days: 7
 
   tests:

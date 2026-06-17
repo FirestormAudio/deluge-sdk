@@ -35,9 +35,17 @@ Run from the workspace root (aliases in `.cargo/config.toml` supply the required
 |---------|--------|
 | `cargo build-fw` | `target/armv7a-none-eabihf/debug/demo-firmware` (debug ELF, RTT enabled) |
 | `cargo build-fw-rel` | `target/armv7a-none-eabihf/release/demo-firmware` (release ELF, RTT disabled) |
-| `cargo build-fw-bin` | `target/armv7a-none-eabihf/release/demo-firmware.bin` (raw flashing binary) |
+| `cargo build-fw-bin` | `target/armv7a-none-eabihf/release/demo-firmware.bin` (raw image — flash as the device firmware) |
 
-See the [workspace README](../../README.md) for flashing and debugging
-(J-Link / probe-rs).
+## Running
+
+A complete device firmware, RAM-linked at SRAM `0x20020000` — the same
+second-stage window the app-loader uses. Either:
+
+- **Run the ELF over a probe** — J-Link / `probe-rs` load and run it; see the
+  [workspace README → Debugging](../../README.md#debugging).
+- **Flash the `.bin` as the device firmware** — installed the same way as the
+  app-loader, so the unit boots straight into it; see the
+  [Device setup guide](../../docs/device-setup.md).
 
 [Synthstrom Deluge]: https://synthstrom.com/product/deluge/

@@ -37,8 +37,17 @@ Run from the workspace root:
 | Command | Output |
 |---------|--------|
 | `cargo build-msc` | `target/armv7a-none-eabihf/debug/msc-firmware` (debug ELF) |
-| `cargo build-msc-bin` | `target/armv7a-none-eabihf/release/msc-firmware.bin` (raw flashing binary) |
+| `cargo build-msc-bin` | `target/armv7a-none-eabihf/release/msc-firmware.bin` (raw image — flash as the device firmware) |
 
-See the [workspace README](../../README.md) for flashing and debugging.
+## Running
+
+A complete device firmware, RAM-linked at SRAM `0x20020000` — the same
+second-stage window the app-loader uses. Either:
+
+- **Run the ELF over a probe** — J-Link / `probe-rs` load and run it; see the
+  [workspace README → Debugging](../../README.md#debugging).
+- **Flash the `.bin` as the device firmware** — installed the same way as the
+  app-loader, so the unit boots straight into it; see the
+  [Device setup guide](../../docs/device-setup.md).
 
 [Synthstrom Deluge]: https://synthstrom.com/product/deluge/
