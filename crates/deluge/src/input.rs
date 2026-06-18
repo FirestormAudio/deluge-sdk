@@ -123,8 +123,8 @@ async fn encoder_pump() {
         })
         .await;
 
-        for i in 0..encoder::NUM_ENCODERS {
-            let delta = encoder::take_detents(i, &mut acc[i]);
+        for (i, acc_i) in acc.iter_mut().enumerate() {
+            let delta = encoder::take_detents(i, acc_i);
             if delta != 0 {
                 let _ = EVENTS.try_send(Event::Encoder {
                     index: i as u8,

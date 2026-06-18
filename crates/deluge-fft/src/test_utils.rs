@@ -6,9 +6,9 @@ use crate::trig::{TWO_PI, cos_f32, sin_f32};
 /// Computes twiddles inline so it is independent of the table layout.
 pub fn dft<const N: usize>(buf: &[Complex; N]) -> [Complex; N] {
     let mut out = [Complex::ZERO; N];
-    for k in 0..N {
+    for (k, out_k) in out.iter_mut().enumerate() {
         let mut sum = Complex::ZERO;
-        for n in 0..N {
+        for (n, &b) in buf.iter().enumerate() {
             // W_N^((k*n) % N) = exp(-2πi·(k*n mod N)/N)
             // Modulo keeps the angle in (-2π, 0], equivalent by periodicity.
             let idx = (k * n) % N;
@@ -17,9 +17,9 @@ pub fn dft<const N: usize>(buf: &[Complex; N]) -> [Complex; N] {
                 re: cos_f32(angle),
                 im: sin_f32(angle),
             };
-            sum = sum + buf[n] * w;
+            sum = sum + b * w;
         }
-        out[k] = sum;
+        *out_k = sum;
     }
     out
 }

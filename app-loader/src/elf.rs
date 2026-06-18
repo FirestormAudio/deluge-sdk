@@ -220,7 +220,7 @@ where
         //     asked for the uncached mirror still lands there);
         //   * SRAM targets are staged in SDRAM, keyed by the physical offset.
         let (write_addr, is_sram) =
-            match place_segment(p_paddr, p_memsz as u32).map_err(|()| ElfError::BadLoadAddress)? {
+            match place_segment(p_paddr, p_memsz as u32).map_err(|_| ElfError::BadLoadAddress)? {
                 SegmentPlacement::Skip => continue,
                 SegmentPlacement::Write { write_addr, sram } => (write_addr, sram),
             };

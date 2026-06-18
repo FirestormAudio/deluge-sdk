@@ -649,7 +649,7 @@ pub fn vcvt_fixed_to_f32<const FRAC_BITS: u32>(value: i32) -> f32 {
                 options(pure, nomem, nostack)
             );
         }
-        
+
         f32::from_bits(bits as u32)
     }
     #[cfg(not(all(target_arch = "arm", target_feature = "vfp2")))]

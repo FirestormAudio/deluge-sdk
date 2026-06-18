@@ -724,10 +724,11 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> Menu<'a, D> {
         if focused {
             self.edit_press();
             if let Some(n) = self.take_value_delta()
-                && n != 0 {
-                    *value += n;
-                    resp.changed = true;
-                }
+                && n != 0
+            {
+                *value += n;
+                resp.changed = true;
+            }
         }
         let mut val: ValBuf = ValBuf::new();
         let _ = write!(val, "{}", *value);
@@ -759,15 +760,16 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> Menu<'a, D> {
         if focused {
             self.edit_press();
             if let Some(n) = self.take_value_delta()
-                && n != 0 {
-                    // Step = 10^-precision, without needing std float ops.
-                    let mut step = 1.0f32;
-                    for _ in 0..precision {
-                        step *= 0.1;
-                    }
-                    *value += n as f32 * step;
-                    resp.changed = true;
+                && n != 0
+            {
+                // Step = 10^-precision, without needing std float ops.
+                let mut step = 1.0f32;
+                for _ in 0..precision {
+                    step *= 0.1;
                 }
+                *value += n as f32 * step;
+                resp.changed = true;
+            }
         }
         let mut val: ValBuf = ValBuf::new();
         let _ = write!(val, "{:.*}", precision, *value);

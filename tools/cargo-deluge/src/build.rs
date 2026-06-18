@@ -106,14 +106,12 @@ pub(crate) fn parse_package_name(toml: &str) -> Option<String> {
             in_package = t == "[package]";
             continue;
         }
-        if in_package {
-            if let Some(rest) = t.strip_prefix("name") {
-                if let Some(q1) = rest.find('"') {
-                    if let Some(q2) = rest[q1 + 1..].find('"') {
-                        return Some(rest[q1 + 1..q1 + 1 + q2].to_string());
-                    }
-                }
-            }
+        if in_package
+            && let Some(rest) = t.strip_prefix("name")
+            && let Some(q1) = rest.find('"')
+            && let Some(q2) = rest[q1 + 1..].find('"')
+        {
+            return Some(rest[q1 + 1..q1 + 1 + q2].to_string());
         }
     }
     None

@@ -278,6 +278,10 @@ pub async fn run_until<B: BlockDevice>(
 }
 
 /// Dispatch one SCSI command.  Returns `(csw_status, data_residue)`.
+// The command (cdb/data_len/dir_in), both bulk endpoints, the device, and the
+// sense/ejected state are all irreducibly distinct inputs to the dispatch; there
+// is no natural sub-grouping that wouldn't just be a tuple in disguise.
+#[allow(clippy::too_many_arguments)]
 async fn handle_command<B: BlockDevice>(
     dev: &mut B,
     cdb: &[u8],

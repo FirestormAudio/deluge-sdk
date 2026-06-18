@@ -22,7 +22,7 @@ use embassy_time::{Duration, Timer};
 /// Convert a clock-pulse interval to whole BPM (assuming one pulse per beat).
 fn interval_to_bpm(dt: Duration) -> u32 {
     let us = dt.as_micros();
-    if us == 0 { 0 } else { (60_000_000 / us) as u32 }
+    60_000_000u64.checked_div(us).unwrap_or(0) as u32
 }
 
 /// Format `n` (0–999) into `buf` as up to 3 ASCII digits; returns the slice.

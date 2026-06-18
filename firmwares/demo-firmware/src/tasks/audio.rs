@@ -133,11 +133,10 @@ unsafe fn iso_out_to_ssi(pkt: *const u8, len: usize) {
 
         // ── Convert USB samples → MSB-aligned 32-bit SSI, mixing in dither ──
         let bytes_per_sample = (USB_BITS_PER_SAMPLE.load(Ordering::Relaxed) / 8) as usize;
-        if bytes_per_sample != 0 {
+        if let Some(num_samples) = len.checked_div(bytes_per_sample) {
             let mut lfsr = HOOK_LFSR;
             let mut clips = 0u32;
             let mut peak = 0u32;
-            let num_samples = len / bytes_per_sample;
             for i in 0..num_samples {
                 let raw = if bytes_per_sample == 3 {
                     let b0 = *pkt.add(i * 3) as u32;

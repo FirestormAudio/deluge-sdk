@@ -180,9 +180,9 @@ pub enum SegmentPlacement {
 /// address and memory size goes.  `p_paddr` is the raw header value (it may be an
 /// uncached mirror alias); `p_memsz` is `p_memsz` from the header.
 ///
-/// Returns `Err(())` if the resolved range is outside every region a segment may
-/// occupy (the caller maps that to its own "bad load address" error).
-pub fn place_segment(p_paddr: u32, p_memsz: u32) -> Result<SegmentPlacement, ()> {
+/// Returns [`BadLoadAddress`] if the resolved range is outside every region a
+/// segment may occupy (the caller maps that to its own "bad load address" error).
+pub fn place_segment(p_paddr: u32, p_memsz: u32) -> Result<SegmentPlacement, BadLoadAddress> {
     let phys = mirror_to_phys(p_paddr);
     // Retention RAM is reserved for the trampoline; never written by the loader.
     if (0x2000_0000..SRAM_LOAD_ORIGIN).contains(&phys) {
@@ -199,9 +199,14 @@ pub fn place_segment(p_paddr: u32, p_memsz: u32) -> Result<SegmentPlacement, ()>
             write_addr: sram_stage_addr(phys),
             sram: true,
         }),
-        None => Err(()),
+        None => Err(BadLoadAddress),
     }
 }
+
+/// [`place_segment`] was handed a physical address/size that resolves to a region
+/// no `PT_LOAD` segment may occupy. Callers map this to their own error.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct BadLoadAddress;
 
 // --- Slice-sourced load plan (USB dev-upload path) -------------------------
 
@@ -314,7 +319,7 @@ pub fn parse_load_plan(elf: &[u8]) -> Result<LoadPlan, PlanError> {
             return Err(PlanError::Truncated);
         }
 
-        match place_segment(p_paddr, p_memsz).map_err(|()| PlanError::BadLoadAddress)? {
+        match place_segment(p_paddr, p_memsz).map_err(|_| PlanError::BadLoadAddress)? {
             SegmentPlacement::Skip => continue,
             SegmentPlacement::Write { write_addr, sram } => {
                 ops[n_ops] = LoadOp {
@@ -672,8 +677,8 @@ mod tests {
 
     #[test]
     fn place_rejects_out_of_region() {
-        assert_eq!(place_segment(0x0800_0000, 0x10), Err(()));
-        assert_eq!(place_segment(SRAM_HI - 4, 0x100), Err(()));
+        assert_eq!(place_segment(0x0800_0000, 0x10), Err(BadLoadAddress));
+        assert_eq!(place_segment(SRAM_HI - 4, 0x100), Err(BadLoadAddress));
     }
 
     // --- parse_load_plan ----------------------------------------------------

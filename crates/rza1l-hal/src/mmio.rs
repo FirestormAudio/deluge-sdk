@@ -35,12 +35,18 @@ macro_rules! reg_handle {
         #[derive(Clone, Copy)]
         pub struct $name(pub usize);
         impl $name {
-            /// Write the register. See [`write32`] for safety.
+            /// Write the register.
+            ///
+            /// # Safety
+            /// See [`write32`].
             #[inline]
             pub unsafe fn write(self, val: $ty) {
                 unsafe { $w(self.0, val) }
             }
-            /// Read the register. See [`read32`] for safety.
+            /// Read the register.
+            ///
+            /// # Safety
+            /// See [`read32`].
             #[inline]
             pub unsafe fn read(self) -> $ty {
                 unsafe { $r(self.0) }
@@ -74,28 +80,40 @@ pub unsafe fn read32(addr: usize) -> u32 {
     unsafe { core::ptr::read_volatile(addr as *const u32) }
 }
 
-/// Write a 16-bit register. See [`write32`] for safety.
+/// Write a 16-bit register.
+///
+/// # Safety
+/// See [`write32`].
 #[cfg(target_os = "none")]
 #[inline(always)]
 pub unsafe fn write16(addr: usize, val: u16) {
     unsafe { core::ptr::write_volatile(addr as *mut u16, val) }
 }
 
-/// Read a 16-bit register. See [`read32`] for safety.
+/// Read a 16-bit register.
+///
+/// # Safety
+/// See [`read32`].
 #[cfg(target_os = "none")]
 #[inline(always)]
 pub unsafe fn read16(addr: usize) -> u16 {
     unsafe { core::ptr::read_volatile(addr as *const u16) }
 }
 
-/// Write an 8-bit register. See [`write32`] for safety.
+/// Write an 8-bit register.
+///
+/// # Safety
+/// See [`write32`].
 #[cfg(target_os = "none")]
 #[inline(always)]
 pub unsafe fn write8(addr: usize, val: u8) {
     unsafe { core::ptr::write_volatile(addr as *mut u8, val) }
 }
 
-/// Read an 8-bit register. See [`read32`] for safety.
+/// Read an 8-bit register.
+///
+/// # Safety
+/// See [`read32`].
 #[cfg(target_os = "none")]
 #[inline(always)]
 pub unsafe fn read8(addr: usize) -> u8 {
@@ -104,38 +122,60 @@ pub unsafe fn read8(addr: usize) -> u8 {
 
 // ── Host/QEMU: shadow MMIO with an access log ──────────────────────────────
 
-/// Write a 32-bit register (recorded in the shadow). See firmware impl for safety.
+/// Write a 32-bit register (recorded in the shadow).
+///
+/// # Safety
+/// See the firmware [`write32`] impl.
 #[cfg(not(target_os = "none"))]
 #[inline]
 pub unsafe fn write32(addr: usize, val: u32) {
     shadow::store(addr, val, 4);
 }
 
-/// Read a 32-bit register (from the shadow). See firmware impl for safety.
+/// Read a 32-bit register (from the shadow).
+///
+/// # Safety
+/// See the firmware [`read32`] impl.
 #[cfg(not(target_os = "none"))]
 #[inline]
 pub unsafe fn read32(addr: usize) -> u32 {
     shadow::load(addr, 4)
 }
 
+/// Write a 16-bit register (recorded in the shadow).
+///
+/// # Safety
+/// See the firmware [`write32`] impl.
 #[cfg(not(target_os = "none"))]
 #[inline]
 pub unsafe fn write16(addr: usize, val: u16) {
     shadow::store(addr, val as u32, 2);
 }
 
+/// Read a 16-bit register (from the shadow).
+///
+/// # Safety
+/// See the firmware [`read32`] impl.
 #[cfg(not(target_os = "none"))]
 #[inline]
 pub unsafe fn read16(addr: usize) -> u16 {
     shadow::load(addr, 2) as u16
 }
 
+/// Write an 8-bit register (recorded in the shadow).
+///
+/// # Safety
+/// See the firmware [`write32`] impl.
 #[cfg(not(target_os = "none"))]
 #[inline]
 pub unsafe fn write8(addr: usize, val: u8) {
     shadow::store(addr, val as u32, 1);
 }
 
+/// Read an 8-bit register (from the shadow).
+///
+/// # Safety
+/// See the firmware [`read32`] impl.
 #[cfg(not(target_os = "none"))]
 #[inline]
 pub unsafe fn read8(addr: usize) -> u8 {
@@ -168,10 +208,10 @@ mod shadow {
     }
 
     thread_local! {
-        static STATE: RefCell<State> = RefCell::new(State {
+        static STATE: RefCell<State> = const { RefCell::new(State {
             mem: BTreeMap::new(),
             log: Vec::new(),
-        });
+        }) };
     }
 
     pub fn store(addr: usize, val: u32, width: u8) {

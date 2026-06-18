@@ -57,10 +57,10 @@ fn wait_for_log_port() -> Result<String, String> {
         }
         // Otherwise accept a single Deluge port, as long as it isn't the
         // dev-upload listener (which would just sit there silently).
-        if let [(name, prod)] = deluge.as_slice() {
-            if !prod.as_deref().is_some_and(|s| s.contains(UPLOAD_PRODUCT)) {
-                return Ok(name.clone());
-            }
+        if let [(name, prod)] = deluge.as_slice()
+            && !prod.as_deref().is_some_and(|s| s.contains(UPLOAD_PRODUCT))
+        {
+            return Ok(name.clone());
         }
         std::thread::sleep(Duration::from_millis(100));
     }

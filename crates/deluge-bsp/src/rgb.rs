@@ -63,10 +63,8 @@ impl PadLeds {
         let mut out = [[0u8; 3]; 16];
         let left = pair * 2;
         let right = left + 1;
-        for row in 0..ROWS {
-            out[row] = self.grid[left][row];
-            out[8 + row] = self.grid[right][row];
-        }
+        out[..ROWS].copy_from_slice(&self.grid[left]);
+        out[8..8 + ROWS].copy_from_slice(&self.grid[right]);
         out
     }
 }

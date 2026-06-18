@@ -172,7 +172,7 @@ fn upload(port: &mut dyn serialport::SerialPort, frame: &[u8]) -> Result<(), Str
 
 /// Print/refresh a single-line `[####    ] 42%` progress bar on stderr.
 fn print_progress(done: usize, total: usize) {
-    let pct = if total == 0 { 100 } else { done * 100 / total };
+    let pct = (done * 100).checked_div(total).unwrap_or(100);
     let filled = pct * 30 / 100;
     let bar: String = (0..30)
         .map(|i| if i < filled { '#' } else { ' ' })
@@ -192,10 +192,11 @@ fn discover_upload_port() -> Result<String, String> {
 
     let mut deluge: Vec<(String, Option<String>)> = Vec::new();
     for p in ports {
-        if let SerialPortType::UsbPort(info) = &p.port_type {
-            if info.vid == DELUGE_VID && info.pid == DELUGE_PID {
-                deluge.push((p.port_name.clone(), info.product.clone()));
-            }
+        if let SerialPortType::UsbPort(info) = &p.port_type
+            && info.vid == DELUGE_VID
+            && info.pid == DELUGE_PID
+        {
+            deluge.push((p.port_name.clone(), info.product.clone()));
         }
     }
 

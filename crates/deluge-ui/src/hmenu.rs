@@ -186,17 +186,16 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> HMenu<'a, D> {
         let focused = i == self.state.cursor();
         let mut changed = false;
 
-        if focused
-            && let MenuInput::Edit(n) = self.pending {
-                let (lo, hi) = (*range.start(), *range.end());
-                let step = (hi - lo) / 64.0;
-                let nv = (*value + n as f32 * step).clamp(lo, hi);
-                if nv != *value {
-                    *value = nv;
-                    changed = true;
-                }
-                self.pending = MenuInput::None;
+        if focused && let MenuInput::Edit(n) = self.pending {
+            let (lo, hi) = (*range.start(), *range.end());
+            let step = (hi - lo) / 64.0;
+            let nv = (*value + n as f32 * step).clamp(lo, hi);
+            if nv != *value {
+                *value = nv;
+                changed = true;
             }
+            self.pending = MenuInput::None;
+        }
 
         let scroll = self.state.scroll();
         let max_visible = self.max_visible();

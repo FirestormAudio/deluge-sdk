@@ -38,15 +38,12 @@ pub(crate) async fn usb_host_task(driver: Rusb1HostDriver) {
                 );
                 // Wait for disconnect before accepting a new device.
                 loop {
-                    match controller.wait_for_device_event().await {
-                        DeviceEvent::Disconnected => {
-                            info!("USB host: device disconnected");
-                            handle.free_address(addr);
-                            break;
-                        }
-                        // Spurious re-connect / overcurrent while already
-                        // connected; ignore.
-                        _ => {}
+                    // Spurious re-connect / overcurrent while already connected
+                    // yields a non-Disconnected event; ignore and keep waiting.
+                    if controller.wait_for_device_event().await == DeviceEvent::Disconnected {
+                        info!("USB host: device disconnected");
+                        handle.free_address(addr);
+                        break;
                     }
                 }
             }
