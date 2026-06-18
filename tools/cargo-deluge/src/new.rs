@@ -11,6 +11,19 @@ const TPL_BUILD_RS: &str = include_str!("../../../examples/blinky/build.rs");
 const TPL_MEMORY_X: &str = include_str!("../../../examples/blinky/memory.x");
 const TPL_MEMORY_RTT_X: &str = include_str!("../../../examples/blinky/memory_rtt.x");
 const TPL_TOOLCHAIN: &str = include_str!("../../../rust-toolchain.toml");
+// J-Link bring-up script reused from the SDK root (referenced by launch.json).
+const TPL_JLINK: &str = include_str!("../../../rza1_debug.JLinkScript");
+
+// Static project + editor templates, kept as real files under `templates/` so
+// they are edited as files rather than as Rust string literals.
+const TPL_MAIN: &str = include_str!("../templates/src/main.rs");
+const TPL_CARGO_CONFIG: &str = include_str!("../templates/cargo/config.toml");
+const TPL_GITIGNORE: &str = include_str!("../templates/gitignore");
+const TPL_VSCODE_EXTENSIONS: &str = include_str!("../templates/vscode/extensions.json");
+const TPL_VSCODE_SETTINGS: &str = include_str!("../templates/vscode/settings.json");
+const TPL_VSCODE_TASKS: &str = include_str!("../templates/vscode/tasks.json");
+// `__APP_NAME__` is substituted with the app name (the debug ELF path).
+const TPL_VSCODE_LAUNCH: &str = include_str!("../templates/vscode/launch.json");
 
 pub(crate) fn cmd_new(args: &[String]) -> Result<(), String> {
     let name = args
@@ -63,15 +76,27 @@ fn validate_app_name(name: &str) -> Result<(), String> {
 /// Write the canonical app file-set into `dir` (already verified not to exist).
 /// Split out from [`cmd_new`] so the full scaffold is testable in a temp dir.
 fn scaffold(dir: &Path, name: &str, deluge_dep: &str) -> Result<(), String> {
-    let crate_name = name.replace('-', "_");
     write(&dir.join("Cargo.toml"), &cargo_toml(name, deluge_dep))?;
     write(&dir.join("rust-toolchain.toml"), TPL_TOOLCHAIN)?;
-    write(&dir.join(".cargo/config.toml"), CARGO_CONFIG)?;
+    write(&dir.join(".cargo/config.toml"), TPL_CARGO_CONFIG)?;
     write(&dir.join("build.rs"), TPL_BUILD_RS)?;
     write(&dir.join("memory.x"), TPL_MEMORY_X)?;
     write(&dir.join("memory_rtt.x"), TPL_MEMORY_RTT_X)?;
-    write(&dir.join("src/main.rs"), &main_rs(&crate_name))?;
-    write(&dir.join(".gitignore"), "/target\n")?;
+    write(&dir.join("src/main.rs"), TPL_MAIN)?;
+    write(&dir.join(".gitignore"), TPL_GITIGNORE)?;
+
+    // VS Code integration: recommended extensions, rust-analyzer set up for the
+    // bare-metal target, `cargo deluge` tasks, and a J-Link debug config. The
+    // launch config loads `rza1_debug.JLinkScript`, scaffolded alongside, and
+    // points at the app's debug ELF (hence the name substitution).
+    write(&dir.join(".vscode/extensions.json"), TPL_VSCODE_EXTENSIONS)?;
+    write(&dir.join(".vscode/settings.json"), TPL_VSCODE_SETTINGS)?;
+    write(&dir.join(".vscode/tasks.json"), TPL_VSCODE_TASKS)?;
+    write(
+        &dir.join(".vscode/launch.json"),
+        &TPL_VSCODE_LAUNCH.replace("__APP_NAME__", name),
+    )?;
+    write(&dir.join("rza1_debug.JLinkScript"), TPL_JLINK)?;
     Ok(())
 }
 
@@ -125,52 +150,6 @@ debug = true
     )
 }
 
-const CARGO_CONFIG: &str = r#"# Build for the Deluge (RZ/A1L, Cortex-A9) by default, with build-std so a plain
-# `cargo build` works. `cargo deluge build` passes the same flags explicitly.
-[build]
-target = "armv7a-none-eabihf"
-
-[target.armv7a-none-eabihf]
-rustflags = [
-    "-C", "target-cpu=cortex-a9",
-    "-C", "target-feature=+neon",
-    "-C", "link-arg=--gc-sections",
-    "-C", "force-frame-pointers=yes",
-]
-
-[unstable]
-build-std = ["core"]
-build-std-features = ["compiler-builtins-mem"]
-"#;
-
-fn main_rs(_crate_name: &str) -> String {
-    r#"//! A Deluge app.
-
-#![no_std]
-#![no_main]
-// Required by the Embassy task the `#[deluge::app]` macro generates.
-#![feature(impl_trait_in_assoc_type)]
-
-use deluge::prelude::*;
-use embassy_time::Timer;
-
-#[deluge::app]
-async fn main(dlg: Deluge) {
-    // The platform (heaps, clocks, interrupts, executor, panic handler) is
-    // already up. Capabilities are taken from the `dlg` handle:
-    //   let mut oled = dlg.oled().await;
-    //   let input = dlg.input();
-    //   let mut pads = dlg.pads().await;
-    let mut led = dlg.sync_led();
-    loop {
-        led.toggle();
-        Timer::after_millis(200).await;
-    }
-}
-"#
-    .to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,11 +189,10 @@ mod tests {
 
     #[test]
     fn main_rs_template_is_an_app() {
-        let m = main_rs("blinky");
-        assert!(m.contains("#![no_std]"));
-        assert!(m.contains("#![no_main]"));
-        assert!(m.contains("#[deluge::app]"));
-        assert!(m.contains("async fn main"));
+        assert!(TPL_MAIN.contains("#![no_std]"));
+        assert!(TPL_MAIN.contains("#![no_main]"));
+        assert!(TPL_MAIN.contains("#[deluge::app]"));
+        assert!(TPL_MAIN.contains("async fn main"));
     }
 
     #[test]
@@ -224,8 +202,28 @@ mod tests {
         assert!(!TPL_MEMORY_RTT_X.is_empty());
         assert!(!TPL_TOOLCHAIN.is_empty());
         assert!(TPL_TOOLCHAIN.contains("armv7a-none-eabihf"));
-        assert!(CARGO_CONFIG.contains("build-std"));
+        assert!(TPL_CARGO_CONFIG.contains("build-std"));
+        assert!(!TPL_JLINK.is_empty());
         assert_eq!(TARGET, "armv7a-none-eabihf");
+    }
+
+    #[test]
+    fn vscode_templates_are_valid_and_unsubstituted() {
+        // The four .vscode files ship non-empty.
+        for t in [
+            TPL_VSCODE_EXTENSIONS,
+            TPL_VSCODE_SETTINGS,
+            TPL_VSCODE_TASKS,
+            TPL_VSCODE_LAUNCH,
+        ] {
+            assert!(!t.is_empty());
+        }
+        // Only launch.json carries the app-name placeholder; it must still be
+        // present in the template (substituted at scaffold time).
+        assert!(TPL_VSCODE_LAUNCH.contains("__APP_NAME__"));
+        assert!(!TPL_VSCODE_EXTENSIONS.contains("__APP_NAME__"));
+        // The default build task is the USB run command.
+        assert!(TPL_VSCODE_TASKS.contains("cargo deluge run"));
     }
 
     // ---- scaffold (full file-set into a temp dir, no chdir) ----------------
@@ -264,12 +262,23 @@ mod tests {
             "memory_rtt.x",
             "src/main.rs",
             ".gitignore",
+            ".vscode/extensions.json",
+            ".vscode/settings.json",
+            ".vscode/tasks.json",
+            ".vscode/launch.json",
+            "rza1_debug.JLinkScript",
         ] {
             assert!(app.join(f).is_file(), "missing scaffolded file: {f}");
         }
 
         let cargo = fs::read_to_string(app.join("Cargo.toml")).unwrap();
         assert_eq!(parse_package_name(&cargo).as_deref(), Some("my-app"));
-        assert_eq!(fs::read_to_string(app.join(".gitignore")).unwrap(), "/target\n");
+        assert!(fs::read_to_string(app.join(".gitignore")).unwrap().contains("/target"));
+
+        // launch.json must have the app name substituted in (the debug ELF path)
+        // and no leftover placeholder.
+        let launch = fs::read_to_string(app.join(".vscode/launch.json")).unwrap();
+        assert!(launch.contains("debug/my-app"), "app name not substituted: {launch}");
+        assert!(!launch.contains("__APP_NAME__"), "placeholder left in launch.json");
     }
 }

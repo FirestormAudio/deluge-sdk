@@ -103,8 +103,8 @@ impl FlashImage {
     /// Build the single trampoline descriptor that copies the image from the
     /// flash memory-mapped window into SRAM.
     ///
-    /// `src` is the **real** SPIBSC window address (`0x1808_0000`), not the
-    /// `0x5808_0000` uncached mirror: the trampoline runs with the MMU off, so
+    /// `src` is the **real** SPIBSC window address (`0x1810_0000`), not the
+    /// `0x5810_0000` uncached mirror: the trampoline runs with the MMU off, so
     /// only the physical SPIBSC AHB window is valid.  Reads happen with caches
     /// off, so the cached/uncached attribute is irrelevant.
     pub fn desc(&self) -> SramSegDesc {
@@ -151,7 +151,16 @@ where
     }
 
     // Validate before erasing so a bad image cannot brick the slot.
-    validate_fsb_metadata(image, stage.code_start)?;
+    let meta = validate_fsb_metadata(image, stage.code_start)?;
+
+    // The flat image (`stage.len`) is normally *shorter* than the span the FSB
+    // copies (`code_end - code_start`, 64 KB-rounded with any BSS tail). `probe`
+    // refuses to boot an image whose copy span overruns the slot, so reject one
+    // here too — otherwise a pathological image with a small body but a huge
+    // `code_end` would flash "OK" yet never appear as BOOT FLASH.
+    if meta.code_end - meta.code_start > spibsc::FLASH_SLOT_LEN {
+        return Err(FsbError::TooLargeForSlot);
+    }
 
     let len = stage.len as u32;
     on_progress(0, len).await;
@@ -169,6 +178,23 @@ where
         unsafe { spibsc::program(spibsc::FLASH_SLOT_OFFSET + off as u32, &image[off..off + n]) };
         off += n;
         on_progress(off as u32, len).await;
+    }
+
+    // Read the whole image back and compare. The SPIBSC layer recovers from a
+    // rejected erase/program (stuck WIP → Clear-Status) *without surfacing an
+    // error*, so a write that silently dropped part of the image would otherwise
+    // flash "OK" yet store a corrupt, unbootable image. Read through the
+    // **uncached** SPIBSC mirror (`+0x4000_0000`, mapped non-cached): `program`
+    // already flushed the SPIBSC read cache, but the CPU's L1/L2 may still hold
+    // stale lines for the slot from an earlier `probe`, and this is also exactly
+    // the physical flash the boot trampoline copies from.
+    const UNCACHED_MIRROR: u32 = 0x4000_0000;
+    for (i, &want) in image.iter().enumerate() {
+        let addr = spibsc::FLASH_SLOT_ADDR + UNCACHED_MIRROR + i as u32;
+        let got = unsafe { core::ptr::read_volatile(addr as *const u8) };
+        if got != want {
+            return Err(FsbError::VerifyFailed(i as u32));
+        }
     }
 
     Ok(())

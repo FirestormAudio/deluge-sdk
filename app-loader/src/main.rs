@@ -273,7 +273,12 @@ async fn write_app_to_flash(
         }
         Err(e) => {
             error!("Flash store: image rejected: {:?}", e);
-            ui::show_message(b"FLASH ERROR", b"BAD IMAGE").await;
+            let line2: &[u8] = match e {
+                deluge_image::elf::FsbError::VerifyFailed(_) => b"VERIFY FAILED",
+                deluge_image::elf::FsbError::TooLargeForSlot => b"TOO LARGE",
+                _ => b"BAD IMAGE",
+            };
+            ui::show_message(b"FLASH ERROR", line2).await;
             Timer::after(Duration::from_secs(2)).await;
         }
     }
@@ -501,9 +506,9 @@ async fn boot_task(spawner: Spawner) {
                     id[0], id[1], id[2], sr
                 );
                 let mut line = *b"ID...... SR..";
-                hex2(&mut line[3..5], id[0]);
-                hex2(&mut line[5..7], id[1]);
-                hex2(&mut line[7..9], id[2]);
+                hex2(&mut line[2..4], id[0]);
+                hex2(&mut line[4..6], id[1]);
+                hex2(&mut line[6..8], id[2]);
                 hex2(&mut line[11..13], sr);
                 ui::show_message(b"FLASH WRITE FAIL", &line).await;
                 embassy_time::Timer::after(embassy_time::Duration::from_secs(4)).await;
@@ -565,6 +570,9 @@ async fn boot_task(spawner: Spawner) {
                 error!("Failed to open app: {:?}", e);
                 ui::show_message(b"OPEN ERROR", b"BACK TO MENU").await;
                 embassy_time::Timer::after(embassy_time::Duration::from_secs(2)).await;
+                let _ = vm.close_volume(volume);
+                drop(vm);
+                drop(entries);
                 continue;
             }
         };
@@ -589,6 +597,10 @@ async fn boot_task(spawner: Spawner) {
                 error!("ELF load error: {:?}", e);
                 ui::show_message(b"LOAD ERROR", line2).await;
                 embassy_time::Timer::after(embassy_time::Duration::from_secs(2)).await;
+                let _ = vm.close_file(file);
+                let _ = vm.close_volume(volume);
+                drop(vm);
+                drop(entries);
                 continue;
             }
         };

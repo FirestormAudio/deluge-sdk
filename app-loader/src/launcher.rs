@@ -199,6 +199,13 @@ pub unsafe fn launch_via_trampoline(descs: &[SramSegDesc], entry: u32) -> ! {
         let code_end = core::ptr::addr_of!(_trampoline_end);
         let code_len = code_end as usize - code_start as usize;
 
+        // The descriptor table sits at RETRAM_TABLE_OFFSET; the code must fit
+        // below it or the copy below would clobber the table we're about to write.
+        debug_assert!(
+            code_len <= RETRAM_TABLE_OFFSET,
+            "trampoline code overruns the descriptor table offset"
+        );
+
         // Copy trampoline code into retention RAM.
         core::ptr::copy_nonoverlapping(code_start, RETRAM_CODE as *mut u8, code_len);
 

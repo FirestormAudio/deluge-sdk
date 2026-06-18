@@ -1,0 +1,23 @@
+{
+  // rust-analyzer is configured for the bare-metal Deluge target. The target
+  // triple and the `-Zbuild-std` flags it needs come from .cargo/config.toml,
+  // so they are not repeated here.
+  //
+  // `allTargets = false` keeps the editor from trying to build host-only test
+  // and bench targets — they require `std`, which this bare-metal target does
+  // not have, and would otherwise surface as spurious "can't find crate for
+  // `std`" errors across the project.
+  "rust-analyzer.cargo.allTargets": false,
+  "rust-analyzer.check.allTargets": false,
+
+  // Format with rustfmt (via rust-analyzer) on save.
+  "[rust]": {
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "rust-lang.rust-analyzer"
+  },
+
+  // Don't watch build output.
+  "files.watcherExclude": {
+    "**/target/**": true
+  }
+}

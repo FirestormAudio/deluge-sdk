@@ -171,7 +171,12 @@ where
     let mut sram_descs = [SramSegDesc::default(); MAX_PHDRS];
     let mut n_sram: usize = 0;
 
-    // Pre-compute total bytes that will be streamed from SD for true load progress.
+    // Pre-compute total bytes that will be streamed from SD for true load
+    // progress.  Use the shared `place_segment` decision so the set of segments
+    // counted here can never drift from the set the copy loop below actually
+    // streams: retention-RAM segments are `Skip`ped (not copied), everything else
+    // is counted.  A placement error is left for the copy loop to surface; the
+    // progress denominator it would have contributed to is irrelevant then.
     let mut total_bytes: u32 = 0;
     for i in 0..phnum {
         let ph = &phdr_buf[i * e_phentsize..][..32];
@@ -179,7 +184,8 @@ where
             continue;
         }
         let p_paddr = le32(ph, 12);
-        if (0x2000_0000..0x2002_0000).contains(&mirror_to_phys(p_paddr)) {
+        let p_memsz = le32(ph, 20);
+        if let Ok(SegmentPlacement::Skip) = place_segment(p_paddr, p_memsz) {
             continue;
         }
         total_bytes = total_bytes.saturating_add(le32(ph, 16));

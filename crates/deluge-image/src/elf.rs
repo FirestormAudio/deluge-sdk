@@ -385,6 +385,10 @@ pub enum FsbError {
     /// programmed without overrunning the slot.  Raised by the slot-store path,
     /// which knows the slot length; [`validate_fsb_metadata`] never returns it.
     TooLargeForSlot,
+    /// A post-program readback of the flash slot did not match the source image,
+    /// so the stored image is corrupt.  Raised by the slot-store path; carries the
+    /// byte offset of the first mismatch.  `validate_fsb_metadata` never returns it.
+    VerifyFailed(u32),
 }
 
 /// Validate the FSB metadata embedded in a flattened (`objcopy -O binary`-style)

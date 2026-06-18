@@ -2,6 +2,59 @@
   "version": "0.2.0",
   "configurations": [
     {
+      // probe-rs debug (trace-a9 fork). The fork does the Cortex-A9 bring-up
+      // internally — no JLinkScript / cp15 monitor commands needed. Build the
+      // target first (`cargo build-fw` for debug, `cargo build-fw-rel` for
+      // release). Requires the "probe-rs.probe-rs-debugger" extension, and that
+      // extension must drive the trace-a9 fork's `probe-rs dap-server` (a stock
+      // probe-rs has no Cortex-A9 support).
+      "name": "demo-firmware (probe-rs)",
+      "type": "probe-rs-debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "chip": "R7S721020",
+      // The fork halts the core in place; a reset would let the ROM re-load
+      // from QSPI.
+      "connectUnderReset": false,
+      "coreConfigs": [
+        {
+          "programBinary": "${workspaceFolder}/target/armv7a-none-eabihf/debug/demo-firmware",
+          "rttEnabled": true
+        }
+      ]
+    },
+    {
+      // Guarantees the trace-a9 fork is used: first start the fork's server in a
+      // terminal —  `probe-rs dap-server --port 50000` — then run this config.
+      "name": "demo-firmware (probe-rs, external server :50000)",
+      "type": "probe-rs-debug",
+      "request": "launch",
+      "server": "127.0.0.1:50000",
+      "cwd": "${workspaceFolder}",
+      "chip": "R7S721020",
+      "connectUnderReset": false,
+      "coreConfigs": [
+        {
+          "programBinary": "${workspaceFolder}/target/armv7a-none-eabihf/debug/demo-firmware",
+          "rttEnabled": true
+        }
+      ]
+    },
+    {
+      "name": "app-loader / SSB (probe-rs)",
+      "type": "probe-rs-debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "chip": "R7S721020",
+      "connectUnderReset": false,
+      "coreConfigs": [
+        {
+          "programBinary": "${workspaceFolder}/target/armv7a-none-eabihf/debug/app-loader",
+          "rttEnabled": true
+        }
+      ]
+    },
+    {
       "name": "demo-firmware (debug)",
       "type": "cortex-debug",
       "request": "launch",

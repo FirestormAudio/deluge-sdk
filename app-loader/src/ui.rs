@@ -323,9 +323,14 @@ pub static UPLOAD_ACTIVE: core::sync::atomic::AtomicBool =
 /// Modal YES/NO prompt asking whether to write `label` to the flash slot.
 ///
 /// Returns `true` only if the user selects YES.  The cursor defaults to NO (the
-/// safe choice); the SELECT encoder scrolls between YES/NO and a press confirms.
-/// Waits for the button to be released first so the long-press that opened this
-/// prompt isn't immediately consumed as the confirmation.
+/// safe choice); the SELECT encoder scrolls between YES/NO and a fresh press
+/// confirms.  The active option is marked with a solid triangle, matching the
+/// boot selector.
+///
+/// The long-press that opened this prompt is normally still held on entry, so we
+/// draw the prompt immediately (feedback the instant the hold fires) but wait for
+/// that press to be released before accepting a confirmation — otherwise the
+/// opening hold would be consumed as the YES/NO press.
 pub async fn confirm_write_to_flash(label: &[u8]) -> bool {
     use embassy_time::{Duration, Timer};
 
@@ -333,11 +338,13 @@ pub async fn confirm_write_to_flash(label: &[u8]) -> bool {
     let mut edge_acc: i8 = 0;
     let mut yes = false; // false = NO (default), true = YES
 
-    // Let go of the opening long-press before we accept a confirmation.
-    while SELECT_DOWN.load(Ordering::Acquire) {
-        Timer::after(Duration::from_millis(16)).await;
-    }
-    let mut press_seen = false;
+    // YES / NO label positions; the active one gets a triangle marker just to its
+    // left (label_x - 6), like the boot selector's cursor.
+    const YES_X: usize = 16;
+    const NO_X: usize = 76;
+
+    // The opening long-press is still held; only confirm after it clears.
+    let mut released = false;
 
     loop {
         let mut fb = FrameBuffer::new();
@@ -350,24 +357,33 @@ pub async fn confirm_write_to_flash(label: &[u8]) -> bool {
         let lx = (WIDTH.saturating_sub(label.len() * 6)) / 2;
         draw_str(&mut fb, lx, TOP_PAD + 14, label);
 
-        // YES / NO row with a leading marker on the active option.
+        // YES / NO row with a triangle marker on the active option.
         let row = TOP_PAD + 28;
-        draw_str(&mut fb, 16, row, if yes { b">YES" } else { b" YES" });
-        draw_str(&mut fb, 76, row, if yes { b" NO" } else { b">NO" });
+        draw_str(&mut fb, YES_X, row, b"YES");
+        draw_str(&mut fb, NO_X, row, b"NO");
+        draw_solid_triangle(&mut fb, if yes { YES_X } else { NO_X } - 6, row);
         oled::send_frame(&fb).await;
 
         Timer::after(Duration::from_millis(16)).await;
 
-        if deluge_bsp::encoder::take_detents(ENC, &mut edge_acc) != 0 {
-            yes = !yes;
+        // Direction-aware selection: scroll either way to land on a fixed option
+        // (YES when scrolling back, NO when scrolling forward) rather than blindly
+        // toggling, so holding a direction settles instead of flip-flopping.
+        let detents = deluge_bsp::encoder::take_detents(ENC, &mut edge_acc);
+        if detents < 0 {
+            yes = true;
+        } else if detents > 0 {
+            yes = false;
         }
 
-        // Confirm on a fresh press (rising edge after release).
         let down = SELECT_DOWN.load(Ordering::Acquire);
-        if down && !press_seen {
+        if !released {
+            // Still letting go of the opening long-press.
+            released = !down;
+        } else if down {
+            // Fresh press after release — confirm the highlighted option.
             return yes;
         }
-        press_seen = down;
     }
 }
 

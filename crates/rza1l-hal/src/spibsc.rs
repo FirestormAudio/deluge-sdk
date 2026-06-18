@@ -85,17 +85,17 @@ pub const FLASH_SIZE: u32 = 0x0040_0000; // 4 MB
 ///
 /// Everything below this is **hardware-reserved** and is never erased or
 /// programmed by this driver — [`erase_sector`] / [`program`] refuse any offset
-/// outside the writable windows (see [`writable`]).  The Deluge QSPI map, by
-/// 256 KB sector:
-///   * sector 0   `0x00000..0x40000`  — first-stage bootloader (FSB)
-///   * sector 1   `0x40000..0x80000`  — Deluge device-settings (data at `0x7F000`;
-///     DelugeFirmware erases this whole 256 KB sector when it saves settings)
-///   * sectors 2-3 `0x80000..0x100000` — second-stage bootloader (SSB); the FSB
-///     loads the SSB from `0x80000`
+/// outside the writable windows (see [`writable`]).  The Deluge flash map (the
+/// regions below are described in the original 256 KB units; the erase
+/// granularity is actually a 64 KB [`SECTOR_SIZE`] block):
+///   * `0x00000..0x40000`  — first-stage bootloader (FSB)
+///   * `0x40000..0x80000`  — Deluge device-settings
+///   * `0x80000..0x100000` — second-stage bootloader (SSB); the FSB loads the
+///     SSB from `0x80000`
 ///
 /// The app slot sits **above** the SSB so storing an app can never touch the
-/// FSB, the device settings, or the SSB itself.  `0x100000` is 256 KB-aligned,
-/// so erasing a slot sector never spills into the reserved region below.
+/// FSB, the device settings, or the SSB itself.  `0x100000` is 64 KB-aligned,
+/// so erasing a slot block never spills into the reserved region below.
 pub const FLASH_SLOT_OFFSET: u32 = 0x0010_0000; // 1 MB
 /// Memory-mapped (read-window) address of the app slot.
 pub const FLASH_SLOT_ADDR: u32 = SPI_FLASH_BASE + FLASH_SLOT_OFFSET;
@@ -117,9 +117,14 @@ pub const SETTINGS_SECTOR_OFFSET: u32 = 0x003C_0000;
 /// Memory-mapped (read-window) address of the settings sector.
 pub const SETTINGS_SECTOR_ADDR: u32 = SPI_FLASH_BASE + SETTINGS_SECTOR_OFFSET;
 
-/// Uniform erase-sector size (**256 KB**).  This part has no 4 KB/64 KB erase —
-/// the only granularities are this sector and full-chip.
-pub const SECTOR_SIZE: u32 = 0x0004_0000;
+/// Uniform erase-sector size (**64 KB**) — the granularity of the `0xD8` block
+/// erase ([`CMD_SECTOR_ERASE`]) on this S25FL032-class 4 MB part.  Earlier code
+/// wrongly assumed 256 KB sectors (copied from an S25FL512 reference): a `0xD8`
+/// clears only 64 KB, so a 256 KB stride left three quarters of every region
+/// un-erased and a multi-sector store corrupted everything past the first 64 KB.
+/// Every slot/settings offset below is 64 KB-aligned, so the geometry is
+/// unchanged — only the erase step shrinks to match the hardware.
+pub const SECTOR_SIZE: u32 = 0x0001_0000;
 /// Program chunk size.  The page buffer is larger, but the Deluge bootloader
 /// programs the firmware region in 256-byte units with the note "Bigger doesn't
 /// seem to work" on this board (`FLASH_WRITE_SIZE` in
@@ -255,7 +260,7 @@ const CMD_WREN: u32 = 0x06;
 const CMD_RDSR: u32 = 0x05;
 const CMD_RDID: u32 = 0x9F;
 const CMD_PP: u32 = 0x02; // page program (3-byte address)
-const CMD_SECTOR_ERASE: u32 = 0xD8; // 256 KB uniform sector erase (3-byte address)
+const CMD_SECTOR_ERASE: u32 = 0xD8; // 64 KB uniform block erase (3-byte address)
 const CMD_CLEAR_STATUS: u32 = 0x30; // clear latched P_ERR/E_ERR (and stuck WIP)
 const SR_WIP: u32 = 1 << 0; // status register: write-in-progress
 const SR_E_ERR: u32 = 1 << 5; // erase error (S25FL-S): set on a rejected erase
@@ -721,7 +726,7 @@ mod tests {
         assert_eq!(FLASH_SLOT_OFFSET, 0x0010_0000);
         assert_eq!(FLASH_SLOT_ADDR, 0x1810_0000);
         assert_eq!(FLASH_SLOT_LEN, 0x002C_0000);
-        assert_eq!(SECTOR_SIZE, 0x0004_0000);
+        assert_eq!(SECTOR_SIZE, 0x0001_0000, "0xD8 erases 64 KB on this part");
     }
 
     /// The slot must be a whole number of erase sectors, and the slot base must
@@ -731,15 +736,17 @@ mod tests {
     fn slot_is_sector_aligned() {
         assert_eq!(FLASH_SLOT_OFFSET % SECTOR_SIZE, 0, "slot base must be sector-aligned");
         assert_eq!(FLASH_SLOT_LEN % SECTOR_SIZE, 0, "slot must be whole sectors");
-        assert_eq!(FLASH_SLOT_LEN / SECTOR_SIZE, 11, "2.75 MB / 256 KB = 11 sectors");
+        assert_eq!(FLASH_SLOT_LEN / SECTOR_SIZE, 44, "2.75 MB / 64 KB = 44 sectors");
     }
 
-    /// The settings sector must be exactly one erase sector, sector-aligned, sit
-    /// directly above the app slot, and — critically — be the **top sector that
-    /// physically exists** (`+ SECTOR_SIZE == FLASH_SIZE`).  Placing it *at* the
-    /// chip end (`0x400000`) instead aliased to `0x0` and erased the FSB.
+    /// The settings sector must be sector-aligned, sit directly above the app
+    /// slot, and stay strictly inside the chip — its erase block must not reach
+    /// or pass the chip end (placing it *at* `0x400000` aliased to `0x0` and
+    /// erased the FSB).  It need not be the literal top sector: with 64 KB
+    /// sectors the 64 KB at `0x3C0000` leaves three unused blocks above it, which
+    /// is harmless — the settings record only occupies the first page.
     #[test]
-    fn settings_sector_is_top_in_chip_sector() {
+    fn settings_sector_is_in_chip_and_above_slot() {
         assert_eq!(SETTINGS_SECTOR_OFFSET, 0x003C_0000);
         assert_eq!(SETTINGS_SECTOR_ADDR, SPI_FLASH_BASE + 0x003C_0000);
         assert_eq!(
@@ -751,10 +758,9 @@ mod tests {
             SETTINGS_SECTOR_OFFSET, FLASH_SLOT_OFFSET + FLASH_SLOT_LEN,
             "settings sector sits directly above the app slot"
         );
-        assert_eq!(
-            SETTINGS_SECTOR_OFFSET + SECTOR_SIZE,
-            FLASH_SIZE,
-            "settings sector must be the last in-chip sector (never at/over the chip end)"
+        assert!(
+            SETTINGS_SECTOR_OFFSET + SECTOR_SIZE <= FLASH_SIZE,
+            "settings erase block must stay inside the chip (never at/over the end)"
         );
     }
 
