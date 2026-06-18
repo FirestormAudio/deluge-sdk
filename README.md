@@ -37,7 +37,7 @@ async fn main(dlg: Deluge) {
 
 ---
 
-## Why it's safe to hack on
+## Safe to hack on
 
 Apps are **ELF binaries that run from RAM**, loaded by the on-device app-loader
 either straight over USB (dev mode) or from the `/APPS/` folder on the SD card.
@@ -157,10 +157,10 @@ compile-proves all of them on the firmware target).
 
 ## Documentation
 
-- **[Getting started](docs/getting-started.md)** — toolchain, `cargo deluge`,
-  and a tour of every capability. Read this first.
 - **[Device setup](docs/device-setup.md)** — from a clone to running your own
   apps: build and flash the app-loader, enable dev mode, install apps.
+- **[Getting started](docs/getting-started.md)** — toolchain, `cargo deluge`,
+  and a tour of every capability. Read this first.
 - **[Advanced developer guide](docs/advanced-guide.md)** — Embassy tasks,
   interrupts, the HAL/BSP layers, and Cortex-A9 trace tooling.
 
