@@ -1,21 +1,21 @@
 //! Variable-width bitmap fonts for Deluge display.
 //!
 //! This module provides `VariFont` - a counterpart to embedded-graphics' `MonoFont`
-//! that works with variable-width fonts from embedded-fonts-deluge.
+//! that works with variable-width fonts from deluge-fonts.
 
-use embedded_fonts_deluge::{Font as DelugeFont, GlyphDescriptor};
+use deluge_fonts::{Font as DelugeFont, GlyphDescriptor};
 
 /// Variable-width bitmap font.
 ///
 /// `VariFont` is designed to work with the Deluge variable-width fonts from
-/// `embedded-fonts-deluge`. Unlike monospaced fonts where every glyph has the same width,
+/// `deluge-fonts`. Unlike monospaced fonts where every glyph has the same width,
 /// variable-width fonts store individual width information for each glyph.
 ///
 /// # Example
 ///
 /// ```no_run
 /// use deluge_ui_toolkit::text::VariFont;
-/// use embedded_fonts_deluge::Font as DelugeFont;
+/// use deluge_fonts::Font as DelugeFont;
 /// use embedded_graphics::prelude::*;
 ///
 /// let font = VariFont::new(DelugeFont::MetricBold13px);

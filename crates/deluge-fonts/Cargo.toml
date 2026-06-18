@@ -1,5 +1,5 @@
 [package]
-name = "embedded-fonts-deluge"
+name = "deluge-fonts"
 version.workspace = true
 edition.workspace = true
 authors = ["Firestorm Community"]

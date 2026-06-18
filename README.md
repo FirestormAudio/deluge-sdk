@@ -51,14 +51,9 @@ That means:
   the ELF over USB and the loader launches it from RAM — no SD shuffling, no
   debug probe.
 
-```mermaid
-flowchart LR
-    edit["edit code"] --> build["cargo deluge run"]
-    build --> usb["ELF → USB upload<br/>(dev mode)"]
-    usb --> load["loader → RAM"]
-    load --> run["app runs"]
-    run --> edit
-```
+<p align="center">
+  <img src="docs/dev-loop.svg" alt="Push-to-run dev loop: edit code → cargo deluge run → ELF over USB upload → loader → RAM → app runs → back to edit code." width="440">
+</p>
 
 ---
 

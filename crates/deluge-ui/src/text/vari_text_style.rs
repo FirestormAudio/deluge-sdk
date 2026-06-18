@@ -25,7 +25,7 @@ use embedded_graphics::{
 ///
 /// ```no_run
 /// use deluge_ui_toolkit::text::{VariFont, VariTextStyle};
-/// use embedded_fonts_deluge::Font as DelugeFont;
+/// use deluge_fonts::Font as DelugeFont;
 /// use embedded_graphics::{pixelcolor::BinaryColor, text::Alignment};
 ///
 /// let font = VariFont::new(DelugeFont::MetricBold13px);
@@ -104,7 +104,7 @@ impl VariTextStyle {
 ///
 /// ```no_run
 /// use deluge_ui_toolkit::text::{VariFont, VariTextStyleBuilder};
-/// use embedded_fonts_deluge::Font as DelugeFont;
+/// use deluge_fonts::Font as DelugeFont;
 /// use embedded_graphics::{pixelcolor::BinaryColor, text::Alignment};
 ///
 /// let font = VariFont::new(DelugeFont::MetricBold13px);
@@ -254,7 +254,7 @@ impl TextRenderer for VariTextStyle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use embedded_fonts_deluge::Font as DelugeFont;
+    use deluge_fonts::Font as DelugeFont;
 
     #[test]
     fn test_style_creation() {

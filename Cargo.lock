@@ -568,6 +568,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "deluge-fonts"
+version = "0.1.0"
+dependencies = [
+ "embedded-graphics",
+]
+
+[[package]]
 name = "deluge-image"
 version = "0.1.0"
 
@@ -585,7 +592,7 @@ dependencies = [
 name = "deluge-ui-toolkit"
 version = "0.1.0"
 dependencies = [
- "embedded-fonts-deluge",
+ "deluge-fonts",
  "embedded-graphics",
  "embedded-graphics-simulator",
  "heapless 0.9.3",
@@ -774,13 +781,6 @@ dependencies = [
  "embedded-io-async 0.7.0",
  "heapless 0.9.3",
  "zerocopy",
-]
-
-[[package]]
-name = "embedded-fonts-deluge"
-version = "0.1.0"
-dependencies = [
- "embedded-graphics",
 ]
 
 [[package]]

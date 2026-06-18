@@ -37,7 +37,7 @@
 //! ## Usage
 //!
 //! ```no_run
-//! use embedded_fonts_deluge::*;
+//! use deluge_fonts::*;
 //! use embedded_graphics::prelude::*;
 //!
 //! // Use the convenient Font enum

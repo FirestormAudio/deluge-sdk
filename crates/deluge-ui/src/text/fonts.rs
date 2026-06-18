@@ -1,11 +1,11 @@
 //! Const font definitions for Deluge variable-width fonts.
 //!
 //! This module provides const instances of [`VariFont`] for each font
-//! available in the embedded-fonts-deluge crate, following the pattern
+//! available in the deluge-fonts crate, following the pattern
 //! used by embedded-graphics' MonoFont constants.
 
 use super::VariFont;
-use embedded_fonts_deluge::Font as DelugeFont;
+use deluge_fonts::Font as DelugeFont;
 
 /// 5px variable-width font (U+0020 to U+005A).
 ///

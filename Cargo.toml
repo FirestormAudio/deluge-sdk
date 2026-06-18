@@ -74,7 +74,7 @@ fixedpoint = { package = "deluge-fixedpoint", path = "crates/fixedpoint", versio
 
 # Vendored from `spark` (GPL-3.0-or-later — kept as standalone crates apps opt
 # into; the permissive `deluge` facade must NOT depend on these).
-embedded-fonts-deluge = { path = "crates/deluge-fonts", version = "0.1.0" }
+deluge-fonts = { path = "crates/deluge-fonts", version = "0.1.0" }
 deluge-ui-toolkit = { path = "crates/deluge-ui", version = "0.1.0" }
 
 [profile.release]

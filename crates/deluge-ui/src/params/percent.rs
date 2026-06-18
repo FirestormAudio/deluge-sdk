@@ -4,7 +4,7 @@
 
 use crate::Positionable;
 use crate::prelude::*;
-use embedded_fonts_deluge::Font;
+use deluge_fonts::Font;
 use embedded_graphics::{
     Drawable,
     draw_target::DrawTarget,

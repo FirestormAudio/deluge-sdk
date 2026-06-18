@@ -10,7 +10,7 @@ pub use fonts::{
 pub use vari_font::VariFont;
 pub use vari_text_style::{VariTextStyle, VariTextStyleBuilder};
 
-use embedded_fonts_deluge::Font as DelugeFont;
+use deluge_fonts::Font as DelugeFont;
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*, text::Alignment};
 
 /// Available fonts for the Deluge display
@@ -29,7 +29,7 @@ pub enum Font {
 }
 
 impl Font {
-    /// Get the embedded-fonts-deluge Font
+    /// Get the deluge-fonts Font
     pub fn deluge_font(&self) -> DelugeFont {
         match self {
             Font::Font5px => DelugeFont::Font5px,
@@ -100,7 +100,7 @@ where
         Alignment::Right => position.x - text_width,
     };
 
-    // Draw text using embedded-fonts-deluge with custom color
+    // Draw text using deluge-fonts with custom color
     deluge_font.draw_text_colored_with_spacing(
         display,
         text,
