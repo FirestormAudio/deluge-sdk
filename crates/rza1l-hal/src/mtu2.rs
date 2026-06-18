@@ -445,7 +445,11 @@ mod tests {
         unsafe { start_free_running(ch, 16) };
         // TCR holds the prescaler code for /16 (= 0b010).
         assert_eq!(mmio::test::peek8(TCR[ch as usize]), tpsc(ch, 16));
-        assert_eq!(mmio::test::peek8(TIER[ch as usize]), 0, "compare-match IRQ off");
+        assert_eq!(
+            mmio::test::peek8(TIER[ch as usize]),
+            0,
+            "compare-match IRQ off"
+        );
         // The channel's CST start bit is set in TSTR.
         assert_eq!(mmio::test::peek8(TSTR) & CST[ch as usize], CST[ch as usize]);
     }
@@ -456,7 +460,11 @@ mod tests {
         // Pretend channels 1 and 3 are both running.
         mmio::test::poke8(TSTR, CST[1] | CST[3]);
         unsafe { stop(3) };
-        assert_eq!(mmio::test::peek8(TSTR), CST[1], "ch1 still running, ch3 stopped");
+        assert_eq!(
+            mmio::test::peek8(TSTR),
+            CST[1],
+            "ch1 still running, ch3 stopped"
+        );
     }
 
     #[test]

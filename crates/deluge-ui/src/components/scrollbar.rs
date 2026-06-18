@@ -80,9 +80,12 @@ impl Drawable for Scrollbar {
         let ind_bottom = ind_y + ind_h;
         let track_bottom = self.top + self.height - 1;
         if ind_bottom < track_bottom {
-            Line::new(Point::new(self.x, ind_bottom), Point::new(self.x, track_bottom))
-                .into_styled(stroke)
-                .draw(d)?;
+            Line::new(
+                Point::new(self.x, ind_bottom),
+                Point::new(self.x, track_bottom),
+            )
+            .into_styled(stroke)
+            .draw(d)?;
         }
 
         // Indicator: a 3 px-wide hollow box straddling the rail.
@@ -125,13 +128,18 @@ mod tests {
         // Indicator centre is lower when scrolled further down.
         let centre = |scroll| {
             let mut d: SimulatorDisplay<BinaryColor> = SimulatorDisplay::new(Size::new(128, 48));
-            Scrollbar::new(126, 14, 27, 8, 3, scroll).draw(&mut d).unwrap();
+            Scrollbar::new(126, 14, 27, 8, 3, scroll)
+                .draw(&mut d)
+                .unwrap();
             // Mean y of lit indicator pixels (x = 125, the indicator's left wall).
             let ys: heapless::Vec<i32, 64> = (0..48)
                 .filter(|&y| d.get_pixel(Point::new(125, y)) == BinaryColor::On)
                 .collect();
             ys.iter().sum::<i32>() / ys.len().max(1) as i32
         };
-        assert!(centre(0) < centre(5), "indicator should descend as scroll grows");
+        assert!(
+            centre(0) < centre(5),
+            "indicator should descend as scroll grows"
+        );
     }
 }

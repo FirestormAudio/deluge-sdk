@@ -116,8 +116,8 @@ impl BlockState {
         }
         if avail > ssi::RX_FRAMES - GUARD_FRAMES {
             // overrun: DMA lapped us — drop stale input, re-anchor one block back.
-            self.rx_rd = ((rx_head_off() + ssi::RX_BUF_LEN - BLOCK_FRAMES * 2) % ssi::RX_BUF_LEN)
-                & !1;
+            self.rx_rd =
+                ((rx_head_off() + ssi::RX_BUF_LEN - BLOCK_FRAMES * 2) % ssi::RX_BUF_LEN) & !1;
         }
 
         let base = ssi::rx_buf_start();

@@ -101,15 +101,34 @@ mod tests {
     #[test]
     fn all_button_ids_are_in_range_and_unique() {
         let buttons = [
-            button::ENCODER_FUNCTION_0, button::ENCODER_FUNCTION_4,
-            button::ENCODER_FUNCTION_1, button::ENCODER_FUNCTION_5,
-            button::ENCODER_FUNCTION_2, button::ENCODER_FUNCTION_6,
-            button::ENCODER_FUNCTION_3, button::ENCODER_FUNCTION_7,
-            button::AFFECT_ENTIRE, button::SYNTH, button::SCALE_MODE, button::LEARN,
-            button::SHIFT, button::SESSION_VIEW, button::KIT, button::LOAD, button::BACK,
-            button::TRIPLETS, button::CLIP_VIEW, button::MIDI, button::CROSS_SCREEN_EDIT,
-            button::SYNC_SCALING, button::RECORD, button::KEYBOARD, button::CV, button::SAVE,
-            button::TAP_TEMPO, button::PLAY,
+            button::ENCODER_FUNCTION_0,
+            button::ENCODER_FUNCTION_4,
+            button::ENCODER_FUNCTION_1,
+            button::ENCODER_FUNCTION_5,
+            button::ENCODER_FUNCTION_2,
+            button::ENCODER_FUNCTION_6,
+            button::ENCODER_FUNCTION_3,
+            button::ENCODER_FUNCTION_7,
+            button::AFFECT_ENTIRE,
+            button::SYNTH,
+            button::SCALE_MODE,
+            button::LEARN,
+            button::SHIFT,
+            button::SESSION_VIEW,
+            button::KIT,
+            button::LOAD,
+            button::BACK,
+            button::TRIPLETS,
+            button::CLIP_VIEW,
+            button::MIDI,
+            button::CROSS_SCREEN_EDIT,
+            button::SYNC_SCALING,
+            button::RECORD,
+            button::KEYBOARD,
+            button::CV,
+            button::SAVE,
+            button::TAP_TEMPO,
+            button::PLAY,
         ];
         let mut seen = [false; 36];
         for &b in &buttons {
@@ -124,14 +143,22 @@ mod tests {
         // The six shaft-click IDs are reported separately and must not collide
         // with any named front-panel button.
         let shaft = [
-            encoder_button::SCROLL_Y, encoder_button::SCROLL_X, encoder_button::TEMPO,
-            encoder_button::MOD_0, encoder_button::MOD_1, encoder_button::SELECT,
+            encoder_button::SCROLL_Y,
+            encoder_button::SCROLL_X,
+            encoder_button::TEMPO,
+            encoder_button::MOD_0,
+            encoder_button::MOD_1,
+            encoder_button::SELECT,
         ];
         assert_eq!(shaft, [0, 9, 13, 18, 27, 31]);
         // Encoder *rotation* IDs are a separate 0..=5 space.
         let rot = [
-            encoder::SCROLL_X, encoder::TEMPO, encoder::MOD_0,
-            encoder::MOD_1, encoder::SCROLL_Y, encoder::SELECT,
+            encoder::SCROLL_X,
+            encoder::TEMPO,
+            encoder::MOD_0,
+            encoder::MOD_1,
+            encoder::SCROLL_Y,
+            encoder::SELECT,
         ];
         let mut seen = [false; 6];
         for &r in &rot {

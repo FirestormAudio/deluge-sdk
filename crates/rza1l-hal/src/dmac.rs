@@ -537,8 +537,21 @@ macro_rules! block_handlers {
     };
 }
 block_handlers!(
-    dbi_0 = 0, dbi_1 = 1, dbi_2 = 2, dbi_3 = 3, dbi_4 = 4, dbi_5 = 5, dbi_6 = 6, dbi_7 = 7,
-    dbi_8 = 8, dbi_9 = 9, dbi_10 = 10, dbi_11 = 11, dbi_12 = 12, dbi_13 = 13, dbi_14 = 14,
+    dbi_0 = 0,
+    dbi_1 = 1,
+    dbi_2 = 2,
+    dbi_3 = 3,
+    dbi_4 = 4,
+    dbi_5 = 5,
+    dbi_6 = 6,
+    dbi_7 = 7,
+    dbi_8 = 8,
+    dbi_9 = 9,
+    dbi_10 = 10,
+    dbi_11 = 11,
+    dbi_12 = 12,
+    dbi_13 = 13,
+    dbi_14 = 14,
     dbi_15 = 15,
 );
 
@@ -646,14 +659,21 @@ mod tests {
         let ch = 6u8; // even
         unsafe { init_with_link_descriptor(ch, desc.as_ptr(), 0x00E1) };
 
-        assert_eq!(crate::mmio::test::peek32(dctrl_reg(ch) as usize), 0, "DCTRL cleared");
+        assert_eq!(
+            crate::mmio::test::peek32(dctrl_reg(ch) as usize),
+            0,
+            "DCTRL cleared"
+        );
         assert_eq!(
             crate::mmio::test::peek32(ch_reg(ch, OFF_CHCFG) as usize),
             0xABCD_1234,
             "CHCFG from desc[4]"
         );
         // Even channel → DMARS resource selector in the low 16 bits.
-        assert_eq!(crate::mmio::test::peek32(dmars_reg(ch) as usize), 0x0000_00E1);
+        assert_eq!(
+            crate::mmio::test::peek32(dmars_reg(ch) as usize),
+            0x0000_00E1
+        );
         assert_eq!(
             crate::mmio::test::peek32(ch_reg(ch, OFF_NXLA) as usize),
             desc.as_ptr() as u32,
@@ -671,6 +691,10 @@ mod tests {
         crate::mmio::test::poke32(dmars, 0x0000_00E1); // ch6 already set the low half
         let desc = [0u32; 8];
         unsafe { init_with_link_descriptor(7, desc.as_ptr(), 0x00E2) };
-        assert_eq!(crate::mmio::test::peek32(dmars), 0x00E2_00E1, "odd in high, even preserved");
+        assert_eq!(
+            crate::mmio::test::peek32(dmars),
+            0x00E2_00E1,
+            "odd in high, even preserved"
+        );
     }
 }

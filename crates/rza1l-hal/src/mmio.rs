@@ -180,7 +180,12 @@ mod shadow {
             for i in 0..width as usize {
                 s.mem.insert(addr + i, (val >> (8 * i)) as u8);
             }
-            s.log.push(Access { write: true, width, addr, val });
+            s.log.push(Access {
+                write: true,
+                width,
+                addr,
+                val,
+            });
         });
     }
 
@@ -191,7 +196,12 @@ mod shadow {
             for i in 0..width as usize {
                 v |= (*s.mem.get(&(addr + i)).unwrap_or(&0) as u32) << (8 * i);
             }
-            s.log.push(Access { write: false, width, addr, val: v });
+            s.log.push(Access {
+                write: false,
+                width,
+                addr,
+                val: v,
+            });
             v
         })
     }
@@ -234,8 +244,8 @@ mod shadow {
 /// Test-only inspection API for the shadow MMIO (host/QEMU target).
 #[cfg(not(target_os = "none"))]
 pub mod test {
-    pub use super::shadow::Access;
     use super::shadow;
+    pub use super::shadow::Access;
     use std::vec::Vec;
 
     /// Clear the shadow memory and access log. Call at the start of every test

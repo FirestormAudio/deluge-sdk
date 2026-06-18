@@ -107,7 +107,9 @@ impl Rspi0 {
 /// `CriticalSectionRawMutex` (not an async-only raw mutex) is deliberate: it
 /// lets [`steal_rspi0`] and [`try_lock_rspi0`] work outside the executor (boot,
 /// and a future panic handler).
-static RSPI0: Mutex<CriticalSectionRawMutex, Rspi0> = Mutex::new(Rspi0 { mode: Mode::Unknown });
+static RSPI0: Mutex<CriticalSectionRawMutex, Rspi0> = Mutex::new(Rspi0 {
+    mode: Mode::Unknown,
+});
 
 /// Type of the guard returned by [`lock_rspi0`].
 pub type Rspi0Guard = MutexGuard<'static, CriticalSectionRawMutex, Rspi0>;
@@ -139,5 +141,7 @@ pub fn try_lock_rspi0() -> Option<Rspi0Guard> {
 /// the lifetime of the returned token (e.g. inside a panic handler with IRQs
 /// masked).
 pub unsafe fn steal_rspi0() -> Rspi0 {
-    Rspi0 { mode: Mode::Unknown }
+    Rspi0 {
+        mode: Mode::Unknown,
+    }
 }

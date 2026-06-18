@@ -26,7 +26,7 @@ fn interval_to_bpm(dt: Duration) -> u32 {
 }
 
 /// Format `n` (0–999) into `buf` as up to 3 ASCII digits; returns the slice.
-fn fmt_u32<'a>(buf: &'a mut [u8; 3], mut n: u32) -> &'a str {
+fn fmt_u32(buf: &mut [u8; 3], mut n: u32) -> &str {
     n = n.min(999);
     let mut i = 3;
     if n == 0 {
@@ -75,7 +75,15 @@ async fn main(dlg: Deluge) {
         oled.text(0, 10, "CLOCK + JACKS");
         oled.text(0, 22, "BPM ");
         oled.text(24, 22, fmt_u32(&mut nbuf, bpm));
-        oled.text(0, 34, if jacks.headphone() { "HP:IN " } else { "HP:-- " });
+        oled.text(
+            0,
+            34,
+            if jacks.headphone() {
+                "HP:IN "
+            } else {
+                "HP:-- "
+            },
+        );
         oled.text(
             48,
             34,

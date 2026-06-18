@@ -195,11 +195,7 @@ pub struct Selection {
 /// user gets feedback without waiting for release.
 ///
 /// Must be called from an Embassy task after `oled::init()` has completed.
-pub async fn run_selector(
-    entries: &[&[u8]],
-    default_idx: usize,
-    countdown_secs: u8,
-) -> Selection {
+pub async fn run_selector(entries: &[&[u8]], default_idx: usize, countdown_secs: u8) -> Selection {
     use embassy_time::{Duration, Instant, Timer};
 
     let mut cursor: usize = default_idx.min(entries.len().saturating_sub(1));
@@ -309,8 +305,7 @@ pub async fn run_selector(
 ///
 /// Pumped by `pic_rx_task` in `main.rs` (set on `ButtonPress`, cleared on
 /// `ButtonRelease`); the selector and prompts derive press/hold edges from it.
-pub static SELECT_DOWN: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
+pub static SELECT_DOWN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// Set by [`crate::devupload`] once an upload header has arrived, to claim the
 /// OLED. While set, [`run_selector`] stops drawing *and* stops acting on input,

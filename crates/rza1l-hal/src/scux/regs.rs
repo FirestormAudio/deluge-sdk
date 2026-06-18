@@ -512,7 +512,10 @@ mod tests {
         assert_eq!(intifs(44100, 44100), 0x0040_0000);
         assert_eq!(intifs(48000, 48000), 0x0040_0000);
         assert_eq!(INTIFS_44100_TO_44100, 0x0040_0000);
-        assert_ne!(INTIFS_44100_TO_44100, 0x0400_0000, "must not be 16× too large");
+        assert_ne!(
+            INTIFS_44100_TO_44100, 0x0400_0000,
+            "must not be 16× too large"
+        );
     }
 
     #[test]

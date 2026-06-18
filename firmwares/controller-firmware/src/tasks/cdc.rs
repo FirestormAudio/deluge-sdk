@@ -16,8 +16,8 @@ use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channe
 use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver, Sender};
 use log::{debug, info};
 
-use rza1l_hal::usb::Rusb1Driver;
 use deluge_bsp::{cv_gate, pic};
+use rza1l_hal::usb::Rusb1Driver;
 
 use crate::events::{EVENT_CHANNEL, HardwareEvent};
 use crate::tasks::oled as oled_task;

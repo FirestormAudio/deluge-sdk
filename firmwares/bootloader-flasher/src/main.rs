@@ -221,7 +221,9 @@ async fn run() -> Result<usize, FlashErr> {
     info!("SD: card ready (HC={})", sd::is_hc());
 
     let vm = fat::new_volume_manager();
-    let volume = vm.open_raw_volume(fat::VolumeIdx(0)).map_err(|_| FlashErr::Fat)?;
+    let volume = vm
+        .open_raw_volume(fat::VolumeIdx(0))
+        .map_err(|_| FlashErr::Fat)?;
     let root = vm.open_root_dir(volume).map_err(|_| FlashErr::Fat)?;
 
     let file = vm
@@ -283,7 +285,10 @@ async fn run() -> Result<usize, FlashErr> {
     for (i, &want) in image.iter().enumerate() {
         let got = unsafe { core::ptr::read_volatile((mirror + i as u32) as *const u8) };
         if got != want {
-            error!("verify mismatch at {:#x}: got {:#x} want {:#x}", i, got, want);
+            error!(
+                "verify mismatch at {:#x}: got {:#x} want {:#x}",
+                i, got, want
+            );
             return Err(FlashErr::Verify);
         }
     }

@@ -21,7 +21,7 @@ async fn main(_dlg: Deluge) {
     let mut tick: u32 = 0;
     loop {
         info!("tick {}", tick);
-        if tick % 5 == 0 {
+        if tick.is_multiple_of(5) {
             warn!("every fifth tick is a warning ({})", tick);
         }
         tick = tick.wrapping_add(1);

@@ -84,7 +84,9 @@ mod tests {
     fn dither_lfsr_is_deterministic() {
         let run = || {
             let mut l = 0x1234u32;
-            (0..8).map(|_| dither_sample(&mut l)).collect::<std::vec::Vec<_>>()
+            (0..8)
+                .map(|_| dither_sample(&mut l))
+                .collect::<std::vec::Vec<_>>()
         };
         assert_eq!(run(), run(), "same seed → same sequence");
     }

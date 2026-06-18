@@ -18,12 +18,12 @@ use deluge_bsp::fat::{self, FatError, RawFile};
 // The ELF wire-format constants and the pure load-range / staging math live in
 // the host-testable `deluge-image` crate so there is a single host-tested
 // implementation (see `crates/deluge-image/src/elf.rs`).
+use deluge_bsp::flash;
 use deluge_image::elf::{
-    ELF_MAGIC, ELFCLASS32, ELFDATA2LSB, EM_ARM, ET_EXEC, LoadTarget, MAX_PHDRS, PT_LOAD,
-    PlanError, SegmentPlacement, classify_load_range, le16, le32, mirror_to_phys, parse_load_plan,
+    ELF_MAGIC, ELFCLASS32, ELFDATA2LSB, EM_ARM, ET_EXEC, LoadTarget, MAX_PHDRS, PT_LOAD, PlanError,
+    SegmentPlacement, classify_load_range, le16, le32, mirror_to_phys, parse_load_plan,
     place_segment, sram_stage_addr,
 };
-use deluge_bsp::flash;
 use embassy_time::{Duration, Timer};
 
 /// Chunk size for streamed segment copies (one FAT sector).
@@ -219,12 +219,11 @@ where
         //   * SDRAM targets are written through `p_paddr` (so a segment that
         //     asked for the uncached mirror still lands there);
         //   * SRAM targets are staged in SDRAM, keyed by the physical offset.
-        let (write_addr, is_sram) = match place_segment(p_paddr, p_memsz as u32)
-            .map_err(|()| ElfError::BadLoadAddress)?
-        {
-            SegmentPlacement::Skip => continue,
-            SegmentPlacement::Write { write_addr, sram } => (write_addr, sram),
-        };
+        let (write_addr, is_sram) =
+            match place_segment(p_paddr, p_memsz as u32).map_err(|()| ElfError::BadLoadAddress)? {
+                SegmentPlacement::Skip => continue,
+                SegmentPlacement::Write { write_addr, sram } => (write_addr, sram),
+            };
 
         vm.file_seek_from_start(file, p_offset)?;
 

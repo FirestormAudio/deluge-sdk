@@ -67,10 +67,10 @@ use super::regs::{
     INTENB1_ATTCHE, INTENB1_DTCHE, INTENB1_SACKE, INTENB1_SIGNE, INTSTS0_BEMP, INTSTS0_BRDY,
     INTSTS0_NRDY, INTSTS1_ATTCH, INTSTS1_DTCH, INTSTS1_SACK, INTSTS1_SIGN, PIPECFG_DBLB,
     PIPECFG_EPNUM_MASK, PIPECFG_SHTNAK, PIPECFG_TYPE_BULK, PIPECFG_TYPE_INTR, PIPECFG_TYPE_ISO,
-    PIPECTR_ACLRM, PIPECTR_BSTS, PIPECTR_PBUSY, PIPECTR_PID_BUF, PIPECTR_PID_MASK,
-    PIPECTR_PID_NAK, PIPECTR_SQCLR, PIPECTR_SQSET, PIPEMAXP_DEVSEL_SHIFT, PIPEMAXP_MXPS_MASK,
-    PIPEPERI_IITV_MASK, Rusb1Regs, SUSPMODE_SUSPM, SYSCFG_DCFM, SYSCFG_DPRPU, SYSCFG_DRPD,
-    SYSCFG_HSE, SYSCFG_UPLLE, SYSCFG_USBE, SYSSTS0_LNST, devadd_ptr, pipectr_ptr, rd, rmw, wr,
+    PIPECTR_ACLRM, PIPECTR_BSTS, PIPECTR_PBUSY, PIPECTR_PID_BUF, PIPECTR_PID_MASK, PIPECTR_PID_NAK,
+    PIPECTR_SQCLR, PIPECTR_SQSET, PIPEMAXP_DEVSEL_SHIFT, PIPEMAXP_MXPS_MASK, PIPEPERI_IITV_MASK,
+    Rusb1Regs, SUSPMODE_SUSPM, SYSCFG_DCFM, SYSCFG_DPRPU, SYSCFG_DRPD, SYSCFG_HSE, SYSCFG_UPLLE,
+    SYSCFG_USBE, SYSSTS0_LNST, devadd_ptr, pipectr_ptr, rd, rmw, wr,
 };
 
 // ---------------------------------------------------------------------------
@@ -656,11 +656,7 @@ impl Rusb1HostDriver {
     ///
     /// Returns the number of bytes actually received (may be less than
     /// `buf.len()` if the device sends a short packet).
-    pub async fn control_data_in(
-        &self,
-        dev_addr: u8,
-        buf: &mut [u8],
-    ) -> Result<usize, PipeError> {
+    pub async fn control_data_in(&self, dev_addr: u8, buf: &mut [u8]) -> Result<usize, PipeError> {
         unsafe {
             let regs = Rusb1Regs::ptr(self.port);
 
@@ -906,12 +902,7 @@ impl Rusb1HostDriver {
     }
 
     /// OUT transfer: send `buf` to `ep_addr` on `dev_addr`.
-    pub async fn xfer_out(
-        &self,
-        dev_addr: u8,
-        ep_addr: u8,
-        buf: &[u8],
-    ) -> Result<(), PipeError> {
+    pub async fn xfer_out(&self, dev_addr: u8, ep_addr: u8, buf: &[u8]) -> Result<(), PipeError> {
         let pipe = self
             .ep_to_pipe(dev_addr, ep_addr)
             .ok_or(PipeError::Canceled)?;
@@ -939,8 +930,7 @@ impl Rusb1HostDriver {
                 // §28.4.5: "to send a zero-length packet, the BCLR bit must be
                 // used to clear the buffer and then the BVAL bit is set").
                 wr(core::ptr::addr_of_mut!(e.d0fifosel), pipe as u16);
-                while rd(core::ptr::addr_of!(e.d0fifosel)) & FIFOSEL_CURPIPE_MASK != pipe as u16 {
-                }
+                while rd(core::ptr::addr_of!(e.d0fifosel)) & FIFOSEL_CURPIPE_MASK != pipe as u16 {}
                 while rd(core::ptr::addr_of!(e.d0fifoctr)) & FIFOCTR_FRDY == 0 {}
                 wr(core::ptr::addr_of_mut!(e.d0fifoctr), FIFOCTR_BCLR);
                 wr(core::ptr::addr_of_mut!(e.d0fifoctr), FIFOCTR_BVAL);
@@ -949,8 +939,7 @@ impl Rusb1HostDriver {
             } else {
                 // Write first packet to D0FIFO (16-bit access for speed).
                 wr(core::ptr::addr_of_mut!(e.d0fifosel), pipe as u16);
-                while rd(core::ptr::addr_of!(e.d0fifosel)) & FIFOSEL_CURPIPE_MASK != pipe as u16 {
-                }
+                while rd(core::ptr::addr_of!(e.d0fifosel)) & FIFOSEL_CURPIPE_MASK != pipe as u16 {}
                 while rd(core::ptr::addr_of!(e.d0fifoctr)) & FIFOCTR_FRDY == 0 {}
 
                 // Read MPS from PIPEMAXP.
@@ -1022,7 +1011,10 @@ impl Rusb1HostDriver {
             let regs = Rusb1Regs::ptr(self.port);
             // Halt the DCP and wait for the NAK transition to finish.
             let ctr = rd(pipectr_ptr(regs, 0));
-            wr(pipectr_ptr(regs, 0), (ctr & !PIPECTR_PID_MASK) | PIPECTR_PID_NAK);
+            wr(
+                pipectr_ptr(regs, 0),
+                (ctr & !PIPECTR_PID_MASK) | PIPECTR_PID_NAK,
+            );
             while rd(pipectr_ptr(regs, 0)) & PIPECTR_PBUSY != 0 {}
             // Status direction; SHTNAK only in the receiving direction
             // (must be 0 when transmitting, TRM §28.3.28).
@@ -1622,7 +1614,11 @@ impl<T: pipe::Type, D: pipe::Direction> UsbPipe<T, D> for Rusb1Pipe<T, D> {
     }
 
     /// Non-control OUT transfer on this pipe.
-    async fn request_out(&mut self, buf: &[u8], _ensure_transaction_end: bool) -> Result<(), PipeError>
+    async fn request_out(
+        &mut self,
+        buf: &[u8],
+        _ensure_transaction_end: bool,
+    ) -> Result<(), PipeError>
     where
         D: pipe::IsOut,
     {

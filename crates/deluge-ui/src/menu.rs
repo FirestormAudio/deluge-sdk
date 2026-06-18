@@ -204,11 +204,21 @@ where
 {
     let value_w = value_font.deluge_font().text_width(value);
     let value_left = DISPLAY_WIDTH as i32 / 2 - value_w / 2;
-    let _ = draw_text(d, value, Point::new(value_left, y), TextStyle::new(value_font));
+    let _ = draw_text(
+        d,
+        value,
+        Point::new(value_left, y),
+        TextStyle::new(value_font),
+    );
     if !suffix.is_empty() {
         let sf = Font::MetricBold9px;
         let sy = y + value_font.height() as i32 - sf.height() as i32;
-        let _ = draw_text(d, suffix, Point::new(value_left + value_w, sy), TextStyle::new(sf));
+        let _ = draw_text(
+            d,
+            suffix,
+            Point::new(value_left + value_w, sy),
+            TextStyle::new(sf),
+        );
     }
 }
 
@@ -486,8 +496,11 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> Menu<'a, D> {
         let content_w = self.content_width();
 
         if focused {
-            let _ = Rectangle::new(Point::new(0, y - 1), Size::new(content_w as u32, ITEM_H as u32))
-                .draw_styled(&PrimitiveStyle::with_fill(BinaryColor::On), self.d);
+            let _ = Rectangle::new(
+                Point::new(0, y - 1),
+                Size::new(content_w as u32, ITEM_H as u32),
+            )
+            .draw_styled(&PrimitiveStyle::with_fill(BinaryColor::On), self.d);
         }
         let color = if focused {
             BinaryColor::Off
@@ -710,12 +723,11 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> Menu<'a, D> {
         resp.focused = focused;
         if focused {
             self.edit_press();
-            if let Some(n) = self.take_value_delta() {
-                if n != 0 {
+            if let Some(n) = self.take_value_delta()
+                && n != 0 {
                     *value += n;
                     resp.changed = true;
                 }
-            }
         }
         let mut val: ValBuf = ValBuf::new();
         let _ = write!(val, "{}", *value);
@@ -746,8 +758,8 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> Menu<'a, D> {
         resp.focused = focused;
         if focused {
             self.edit_press();
-            if let Some(n) = self.take_value_delta() {
-                if n != 0 {
+            if let Some(n) = self.take_value_delta()
+                && n != 0 {
                     // Step = 10^-precision, without needing std float ops.
                     let mut step = 1.0f32;
                     for _ in 0..precision {
@@ -756,7 +768,6 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> Menu<'a, D> {
                     *value += n as f32 * step;
                     resp.changed = true;
                 }
-            }
         }
         let mut val: ValBuf = ValBuf::new();
         let _ = write!(val, "{:.*}", precision, *value);
@@ -1018,7 +1029,10 @@ mod tests {
         // Open the value editor.
         frame(&mut st, &mut s, MenuInput::Press);
         assert!(st.is_editing());
-        assert!(st.needs_redraw(), "opening the editor must request a redraw");
+        assert!(
+            st.needs_redraw(),
+            "opening the editor must request a redraw"
+        );
         // The editor frame itself clears the request.
         frame(&mut st, &mut s, MenuInput::None);
         assert!(!st.needs_redraw());
@@ -1032,7 +1046,10 @@ mod tests {
         assert_eq!(st.cursor(), 3);
         frame(&mut st, &mut s, MenuInput::Press);
         assert_eq!(st.depth(), 1);
-        assert!(st.needs_redraw(), "entering a submenu must request a redraw");
+        assert!(
+            st.needs_redraw(),
+            "entering a submenu must request a redraw"
+        );
         // The child renders next frame; with a constant-width gutter there is no
         // follow-up redraw.
         frame(&mut st, &mut s, MenuInput::None);
@@ -1236,7 +1253,8 @@ mod tests {
         };
 
         let mut st = MenuState::new();
-        let mut d: SimulatorDisplay<BinaryColor> = SimulatorDisplay::new(Size::new(DISPLAY_WIDTH, 48));
+        let mut d: SimulatorDisplay<BinaryColor> =
+            SimulatorDisplay::new(Size::new(DISPLAY_WIDTH, 48));
         render(&mut d, &mut st, MenuInput::None); // rows_last = 6
         render(&mut d, &mut st, MenuInput::Turn(2)); // cursor 2, still window [0..3)
         render(&mut d, &mut st, MenuInput::Turn(1)); // cursor 3 → must scroll to [1..4) now
@@ -1285,6 +1303,9 @@ mod tests {
             .points()
             .filter(|&p| d.get_pixel(p) == BinaryColor::On)
             .count();
-        assert!(lit > 20, "expected the menu to light real pixels, got {lit}");
+        assert!(
+            lit > 20,
+            "expected the menu to light real pixels, got {lit}"
+        );
     }
 }

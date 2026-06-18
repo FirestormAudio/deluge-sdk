@@ -7,7 +7,7 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{FnArg, ItemFn, parse_macro_input};
+use syn::{parse_macro_input, FnArg, ItemFn};
 
 /// Mark an `async fn main` as the entry point of a Deluge app.
 ///

@@ -186,8 +186,8 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> HMenu<'a, D> {
         let focused = i == self.state.cursor();
         let mut changed = false;
 
-        if focused {
-            if let MenuInput::Edit(n) = self.pending {
+        if focused
+            && let MenuInput::Edit(n) = self.pending {
                 let (lo, hi) = (*range.start(), *range.end());
                 let step = (hi - lo) / 64.0;
                 let nv = (*value + n as f32 * step).clamp(lo, hi);
@@ -197,7 +197,6 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> HMenu<'a, D> {
                 }
                 self.pending = MenuInput::None;
             }
-        }
 
         let scroll = self.state.scroll();
         let max_visible = self.max_visible();
@@ -368,7 +367,9 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> HMenu<'a, D> {
         if let Some(x) = slot {
             let size = self.bar_size();
             let live = Self::norm_unipolar(*value, &range);
-            self.place(x, live, 0.0, 1.0, |t| UnipolarBar::new(Point::zero(), size, t));
+            self.place(x, live, 0.0, 1.0, |t| {
+                UnipolarBar::new(Point::zero(), size, t)
+            });
             self.label(x, label, focused);
         }
         Response {
@@ -379,12 +380,19 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> HMenu<'a, D> {
     }
 
     /// A bipolar (center-out) fill-bar column.
-    pub fn bipolar(&mut self, label: &str, value: &mut f32, range: RangeInclusive<f32>) -> Response {
+    pub fn bipolar(
+        &mut self,
+        label: &str,
+        value: &mut f32,
+        range: RangeInclusive<f32>,
+    ) -> Response {
         let (slot, focused, changed) = self.column_common(value, &range);
         if let Some(x) = slot {
             let size = self.bar_size();
             let live = Self::norm_bipolar(*value, &range);
-            self.place(x, live, -1.0, 1.0, |t| BipolarBar::new(Point::zero(), size, t));
+            self.place(x, live, -1.0, 1.0, |t| {
+                BipolarBar::new(Point::zero(), size, t)
+            });
             self.label(x, label, focused);
         }
         Response {
@@ -440,7 +448,12 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> HMenu<'a, D> {
     }
 
     /// A percent-readout column (unipolar).
-    pub fn percent(&mut self, label: &str, value: &mut f32, range: RangeInclusive<f32>) -> Response {
+    pub fn percent(
+        &mut self,
+        label: &str,
+        value: &mut f32,
+        range: RangeInclusive<f32>,
+    ) -> Response {
         let (slot, focused, changed) = self.column_common(value, &range);
         if let Some(x) = slot {
             let live = Self::norm_unipolar(*value, &range);
@@ -470,7 +483,12 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> HMenu<'a, D> {
     }
 
     /// A release-envelope column (unipolar).
-    pub fn release(&mut self, label: &str, value: &mut f32, range: RangeInclusive<f32>) -> Response {
+    pub fn release(
+        &mut self,
+        label: &str,
+        value: &mut f32,
+        range: RangeInclusive<f32>,
+    ) -> Response {
         let (slot, focused, changed) = self.column_common(value, &range);
         if let Some(x) = slot {
             let live = Self::norm_unipolar(*value, &range);

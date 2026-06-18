@@ -404,7 +404,8 @@ pub unsafe fn init_block_irq(cfg: &SsiConfig) {
         RX_DMA_CH_ACTIVE.store(cfg.rx_dma_ch, core::sync::atomic::Ordering::Relaxed);
 
         // ── TX: single self-referential descriptor (as in `init`). ────────────
-        let tx_desc_u = (core::ptr::addr_of!(TX_DESC) as usize + UNCACHED_MIRROR_OFFSET) as *mut u32;
+        let tx_desc_u =
+            (core::ptr::addr_of!(TX_DESC) as usize + UNCACHED_MIRROR_OFFSET) as *mut u32;
         tx_desc_u
             .add(1)
             .write_volatile(core::ptr::addr_of!(TX_BUF.0[0]) as u32);
@@ -627,7 +628,10 @@ mod tests {
     #[test]
     fn fifo_init_composes_reset_and_trigger_bits() {
         // INIT resets both FIFOs and sets the 4-stage trigger thresholds.
-        assert_eq!(SSIFCR_INIT, SSIFCR_TFRST | SSIFCR_RFRST | SSIFCR_TTRG_4 | SSIFCR_RTRG_4);
+        assert_eq!(
+            SSIFCR_INIT,
+            SSIFCR_TFRST | SSIFCR_RFRST | SSIFCR_TTRG_4 | SSIFCR_RTRG_4
+        );
         assert_eq!(SSIFCR_TTRG_4, 0x80);
         assert_eq!(SSIFCR_RTRG_4, 0x20);
         assert_eq!(SSIFCR_INIT, 0xA3);

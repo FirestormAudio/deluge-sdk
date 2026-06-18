@@ -26,7 +26,10 @@ pub(crate) async fn usb_host_task(driver: Rusb1HostDriver) {
         let speed = controller.wait_for_connection().await;
         info!("USB host: device connected ({:?})", speed);
 
-        match handle.enumerate(BusRoute::Direct(speed), &mut config_buf).await {
+        match handle
+            .enumerate(BusRoute::Direct(speed), &mut config_buf)
+            .await
+        {
             Ok((dev_info, _)) => {
                 let addr = dev_info.device_address;
                 info!(

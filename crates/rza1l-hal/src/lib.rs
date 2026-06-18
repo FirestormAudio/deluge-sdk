@@ -32,7 +32,6 @@ pub mod mmu;
 pub mod mtu2;
 pub mod ostm;
 pub mod rspi;
-pub mod usb;
 pub mod scux;
 pub mod sdhi;
 pub mod spibsc;
@@ -42,6 +41,7 @@ pub mod startup;
 pub mod stb;
 pub mod time_driver;
 pub mod uart;
+pub mod usb;
 
 pub mod allocator;
 pub mod gpio;

@@ -66,11 +66,19 @@ pub(crate) fn route_pic_event(ev: pic::Event) {
     let mapped = match ev {
         pic::Event::PadPress { id } => {
             let (x, y) = pic::pad_coords(id);
-            Event::Pad { x, y, pressed: true }
+            Event::Pad {
+                x,
+                y,
+                pressed: true,
+            }
         }
         pic::Event::PadRelease { id } => {
             let (x, y) = pic::pad_coords(id);
-            Event::Pad { x, y, pressed: false }
+            Event::Pad {
+                x,
+                y,
+                pressed: false,
+            }
         }
         pic::Event::ButtonPress { id } => Event::Button { id, pressed: true },
         pic::Event::ButtonRelease { id } => Event::Button { id, pressed: false },

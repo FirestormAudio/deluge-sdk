@@ -270,7 +270,7 @@ impl PacketReader {
                     self.fill = n;
                     return;
                 }
-                Ok(_) => {} // zero-length packet; keep reading
+                Ok(_) => {}                       // zero-length packet; keep reading
                 Err(_) => self.connected = false, // host went away; rewait
             }
         }

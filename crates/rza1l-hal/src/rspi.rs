@@ -641,10 +641,22 @@ mod tests {
         unsafe { init(ch, 10_000_000) };
         let b = base(ch);
 
-        assert_eq!(mmio::test::peek8(b + OFF_SPBR), 3, "baud divider for ~10 MHz");
-        assert_eq!(mmio::test::peek8(b + OFF_SPDCR), SPDCR_32BIT, "32-bit longword frames");
+        assert_eq!(
+            mmio::test::peek8(b + OFF_SPBR),
+            3,
+            "baud divider for ~10 MHz"
+        );
+        assert_eq!(
+            mmio::test::peek8(b + OFF_SPDCR),
+            SPDCR_32BIT,
+            "32-bit longword frames"
+        );
         assert_eq!(mmio::test::peek8(b + OFF_SPBFCR), SPBFCR_INIT_32BIT);
-        assert_eq!(mmio::test::peek16(b + OFF_SPCMD0), SPCMD0_32BIT, "32-bit mode-0 cmd");
+        assert_eq!(
+            mmio::test::peek16(b + OFF_SPCMD0),
+            SPCMD0_32BIT,
+            "32-bit mode-0 cmd"
+        );
         // Final SPCR has master + TX-int + SPI-enable all set.
         let spcr = mmio::test::peek8(b + OFF_SPCR);
         assert_eq!(spcr & SPCR_MSTR, SPCR_MSTR, "master mode");

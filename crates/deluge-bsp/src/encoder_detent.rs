@@ -33,9 +33,17 @@ mod tests {
     #[test]
     fn two_edges_make_one_detent() {
         let mut acc = 0;
-        assert_eq!(accumulate_detents(1, &mut acc), 0, "one edge: no detent yet");
+        assert_eq!(
+            accumulate_detents(1, &mut acc),
+            0,
+            "one edge: no detent yet"
+        );
         assert_eq!(acc, 1, "leftover edge retained");
-        assert_eq!(accumulate_detents(1, &mut acc), 1, "second edge completes a detent");
+        assert_eq!(
+            accumulate_detents(1, &mut acc),
+            1,
+            "second edge completes a detent"
+        );
         assert_eq!(acc, 0);
     }
 

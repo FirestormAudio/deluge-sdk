@@ -451,10 +451,15 @@ async fn boot_task(spawner: Spawner) {
         let is_sd_entry = selected < data_idx && !(has_flash && selected == 0);
         if long_press && is_sd_entry {
             let (root, selected_entry, label) = {
-                let (_, root, entries) =
-                    sd_listing.as_ref().expect("sd listing present for SD entry");
+                let (_, root, entries) = sd_listing
+                    .as_ref()
+                    .expect("sd listing present for SD entry");
                 let sd_idx = selected - flash_offset;
-                (*root, entries.get(sd_idx).clone(), entries.display_name(sd_idx))
+                (
+                    *root,
+                    entries.get(sd_idx).clone(),
+                    entries.display_name(sd_idx),
+                )
             };
             if ui::confirm_write_to_flash(label).await {
                 write_app_to_flash(&mut vm, root, &selected_entry, label).await;
@@ -487,11 +492,7 @@ async fn boot_task(spawner: Spawner) {
             drop(vm);
             let ok = unsafe { settings::write(&new_cfg).await };
             if ok {
-                ui::show_message(
-                    b"DEV MODE",
-                    if new_cfg.dev_mode { b"ON" } else { b"OFF" },
-                )
-                .await;
+                ui::show_message(b"DEV MODE", if new_cfg.dev_mode { b"ON" } else { b"OFF" }).await;
                 embassy_time::Timer::after(embassy_time::Duration::from_millis(700)).await;
             } else {
                 // The flash write didn't stick (the device stays responsive

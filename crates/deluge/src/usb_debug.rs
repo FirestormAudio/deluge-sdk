@@ -119,7 +119,10 @@ impl Write for FmtBuf {
 /// # Safety
 /// Call exactly once, after platform/clock init and before interrupts are
 /// enabled. Takes ownership of USB0 (apps must not also bring up a USB stack).
-pub unsafe fn build() -> (UsbDevice<'static, Rusb1Driver>, Sender<'static, Rusb1Driver>) {
+pub unsafe fn build() -> (
+    UsbDevice<'static, Rusb1Driver>,
+    Sender<'static, Rusb1Driver>,
+) {
     let (_port, driver) = unsafe { init_device_mode(0) };
 
     let mut config = Config::new(0x16D0, 0x0EDA);
@@ -158,7 +161,10 @@ pub unsafe fn build() -> (UsbDevice<'static, Rusb1Driver>, Sender<'static, Rusb1
 /// Spawn the USB-debug device + log-drain tasks. Call from the executor closure.
 pub fn spawn(
     spawner: Spawner,
-    bits: (UsbDevice<'static, Rusb1Driver>, Sender<'static, Rusb1Driver>),
+    bits: (
+        UsbDevice<'static, Rusb1Driver>,
+        Sender<'static, Rusb1Driver>,
+    ),
 ) {
     let (device, tx) = bits;
     spawner.spawn(usb_run(device).unwrap());

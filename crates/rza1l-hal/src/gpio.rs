@@ -358,9 +358,21 @@ mod tests {
 
         unsafe { set_as_output(6, 12) };
 
-        assert_eq!(mmio::test::peek16(pmc(6) as usize), 0xEFFF, "PMC bit 12 cleared");
-        assert_eq!(mmio::test::peek16(pm(6) as usize), 0xEFFF, "PM bit 12 cleared (output)");
-        assert_eq!(mmio::test::peek16(pipc(6) as usize), 0xEFFF, "PIPC bit 12 cleared (sw)");
+        assert_eq!(
+            mmio::test::peek16(pmc(6) as usize),
+            0xEFFF,
+            "PMC bit 12 cleared"
+        );
+        assert_eq!(
+            mmio::test::peek16(pm(6) as usize),
+            0xEFFF,
+            "PM bit 12 cleared (output)"
+        );
+        assert_eq!(
+            mmio::test::peek16(pipc(6) as usize),
+            0xEFFF,
+            "PIPC bit 12 cleared (sw)"
+        );
     }
 
     /// `set_as_input` clears PMC, sets PM (input) and sets PIBC (input buffer).
@@ -369,8 +381,16 @@ mod tests {
         mmio::test::reset();
         unsafe { set_as_input(3, 5) };
         let bit = 1u16 << 5;
-        assert_eq!(mmio::test::peek16(pmc(3) as usize), 0, "PMC bit cleared (GPIO)");
-        assert_eq!(mmio::test::peek16(pm(3) as usize), bit, "PM bit set (input)");
+        assert_eq!(
+            mmio::test::peek16(pmc(3) as usize),
+            0,
+            "PMC bit cleared (GPIO)"
+        );
+        assert_eq!(
+            mmio::test::peek16(pm(3) as usize),
+            bit,
+            "PM bit set (input)"
+        );
         assert_eq!(mmio::test::peek16(pibc(3) as usize), bit, "PIBC bit set");
     }
 
@@ -407,7 +427,11 @@ mod tests {
         assert_eq!(mmio::test::peek16(PFCE + off), 0, "PFCE clear");
         assert_eq!(mmio::test::peek16(PFC + off), bit, "PFC set");
         assert_eq!(mmio::test::peek16(PMC1 + off), bit, "PMC set (peripheral)");
-        assert_eq!(mmio::test::peek16(PIPC1 + off), bit, "PIPC set (hw control)");
+        assert_eq!(
+            mmio::test::peek16(PIPC1 + off),
+            bit,
+            "PIPC set (hw control)"
+        );
     }
 
     /// The type-state `Pin` output drives the output-latch bit and reads it

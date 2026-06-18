@@ -192,8 +192,17 @@ mod tests {
     fn each_write_is_followed_by_a_dummy_read_of_same_reg() {
         mmio::test::reset();
         let cfg = StbConfig {
-            stbcr2: 1, stbcr3: 1, stbcr4: 1, stbcr5: 1, stbcr6: 1, stbcr7: 1,
-            stbcr8: 1, stbcr9: 1, stbcr10: 1, stbcr11: 1, stbcr12: 1,
+            stbcr2: 1,
+            stbcr3: 1,
+            stbcr4: 1,
+            stbcr5: 1,
+            stbcr6: 1,
+            stbcr7: 1,
+            stbcr8: 1,
+            stbcr9: 1,
+            stbcr10: 1,
+            stbcr11: 1,
+            stbcr12: 1,
         };
         unsafe { init(&cfg) };
 
@@ -201,7 +210,10 @@ mod tests {
         assert_eq!(log.len(), 22, "11 writes + 11 dummy reads");
         for pair in log.chunks(2) {
             assert!(pair[0].write && !pair[1].write, "write then read");
-            assert_eq!(pair[0].addr, pair[1].addr, "dummy read targets the written reg");
+            assert_eq!(
+                pair[0].addr, pair[1].addr,
+                "dummy read targets the written reg"
+            );
             assert_eq!(pair[0].width, 1, "STBCR is 8-bit");
         }
     }

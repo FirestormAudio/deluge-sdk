@@ -16,8 +16,8 @@
 //! Naming follows the C `usb_iobitmask.h` file with the `USB_` prefix removed
 //! and snake_case used for the shift variants.
 
-use core::ptr::{read_volatile, write_volatile};
 use super::{USB0_BASE, USB1_BASE};
+use core::ptr::{read_volatile, write_volatile};
 
 // ---------------------------------------------------------------------------
 // SYSCFG0

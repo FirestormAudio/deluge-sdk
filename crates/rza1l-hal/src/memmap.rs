@@ -93,8 +93,16 @@ pub fn dma_inv_plan(start: usize, end: usize) -> DmaInvPlan {
     let first = line_floor(start);
     let last = line_floor(end);
     DmaInvPlan {
-        clean_inv_first: if start & LINE_MASK != 0 { Some(first) } else { None },
-        clean_inv_last: if end & LINE_MASK != 0 { Some(last) } else { None },
+        clean_inv_first: if start & LINE_MASK != 0 {
+            Some(first)
+        } else {
+            None
+        },
+        clean_inv_last: if end & LINE_MASK != 0 {
+            Some(last)
+        } else {
+            None
+        },
         inv_first: first,
         inv_last: last,
     }
@@ -237,16 +245,27 @@ mod tests {
     #[test]
     fn ttb_descriptor_encoding() {
         // Flat VA=PA: section 0x0C0 (=0x0C00_0000) cached.
-        assert_eq!(ttb_section_descriptor(0xC0, PARA_NORMAL_CACHE), 0x0C00_0000 | 0x1DEE);
+        assert_eq!(
+            ttb_section_descriptor(0xC0, PARA_NORMAL_CACHE),
+            0x0C00_0000 | 0x1DEE
+        );
         // Index is shifted by 20; attr is masked to the low 20 bits.
         assert_eq!(ttb_section_descriptor(1, 0) >> 20, 1);
-        assert_eq!(ttb_section_descriptor(0, 0xFFF0_0000), 0, "high attr bits dropped");
+        assert_eq!(
+            ttb_section_descriptor(0, 0xFFF0_0000),
+            0,
+            "high attr bits dropped"
+        );
     }
 
     #[test]
     fn all_para_attrs_mark_a_section_entry() {
         // Short-descriptor section entries carry bits[1:0] = 0b10.
-        for attr in [PARA_STRONGLY_ORDERED, PARA_NORMAL_NOT_CACHE, PARA_NORMAL_CACHE] {
+        for attr in [
+            PARA_STRONGLY_ORDERED,
+            PARA_NORMAL_NOT_CACHE,
+            PARA_NORMAL_CACHE,
+        ] {
             assert_eq!(attr & 0b11, 0b10, "{attr:#x} must be a section descriptor");
         }
     }
@@ -276,14 +295,38 @@ mod tests {
         // Boundaries and cacheability per HW manual ch.5 (validated against the
         // TRM address-space table).
         assert_eq!(attr_at(0x0000_0000), PARA_NORMAL_CACHE, "CS0 NOR");
-        assert_eq!(attr_at(0x0C00_0000), PARA_NORMAL_CACHE, "SDRAM (CS3) cached");
-        assert_eq!(attr_at(0x1000_0000), PARA_STRONGLY_ORDERED, "CS4/CS5 device");
+        assert_eq!(
+            attr_at(0x0C00_0000),
+            PARA_NORMAL_CACHE,
+            "SDRAM (CS3) cached"
+        );
+        assert_eq!(
+            attr_at(0x1000_0000),
+            PARA_STRONGLY_ORDERED,
+            "CS4/CS5 device"
+        );
         assert_eq!(attr_at(0x1800_0000), PARA_NORMAL_CACHE, "SPI flash cached");
-        assert_eq!(attr_at(0x2000_0000), PARA_NORMAL_CACHE, "on-chip SRAM cached");
+        assert_eq!(
+            attr_at(0x2000_0000),
+            PARA_NORMAL_CACHE,
+            "on-chip SRAM cached"
+        );
         // Mirror windows at +0x4000_0000 are normal-non-cacheable (or device).
-        assert_eq!(attr_at(0x4C00_0000), PARA_NORMAL_NOT_CACHE, "SDRAM mirror uncached");
-        assert_eq!(attr_at(0x6002_0000), PARA_NORMAL_NOT_CACHE, "SRAM mirror uncached");
+        assert_eq!(
+            attr_at(0x4C00_0000),
+            PARA_NORMAL_NOT_CACHE,
+            "SDRAM mirror uncached"
+        );
+        assert_eq!(
+            attr_at(0x6002_0000),
+            PARA_NORMAL_NOT_CACHE,
+            "SRAM mirror uncached"
+        );
         // Peripherals (e.g. DMAC @ 0xE820_0000) are strongly-ordered.
-        assert_eq!(attr_at(0xE820_0000), PARA_STRONGLY_ORDERED, "peripheral device");
+        assert_eq!(
+            attr_at(0xE820_0000),
+            PARA_STRONGLY_ORDERED,
+            "peripheral device"
+        );
     }
 }

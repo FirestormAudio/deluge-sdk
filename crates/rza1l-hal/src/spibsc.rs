@@ -396,13 +396,20 @@ unsafe fn clear_status() {
 /// `None` (only ever from the feature-gated forced path) drops the window check
 /// to a bare chip-bounds check, so a recovery tool can erase the FSB / SSB.  The
 /// anti-aliasing chip-size bound ([`in_chip`]) is kept either way.
-unsafe fn erase_sector_at(offset: u32, sector_size: u32, writable: Option<&[core::ops::Range<u32>]>) {
+unsafe fn erase_sector_at(
+    offset: u32,
+    sector_size: u32,
+    writable: Option<&[core::ops::Range<u32>]>,
+) {
     let ok = match writable {
         Some(windows) => write_allowed(offset, sector_size, windows),
         None => in_chip(offset, sector_size),
     };
     if !ok {
-        debug_assert!(false, "spibsc: refused erase outside writable/in-chip range");
+        debug_assert!(
+            false,
+            "spibsc: refused erase outside writable/in-chip range"
+        );
         return;
     }
     unsafe {
@@ -432,7 +439,11 @@ unsafe fn erase_sector_at(offset: u32, sector_size: u32, writable: Option<&[core
 /// `writable` carries the board's allowed windows for the normal path; `None`
 /// (forced path only) drops the window check to a bare chip-bounds check; see
 /// [`erase_sector_at`].
-unsafe fn program_page_manual(offset: u32, data: &[u8], writable: Option<&[core::ops::Range<u32>]>) {
+unsafe fn program_page_manual(
+    offset: u32,
+    data: &[u8],
+    writable: Option<&[core::ops::Range<u32>]>,
+) {
     if data.is_empty() {
         return;
     }
@@ -441,7 +452,10 @@ unsafe fn program_page_manual(offset: u32, data: &[u8], writable: Option<&[core:
         None => in_chip(offset, data.len() as u32),
     };
     if !ok {
-        debug_assert!(false, "spibsc: refused program outside writable/in-chip range");
+        debug_assert!(
+            false,
+            "spibsc: refused program outside writable/in-chip range"
+        );
         return;
     }
     unsafe {
@@ -555,7 +569,11 @@ impl FlashMap {
         // Interrupts masked for the whole manual-mode window (see module docs).
         critical_section::with(|_| unsafe {
             to_manual();
-            erase_sector_at(offset & !(self.sector_size - 1), self.sector_size, Some(self.writable));
+            erase_sector_at(
+                offset & !(self.sector_size - 1),
+                self.sector_size,
+                Some(self.writable),
+            );
             to_read_mode();
         });
     }

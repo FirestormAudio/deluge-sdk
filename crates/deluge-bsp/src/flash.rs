@@ -56,8 +56,10 @@ pub const SETTINGS_ADDR: u32 = spibsc::SPI_FLASH_BASE + SETTINGS_OFFSET;
 /// The board's app-writable windows: the app slot and the settings block.  Erase
 /// and program through [`MAP`] refuse any range outside these (and outside the
 /// chip), keeping a caller bug away from the FSB / settings / SSB.
-const WRITABLE: &[core::ops::Range<u32>] =
-    &[SLOT_OFFSET..SLOT_OFFSET + SLOT_LEN, SETTINGS_OFFSET..SETTINGS_OFFSET + SECTOR_SIZE];
+const WRITABLE: &[core::ops::Range<u32>] = &[
+    SLOT_OFFSET..SLOT_OFFSET + SLOT_LEN,
+    SETTINGS_OFFSET..SETTINGS_OFFSET + SECTOR_SIZE,
+];
 
 /// The Deluge flash profile: geometry + writable-window policy.  Hand this to the
 /// SPIBSC controller for every guarded erase/program, e.g.
@@ -80,7 +82,11 @@ mod tests {
     /// erasing a slot block never spills into the reserved region (FSB/SSB) below.
     #[test]
     fn slot_is_block_aligned() {
-        assert_eq!(SLOT_OFFSET % SECTOR_SIZE, 0, "slot base must be block-aligned");
+        assert_eq!(
+            SLOT_OFFSET % SECTOR_SIZE,
+            0,
+            "slot base must be block-aligned"
+        );
         assert_eq!(SLOT_LEN % SECTOR_SIZE, 0, "slot must be whole blocks");
         assert_eq!(SLOT_LEN / SECTOR_SIZE, 44, "2.75 MB / 64 KB = 44 blocks");
         assert_eq!(SLOT_ADDR, 0x1810_0000);
@@ -91,9 +97,20 @@ mod tests {
     /// chip end — the alias that once erased the FSB).
     #[test]
     fn settings_block_is_in_chip_and_above_slot() {
-        assert_eq!(SETTINGS_OFFSET % SECTOR_SIZE, 0, "settings must be block-aligned");
-        assert_eq!(SETTINGS_OFFSET, SLOT_OFFSET + SLOT_LEN, "settings sits above the slot");
-        assert!(SETTINGS_OFFSET + SECTOR_SIZE <= FLASH_SIZE, "settings stays inside the chip");
+        assert_eq!(
+            SETTINGS_OFFSET % SECTOR_SIZE,
+            0,
+            "settings must be block-aligned"
+        );
+        assert_eq!(
+            SETTINGS_OFFSET,
+            SLOT_OFFSET + SLOT_LEN,
+            "settings sits above the slot"
+        );
+        assert!(
+            SETTINGS_OFFSET + SECTOR_SIZE <= FLASH_SIZE,
+            "settings stays inside the chip"
+        );
     }
 
     /// Both writable windows stay strictly inside the chip, so no erase can alias
@@ -104,7 +121,11 @@ mod tests {
             assert!(w.start < w.end);
             assert!(w.end <= FLASH_SIZE);
         }
-        assert_eq!(MAP.writable.len(), 2, "exactly the slot and the settings block");
+        assert_eq!(
+            MAP.writable.len(),
+            2,
+            "exactly the slot and the settings block"
+        );
         assert_eq!(MAP.sector_size, SECTOR_SIZE);
         assert_eq!(MAP.page, PAGE);
     }

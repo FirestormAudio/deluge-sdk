@@ -79,11 +79,10 @@ use regs::*;
 // Re-export the public SCUX register/API constants (formerly defined here)
 // so existing `scux::NAME` paths keep working for callers (e.g. deluge-bsp).
 pub use regs::{
-    DMARS_SCURXI0, DMARS_SCURXI1, DMARS_SCURXI2, DMARS_SCURXI3, DMARS_SCUTXI0,
-    DMARS_SCUTXI1, DMARS_SCUTXI2, DMARS_SCUTXI3, FDTSEL_DIVEN, FDTSEL_SCKSEL_SSIF0_WS,
-    INTIFS_44100_TO_44100, INTIFS_44100_TO_48000, INTIFS_48000_TO_44100,
-    INTIFS_48000_TO_48000, INTIFS_88200_TO_44100, INTIFS_96000_TO_44100,
-    INTIFS_96000_TO_48000, SSICTRL_SSI0TX, intifs,
+    DMARS_SCURXI0, DMARS_SCURXI1, DMARS_SCURXI2, DMARS_SCURXI3, DMARS_SCUTXI0, DMARS_SCUTXI1,
+    DMARS_SCUTXI2, DMARS_SCUTXI3, FDTSEL_DIVEN, FDTSEL_SCKSEL_SSIF0_WS, INTIFS_44100_TO_44100,
+    INTIFS_44100_TO_48000, INTIFS_48000_TO_44100, INTIFS_48000_TO_48000, INTIFS_88200_TO_44100,
+    INTIFS_96000_TO_44100, INTIFS_96000_TO_48000, SSICTRL_SSI0TX, intifs,
 };
 
 // ── Configuration types ───────────────────────────────────────────────────────
@@ -1260,7 +1259,10 @@ mod tests {
         assert_eq!(AudioInfo::STEREO_24.channels, 2);
         assert_eq!(AudioInfo::STEREO_24.to_reg(), 2);
         // CHNUM is the actual count (not count−1).
-        let mono = AudioInfo { channels: 1, depth: BitDepth::B24 };
+        let mono = AudioInfo {
+            channels: 1,
+            depth: BitDepth::B24,
+        };
         assert_eq!(mono.to_reg() & 0xFFFF, 1);
     }
 }

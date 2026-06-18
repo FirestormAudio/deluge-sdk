@@ -379,7 +379,10 @@ mod tests {
         // Two glyphs: widths + one spacing gap (default spacing = 1).
         assert_eq!(f.text_width("AB"), w('A') + w('B') + 1);
         // Custom spacing scales with (n-1) gaps; spacing 0 = pure glyph widths.
-        assert_eq!(f.text_width_with_spacing("ABC", 0), w('A') + w('B') + w('C'));
+        assert_eq!(
+            f.text_width_with_spacing("ABC", 0),
+            w('A') + w('B') + w('C')
+        );
         assert_eq!(
             f.text_width_with_spacing("ABC", 4),
             w('A') + w('B') + w('C') + 2 * 4
@@ -425,7 +428,10 @@ mod tests {
         where
             I: IntoIterator<Item = embedded_graphics::Pixel<BinaryColor>>,
         {
-            self.lit += pixels.into_iter().filter(|p| p.1 == BinaryColor::On).count();
+            self.lit += pixels
+                .into_iter()
+                .filter(|p| p.1 == BinaryColor::On)
+                .count();
             Ok(())
         }
     }

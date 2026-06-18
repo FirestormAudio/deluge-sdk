@@ -501,9 +501,18 @@ mod tests {
 
     #[test]
     fn classify_sdram_and_sram() {
-        assert_eq!(classify_load_range(SDRAM_LO, 0x1000), Some(LoadTarget::Sdram));
-        assert_eq!(classify_load_range(SDRAM_HI - 1, 1), Some(LoadTarget::Sdram));
-        assert_eq!(classify_load_range(SRAM_LOAD_ORIGIN, 0x1000), Some(LoadTarget::Sram));
+        assert_eq!(
+            classify_load_range(SDRAM_LO, 0x1000),
+            Some(LoadTarget::Sdram)
+        );
+        assert_eq!(
+            classify_load_range(SDRAM_HI - 1, 1),
+            Some(LoadTarget::Sdram)
+        );
+        assert_eq!(
+            classify_load_range(SRAM_LOAD_ORIGIN, 0x1000),
+            Some(LoadTarget::Sram)
+        );
         assert_eq!(classify_load_range(SRAM_HI - 4, 4), Some(LoadTarget::Sram));
     }
 
@@ -532,7 +541,10 @@ mod tests {
         // Byte 0 of the SRAM region maps to the staging base.
         assert_eq!(sram_stage_addr(SRAM_LOAD_ORIGIN), SDRAM_STAGE_BASE);
         // Offset within SRAM is preserved into the staging window.
-        assert_eq!(sram_stage_addr(SRAM_LOAD_ORIGIN + 0x1234), SDRAM_STAGE_BASE + 0x1234);
+        assert_eq!(
+            sram_stage_addr(SRAM_LOAD_ORIGIN + 0x1234),
+            SDRAM_STAGE_BASE + 0x1234
+        );
         // The whole SRAM region stays inside SDRAM (staging window ≤ ~2.875 MB).
         let top = sram_stage_addr(SRAM_HI - 1);
         assert!(top < 0x1000_0000, "staging must stay within 64 MB SDRAM");
@@ -565,12 +577,18 @@ mod tests {
     #[test]
     fn fsb_rejects_bad_images() {
         // Too short to hold the metadata block.
-        assert_eq!(validate_fsb_metadata(&[0u8; 16], 0), Err(FsbError::TooSmall));
+        assert_eq!(
+            validate_fsb_metadata(&[0u8; 16], 0),
+            Err(FsbError::TooSmall)
+        );
 
         // Missing signature.
         let mut img = fsb_image(0x2002_0000, 0x2003_0000, 0x2002_0100, 0x800);
         img[FSB_SIGNATURE_OFF] = 0;
-        assert_eq!(validate_fsb_metadata(&img, 0x2002_0000), Err(FsbError::BadSignature));
+        assert_eq!(
+            validate_fsb_metadata(&img, 0x2002_0000),
+            Err(FsbError::BadSignature)
+        );
 
         // code_start disagrees with the image's lowest load address.
         let img = fsb_image(0x2002_0000, 0x2003_0000, 0x2002_0100, 0x800);
@@ -581,7 +599,10 @@ mod tests {
 
         // code_end <= code_start.
         let img = fsb_image(0x2002_0000, 0x2002_0000, 0x2002_0000, 0x800);
-        assert_eq!(validate_fsb_metadata(&img, 0x2002_0000), Err(FsbError::BadCodeEnd));
+        assert_eq!(
+            validate_fsb_metadata(&img, 0x2002_0000),
+            Err(FsbError::BadCodeEnd)
+        );
 
         // Entry outside code_start..code_end.
         let img = fsb_image(0x2002_0000, 0x2003_0000, 0x2003_0000, 0x800);
@@ -592,7 +613,10 @@ mod tests {
 
         // Flat image longer than code_end - code_start.
         let img = fsb_image(0x2002_0000, 0x2002_0100, 0x2002_0000, 0x800);
-        assert_eq!(validate_fsb_metadata(&img, 0x2002_0000), Err(FsbError::ImageTooLong));
+        assert_eq!(
+            validate_fsb_metadata(&img, 0x2002_0000),
+            Err(FsbError::ImageTooLong)
+        );
     }
 
     #[test]
@@ -727,16 +751,28 @@ mod tests {
     #[test]
     fn plan_rejects_bad_images() {
         // Bad magic.
-        let mut img = elf_with_segments(SRAM_LOAD_ORIGIN, &[(0x80, SRAM_LOAD_ORIGIN, 0x10, 0x10)], 0x100);
+        let mut img = elf_with_segments(
+            SRAM_LOAD_ORIGIN,
+            &[(0x80, SRAM_LOAD_ORIGIN, 0x10, 0x10)],
+            0x100,
+        );
         img[1] = b'Z';
         assert_eq!(parse_load_plan(&img), Err(PlanError::BadMagic));
 
         // filesz > memsz.
-        let img = elf_with_segments(SRAM_LOAD_ORIGIN, &[(0x80, SRAM_LOAD_ORIGIN, 0x20, 0x10)], 0x100);
+        let img = elf_with_segments(
+            SRAM_LOAD_ORIGIN,
+            &[(0x80, SRAM_LOAD_ORIGIN, 0x20, 0x10)],
+            0x100,
+        );
         assert_eq!(parse_load_plan(&img), Err(PlanError::WrongFormat));
 
         // Segment file range past the end of the slice.
-        let img = elf_with_segments(SRAM_LOAD_ORIGIN, &[(0x80, SRAM_LOAD_ORIGIN, 0x100, 0x100)], 0x100);
+        let img = elf_with_segments(
+            SRAM_LOAD_ORIGIN,
+            &[(0x80, SRAM_LOAD_ORIGIN, 0x100, 0x100)],
+            0x100,
+        );
         assert_eq!(parse_load_plan(&img), Err(PlanError::Truncated));
 
         // Bad load address.
@@ -744,8 +780,9 @@ mod tests {
         assert_eq!(parse_load_plan(&img), Err(PlanError::BadLoadAddress));
 
         // Too many program headers.
-        let many: Vec<(u32, u32, u32, u32)> =
-            (0..=MAX_PHDRS).map(|_| (0x80, SRAM_LOAD_ORIGIN, 0, 0)).collect();
+        let many: Vec<(u32, u32, u32, u32)> = (0..=MAX_PHDRS)
+            .map(|_| (0x80, SRAM_LOAD_ORIGIN, 0, 0))
+            .collect();
         let img = elf_with_segments(SRAM_LOAD_ORIGIN, &many, 0x400);
         assert_eq!(parse_load_plan(&img), Err(PlanError::WrongFormat));
     }

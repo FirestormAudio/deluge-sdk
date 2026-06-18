@@ -43,7 +43,6 @@ const BCR_16BIT_1IDLE: u32 = 0x1000_0C00;
 // CSxWCR (non-SDRAM): setup 1.5 cyc, access 6 wait, teardown 0.5 cyc.
 const WCR_6WAIT: u32 = 0x0000_0B40;
 
-
 /// Configure CS0 for 16-bit external bus access.
 ///
 /// Sets bus timing to match the Renesas RSK+ NOR-flash configuration:
