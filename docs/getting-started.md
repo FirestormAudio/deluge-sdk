@@ -16,14 +16,9 @@ That means:
   the ELF over USB and the loader launches it from RAM — no SD shuffling, no
   probe. (Or copy the ELF to `/APPS/` and reboot.)
 
-```mermaid
-flowchart LR
-    edit["edit code"] --> build["cargo deluge run"]
-    build --> usb["ELF → USB upload<br/>(DEV MODE)"]
-    usb --> load["loader → RAM"]
-    load --> run["app runs"]
-    run --> edit
-```
+<p align="center">
+  <img src="dev-loop.svg" alt="Push-to-run dev loop: edit code → cargo deluge run → ELF over USB upload → loader → RAM → app runs → back to edit code." width="440">
+</p>
 
 > **Licensing:** the SDK (`deluge`) and core libraries are `MIT OR Apache-2.0`.
 > The optional OLED UI toolkit (`deluge-ui-toolkit`) and its fonts are
@@ -34,43 +29,25 @@ flowchart LR
 
 ## 1. Prerequisites
 
-### Toolchain
+This guide assumes your Deluge is already set up to run apps. If it isn't — or
+you're starting from a fresh clone — do the one-time
+[**Device setup**](device-setup.md) first; it's the single source of truth for
+flashing the app-loader, preparing the SD card, and the full toolchain. The
+checklist you need here:
 
-The required Rust toolchain (nightly + the `armv7a-none-eabihf` target +
-`rust-src`) is pinned in [`rust-toolchain.toml`](../rust-toolchain.toml) and
-installed automatically on first use:
-
-```sh
-rustup show     # installs the pinned nightly + target on first run
-```
-
-### The `cargo deluge` subcommand
-
-`cargo deluge` is the host tool that scaffolds, builds, and deploys apps so you
-never touch `-Zbuild-std`, linker flags, or the embedded target triple by hand.
-Install it from this repo:
-
-```sh
-cargo install --path tools/cargo-deluge
-```
-
-### A Deluge running the app-loader
-
-Your Deluge must be running the **app-loader** (the second-stage bootloader that
-presents the on-device app menu, accepts USB uploads in dev mode, and streams
-ELFs from `/APPS/`). Building and flashing the app-loader is a one-time step
-covered by the [Device setup guide](device-setup.md) (see
-[`app-loader/README.md`](../app-loader/README.md) for the loader's internals).
-
-### Turn on DEV MODE (for USB upload)
-
-`cargo deluge run` uploads over USB, which the app-loader only accepts when
-**dev mode** is on (a persistent, default-off setting, so a stock unit never
-takes firmware over USB). To enable it: on the boot menu, scroll to
-**`DEV MODE: OFF`** and press SELECT — it flips to **`DEV MODE: ON`** and is
-saved to flash (it survives reboots). While on, the loader listens for an upload
-in the background and the auto-boot countdown is disabled, so the unit waits on
-the menu indefinitely. Toggle it off the same way.
+- **Rust toolchain** — pinned in [`rust-toolchain.toml`](../rust-toolchain.toml);
+  `rustup show` installs it on first run (nightly + the `armv7a-none-eabihf`
+  target + `rust-src`).
+- **`cargo deluge`** — the host tool that scaffolds, builds, and deploys apps so
+  you never touch `-Zbuild-std`, linker flags, or the target triple by hand:
+  `cargo install --path tools/cargo-deluge`.
+- **A Deluge running the app-loader** — the on-device menu that launches your
+  app ELFs. Flashing it is the one-time [Device setup](device-setup.md) step
+  (see [`app-loader/README.md`](../app-loader/README.md) for its internals).
+- **DEV MODE: ON** — required for `cargo deluge run`'s USB upload. On the boot
+  menu, select **`DEV MODE: OFF`** to flip it to **`DEV MODE: ON`** (persistent,
+  default-off, survives reboots). Without it, deploy to the SD card's `/APPS/`
+  instead — see [Device setup → Build and install an app](device-setup.md#7-build-and-install-an-app).
 
 ---
 
@@ -439,7 +416,10 @@ cargo build-fw -p blinky        # debug ELF for one example
 
 ## 10. Troubleshooting
 
-- **`cargo deluge` not found** — install it: `cargo install --path tools/cargo-deluge`.
+App and runtime issues are below; for setup/flashing problems (no boot menu,
+`objcopy` errors, app missing from the menu) see
+[Device setup → Troubleshooting](device-setup.md#9-troubleshooting).
+
 - **Panic: `… called more than once`** — a capability accessor was taken twice;
   acquire each handle once and pass it around.
 - **`run` can't find the Deluge** — make sure **DEV MODE: ON** and the unit is
