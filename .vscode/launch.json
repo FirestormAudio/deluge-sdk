@@ -1,0 +1,497 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      // probe-rs debug (trace-a9 fork). The fork does the Cortex-A9 bring-up
+      // internally — no JLinkScript / cp15 monitor commands needed. Build the
+      // target first (`cargo build-fw` for debug, `cargo build-fw-rel` for
+      // release). Requires the "probe-rs.probe-rs-debugger" extension, and that
+      // extension must drive the trace-a9 fork's `probe-rs dap-server` (a stock
+      // probe-rs has no Cortex-A9 support).
+      "name": "demo-firmware (probe-rs)",
+      "type": "probe-rs-debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "chip": "R7S721020",
+      // The fork halts the core in place; a reset would let the ROM re-load
+      // from QSPI.
+      "connectUnderReset": false,
+      "coreConfigs": [
+        {
+          "programBinary": "${workspaceFolder}/target/armv7a-none-eabihf/debug/demo-firmware",
+          "rttEnabled": true
+        }
+      ]
+    },
+    {
+      // Guarantees the trace-a9 fork is used: first start the fork's server in a
+      // terminal —  `probe-rs dap-server --port 50000` — then run this config.
+      "name": "demo-firmware (probe-rs, external server :50000)",
+      "type": "probe-rs-debug",
+      "request": "launch",
+      "server": "127.0.0.1:50000",
+      "cwd": "${workspaceFolder}",
+      "chip": "R7S721020",
+      "connectUnderReset": false,
+      "coreConfigs": [
+        {
+          "programBinary": "${workspaceFolder}/target/armv7a-none-eabihf/debug/demo-firmware",
+          "rttEnabled": true
+        }
+      ]
+    },
+    {
+      "name": "app-loader / SSB (probe-rs)",
+      "type": "probe-rs-debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "chip": "R7S721020",
+      "connectUnderReset": false,
+      "coreConfigs": [
+        {
+          "programBinary": "${workspaceFolder}/target/armv7a-none-eabihf/debug/app-loader",
+          "rttEnabled": true
+        }
+      ]
+    },
+    {
+      "name": "demo-firmware (debug)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/target/armv7a-none-eabihf/debug/demo-firmware",
+      "serverpath": "/usr/bin/JLinkGDBServerCLExe",
+      "servertype": "jlink",
+      "device": "R7S721020",
+      "interface": "swd",
+      "serverArgs": ["-jlinkscriptfile", "${workspaceFolder}/rza1_debug.JLinkScript"],
+      "overrideLaunchCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ],
+      "overrideResetCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ],
+      "rttConfig": {
+        "enabled": true,
+        "address": "auto",
+        "decoders": [
+          {
+            "port": 0,
+            "timestamp": true,
+            "type": "console",
+            "logfile": "${workspaceFolder}/rtt.log"
+          }
+        ]
+      },
+    },
+    {
+      "name": "demo-firmware (release)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/target/armv7a-none-eabihf/release/demo-firmware",
+      "serverpath": "/usr/bin/JLinkGDBServerCLExe",
+      "servertype": "jlink",
+      "device": "R7S721020",
+      "interface": "swd",
+      "serverArgs": ["-jlinkscriptfile", "${workspaceFolder}/rza1_debug.JLinkScript"],
+      "overrideLaunchCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ],
+      "overrideResetCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ]
+    },
+    {
+      "name": "crow-firmware (debug)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/target/armv7a-none-eabihf/debug/crow-firmware",
+      "serverpath": "/usr/bin/JLinkGDBServerCLExe",
+      "servertype": "jlink",
+      "device": "R7S721020",
+      "interface": "swd",
+      "serverArgs": ["-jlinkscriptfile", "${workspaceFolder}/rza1_debug.JLinkScript"],
+      "overrideLaunchCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ],
+      "overrideResetCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ],
+      "rttConfig": {
+        "enabled": true,
+        "address": "auto",
+        "decoders": [
+          {
+            "port": 0,
+            "timestamp": true,
+            "type": "console",
+            "logfile": "${workspaceFolder}/rtt-crow.log"
+          }
+        ]
+      },
+    },
+    {
+      "name": "crow-firmware (release)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/target/armv7a-none-eabihf/release/crow-firmware",
+      "serverpath": "/usr/bin/JLinkGDBServerCLExe",
+      "servertype": "jlink",
+      "device": "R7S721020",
+      "interface": "swd",
+      "serverArgs": ["-jlinkscriptfile", "${workspaceFolder}/rza1_debug.JLinkScript"],
+      "overrideLaunchCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ],
+      "overrideResetCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ]
+    },
+    {
+      "name": "wren-firmware (debug)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/target/armv7a-none-eabihf/debug/wren-firmware",
+      "serverpath": "/usr/bin/JLinkGDBServerCLExe",
+      "servertype": "jlink",
+      "device": "R7S721020",
+      "interface": "swd",
+      "serverArgs": ["-jlinkscriptfile", "${workspaceFolder}/rza1_debug.JLinkScript"],
+      "overrideLaunchCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ],
+      "overrideResetCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ],
+      "rttConfig": {
+        "enabled": true,
+        "address": "auto",
+        "decoders": [
+          {
+            "port": 0,
+            "timestamp": true,
+            "type": "console",
+            "logfile": "${workspaceFolder}/rtt-wren.log"
+          }
+        ]
+      },
+      "runToEntryPoint": "main"
+    },
+    {
+      "name": "wren-firmware (release)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/target/armv7a-none-eabihf/release/wren-firmware",
+      "serverpath": "/usr/bin/JLinkGDBServerCLExe",
+      "servertype": "jlink",
+      "device": "R7S721020",
+      "interface": "swd",
+      "serverArgs": ["-jlinkscriptfile", "${workspaceFolder}/rza1_debug.JLinkScript"],
+      "overrideLaunchCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ],
+      "overrideResetCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ]
+    },
+    {
+      "name": "controller-firmware (debug)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/target/armv7a-none-eabihf/debug/deluge-controller",
+      "serverpath": "/usr/bin/JLinkGDBServerCLExe",
+      "servertype": "jlink",
+      "device": "R7S721020",
+      "interface": "swd",
+      "serverArgs": ["-jlinkscriptfile", "${workspaceFolder}/rza1_debug.JLinkScript"],
+      "overrideLaunchCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ],
+      "overrideResetCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ],
+      "rttConfig": {
+        "enabled": true,
+        "address": "auto",
+        "decoders": [
+          {
+            "port": 0,
+            "timestamp": true,
+            "type": "console",
+            "logfile": "${workspaceFolder}/rtt-controller.log"
+          }
+        ]
+      },
+    },
+    {
+      "name": "controller-firmware (release)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/target/armv7a-none-eabihf/release/deluge-controller",
+      "serverpath": "/usr/bin/JLinkGDBServerCLExe",
+      "servertype": "jlink",
+      "device": "R7S721020",
+      "interface": "swd",
+      "serverArgs": ["-jlinkscriptfile", "${workspaceFolder}/rza1_debug.JLinkScript"],
+      "overrideLaunchCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ],
+      "overrideResetCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ]
+    },
+    {
+      "name": "msc-firmware (debug)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/target/armv7a-none-eabihf/debug/msc-firmware",
+      "serverpath": "/usr/bin/JLinkGDBServerCLExe",
+      "servertype": "jlink",
+      "device": "R7S721020",
+      "interface": "swd",
+      "serverArgs": ["-jlinkscriptfile", "${workspaceFolder}/rza1_debug.JLinkScript"],
+      "overrideLaunchCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ],
+      "overrideResetCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ],
+      "rttConfig": {
+        "enabled": true,
+        "address": "auto",
+        "decoders": [
+          {
+            "port": 0,
+            "timestamp": true,
+            "type": "console",
+            "logfile": "${workspaceFolder}/rtt-msc.log"
+          }
+        ]
+      },
+    },
+    {
+      "name": "msc-firmware (release)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/target/armv7a-none-eabihf/release/msc-firmware",
+      "serverpath": "/usr/bin/JLinkGDBServerCLExe",
+      "servertype": "jlink",
+      "device": "R7S721020",
+      "interface": "swd",
+      "serverArgs": ["-jlinkscriptfile", "${workspaceFolder}/rza1_debug.JLinkScript"],
+      "overrideLaunchCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ],
+      "overrideResetCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ]
+    },
+    {
+      "name": "SSB (debug, RTT)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/target/armv7a-none-eabihf/debug/app-loader",
+      "serverpath": "/usr/bin/JLinkGDBServerCLExe",
+      "servertype": "jlink",
+      "device": "R7S721020",
+      "interface": "swd",
+      "serverArgs": ["-jlinkscriptfile", "${workspaceFolder}/rza1_debug.JLinkScript"],
+      "overrideLaunchCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ],
+      "overrideResetCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ],
+      "rttConfig": {
+        "enabled": true,
+        "address": "auto",
+        "decoders": [
+          {
+            "port": 0,
+            "timestamp": true,
+            "type": "console",
+            "logfile": "${workspaceFolder}/rtt-ssb.log"
+          }
+        ]
+      },
+      "runToEntryPoint": "main",
+    },
+    {
+      "name": "bootloader-flasher (debug, RTT)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/target/armv7a-none-eabihf/debug/bootloader-flasher",
+      "serverpath": "/usr/bin/JLinkGDBServerCLExe",
+      "servertype": "jlink",
+      "device": "R7S721020",
+      "interface": "swd",
+      "serverArgs": ["-jlinkscriptfile", "${workspaceFolder}/rza1_debug.JLinkScript"],
+      "overrideLaunchCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ],
+      "overrideResetCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ],
+      "rttConfig": {
+        "enabled": true,
+        "address": "auto",
+        "decoders": [
+          {
+            "port": 0,
+            "timestamp": true,
+            "type": "console",
+            "logfile": "${workspaceFolder}/rtt-flasher.log"
+          }
+        ]
+      },
+      "runToEntryPoint": "main",
+    },
+    {
+      "name": "bootloader-flasher (release)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/target/armv7a-none-eabihf/release/bootloader-flasher",
+      "serverpath": "/usr/bin/JLinkGDBServerCLExe",
+      "servertype": "jlink",
+      "device": "R7S721020",
+      "interface": "swd",
+      "serverArgs": ["-jlinkscriptfile", "${workspaceFolder}/rza1_debug.JLinkScript"],
+      "overrideLaunchCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ],
+      "overrideResetCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ]
+    },
+    {
+    "name": "demo-firmware (standalone)",
+    "type": "cortex-debug",
+    "request": "launch",
+    "serverpath": "/usr/bin/JLinkGDBServerCLExe",
+    "servertype": "jlink",
+    "device": "R7S721020",
+    "interface": "swd",
+    "executable": "${workspaceFolder}/demo-firmware",
+    "jlinkscript": "${workspaceFolder}/rza1_debug.JLinkScript",
+    "runToEntryPoint": "main",          // now resolves to the APP's main
+    "rttConfig": { "enabled": true, "address": "auto",
+                   "decoders": [{ "type": "console", "port": 0 }] }
+  }
+  ]
+}

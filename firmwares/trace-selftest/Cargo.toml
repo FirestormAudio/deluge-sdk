@@ -1,0 +1,17 @@
+[package]
+publish = false  # binary crate — not for crates.io
+name = "trace-selftest"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Diagnostic image for validating the probe-rs trace-a9 fixes (H1/H2/H3) on RZ/A1L."
+
+[[bin]]
+name = "trace-selftest"
+test = false
+
+[dependencies]
+# Pulls in the RZ/A1L startup (vector table, reset handler, stacks, bss init) and
+# the linker scripts. No higher-level BSP / executor — this image is deliberately
+# minimal so its control flow is predictable for trace validation.
+rza1l-hal = { path = "../../crates/rza1l-hal" }

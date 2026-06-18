@@ -1,0 +1,31 @@
+name: Examples
+
+# Compile-proves every SDK example on the firmware target (armv7a-none-eabihf).
+# This is the coverage the `deluge` facade and the `#[deluge::app]` macro get —
+# they can't be unit-tested on a host target, so building every example
+# exercises the whole capability surface end to end. Reusable (called from
+# ci.yml) and runnable on demand.
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Compile-prove examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          targets: armv7a-none-eabihf
+          components: rust-src,llvm-tools-preview
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Compile-prove examples
+        run: ./tools/build-examples.sh

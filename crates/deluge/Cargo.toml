@@ -1,0 +1,55 @@
+[package]
+name = "deluge"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "User-friendly SDK for building apps on the Synthstrom Deluge."
+categories = ["embedded", "no-std", "hardware-support"]
+keywords = ["deluge", "synthstrom", "embassy", "rza1", "embedded"]
+
+[dependencies]
+deluge-macros = { path = "../deluge-macros" }
+deluge-bsp = { path = "../deluge-bsp" }
+rza1l-hal = { path = "../rza1l-hal" }
+fixedpoint = { workspace = true }
+cortex-ar = { workspace = true }
+log = { workspace = true }
+embedded-hal = "1"
+embedded-graphics-core = "0.4"
+rtt-target = { workspace = true, optional = true }
+embassy-executor = { workspace = true, features = [
+    "nightly",
+    "platform-cortex-ar",
+    "executor-thread",
+] }
+embassy-sync = { workspace = true }
+embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
+embassy-usb = { workspace = true, optional = true }
+
+[features]
+default = []
+## Register the HAL's on-chip SRAM heap as the global allocator, so `alloc`
+## collections (`String`, `Vec`, `format!`) work. Needed by apps that use the GPL
+## `deluge-ui-toolkit`. Off by default — the SDK is otherwise allocator-free.
+## SDRAM is left for bulk audio buffers (samples/delay lines), allocated
+## explicitly via `rza1l_hal::allocator::SDRAM`. Apps enabling this must also
+## build with `-Zbuild-std=core,alloc`.
+alloc = []
+## Route the `log` crate to a USB CDC-ACM serial interface (a `/dev/ttyACM*`
+## port on the host) so firmware logs are visible over the USB cable with **no
+## debug probe**. Off by default (brings up a USB device + costs flash/RAM).
+## Only one global logger may be registered, so `usb-log` takes precedence over
+## the `rtt` feature when both are enabled.
+usb-log = ["dep:embassy-usb"]
+## Use the per-block RX DMA interrupt clock for `dlg.audio()` (drift-free, lower
+## latency) instead of the default poll loop. Same `process()` API.
+audio-irq = ["deluge-bsp/audio-irq"]
+## Enable RTT (SEGGER Real-Time Transfer) debug logging. Initialises the RTT
+## logger in the `#[deluge::app]` runtime and turns on RTT in the HAL/BSP.
+## Off by default so a minimal app does not pull in the RTT control block.
+## An app that enables this must also build with its matching rtt linker script
+## (the example template's `rtt` feature wires both).
+rtt = ["dep:rtt-target", "rza1l-hal/rtt"]

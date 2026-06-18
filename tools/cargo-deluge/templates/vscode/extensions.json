@@ -1,0 +1,12 @@
+{
+  // Extensions recommended for Deluge app development. VS Code prompts to
+  // install these the first time the folder is opened.
+  "recommendations": [
+    // Rust language support (completion, go-to-def, inline diagnostics).
+    "rust-lang.rust-analyzer",
+    // TOML support for Cargo.toml / config.toml.
+    "tamasfe.even-better-toml",
+    // ARM Cortex debugging over a J-Link probe (the "Debug (J-Link)" launch).
+    "marus25.cortex-debug"
+  ]
+}

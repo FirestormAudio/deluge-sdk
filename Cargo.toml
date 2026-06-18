@@ -1,9 +1,81 @@
 [workspace]
-members = ["demo-firmware", "rza1l-hal", "deluge-bsp", "deluge-fft"]
+members = [
+  "firmwares/demo-firmware",
+  "firmwares/controller-firmware",
+  "firmwares/msc-firmware",
+  "firmwares/wp-probe",
+  "firmwares/trace-selftest",
+  "firmwares/bootloader-flasher",
+  "crates/rza1l-hal",
+  "crates/deluge-bsp",
+  "crates/deluge-fft",
+  "app-loader",
+  "crates/deluge",
+  "crates/deluge-image",
+  "crates/deluge-macros",
+  "crates/armv7-dsp-intrinsics",
+  "crates/fixedpoint",
+  "crates/deluge-fonts",
+  "crates/deluge-ui",
+  "examples/blinky",
+  "examples/oled_hello",
+  "examples/oled_menu",
+  "examples/oled_hmenu",
+  "examples/input_demo",
+  "examples/pad_paint",
+  "examples/midi_cv",
+  "examples/clock_jacks",
+  "examples/sd_demo",
+  "examples/audio_passthru",
+  "examples/audio_passthru_irq",
+  "examples/button_leds",
+  "examples/usb_log",
+]
+# Host-side tooling: built for the host triple, not the embedded armv7a target,
+# so it must not be a member of this no_std cross-compiled workspace.
+exclude = ["tools/cargo-deluge"]
 resolver = "2"
 
 [workspace.package]
+version = "0.1.0"
+edition = "2024"
 license = "MIT OR Apache-2.0"
+authors = ["Katherine Whitlock <kate@skylinesynths.nyc>"]
+repository = "https://github.com/FirestormAudio/deluge-sdk"
+homepage = "https://github.com/FirestormAudio/deluge-sdk"
+
+[workspace.dependencies]
+# Embassy async runtime + USB stacks — pinned to crates.io releases so builds
+# are reproducible and don't track a moving `main`. Bump versions here only.
+embassy-executor = "0.10.0"
+embassy-futures = "0.1.2"
+embassy-sync = "0.8.0"
+embassy-time = "0.5.1"
+embassy-time-driver = "0.2.2"
+embassy-time-queue-utils = "0.3.2"
+embassy-usb = "0.6.0"
+embassy-usb-driver = "0.2.2"
+embassy-usb-host = "0.1.0"
+
+# Shared platform / utility crates.
+cortex-ar = "0.3"
+critical-section = "1"
+log = { version = "0.4", features = ["release_max_level_off"] }
+rtt-target = { version = "0.6", features = ["log"] }
+
+gdbstub = { version = "0.7" }
+
+# Vendored from the `spark` repo (MIT/Apache). Fixed-point DSP math; ARMv7 = the
+# Deluge's Cortex-A9, so the DSP intrinsics map straight onto the hardware.
+armv7-dsp-intrinsics = { path = "crates/armv7-dsp-intrinsics", version = "0.1.0" }
+# Published as `deluge-fixedpoint`; kept under the `fixedpoint` dependency name
+# so members `use fixedpoint::…` unchanged.
+fixedpoint = { package = "deluge-fixedpoint", path = "crates/fixedpoint", version = "0.1.0" }
+
+# Vendored from `spark` (GPL-3.0-or-later — kept as standalone crates apps opt
+# into; the permissive `deluge` facade must NOT depend on these).
+deluge-fonts = { path = "crates/deluge-fonts", version = "0.1.0" }
+deluge-ui-toolkit = { path = "crates/deluge-ui", version = "0.1.0" }
 
 [profile.release]
 opt-level = "s"

@@ -1,0 +1,31 @@
+name: Tests
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Unit tests (host + QEMU ARM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          # QEMU ARM bucket + host bucket (see tools/test.sh).
+          targets: armv7-unknown-linux-gnueabihf, x86_64-unknown-linux-gnu
+          components: rust-src,llvm-tools-preview
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install QEMU + ARM cross toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user gcc-arm-linux-gnueabihf
+
+      - name: Run test suite
+        run: ./tools/test.sh

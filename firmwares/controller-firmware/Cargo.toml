@@ -1,0 +1,31 @@
+[package]
+publish = false  # binary crate — not for crates.io
+name = "deluge-controller"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[[bin]]
+name = "deluge-controller"
+test = false
+
+[dependencies]
+rza1l-hal = { path = "../../crates/rza1l-hal" }
+deluge-bsp = { path = "../../crates/deluge-bsp" }
+cortex-ar = { workspace = true }
+embassy-executor = { workspace = true, features = ["nightly", "platform-cortex-ar", "executor-thread"] }
+embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
+embassy-sync = { workspace = true }
+embassy-usb = { workspace = true }
+embassy-usb-driver = { workspace = true }
+embassy-usb-host = { workspace = true }
+rtt-target = { workspace = true, optional = true }
+log = { workspace = true }
+embassy-futures = { workspace = true }
+
+[features]
+## Enable RTT (SEGGER Real-Time Transfer) debug logging.
+## Activates rtt-target, defines _SEGGER_RTT, and registers the logger.
+## Disable for release builds: cargo build-fw --release --no-default-features
+default = []
+rtt = ["dep:rtt-target", "rza1l-hal/rtt"]

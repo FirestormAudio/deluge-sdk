@@ -1,0 +1,15 @@
+[package]
+name = "deluge-fonts"
+version.workspace = true
+edition.workspace = true
+authors = ["Firestorm Community"]
+license = "GPL-3.0-or-later"
+repository.workspace = true
+description = "Bitmap fonts for the Deluge 128x48 OLED UI toolkit (embedded-graphics)."
+
+[features]
+default = ["embedded-graphics"]
+embedded-graphics = ["dep:embedded-graphics"]
+
+[dependencies]
+embedded-graphics = { version = "0.8", optional = true }

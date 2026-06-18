@@ -1,0 +1,28 @@
+[package]
+publish = false  # binary crate — not for crates.io
+name = "bootloader-flasher"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[[bin]]
+name = "bootloader-flasher"
+test = false
+
+[dependencies]
+# `unlock-bootloader` enables spibsc::force_erase_range / force_program, which is
+# the whole point of this tool: it (re)writes the protected first-stage-bootloader
+# sector that the normal driver refuses to touch.
+rza1l-hal = { path = "../../crates/rza1l-hal", features = ["unlock-bootloader"] }
+deluge-bsp = { path = "../../crates/deluge-bsp" }
+cortex-ar = { workspace = true }
+embassy-executor = { workspace = true, features = ["nightly", "platform-cortex-ar", "executor-thread"] }
+embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
+embassy-sync = { workspace = true }
+embassy-futures = { workspace = true }
+log = { workspace = true }
+rtt-target = { workspace = true, optional = true }
+
+[features]
+default = []
+rtt = ["dep:rtt-target", "rza1l-hal/rtt"]

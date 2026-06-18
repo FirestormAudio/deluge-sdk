@@ -1,0 +1,25 @@
+[package]
+publish = false  # binary crate — not for crates.io
+name = "sd_demo"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Deluge SDK example: SD-card file write/read round-trip."
+
+[[bin]]
+name = "sd_demo"
+test = false
+
+[dependencies]
+deluge = { path = "../../crates/deluge" }
+embassy-executor = { workspace = true, features = [
+    "nightly",
+    "platform-cortex-ar",
+    "executor-thread",
+] }
+embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
+
+[features]
+default = []
+## Opt-in RTT (SEGGER) logging over a debug probe.
+rtt = ["deluge/rtt"]

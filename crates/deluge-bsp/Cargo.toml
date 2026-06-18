@@ -1,0 +1,41 @@
+[package]
+name = "deluge-bsp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Board support package for the Synthstrom Deluge (peripherals, PIC, OLED, SD)."
+
+[lib]
+# Unit tests (in #[cfg(all(test, not(target_os="none")))]) run natively via
+# `cargo test` (host target). They cannot compile for armv7a-none-eabihf
+# because the `test` crate requires std.
+test = false
+
+[features]
+default = []
+## Drive `audio::init_direct` from a per-block RX DMA interrupt (the audio SDK's
+## v2 cadence) instead of the default poll loop. Selected by `deluge/audio-irq`.
+audio-irq = []
+
+[dependencies]
+rza1l-hal = { path = "../rza1l-hal" }
+embedded-sdmmc = { version = "0.9", default-features = false, features = ["log"] }
+critical-section = { workspace = true }
+log = { workspace = true }
+
+[target.'cfg(target_os = "none")'.dependencies]
+cortex-ar = { workspace = true }
+embassy-sync = { workspace = true }
+embassy-futures = { workspace = true }
+embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
+embassy-usb-driver = { workspace = true }
+embassy-usb = { workspace = true }
+embassy-usb-host = { workspace = true }
+
+[target.'cfg(not(target_os = "none"))'.dev-dependencies]
+critical-section = { workspace = true, features = ["std"] }
+
+

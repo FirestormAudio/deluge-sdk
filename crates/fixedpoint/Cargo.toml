@@ -1,0 +1,24 @@
+[package]
+# Published as `deluge-fixedpoint` (plain `fixedpoint` is taken on crates.io);
+# the library/import name stays `fixedpoint` via [lib] below, so dependents and
+# `use fixedpoint::…` are unaffected.
+name = "deluge-fixedpoint"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Type-safe const-generic fixed-point arithmetic with an optional ARMv7 DSP fast path."
+categories = ["embedded", "no-std", "mathematics"]
+keywords = ["fixed-point", "q31", "dsp", "no-std", "armv7"]
+
+[dependencies]
+armv7-dsp-intrinsics.workspace = true
+
+[dev-dependencies]
+proptest = "1.5"
+
+[lib]
+name = "fixedpoint"
+path = "src/lib.rs"

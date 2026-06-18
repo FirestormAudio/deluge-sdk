@@ -1,0 +1,18 @@
+[package]
+name = "armv7-dsp-intrinsics"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "ARMv7 DSP intrinsics for efficient fixed-point arithmetic"
+repository = "https://github.com/stellar-aria/spark"
+
+[dependencies]
+
+[features]
+default = []
+# Enable unstable ARM intrinsics (requires nightly)
+nightly = []
+
+[lib]
+name = "armv7_dsp_intrinsics"
+path = "src/lib.rs"

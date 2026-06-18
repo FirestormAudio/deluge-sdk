@@ -1,0 +1,40 @@
+{
+  // Debug the app over a J-Link probe (advanced — needs a probe and a J-Link
+  // install). The normal iterate loop is the "deluge: run" task, which uploads
+  // over USB and needs no probe.
+  //
+  // RTT logging is off here: the default build does not include the RTT control
+  // block. Build with the `rtt` feature and add an `"rttConfig"` block if you
+  // want SEGGER RTT console output.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug (J-Link)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/target/armv7a-none-eabihf/debug/__APP_NAME__",
+      "servertype": "jlink",
+      "device": "R7S721020",
+      "interface": "swd",
+      "serverArgs": ["-jlinkscriptfile", "${workspaceFolder}/rza1_debug.JLinkScript"],
+      "preLaunchTask": "deluge: build",
+      "runToEntryPoint": "main",
+      // Bring the Cortex-A9 up the way the loader does before loading the ELF.
+      "overrideLaunchCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ],
+      "overrideResetCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+error: #[deluge::app] must be applied to an `async fn`
+ --> tests/ui/not_async.rs:5:1
+  |
+5 | fn app() {}
+  | ^^^^^^^^

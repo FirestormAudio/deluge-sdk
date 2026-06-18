@@ -1,0 +1,35 @@
+[package]
+name = "deluge-fft"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Portable-SIMD, no-std, const-generic FFT for the Deluge SDK audio pipeline."
+categories = ["embedded", "no-std", "mathematics"]
+keywords = ["fft", "dsp", "no-std", "simd"]
+
+[features]
+default = []
+# Expose the test-only reference DFT and round-trip helpers.
+test-utils = []
+
+[dependencies]
+
+[dev-dependencies]
+# For host-side unit tests only — not pulled in for no-std targets.
+approx = "0.5"
+# Benchmark harness.
+criterion = { version = "0.8", features = ["html_reports"] }
+# Reference implementation to compare against.
+rustfft = "6"
+# Cross-crate DSP-pipeline integration test (tests/dsp_pipeline.rs): quantise +
+# fixed-point gain feeding the FFT. armv7-dsp-intrinsics needs `nightly` for the
+# real DSP-instruction path on the QEMU ARM target.
+fixedpoint = { workspace = true }
+armv7-dsp-intrinsics = { workspace = true, features = ["nightly"] }
+
+[[bench]]
+name = "fft_bench"
+harness = false

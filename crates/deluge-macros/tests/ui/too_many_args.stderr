@@ -1,0 +1,5 @@
+error: #[deluge::app] entry point takes at most one argument (the `Deluge` handle)
+ --> tests/ui/too_many_args.rs:5:14
+  |
+5 | async fn app(a: u8, b: u8) {}
+  |              ^^^^^^^^^^^^

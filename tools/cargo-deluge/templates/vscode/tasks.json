@@ -1,0 +1,44 @@
+{
+  // `cargo deluge` wrappers. Run with Terminal → Run Task…, or press the
+  // default build shortcut (Ctrl/Cmd+Shift+B) for "run".
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "deluge: run (USB, dev mode)",
+      "detail": "Build, upload over USB, and launch from RAM. Needs the app-loader with dev mode on.",
+      "type": "shell",
+      "command": "cargo deluge run",
+      "problemMatcher": ["$rustc"],
+      "group": { "kind": "build", "isDefault": true },
+      "presentation": { "clear": true }
+    },
+    {
+      "label": "deluge: run --release",
+      "detail": "Same as run, optimized build.",
+      "type": "shell",
+      "command": "cargo deluge run --release",
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "deluge: build",
+      "detail": "Build the app to an ELF without uploading.",
+      "type": "shell",
+      "command": "cargo deluge build",
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "deluge: deploy to SD card",
+      "detail": "Copy the built ELF to a mounted SD card's /APPS/ folder.",
+      "type": "shell",
+      "command": "cargo deluge deploy",
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "deluge: stream USB log",
+      "detail": "Stream a running app's USB serial log (needs the usb-log feature).",
+      "type": "shell",
+      "command": "cargo deluge log",
+      "problemMatcher": []
+    }
+  ]
+}

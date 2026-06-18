@@ -1,0 +1,25 @@
+[package]
+publish = false  # binary crate — not for crates.io
+name = "audio_passthru_irq"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Deluge SDK example: audio effect on the per-block IRQ clock (M5 v2)."
+
+[[bin]]
+name = "audio_passthru_irq"
+test = false
+
+[dependencies]
+# Same as audio_passthru, but with the v2 per-block IRQ audio clock enabled.
+deluge = { path = "../../crates/deluge", features = ["audio-irq"] }
+embassy-executor = { workspace = true, features = [
+    "nightly",
+    "platform-cortex-ar",
+    "executor-thread",
+] }
+
+[features]
+default = []
+## Opt-in RTT (SEGGER) logging over a debug probe.
+rtt = ["deluge/rtt"]

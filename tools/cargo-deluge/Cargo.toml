@@ -1,0 +1,22 @@
+[package]
+name = "cargo-deluge"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[[bin]]
+name = "cargo-deluge"
+path = "src/main.rs"
+
+[dependencies]
+# A cross-platform serial port can't be opened portably from pure std, so the
+# USB upload path (`cargo deluge run`) needs this. It is the only dependency; the
+# wire-format CRC is hand-rolled (and pinned by a test against the device's
+# `deluge-image::crc32`), so there is no shared-crate coupling.
+serialport = "4"
+
+[dev-dependencies]
+# Cross-check the hand-rolled framing CRC against the on-device implementation so
+# the two ends can never drift.
+deluge-image = { path = "../../crates/deluge-image" }

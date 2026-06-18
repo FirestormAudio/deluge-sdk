@@ -1,0 +1,5 @@
+error: unknown #[deluge::app] argument (expected `setup = <path>`)
+ --> tests/ui/unknown_attr.rs:4:22
+  |
+4 | #[deluge_macros::app(frobnicate = bar)]
+  |                      ^^^^^^^^^^

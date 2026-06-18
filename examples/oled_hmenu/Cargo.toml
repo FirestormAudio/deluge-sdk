@@ -1,0 +1,26 @@
+[package]
+publish = false  # binary crate — not for crates.io
+name = "oled_hmenu"
+version = "0.1.0"
+edition = "2024"
+# Links the GPL deluge-ui-toolkit, so the example is GPL too.
+license = "GPL-3.0-or-later"
+description = "Deluge SDK example: a horizontal param-column menu (HMenu) on the OLED."
+
+[[bin]]
+name = "oled_hmenu"
+test = false
+
+[dependencies]
+deluge = { path = "../../crates/deluge", features = ["alloc"] }
+deluge-ui-toolkit = { path = "../../crates/deluge-ui" }
+embassy-executor = { workspace = true, features = [
+    "nightly",
+    "platform-cortex-ar",
+    "executor-thread",
+] }
+
+[features]
+default = []
+## Opt-in RTT (SEGGER) logging over a debug probe.
+rtt = ["deluge/rtt"]

@@ -1,0 +1,26 @@
+[package]
+publish = false  # binary crate — not for crates.io
+name = "oled_hello"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Deluge SDK example: draw to the OLED with embedded-graphics."
+
+[[bin]]
+name = "oled_hello"
+test = false
+
+[dependencies]
+deluge = { path = "../../crates/deluge" }
+embassy-executor = { workspace = true, features = [
+    "nightly",
+    "platform-cortex-ar",
+    "executor-thread",
+] }
+embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
+embedded-graphics = "0.8"
+
+[features]
+default = []
+## Opt-in RTT (SEGGER) logging over a debug probe.
+rtt = ["deluge/rtt"]
