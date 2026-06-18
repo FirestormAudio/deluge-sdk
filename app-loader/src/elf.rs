@@ -23,7 +23,7 @@ use deluge_image::elf::{
     PlanError, SegmentPlacement, classify_load_range, le16, le32, mirror_to_phys, parse_load_plan,
     place_segment, sram_stage_addr,
 };
-use rza1l_hal::spibsc;
+use deluge_bsp::flash;
 use embassy_time::{Duration, Timer};
 
 /// Chunk size for streamed segment copies (one FAT sector).
@@ -428,7 +428,7 @@ where
     }
 
     let image_len = (hi - lo) as usize;
-    if image_len as u32 > spibsc::FLASH_SLOT_LEN {
+    if image_len as u32 > flash::SLOT_LEN {
         return Err(ElfError::TooLarge);
     }
 

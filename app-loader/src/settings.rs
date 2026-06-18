@@ -1,5 +1,5 @@
 //! Persistent app-loader settings, stored in the SPI-flash **settings sector**
-//! ([`spibsc::SETTINGS_SECTOR_ADDR`]) so they survive a power-cycle and do not
+//! ([`flash::SETTINGS_ADDR`]) so they survive a power-cycle and do not
 //! depend on the SD card.
 //!
 //! The only setting today is the **dev-mode** flag: when on, `boot_task` brings
@@ -13,7 +13,7 @@
 //! adds the hardware read (memory-mapped window) and write (erase + program),
 //! reusing the exact flash path the app-slot store uses.
 
-use rza1l_hal::spibsc;
+use deluge_bsp::flash;
 
 pub use deluge_image::settings::{RECORD_LEN, Settings, decode, encode};
 
@@ -24,7 +24,7 @@ pub use deluge_image::settings::{RECORD_LEN, Settings, decode, encode};
 /// the stale pre-write line, which would make the post-write read-back (and a
 /// same-session re-read) lie.  The uncached mirror always sees current flash.
 const SETTINGS_UNCACHED_ADDR: u32 =
-    spibsc::SETTINGS_SECTOR_ADDR + rza1l_hal::UNCACHED_MIRROR_OFFSET as u32;
+    flash::SETTINGS_ADDR + rza1l_hal::UNCACHED_MIRROR_OFFSET as u32;
 
 /// Read the persisted settings from the flash settings sector (via the uncached
 /// mirror), falling back to [`Settings::default`] on a blank or invalid record
@@ -41,7 +41,7 @@ pub fn read() -> Settings {
 
 /// Persist `s` to the flash settings sector: erase the sector, then program the
 /// encoded record into its first page.  Reuses the exact erase/program path the
-/// flash app-slot store uses (`spibsc::erase_range` + `spibsc::program`); a
+/// flash app-slot store uses (`flash::MAP.erase_range` + `.program`); a
 /// single 256 B page per write keeps wear negligible.
 ///
 /// Returns `true` if the record was programmed and reads back correctly.  A
@@ -55,14 +55,14 @@ pub fn read() -> Settings {
 /// only from the boot menu context, like the app-slot store.
 pub async unsafe fn write(s: &Settings) -> bool {
     let record = encode(s);
-    // `spibsc::erase_range`/`program` each run their manual-mode window with
+    // `FlashMap::erase_range`/`program` each run their manual-mode window with
     // interrupts masked and a bounded WIP-wait internally — required on this
     // board, where taking the OLED SPI-DMA interrupt mid-erase freezes the
     // machine, and where a rejected erase would otherwise spin forever (see the
     // SPIBSC module docs and `DelugeBootloader/src/spibsc_init2.c`).
     unsafe {
-        spibsc::erase_range(spibsc::SETTINGS_SECTOR_OFFSET, spibsc::PAGE as u32);
-        spibsc::program(spibsc::SETTINGS_SECTOR_OFFSET, &record);
+        flash::MAP.erase_range(flash::SETTINGS_OFFSET, flash::PAGE as u32);
+        flash::MAP.program(flash::SETTINGS_OFFSET, &record);
     }
     // Verify through the uncached mirror (the cached window may be stale).
     read() == *s

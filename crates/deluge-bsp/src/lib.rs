@@ -22,6 +22,9 @@ pub mod encoder_detent;
 // host/QEMU test build (the pure-logic modules below still compile there).
 #[cfg(target_os = "none")]
 pub mod fat;
+/// Deluge SPI-NOR flash profile (chip geometry + board memory map).  Pure
+/// data + re-exports over the SoC `rza1l_hal::spibsc` controller.
+pub mod flash;
 pub mod jacks;
 #[cfg(target_os = "none")]
 pub mod midi_gate;

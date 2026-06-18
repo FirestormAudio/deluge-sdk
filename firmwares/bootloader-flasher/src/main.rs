@@ -33,15 +33,17 @@ use log::{error, info, warn};
 
 use deluge_bsp::oled::text::draw_str;
 use deluge_bsp::oled::{self, FrameBuffer, WIDTH};
-use deluge_bsp::{fat, sd};
+use deluge_bsp::{fat, flash, sd};
 use rza1l_hal::{allocator, spibsc};
 
 /// Fixed 8.3 filename the FSB image is read from (card root).
 const IMAGE_NAME: &str = "BOOT.BIN";
 
-/// The FSB lives in sector 0; an image must fit within one erase sector so we
-/// never spill into the device-settings sector at `0x40000`.
-const MAX_IMAGE_LEN: usize = spibsc::SECTOR_SIZE as usize;
+/// The FSB occupies the reserved region below the device-settings sector at
+/// `0x40000`; an image must fit within it (256 KB = 4 × 64 KB erase blocks) so we
+/// never spill into settings.  (This is the FSB region size, not the erase-block
+/// size — the two used to coincide at 256 KB but the erase block is now 64 KB.)
+const MAX_IMAGE_LEN: usize = 0x0004_0000;
 
 /// SDRAM staging buffer base (CS3). The image is read here before programming;
 /// 256 KB easily fits in the 64 MB SDRAM.
@@ -263,13 +265,13 @@ async fn run() -> Result<usize, FlashErr> {
     // (keeping the chip-bounds guard) — recovery-only, enabled by the
     // `unlock-bootloader` feature.
     show_progress(b"ERASING", 0).await;
-    unsafe { spibsc::force_erase_range(0, total as u32) };
+    unsafe { spibsc::force_erase_range(0, total as u32, flash::SECTOR_SIZE) };
 
     const CHUNK: usize = 0x1000;
     let mut off = 0usize;
     while off < total {
         let n = CHUNK.min(total - off);
-        unsafe { spibsc::force_program(off as u32, &image[off..off + n]) };
+        unsafe { spibsc::force_program(off as u32, &image[off..off + n], flash::PAGE) };
         off += n;
         let pct = (off * 100 / total) as u8;
         show_progress(b"WRITING", pct).await;

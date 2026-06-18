@@ -18,13 +18,13 @@
 //! | `+0x28` | `code_execute` — entry point |
 //! | `+0x2C` | `".BootLoad_ValidProgramTest."` signature |
 //!
-//! The image lives at the flash slot ([`spibsc::FLASH_SLOT_ADDR`]); we read these
+//! The image lives at the flash slot ([`flash::SLOT_ADDR`]); we read these
 //! words through the memory-mapped window, validate them, and reuse the
 //! existing trampoline ([`crate::launcher::launch_via_trampoline`]) to copy
 //! `code_start..code_end` from flash into SRAM and jump to `code_execute`.
 
+use deluge_bsp::flash;
 use deluge_image::elf::{FsbError, validate_fsb_metadata};
-use rza1l_hal::spibsc;
 
 use crate::elf::{FlashStage, SramSegDesc};
 
@@ -56,12 +56,12 @@ pub struct FlashImage {
 #[inline]
 fn read_word(off: u32) -> u32 {
     // Reads go through the cached memory-mapped window; flash is memory-mapped here.
-    unsafe { core::ptr::read_volatile((spibsc::FLASH_SLOT_ADDR + off) as *const u32) }
+    unsafe { core::ptr::read_volatile((flash::SLOT_ADDR + off) as *const u32) }
 }
 
 #[inline]
 fn read_byte(off: u32) -> u8 {
-    unsafe { core::ptr::read_volatile((spibsc::FLASH_SLOT_ADDR + off) as *const u8) }
+    unsafe { core::ptr::read_volatile((flash::SLOT_ADDR + off) as *const u8) }
 }
 
 /// Inspect the flash slot and return a [`FlashImage`] if it holds a valid,
@@ -85,7 +85,7 @@ pub fn probe() -> Option<FlashImage> {
     if code_end <= code_start || code_end > SRAM_END {
         return None;
     }
-    if code_end - code_start > spibsc::FLASH_SLOT_LEN {
+    if code_end - code_start > flash::SLOT_LEN {
         return None;
     }
     if entry < code_start || entry >= code_end {
@@ -109,7 +109,7 @@ impl FlashImage {
     /// off, so the cached/uncached attribute is irrelevant.
     pub fn desc(&self) -> SramSegDesc {
         SramSegDesc {
-            src: spibsc::FLASH_SLOT_ADDR,
+            src: flash::SLOT_ADDR,
             dst: self.code_start,
             filesz: self.code_end - self.code_start,
             zero_extra: 0,
@@ -123,7 +123,7 @@ impl FlashImage {
 /// The image's FSB metadata is validated **before** any erase, so an image the
 /// boot path would reject is refused without touching the slot — it can never
 /// brick an existing stored image. After a successful return the next
-/// [`probe`] sees the new image (`spibsc::program` flushes the read cache).
+/// [`probe`] sees the new image (`FlashMap::program` flushes the read cache).
 ///
 /// # Safety
 /// Erases and programs the flash app slot; no code may run from flash during the
@@ -146,7 +146,7 @@ where
     // error surfaced.  Catch the misfit here so the slot is never touched and the
     // caller sees a clear failure.  (The SD flatten path also checks this against
     // the staging buffer; this is the choke point that owns the slot invariant.)
-    if stage.len as u32 > spibsc::FLASH_SLOT_LEN {
+    if stage.len as u32 > flash::SLOT_LEN {
         return Err(FsbError::TooLargeForSlot);
     }
 
@@ -158,24 +158,24 @@ where
     // refuses to boot an image whose copy span overruns the slot, so reject one
     // here too — otherwise a pathological image with a small body but a huge
     // `code_end` would flash "OK" yet never appear as BOOT FLASH.
-    if meta.code_end - meta.code_start > spibsc::FLASH_SLOT_LEN {
+    if meta.code_end - meta.code_start > flash::SLOT_LEN {
         return Err(FsbError::TooLargeForSlot);
     }
 
     let len = stage.len as u32;
     on_progress(0, len).await;
 
-    // Erase every 256 KB sector the image spans.
-    unsafe { spibsc::erase_range(spibsc::FLASH_SLOT_OFFSET, len) };
+    // Erase every 64 KB block the image spans.
+    unsafe { flash::MAP.erase_range(flash::SLOT_OFFSET, len) };
 
-    // Program in chunks so the OLED can show progress. `spibsc::program`
+    // Program in chunks so the OLED can show progress. `FlashMap::program`
     // internally splits each call into ≤256-byte page writes and restores
     // memory-mapped read mode (flushing the read cache) when it returns.
     const CHUNK: usize = 0x1000; // 4 KB
     let mut off = 0usize;
     while off < image.len() {
         let n = CHUNK.min(image.len() - off);
-        unsafe { spibsc::program(spibsc::FLASH_SLOT_OFFSET + off as u32, &image[off..off + n]) };
+        unsafe { flash::MAP.program(flash::SLOT_OFFSET + off as u32, &image[off..off + n]) };
         off += n;
         on_progress(off as u32, len).await;
     }
@@ -190,7 +190,7 @@ where
     // the physical flash the boot trampoline copies from.
     const UNCACHED_MIRROR: u32 = 0x4000_0000;
     for (i, &want) in image.iter().enumerate() {
-        let addr = spibsc::FLASH_SLOT_ADDR + UNCACHED_MIRROR + i as u32;
+        let addr = flash::SLOT_ADDR + UNCACHED_MIRROR + i as u32;
         let got = unsafe { core::ptr::read_volatile(addr as *const u8) };
         if got != want {
             return Err(FsbError::VerifyFailed(i as u32));

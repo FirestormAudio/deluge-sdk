@@ -1,8 +1,13 @@
 //! SPI Multi-I/O Bus Controller (SPIBSC0) — manual-command NOR-flash driver.
 //!
-//! The Deluge stores the first-stage bootloader, the SSB, and (with this change)
-//! a bootable firmware image in a single SPI NOR flash chip — a **Spansion
-//! S25FL512** (512 Mbit, uniform **256 KB** sectors) on SPIBSC channel 0.
+//! This is the SoC-generic SPIBSC channel-0 *controller* driver: manual-mode
+//! JEDEC transfers, memory-mapped read mode, the JEDEC ID/status reads, and the
+//! chip-bounds anti-alias guard.  The chip geometry and the board's flash map
+//! (sector/page size, app-slot and settings layout, writable regions) are *not*
+//! here — they are board facts carried by [`FlashMap`], which the BSP constructs
+//! (see `deluge-bsp::flash`, which describes the Deluge's 4 MB / 64 KB-sector
+//! part and its FSB/SSB/settings/app-slot layout).
+//!
 //! At reset the controller is in **external-address-space read mode**
 //! (memory-mapped): the flash appears at `0x1800_0000` (cached) / `0x5800_0000`
 //! (uncached mirror) and ordinary loads fetch flash bytes.  That mode is
@@ -71,86 +76,48 @@ use core::sync::atomic::{AtomicU32, Ordering, compiler_fence};
 
 /// Base of the cached memory-mapped read window — flash offset 0 maps here.
 pub const SPI_FLASH_BASE: u32 = 0x1800_0000;
-/// Total flash size in bytes.  **The Deluge's SPI NOR is 4 MB**, not the larger
-/// part our earlier comments assumed: the bootloader places the firmware at
-/// `0x80000` with a 3.5 MB maximum, ending exactly at `0x400000`, which *is the
-/// end of the chip* (`DelugeBootloader/src/spibsc_init2.c`).  Nothing exists
-/// above `0x400000`; an address there wraps modulo the chip size back onto low
-/// sectors — writing `0x400000` aliases to `0x0` and erases the FSB.  Every
-/// write is therefore bounded against this (and the JEDEC-derived
-/// [`chip_capacity`]); no offset at or beyond it is ever issued.
-pub const FLASH_SIZE: u32 = 0x0040_0000; // 4 MB
 
-/// Flash-relative offset of the bootable app slot.
+/// Chip geometry plus the board's writable-region policy, supplied by the BSP.
 ///
-/// Everything below this is **hardware-reserved** and is never erased or
-/// programmed by this driver — [`erase_sector`] / [`program`] refuse any offset
-/// outside the writable windows (see [`writable`]).  The Deluge flash map (the
-/// regions below are described in the original 256 KB units; the erase
-/// granularity is actually a 64 KB [`SECTOR_SIZE`] block):
-///   * `0x00000..0x40000`  — first-stage bootloader (FSB)
-///   * `0x40000..0x80000`  — Deluge device-settings
-///   * `0x80000..0x100000` — second-stage bootloader (SSB); the FSB loads the
-///     SSB from `0x80000`
+/// The SPIBSC *controller* (manual-mode transfers, mmap read mode, JEDEC reads,
+/// the chip-bounds anti-alias guard) is SoC-generic and lives in this module; the
+/// numbers that depend on *which flash part is on which board* do not.  A
+/// `FlashMap` carries them so a different part/board is a one-line BSP change.
 ///
-/// The app slot sits **above** the SSB so storing an app can never touch the
-/// FSB, the device settings, or the SSB itself.  `0x100000` is 64 KB-aligned,
-/// so erasing a slot block never spills into the reserved region below.
-pub const FLASH_SLOT_OFFSET: u32 = 0x0010_0000; // 1 MB
-/// Memory-mapped (read-window) address of the app slot.
-pub const FLASH_SLOT_ADDR: u32 = SPI_FLASH_BASE + FLASH_SLOT_OFFSET;
-/// Length of the app slot (2.75 MB: `0x100000..0x3C0000`; 11 × 256 KB sectors).
-/// The slot stops one sector short of the chip end so the top sector can hold the
-/// [settings record](SETTINGS_SECTOR_OFFSET) — everything stays inside the 4 MB
-/// device.
-pub const FLASH_SLOT_LEN: u32 = 0x002C_0000;
+/// Every erase/program goes through [`FlashMap`]'s methods, which refuse any range
+/// not inside one of `writable` (the board's app-writable windows) **and** not
+/// inside the physically present chip ([`in_chip`]).  That keeps the single
+/// write-guard choke point — now keyed on the supplied windows rather than
+/// hardcoded constants.
+pub struct FlashMap {
+    /// Erase-block size in bytes — the granularity of the `0xD8` block erase on
+    /// this part.  Erase offsets are rounded down to this, and ranges are erased
+    /// one block at a time.
+    pub sector_size: u32,
+    /// Page-program size in bytes.  A single program never crosses a page
+    /// boundary; [`FlashMap::program`] splits longer buffers at multiples of this.
+    pub page: usize,
+    /// The board's app-writable windows (flash-relative).  Erase/program refuse
+    /// any range not wholly inside one of these — the belt-and-suspenders guard
+    /// that keeps a caller bug away from the FSB / SSB / reserved regions.
+    pub writable: &'static [core::ops::Range<u32>],
+}
 
-/// Flash-relative offset of the **settings sector** — the **top 256 KB sector of
-/// the 4 MB chip** (`0x3C0000..0x400000`), immediately above the app slot.
-///
-/// It must live *inside* the device: the previous choice (`0x400000`) was at the
-/// chip boundary and aliased to `0x0`, erasing the FSB.  This sector is the last
-/// one that physically exists, sits above the app slot, and is never touched by
-/// the FSB/SSB.  The app-loader stores its persistent, card-independent dev-mode
-/// flag here (see `app-loader/src/settings.rs`).
-pub const SETTINGS_SECTOR_OFFSET: u32 = 0x003C_0000;
-/// Memory-mapped (read-window) address of the settings sector.
-pub const SETTINGS_SECTOR_ADDR: u32 = SPI_FLASH_BASE + SETTINGS_SECTOR_OFFSET;
-
-/// Uniform erase-sector size (**64 KB**) — the granularity of the `0xD8` block
-/// erase ([`CMD_SECTOR_ERASE`]) on this S25FL032-class 4 MB part.  Earlier code
-/// wrongly assumed 256 KB sectors (copied from an S25FL512 reference): a `0xD8`
-/// clears only 64 KB, so a 256 KB stride left three quarters of every region
-/// un-erased and a multi-sector store corrupted everything past the first 64 KB.
-/// Every slot/settings offset below is 64 KB-aligned, so the geometry is
-/// unchanged — only the erase step shrinks to match the hardware.
-pub const SECTOR_SIZE: u32 = 0x0001_0000;
-/// Program chunk size.  The page buffer is larger, but the Deluge bootloader
-/// programs the firmware region in 256-byte units with the note "Bigger doesn't
-/// seem to work" on this board (`FLASH_WRITE_SIZE` in
-/// `DelugeBootloader/src/spibsc_init2.c`), so we match that: a single program is
-/// at most 256 bytes and never crosses a 256-byte boundary.
-pub const PAGE: usize = 256;
-
-/// `true` if `[offset, offset+len)` lies entirely within one of the two writable
-/// windows: the firmware **app slot** or the **settings sector** above it.
+/// `true` if `[offset, offset+len)` lies entirely within one of `windows`.
 ///
 /// Belt-and-suspenders write protection: every erase and program funnels through
-/// a check against this, so a caller bug can never reach the FSB, the
-/// device-settings sector, or the SSB below [`FLASH_SLOT_OFFSET`].  The settings
-/// sector ([`SETTINGS_SECTOR_OFFSET`]) is a second, separate allowed window — one
-/// sector — that holds the app-loader's persistent dev-mode flag.
+/// a check against the board's writable windows ([`FlashMap::writable`]), so a
+/// caller bug can never reach a region the board didn't mark writable (the FSB,
+/// device-settings, or SSB on the Deluge).  Empty ranges are never writable.
 #[inline]
-fn writable(offset: u32, len: u32) -> bool {
+fn within_windows(offset: u32, len: u32, windows: &[core::ops::Range<u32>]) -> bool {
     if len == 0 {
         return false;
     }
     let end = offset as u64 + len as u64;
-    let in_slot =
-        offset >= FLASH_SLOT_OFFSET && end <= (FLASH_SLOT_OFFSET as u64 + FLASH_SLOT_LEN as u64);
-    let in_settings = offset >= SETTINGS_SECTOR_OFFSET
-        && end <= (SETTINGS_SECTOR_OFFSET as u64 + SECTOR_SIZE as u64);
-    in_slot || in_settings
+    windows
+        .iter()
+        .any(|w| offset >= w.start && end <= w.end as u64)
 }
 
 /// Cached usable flash capacity in bytes from the JEDEC density byte.
@@ -163,8 +130,8 @@ static CHIP_CAPACITY: AtomicU32 = AtomicU32::new(0);
 ///
 /// **Must be called outside a manual-mode window** — it issues its own RDID
 /// (which toggles `CMNCR.MD`); the public erase/program entry points prime it
-/// before `to_manual`, so the per-sector check ([`write_allowed`]) only ever
-/// reads the cache.
+/// before `to_manual`, so the per-sector guard ([`in_chip`]/[`within_windows`])
+/// only ever reads the cache.
 fn chip_capacity() -> u32 {
     let cached = CHIP_CAPACITY.load(Ordering::Relaxed);
     if cached != 0 {
@@ -185,28 +152,16 @@ fn chip_capacity() -> u32 {
     cap
 }
 
-/// `true` if `[offset, offset+len)` is inside a writable window **and** inside the
-/// physically present flash (using the cached [`chip_capacity`]).  The chip-size
-/// bound is what prevents an out-of-range offset from wrapping (modulo the chip
-/// size) onto a reserved low sector — the failure that erased the FSB.  Reads
-/// only the cache, so it is safe to call inside a manual-mode window; an unknown
-/// capacity (`0`) refuses the write.
-fn write_allowed(offset: u32, len: u32) -> bool {
-    if !writable(offset, len) {
-        return false;
-    }
-    in_chip(offset, len)
-}
-
 /// `true` if `[offset, offset+len)` is non-empty and lies inside the physically
-/// present flash (using the cached [`chip_capacity`]) — **without** the
-/// writable-window restriction of [`writable`].
+/// present flash (using the cached [`chip_capacity`]).
 ///
-/// This is the only guard kept on the `unlock-bootloader` forced path: it still
-/// prevents an out-of-range offset from wrapping (modulo the chip size) onto a
-/// low sector — the failure that once erased the FSB — but it deliberately does
-/// *not* protect the FSB / device-settings / SSB regions, because the whole point
-/// of the forced path is to (re)write them from a JTAG-loaded recovery tool.
+/// The chip-size bound is what prevents an out-of-range offset from wrapping
+/// (modulo the chip size) onto a reserved low sector — the failure that erased
+/// the FSB.  It is combined with [`within_windows`] on the normal write path and
+/// is the *only* guard kept on the `unlock-bootloader` forced path (which
+/// deliberately drops the window restriction so a recovery tool can rewrite the
+/// FSB / settings / SSB).  Reads only the cache, so it is safe inside a
+/// manual-mode window; an unknown capacity (`0`) refuses every write.
 #[inline]
 fn in_chip(offset: u32, len: u32) -> bool {
     if len == 0 {
@@ -214,6 +169,13 @@ fn in_chip(offset: u32, len: u32) -> bool {
     }
     let cap = CHIP_CAPACITY.load(Ordering::Relaxed);
     cap != 0 && (offset as u64 + len as u64) <= cap as u64
+}
+
+/// Guard for the normal (board-restricted) write path: inside one of the board's
+/// writable `windows` **and** inside the physical chip.
+#[inline]
+fn write_allowed(offset: u32, len: u32, windows: &[core::ops::Range<u32>]) -> bool {
+    within_windows(offset, len, windows) && in_chip(offset, len)
 }
 
 // ---------------------------------------------------------------------------
@@ -427,18 +389,17 @@ unsafe fn clear_status() {
     }
 }
 
-/// Erase the 256 KB sector at sector-aligned `offset`.  Assumes manual mode is
-/// already active.  Refuses anything outside the app slot — the single choke
-/// point for every erase path.
+/// Erase the `sector_size`-byte block at block-aligned `offset`.  Assumes manual
+/// mode is already active.  The single choke point for every erase path.
 ///
-/// `allow_protected` (only ever `true` on the feature-gated forced path) relaxes
-/// the writable-window check to a chip-bounds check, so a recovery tool can erase
-/// the FSB / SSB; the anti-aliasing chip-size bound is kept either way.
-unsafe fn erase_sector_at(offset: u32, allow_protected: bool) {
-    let ok = if allow_protected {
-        in_chip(offset, SECTOR_SIZE)
-    } else {
-        write_allowed(offset, SECTOR_SIZE)
+/// `writable` carries the board's allowed windows for the normal path; passing
+/// `None` (only ever from the feature-gated forced path) drops the window check
+/// to a bare chip-bounds check, so a recovery tool can erase the FSB / SSB.  The
+/// anti-aliasing chip-size bound ([`in_chip`]) is kept either way.
+unsafe fn erase_sector_at(offset: u32, sector_size: u32, writable: Option<&[core::ops::Range<u32>]>) {
+    let ok = match writable {
+        Some(windows) => write_allowed(offset, sector_size, windows),
+        None => in_chip(offset, sector_size),
     };
     if !ok {
         debug_assert!(false, "spibsc: refused erase outside writable/in-chip range");
@@ -461,23 +422,23 @@ unsafe fn erase_sector_at(offset: u32, allow_protected: bool) {
 }
 
 /// Page-program helper that assumes manual mode is already active (so multi-page
-/// [`program`] does not toggle read mode per page).  Refuses anything outside the
-/// app slot — the single choke point for every program path.
+/// [`FlashMap::program`] does not toggle read mode per page).  The single choke
+/// point for every program path.
 ///
 /// Mirrors the Renesas `R_SFLASH_ByteProgram` sequence: a command+address
 /// transfer with SSL kept, then data transfers in 32/16/8-bit units with the
 /// datum MSB-aligned in `SMWDR0`, SSL negated on the last unit.
 ///
-/// `allow_protected` (only ever `true` on the feature-gated forced path) relaxes
-/// the writable-window check to a chip-bounds check; see [`erase_sector_at`].
-unsafe fn program_page_manual(offset: u32, data: &[u8], allow_protected: bool) {
+/// `writable` carries the board's allowed windows for the normal path; `None`
+/// (forced path only) drops the window check to a bare chip-bounds check; see
+/// [`erase_sector_at`].
+unsafe fn program_page_manual(offset: u32, data: &[u8], writable: Option<&[core::ops::Range<u32>]>) {
     if data.is_empty() {
         return;
     }
-    let ok = if allow_protected {
-        in_chip(offset, data.len() as u32)
-    } else {
-        write_allowed(offset, data.len() as u32)
+    let ok = match writable {
+        Some(windows) => write_allowed(offset, data.len() as u32, windows),
+        None => in_chip(offset, data.len() as u32),
     };
     if !ok {
         debug_assert!(false, "spibsc: refused program outside writable/in-chip range");
@@ -579,131 +540,139 @@ pub fn read_status_reg() -> u8 {
     })
 }
 
-/// Erase the 256 KB sector containing `offset` (flash-relative).
-///
-/// # Safety
-/// Switches the flash bus out of memory-mapped read mode, so no code may execute
-/// from flash during the call.  Offsets outside the app slot are refused.
-pub unsafe fn erase_sector(offset: u32) {
-    // Probe the chip size *before* entering manual mode (it issues its own RDID);
-    // the per-sector guard then reads the cached value.
-    chip_capacity();
-    // Interrupts masked for the whole manual-mode window (see module docs).
-    critical_section::with(|_| unsafe {
-        to_manual();
-        erase_sector_at(offset & !(SECTOR_SIZE - 1), false);
-        to_read_mode();
-    });
-}
+impl FlashMap {
+    /// Erase the [`sector_size`](FlashMap::sector_size)-byte block containing
+    /// `offset` (flash-relative).
+    ///
+    /// # Safety
+    /// Switches the flash bus out of memory-mapped read mode, so no code may
+    /// execute from flash during the call.  Offsets outside [`self.writable`] are
+    /// refused.
+    pub unsafe fn erase_sector(&self, offset: u32) {
+        // Probe the chip size *before* entering manual mode (it issues its own
+        // RDID); the per-block guard then reads the cached value.
+        chip_capacity();
+        // Interrupts masked for the whole manual-mode window (see module docs).
+        critical_section::with(|_| unsafe {
+            to_manual();
+            erase_sector_at(offset & !(self.sector_size - 1), self.sector_size, Some(self.writable));
+            to_read_mode();
+        });
+    }
 
-/// Erase every 256 KB sector touched by `[offset, offset+len)` (flash-relative).
-///
-/// # Safety
-/// See [`erase_sector`].
-pub unsafe fn erase_range(offset: u32, len: u32) {
-    chip_capacity(); // probe chip size before manual mode (see `erase_sector`)
-    // Interrupts masked for the whole manual-mode window (see module docs).
-    critical_section::with(|_| unsafe {
-        let mut addr = offset & !(SECTOR_SIZE - 1);
-        let end = offset + len;
-        to_manual();
-        while addr < end {
-            erase_sector_at(addr, false);
-            addr += SECTOR_SIZE;
-        }
-        to_read_mode();
-    });
-}
+    /// Erase every block touched by `[offset, offset+len)` (flash-relative).
+    ///
+    /// # Safety
+    /// See [`FlashMap::erase_sector`].
+    pub unsafe fn erase_range(&self, offset: u32, len: u32) {
+        chip_capacity(); // probe chip size before manual mode
+        // Interrupts masked for the whole manual-mode window (see module docs).
+        critical_section::with(|_| unsafe {
+            let mut addr = offset & !(self.sector_size - 1);
+            let end = offset + len;
+            to_manual();
+            while addr < end {
+                erase_sector_at(addr, self.sector_size, Some(self.writable));
+                addr += self.sector_size;
+            }
+            to_read_mode();
+        });
+    }
 
-/// Program up to [`PAGE`] bytes at `offset` (flash-relative).  The byte range
-/// must not cross a page boundary and the sector must already be erased.
-///
-/// # Safety
-/// See [`erase_sector`].
-pub unsafe fn program_page(offset: u32, data: &[u8]) {
-    chip_capacity(); // probe chip size before manual mode (see `erase_sector`)
-    // Interrupts masked for the whole manual-mode window (see module docs).
-    critical_section::with(|_| unsafe {
-        to_manual();
-        program_page_manual(offset, data, false);
-        to_read_mode();
-    });
-}
+    /// Program up to [`page`](FlashMap::page) bytes at `offset` (flash-relative).
+    /// The byte range must not cross a page boundary and the block must already be
+    /// erased.
+    ///
+    /// # Safety
+    /// See [`FlashMap::erase_sector`].
+    pub unsafe fn program_page(&self, offset: u32, data: &[u8]) {
+        chip_capacity(); // probe chip size before manual mode
+        // Interrupts masked for the whole manual-mode window (see module docs).
+        critical_section::with(|_| unsafe {
+            to_manual();
+            program_page_manual(offset, data, Some(self.writable));
+            to_read_mode();
+        });
+    }
 
-/// Program an arbitrary-length buffer at `offset` (flash-relative), splitting it
-/// into [`PAGE`]-bounded writes.  The target range must already be erased.
-///
-/// # Safety
-/// See [`erase_sector`].
-pub unsafe fn program(offset: u32, data: &[u8]) {
-    chip_capacity(); // probe chip size before manual mode (see `erase_sector`)
-    // Interrupts masked for the whole manual-mode window (see module docs).
-    critical_section::with(|_| unsafe {
-        to_manual();
-        let mut addr = offset;
-        let mut rest = data;
-        while !rest.is_empty() {
-            let page_room = PAGE - (addr as usize & (PAGE - 1));
-            let chunk = core::cmp::min(page_room, rest.len());
-            program_page_manual(addr, &rest[..chunk], false);
-            addr += chunk as u32;
-            rest = &rest[chunk..];
-        }
-        to_read_mode();
-    });
+    /// Program an arbitrary-length buffer at `offset` (flash-relative), splitting
+    /// it into [`page`](FlashMap::page)-bounded writes.  The target range must
+    /// already be erased.
+    ///
+    /// # Safety
+    /// See [`FlashMap::erase_sector`].
+    pub unsafe fn program(&self, offset: u32, data: &[u8]) {
+        chip_capacity(); // probe chip size before manual mode
+        // Interrupts masked for the whole manual-mode window (see module docs).
+        critical_section::with(|_| unsafe {
+            to_manual();
+            let mut addr = offset;
+            let mut rest = data;
+            while !rest.is_empty() {
+                let page_room = self.page - (addr as usize & (self.page - 1));
+                let chunk = core::cmp::min(page_room, rest.len());
+                program_page_manual(addr, &rest[..chunk], Some(self.writable));
+                addr += chunk as u32;
+                rest = &rest[chunk..];
+            }
+            to_read_mode();
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Forced (unlocked) writes — recovery tooling only
 // ---------------------------------------------------------------------------
 //
-// These bypass the writable-window guard ([`writable`]) so a JTAG-loaded recovery
-// program can (re)write the protected low regions — the FSB, the device-settings
-// sector, and the SSB — which the normal API refuses.  They are gated behind the
+// These bypass the writable-window guard so a JTAG-loaded recovery program can
+// (re)write the protected low regions — the FSB, the device-settings sector, and
+// the SSB — which the normal API refuses.  They are gated behind the
 // `unlock-bootloader` cargo feature so the capability cannot be linked into normal
 // firmware (or the app-loader) by accident.  The anti-aliasing chip-bounds check
 // ([`in_chip`]) is retained: that is what prevents an out-of-range offset from
-// wrapping onto a low sector, and dropping it is what once erased the FSB.
+// wrapping onto a low sector, and dropping it is what once erased the FSB.  The
+// caller passes the geometry (which lives in the BSP profile, e.g.
+// `deluge-bsp::flash`).
 
-/// Erase every 256 KB sector touched by `[offset, offset+len)` (flash-relative),
-/// **including the protected FSB / settings / SSB regions**.
+/// Erase every `sector_size`-byte block touched by `[offset, offset+len)`
+/// (flash-relative), **including the protected FSB / settings / SSB regions**.
 ///
 /// # Safety
-/// See [`erase_sector`].  In addition, this can erase the first-stage bootloader
-/// and brick the device until reflashed over JTAG/SPI — only call from a recovery
-/// tool that is itself running from SRAM (never from flash).
+/// See [`FlashMap::erase_sector`].  In addition, this can erase the first-stage
+/// bootloader and brick the device until reflashed over JTAG/SPI — only call from
+/// a recovery tool that is itself running from SRAM (never from flash).
 #[cfg(feature = "unlock-bootloader")]
-pub unsafe fn force_erase_range(offset: u32, len: u32) {
-    chip_capacity(); // probe chip size before manual mode (see `erase_sector`)
+pub unsafe fn force_erase_range(offset: u32, len: u32, sector_size: u32) {
+    chip_capacity(); // probe chip size before manual mode
     critical_section::with(|_| unsafe {
-        let mut addr = offset & !(SECTOR_SIZE - 1);
+        let mut addr = offset & !(sector_size - 1);
         let end = offset + len;
         to_manual();
         while addr < end {
-            erase_sector_at(addr, true);
-            addr += SECTOR_SIZE;
+            erase_sector_at(addr, sector_size, None);
+            addr += sector_size;
         }
         to_read_mode();
     });
 }
 
 /// Program an arbitrary-length buffer at `offset` (flash-relative), splitting it
-/// into [`PAGE`]-bounded writes, **including the protected FSB / settings / SSB
+/// into `page`-bounded writes, **including the protected FSB / settings / SSB
 /// regions**.  The target range must already be erased.
 ///
 /// # Safety
 /// See [`force_erase_range`].
 #[cfg(feature = "unlock-bootloader")]
-pub unsafe fn force_program(offset: u32, data: &[u8]) {
-    chip_capacity(); // probe chip size before manual mode (see `erase_sector`)
+pub unsafe fn force_program(offset: u32, data: &[u8], page: usize) {
+    chip_capacity(); // probe chip size before manual mode
     critical_section::with(|_| unsafe {
         to_manual();
         let mut addr = offset;
         let mut rest = data;
         while !rest.is_empty() {
-            let page_room = PAGE - (addr as usize & (PAGE - 1));
+            let page_room = page - (addr as usize & (page - 1));
             let chunk = core::cmp::min(page_room, rest.len());
-            program_page_manual(addr, &rest[..chunk], true);
+            program_page_manual(addr, &rest[..chunk], None);
             addr += chunk as u32;
             rest = &rest[chunk..];
         }
@@ -715,111 +684,54 @@ pub unsafe fn force_program(offset: u32, data: &[u8]) {
 mod tests {
     use super::*;
 
-    /// The app-slot flash geometry is the contract the app-loader relies on when
-    /// it erases/programs a stored image into the slot and when the FSB copies it
-    /// back into SRAM. If these literals change, the flash-store path and the
-    /// boot-from-flash path must agree — so pin them here.
+    // Generic-controller invariants only.  The Deluge flash *map* (slot/settings
+    // layout, the writable windows it feeds `FlashMap`) is board policy and is
+    // tested in `deluge-bsp::flash`.  Test sizes here are arbitrary stand-ins for
+    // a 4 MB / 64 KB-sector part.
+    const TEST_CHIP: u32 = 0x0040_0000;
+    const TEST_SECTOR: u32 = 0x0001_0000;
+
+    /// `within_windows` accepts only ranges wholly inside one of the supplied
+    /// windows, and never a zero-length range.
     #[test]
-    fn app_slot_geometry_is_pinned() {
-        assert_eq!(SPI_FLASH_BASE, 0x1800_0000);
-        assert_eq!(FLASH_SIZE, 0x0040_0000, "the Deluge SPI NOR is 4 MB");
-        assert_eq!(FLASH_SLOT_OFFSET, 0x0010_0000);
-        assert_eq!(FLASH_SLOT_ADDR, 0x1810_0000);
-        assert_eq!(FLASH_SLOT_LEN, 0x002C_0000);
-        assert_eq!(SECTOR_SIZE, 0x0001_0000, "0xD8 erases 64 KB on this part");
+    fn within_windows_guards_supplied_ranges() {
+        let windows = [0x10_0000u32..0x3C_0000, 0x3C_0000..0x3D_0000];
+        // Wholly inside a window.
+        assert!(within_windows(0x10_0000, 0x2C_0000, &windows));
+        assert!(within_windows(0x3C_0000, TEST_SECTOR, &windows));
+        // One byte past a window edge, or below the first window, is refused.
+        assert!(!within_windows(0x10_0000, 0x2C_0001, &windows));
+        assert!(!within_windows(0, TEST_SECTOR, &windows));
+        assert!(!within_windows(0x3C_0000, TEST_SECTOR + 1, &windows));
+        // Zero length is never writable.
+        assert!(!within_windows(0x10_0000, 0, &windows));
     }
 
-    /// The slot must be a whole number of erase sectors, and the slot base must
-    /// be sector-aligned so erasing a slot sector never spills into the
-    /// hardware-reserved region (FSB / settings / SSB) below it.
+    /// `in_chip` is the chip-bounds anti-alias guard the forced path keeps even
+    /// without a window restriction: it accepts any in-chip range (including the
+    /// reserved low sectors) but rejects anything reaching past the physical end,
+    /// and refuses everything when the capacity is unknown.
     #[test]
-    fn slot_is_sector_aligned() {
-        assert_eq!(FLASH_SLOT_OFFSET % SECTOR_SIZE, 0, "slot base must be sector-aligned");
-        assert_eq!(FLASH_SLOT_LEN % SECTOR_SIZE, 0, "slot must be whole sectors");
-        assert_eq!(FLASH_SLOT_LEN / SECTOR_SIZE, 44, "2.75 MB / 64 KB = 44 sectors");
-    }
-
-    /// The settings sector must be sector-aligned, sit directly above the app
-    /// slot, and stay strictly inside the chip — its erase block must not reach
-    /// or pass the chip end (placing it *at* `0x400000` aliased to `0x0` and
-    /// erased the FSB).  It need not be the literal top sector: with 64 KB
-    /// sectors the 64 KB at `0x3C0000` leaves three unused blocks above it, which
-    /// is harmless — the settings record only occupies the first page.
-    #[test]
-    fn settings_sector_is_in_chip_and_above_slot() {
-        assert_eq!(SETTINGS_SECTOR_OFFSET, 0x003C_0000);
-        assert_eq!(SETTINGS_SECTOR_ADDR, SPI_FLASH_BASE + 0x003C_0000);
-        assert_eq!(
-            SETTINGS_SECTOR_OFFSET % SECTOR_SIZE,
-            0,
-            "settings sector must be sector-aligned"
-        );
-        assert_eq!(
-            SETTINGS_SECTOR_OFFSET, FLASH_SLOT_OFFSET + FLASH_SLOT_LEN,
-            "settings sector sits directly above the app slot"
-        );
-        assert!(
-            SETTINGS_SECTOR_OFFSET + SECTOR_SIZE <= FLASH_SIZE,
-            "settings erase block must stay inside the chip (never at/over the end)"
-        );
-    }
-
-    /// Every writable offset must stay strictly inside the chip, so no erase can
-    /// alias past the end onto a reserved low sector (the FSB-erasing bug).
-    #[test]
-    fn writable_windows_stay_inside_the_chip() {
-        assert!(FLASH_SLOT_OFFSET + FLASH_SLOT_LEN <= FLASH_SIZE);
-        assert!(SETTINGS_SECTOR_OFFSET + SECTOR_SIZE <= FLASH_SIZE);
-    }
-
-    /// The two writable windows — app slot and settings sector — accept exactly
-    /// their own ranges and nothing below the slot (FSB / settings / SSB).
-    #[test]
-    fn writable_guards_both_windows() {
-        // App slot: whole slot and a sub-range are writable; one byte past the
-        // top is not, and the reserved region below it is not.
-        assert!(writable(FLASH_SLOT_OFFSET, FLASH_SLOT_LEN));
-        assert!(writable(FLASH_SLOT_OFFSET, SECTOR_SIZE));
-        assert!(!writable(FLASH_SLOT_OFFSET, FLASH_SLOT_LEN + 1));
-        assert!(!writable(0, SECTOR_SIZE), "FSB sector must stay protected");
-
-        // Settings sector: exactly its one sector is writable; not one byte more,
-        // and not the gap between the slot top and the settings sector.
-        assert!(writable(SETTINGS_SECTOR_OFFSET, SECTOR_SIZE));
-        assert!(writable(SETTINGS_SECTOR_OFFSET, PAGE as u32));
-        assert!(!writable(SETTINGS_SECTOR_OFFSET, SECTOR_SIZE + 1));
-        assert!(!writable(SETTINGS_SECTOR_OFFSET + SECTOR_SIZE, PAGE as u32));
-        assert!(!writable(0, 0), "zero-length is never writable");
-    }
-
-    /// The forced (`unlock-bootloader`) path drops the writable-window guard but
-    /// keeps the chip-bounds guard.  `in_chip` must therefore accept the FSB
-    /// sector (which `writable` rejects) yet still reject anything that would
-    /// reach past the physical chip end — the anti-aliasing protection that must
-    /// never be lost, even on the recovery path.
-    #[test]
-    fn in_chip_allows_fsb_but_keeps_chip_bounds() {
-        // Prime the cached capacity to the real 4 MB part (RDID is unavailable on
-        // the host); restore it afterwards so test ordering can't leak state.
+    fn in_chip_keeps_chip_bounds() {
+        // Prime the cached capacity (RDID is unavailable on the host); restore it
+        // afterwards so test ordering can't leak state.
         let saved = CHIP_CAPACITY.load(Ordering::Relaxed);
-        CHIP_CAPACITY.store(FLASH_SIZE, Ordering::Relaxed);
+        CHIP_CAPACITY.store(TEST_CHIP, Ordering::Relaxed);
 
-        // FSB sector: blocked by the normal guard, allowed by the forced guard.
-        assert!(!writable(0, SECTOR_SIZE), "FSB stays protected on the normal path");
-        assert!(in_chip(0, SECTOR_SIZE), "forced path may erase the FSB sector");
-        // SSB region too.
-        assert!(in_chip(0x0008_0000, SECTOR_SIZE));
-
-        // Chip bounds are still enforced: the last in-chip byte is fine, one past
-        // the end is not, and a wrap-prone offset at the chip end is refused.
-        assert!(in_chip(FLASH_SIZE - SECTOR_SIZE, SECTOR_SIZE));
-        assert!(!in_chip(FLASH_SIZE - SECTOR_SIZE, SECTOR_SIZE + 1));
-        assert!(!in_chip(FLASH_SIZE, PAGE as u32));
+        // Any in-chip range is allowed by the bare chip-bounds guard — including
+        // the low (FSB/SSB) sectors the forced path is allowed to rewrite.
+        assert!(in_chip(0, TEST_SECTOR));
+        assert!(in_chip(0x0008_0000, TEST_SECTOR));
+        // The last in-chip byte is fine; one past the end is not; a wrap-prone
+        // offset at the chip end is refused.
+        assert!(in_chip(TEST_CHIP - TEST_SECTOR, TEST_SECTOR));
+        assert!(!in_chip(TEST_CHIP - TEST_SECTOR, TEST_SECTOR + 1));
+        assert!(!in_chip(TEST_CHIP, 0x100));
         assert!(!in_chip(0, 0), "zero-length is never writable");
 
-        // An unprobed/implausible capacity (0) refuses every forced write.
+        // An unprobed/implausible capacity (0) refuses every write.
         CHIP_CAPACITY.store(0, Ordering::Relaxed);
-        assert!(!in_chip(0, SECTOR_SIZE), "unknown capacity refuses forced writes");
+        assert!(!in_chip(0, TEST_SECTOR), "unknown capacity refuses writes");
 
         CHIP_CAPACITY.store(saved, Ordering::Relaxed);
     }
