@@ -21,8 +21,8 @@ use deluge_bsp::fat::{self, FatError, RawFile};
 use deluge_bsp::flash;
 use deluge_image::elf::{
     ELF_MAGIC, ELFCLASS32, ELFDATA2LSB, EM_ARM, ET_EXEC, LoadTarget, MAX_PHDRS, PT_LOAD, PlanError,
-    SegmentPlacement, classify_load_range, le16, le32, mirror_to_phys, parse_load_plan,
-    place_segment, sram_stage_addr,
+    SegmentPlacement, classify_load_range, find_fsb_base, le16, le32, mirror_to_phys,
+    parse_load_plan, place_segment, sram_stage_addr,
 };
 use embassy_time::{Duration, Timer};
 
@@ -339,11 +339,14 @@ pub unsafe fn load_from_slice(elf: &[u8]) -> Result<LoadResult, ElfError> {
 /// A flat firmware image staged in the SDRAM staging window, ready to be
 /// programmed into the flash app slot.
 pub struct FlashStage {
-    /// Pointer to image byte 0 inside the SDRAM staging window.
+    /// Pointer to image byte 0 (the vector table) inside the SDRAM staging
+    /// window — re-based past any leading NOLOAD region by [`find_fsb_base`].
     pub ptr: *const u8,
-    /// Flattened image length in bytes (`hi - lo` of the SRAM `PT_LOAD` LMAs).
+    /// Flattened image length in bytes, from the vector table to the highest
+    /// SRAM `PT_LOAD` LMA end.
     pub len: usize,
-    /// Lowest load address (LMA) of the image — equals the FSB `code_start`.
+    /// Load address (LMA) of image byte 0 — the vector table base, which equals
+    /// the FSB `code_start` metadata word.
     pub code_start: u32,
 }
 
@@ -487,9 +490,26 @@ where
         on_progress(total_bytes, total_bytes).await;
     }
 
+    // Re-base the flat image on the FSB vector table.
+    //
+    // The image is currently based at `lo`, the lowest PT_LOAD load address.
+    // For SDK firmware (`rza1l-hal`'s startup) the vector table *is* the lowest
+    // loadable address, so `base_off == 0` and nothing moves. A DelugeFirmware-
+    // style image instead places a leading NOLOAD region (MMU TTB + mode stacks)
+    // at a lower address than the vector table inside the same PT_LOAD, so byte 0
+    // here is that zero-filled region and the metadata/signature the boot path
+    // reads at `+0x20`/`+0x2C` would land deep in the image. Anchor on the
+    // signature and drop the leading region so byte 0 is the vector table again —
+    // the same layout `objcopy -O binary` (section-based) produces, and what the
+    // on-flash boot path (`flashboot`) and `validate_fsb_metadata` expect. If the
+    // image carries no signature, leave it unshifted so the store path's
+    // validation reports the precise `BadSignature` rejection.
+    let staged = unsafe { core::slice::from_raw_parts(stage_base as *const u8, image_len) };
+    let base_off = find_fsb_base(staged).unwrap_or(0);
+
     Ok(FlashStage {
-        ptr: stage_base as *const u8,
-        len: image_len,
-        code_start: lo,
+        ptr: (stage_base + base_off as u32) as *const u8,
+        len: image_len - base_off,
+        code_start: lo + base_off as u32,
     })
 }

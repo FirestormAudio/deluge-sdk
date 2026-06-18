@@ -439,6 +439,37 @@ pub fn validate_fsb_metadata(image: &[u8], image_base: u32) -> Result<FsbMeta, F
     })
 }
 
+/// Locate the bootable image base within a flattened, possibly multi-segment
+/// image by anchoring on the FSB signature.
+///
+/// The flash-boot path keys off the `.BootLoad_ValidProgramTest.` signature at
+/// [`FSB_SIGNATURE_OFF`] from image byte 0, so byte 0 must be the vector table.
+/// The flattener bases the staged image at the *lowest* `PT_LOAD` load address,
+/// which for SDK firmware (`rza1l-hal`'s startup) already *is* the vector table —
+/// so this returns `Some(0)`.
+///
+/// Some firmware lays out differently: the DelugeFirmware linker places a
+/// leading `NOLOAD` region (MMU translation table + mode stacks) at a lower
+/// address than the vector table *inside the same `PT_LOAD`*, so the segment's
+/// `p_paddr` is below `_start`.  Byte 0 of the flat image is then that
+/// zero-filled region, and the metadata/signature the boot path expects at
+/// `+0x20`/`+0x2C` land deep in the image.  That leading region is not part of
+/// the bootable image the FSB copies (the firmware's own startup rebuilds the
+/// TTB and stacks), so the flattener drops it: this returns the offset of the
+/// vector table (`signature offset − FSB_SIGNATURE_OFF`), matching the
+/// section-based layout `objcopy -O binary` produces.
+///
+/// Returns `None` if the signature is absent (a genuinely unsigned image) or
+/// only appears within the first metadata block's worth of bytes (too early to
+/// be a real `+0x2C` signature) — callers leave the image unshifted so
+/// [`validate_fsb_metadata`] reports the precise rejection.
+pub fn find_fsb_base(image: &[u8]) -> Option<usize> {
+    image
+        .windows(FSB_SIGNATURE.len())
+        .position(|w| w == FSB_SIGNATURE)
+        .and_then(|sig_off| sig_off.checked_sub(FSB_SIGNATURE_OFF))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -622,6 +653,42 @@ mod tests {
             validate_fsb_metadata(&img, 0x2002_0000),
             Err(FsbError::ImageTooLong)
         );
+    }
+
+    #[test]
+    fn find_fsb_base_zero_when_vectors_lead() {
+        // SDK layout: signature already at +0x2C, so the base is byte 0.
+        let img = fsb_image(0x2002_0000, 0x2003_0000, 0x2002_0100, 0x800);
+        assert_eq!(find_fsb_base(&img), Some(0));
+    }
+
+    #[test]
+    fn find_fsb_base_skips_leading_noload_region() {
+        // DelugeFirmware layout: a zero-filled leading region (MMU TTB / stacks)
+        // precedes the vector table, so the signature sits deeper in the flat
+        // image. The returned base re-anchors byte 0 on the vector table.
+        const LEAD: usize = 0x4_1300;
+        let body = fsb_image(0x2006_1300, 0x2021_dfde, 0x2006_1300, 0x800);
+        let mut img = vec![0u8; LEAD];
+        img.extend_from_slice(&body);
+        assert_eq!(find_fsb_base(&img), Some(LEAD));
+        // Re-basing there yields a body whose metadata validates.
+        let base = find_fsb_base(&img).unwrap();
+        assert_eq!(
+            validate_fsb_metadata(&img[base..], 0x2006_1300),
+            Ok(FsbMeta {
+                code_start: 0x2006_1300,
+                code_end: 0x2021_dfde,
+                entry: 0x2006_1300,
+            })
+        );
+    }
+
+    #[test]
+    fn find_fsb_base_none_when_unsigned() {
+        // No signature anywhere: caller leaves the image unshifted and lets
+        // validate_fsb_metadata report BadSignature.
+        assert_eq!(find_fsb_base(&[0u8; 0x400]), None);
     }
 
     #[test]
