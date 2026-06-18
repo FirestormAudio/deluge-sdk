@@ -1,4 +1,4 @@
-# embedded-fonts-deluge
+# deluge-fonts
 
 Fonts extracted from the Synthstrom Audible Deluge firmware for use with embedded-graphics.
 
@@ -123,7 +123,7 @@ cargo run --example seven_segment
 
 ```toml
 # Use without embedded-graphics
-embedded-fonts-deluge = { version = "0.1", default-features = false }
+deluge-fonts = { version = "0.1", default-features = false }
 ```
 
 ## Important Notes

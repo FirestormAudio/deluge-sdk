@@ -36,7 +36,7 @@ cargo test --target "$QEMU" -p armv7-dsp-intrinsics --features nightly --lib
 cargo test --target "$QEMU" -p deluge-fft --features test-utils
 cargo test --target "$QEMU" -p rza1l-hal --lib
 cargo test --target "$QEMU" -p deluge-bsp --lib
-cargo test --target "$QEMU" -p embedded-fonts-deluge --lib
+cargo test --target "$QEMU" -p deluge-fonts --lib
 
 echo "==> Host bucket ($HOST)"
 cargo test --target "$HOST" -p deluge-image

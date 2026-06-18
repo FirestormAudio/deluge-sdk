@@ -122,7 +122,7 @@ The menu system supports various parameter types:
 
 ## Available Fonts
 
-From `embedded-fonts-deluge`:
+From `deluge-fonts`:
 
 - `Font::Font5px` - Original 5px font (very compact)
 - `Font::FontApple` - Apple II 7px font (retro style)

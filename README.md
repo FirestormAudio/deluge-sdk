@@ -175,7 +175,7 @@ compile-proves all of them on the firmware target).
 | `crates/deluge-bsp` | `deluge-bsp` | board support: peripherals, PIC, OLED, SD, … |
 | `crates/rza1l-hal` | `rza1l-hal` | RZ/A1L hardware abstraction layer |
 | `crates/deluge-ui` | `deluge-ui-toolkit` | OLED menu/text UI toolkit (GPL) |
-| `crates/deluge-fonts` | `embedded-fonts-deluge` | bitmap fonts for the toolkit (GPL) |
+| `crates/deluge-fonts` | `deluge-fonts` | bitmap fonts for the toolkit (GPL) |
 | `crates/deluge-fft`, `crates/fixedpoint`, `crates/armv7-dsp-intrinsics` | | fixed-point DSP math + ARMv7 intrinsics |
 | `app-loader/` | | the second-stage bootloader / app menu flashed to the device |
 | `firmwares/` | | standalone firmware images (demo, controller, MSC, recovery tools) |
@@ -204,7 +204,7 @@ in the GPL UI toolkit, so an app stays permissively licensed unless it opts in.
 
 The SDK and core libraries are **`MIT OR Apache-2.0`**. The OLED UI toolkit
 (`crates/deluge-ui`, package `deluge-ui-toolkit`) and its fonts
-(`crates/deluge-fonts`, package `embedded-fonts-deluge`) are
+(`crates/deluge-fonts`, package `deluge-fonts`) are
 **`GPL-3.0-or-later`** (see [`LICENSE-GPL`](LICENSE-GPL)). They are standalone
 crates: the permissive `deluge` facade does **not** depend on them, so an app
 stays MIT/Apache unless it opts into the toolkit, in which case that app
