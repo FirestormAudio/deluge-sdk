@@ -18,6 +18,7 @@
 #   - rustup targets: armv7-unknown-linux-gnueabihf, x86_64-unknown-linux-gnu
 #   - qemu-user (provides qemu-arm)            [apt: qemu-user]
 #   - arm-linux-gnueabihf-gcc (cross linker)   [apt: gcc-arm-linux-gnueabihf]
+#   - libudev (serialport, via cargo-deluge)   [apt: libudev-dev; pacman: systemd]
 #
 # The qemu-arm runner + cross linker are configured in .cargo/config.toml.
 #

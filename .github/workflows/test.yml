@@ -22,10 +22,10 @@ jobs:
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Install QEMU + ARM cross toolchain
+      - name: Install QEMU + ARM cross toolchain + libudev (for serialport)
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-user gcc-arm-linux-gnueabihf
+          sudo apt-get install -y qemu-user gcc-arm-linux-gnueabihf libudev-dev
 
       - name: Run test suite
         run: ./tools/test.sh
