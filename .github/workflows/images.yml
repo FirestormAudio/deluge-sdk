@@ -35,7 +35,7 @@ jobs:
             cmd: cargo build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p deluge-controller
             artifact: target/armv7a-none-eabihf/release/deluge-controller
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
