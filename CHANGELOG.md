@@ -18,6 +18,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and SD-card `/APPS/` loading.
 - Example apps under `examples/` covering OLED, input, pads, LEDs, audio, CV/gate,
   MIDI, clock I/O, SD card, and USB logging.
-- `bootloader-flasher` recovery tool for reflashing the first-stage bootloader.
 
 [Unreleased]: https://github.com/FirestormAudio/deluge-sdk

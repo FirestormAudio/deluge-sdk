@@ -111,12 +111,6 @@ sequence to trigger an update) — this repo doesn't change that path:
 > update path as stock firmware, you can always re-flash by repeating the
 > procedure — installing the app-loader does not overwrite the first-stage
 > bootloader.
->
-> **Deep recovery (advanced, danger):** the separate
-> [`bootloader-flasher`](../firmwares/bootloader-flasher/) tool reprograms the
-> *first*-stage bootloader (flash sector 0) and is loaded over JTAG/SWD by a
-> recovery probe. You only need it if the first-stage bootloader itself is
-> damaged — not for installing or updating the app-loader.
 
 After flashing, power-cycle. You should land on the app-loader's OLED **boot
 menu**.

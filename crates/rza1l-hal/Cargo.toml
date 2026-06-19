@@ -34,9 +34,6 @@ log = { workspace = true }
 
 [features]
 rtt = ["dep:rtt-target"]
-# Unlocks `spibsc::force_erase_range` / `force_program`, which can write the
-# protected low flash regions (FSB / settings / SSB).  Recovery tooling only
-# (e.g. the bootloader-flasher); never enable in normal firmware.
 unlock-bootloader = []
 
 [dependencies.rtt-target]
