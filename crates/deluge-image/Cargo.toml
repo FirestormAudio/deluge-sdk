@@ -6,7 +6,16 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+readme = "README.md"
+# Internal crate: nothing on crates.io depends on it. Its only consumers are the
+# (unpublished) `app-loader` firmware and a dev-dependency cross-check test in
+# the (`publish = false`) `cargo-deluge` host tool. Kept as a standalone crate so
+# the device and host agree on the image format in one place, but not published.
+# Flip this to publish if you want third-party Deluge tooling to use it directly.
+publish = false
 description = "Pure firmware-image format logic (ELF load classification + FSB metadata validation) shared by the app-loader."
+categories = ["embedded", "no-std", "parsing"]
+keywords = ["deluge", "elf", "firmware", "no-std", "parsing"]
 
 [lib]
 # Host/QEMU unit tests run via `cargo test` on a non-bare-metal target. The

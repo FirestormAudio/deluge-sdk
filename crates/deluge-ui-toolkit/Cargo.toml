@@ -1,11 +1,15 @@
 [package]
 name = "deluge-ui-toolkit"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 authors = ["Firestorm Community"]
 description = "Graphics toolkit for Deluge 128×48 horizontal monochrome OLED display"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/FirestormAudio/deluge-sdk"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+categories = ["embedded", "no-std", "graphics"]
+keywords = ["deluge", "oled", "ui", "embedded-graphics", "menu"]
 build = "build.rs"
 
 [dependencies]

@@ -11,7 +11,7 @@ name = "clock_jacks"
 test = false
 
 [dependencies]
-deluge = { path = "../../crates/deluge" }
+deluge = { path = "../../crates/deluge-sdk", package = "deluge-sdk" }
 embassy-executor = { workspace = true, features = [
     "nightly",
     "platform-cortex-ar",

@@ -6,7 +6,15 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+readme = "README.md"
 description = "Board support package for the Synthstrom Deluge (peripherals, PIC, OLED, SD)."
+categories = ["embedded", "no-std", "hardware-support"]
+keywords = ["deluge", "synthstrom", "bsp", "rza1", "embedded"]
+
+# docs.rs builds on the x86_64 host by default; the bare-metal peripheral code
+# only compiles for the device triple, so build the docs there.
+[package.metadata.docs.rs]
+default-target = "armv7a-none-eabihf"
 
 [lib]
 # Unit tests (in #[cfg(all(test, not(target_os="none")))]) run natively via
@@ -21,7 +29,7 @@ default = []
 audio-irq = []
 
 [dependencies]
-rza1l-hal = { path = "../rza1l-hal" }
+rza1l-hal = { path = "../rza1l-hal", version = "0.1.0" }
 embedded-sdmmc = { version = "0.9", default-features = false, features = ["log"] }
 critical-section = { workspace = true }
 log = { workspace = true }

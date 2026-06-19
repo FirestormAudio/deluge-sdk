@@ -6,6 +6,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+readme = "README.md"
 description = "Portable-SIMD, no-std, const-generic FFT for the Deluge SDK audio pipeline."
 categories = ["embedded", "no-std", "mathematics"]
 keywords = ["fft", "dsp", "no-std", "simd"]

@@ -1,10 +1,15 @@
 [package]
 name = "armv7-dsp-intrinsics"
-version = "0.1.0"
-edition = "2024"
-license = "MIT OR Apache-2.0"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
 description = "ARMv7 DSP intrinsics for efficient fixed-point arithmetic"
-repository = "https://github.com/stellar-aria/spark"
+categories = ["embedded", "no-std", "hardware-support"]
+keywords = ["arm", "dsp", "simd", "fixed-point", "intrinsics"]
 
 [dependencies]
 

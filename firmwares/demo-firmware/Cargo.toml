@@ -10,7 +10,7 @@ name = "demo-firmware"
 test = false
 
 [dependencies]
-deluge = { path = "../../crates/deluge" }
+deluge = { path = "../../crates/deluge-sdk", package = "deluge-sdk" }
 rza1l-hal = { path = "../../crates/rza1l-hal" }
 deluge-bsp = { path = "../../crates/deluge-bsp" }
 cortex-ar = { workspace = true }

@@ -9,13 +9,13 @@ members = [
   "crates/deluge-bsp",
   "crates/deluge-fft",
   "app-loader",
-  "crates/deluge",
+  "crates/deluge-sdk",
   "crates/deluge-image",
-  "crates/deluge-macros",
+  "crates/deluge-sdk-macros",
   "crates/armv7-dsp-intrinsics",
-  "crates/fixedpoint",
+  "crates/deluge-fixedpoint",
   "crates/deluge-fonts",
-  "crates/deluge-ui",
+  "crates/deluge-ui-toolkit",
   "examples/blinky",
   "examples/oled_hello",
   "examples/oled_menu",
@@ -69,12 +69,12 @@ gdbstub = { version = "0.7" }
 armv7-dsp-intrinsics = { path = "crates/armv7-dsp-intrinsics", version = "0.1.0" }
 # Published as `deluge-fixedpoint`; kept under the `fixedpoint` dependency name
 # so members `use fixedpoint::…` unchanged.
-fixedpoint = { package = "deluge-fixedpoint", path = "crates/fixedpoint", version = "0.1.0" }
+fixedpoint = { package = "deluge-fixedpoint", path = "crates/deluge-fixedpoint", version = "0.1.0" }
 
 # Vendored from `spark` (GPL-3.0-or-later — kept as standalone crates apps opt
 # into; the permissive `deluge` facade must NOT depend on these).
 deluge-fonts = { path = "crates/deluge-fonts", version = "0.1.0" }
-deluge-ui-toolkit = { path = "crates/deluge-ui", version = "0.1.0" }
+deluge-ui-toolkit = { path = "crates/deluge-ui-toolkit", version = "0.1.0" }
 
 [profile.release]
 opt-level = "s"

@@ -1,5 +1,9 @@
 [package]
-name = "deluge-macros"
+# Published as `deluge-sdk-macros` to pair clearly with the `deluge-sdk` crate
+# (and avoid implying it belongs to the unrelated `deluge` crate on crates.io);
+# the import name stays `deluge_macros` via [lib] below. You don't depend on
+# this directly — it's re-exported as `deluge::app`.
+name = "deluge-sdk-macros"
 version.workspace = true
 # Pinned to 2021 (not the workspace 2024): proc-macro expansion is edition-
 # sensitive and this crate is validated against 2021.
@@ -8,9 +12,13 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+readme = "README.md"
 description = "Procedural macros for the Deluge SDK (#[deluge::app])."
+categories = ["embedded", "no-std", "development-tools::procedural-macro-helpers"]
+keywords = ["deluge", "macros", "proc-macro", "embedded", "app"]
 
 [lib]
+name = "deluge_macros"
 proc-macro = true
 
 [dependencies]

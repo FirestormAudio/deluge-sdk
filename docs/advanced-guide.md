@@ -66,9 +66,9 @@ raw HAL call.
 
 ## 2. Boot & runtime in depth
 
-The `#[deluge::app]` macro ([`crates/deluge-macros/src/lib.rs`](../crates/deluge-macros/src/lib.rs))
+The `#[deluge::app]` macro ([`crates/deluge-sdk-macros/src/lib.rs`](../crates/deluge-sdk-macros/src/lib.rs))
 generates an `extern "C" fn main` that calls `deluge::__rt::run`. The runtime lives
-in [`crates/deluge/src/lib.rs`](../crates/deluge/src/lib.rs) (`__rt` module) and runs
+in [`crates/deluge-sdk/src/lib.rs`](../crates/deluge-sdk/src/lib.rs) (`__rt` module) and runs
 this sequence:
 
 1. **Logging** — initialise the RTT or USB-CDC logger (feature-gated; one global logger).
@@ -178,7 +178,7 @@ The SDK funnels hardware events into tasks with two idioms worth copying.
 
 A take-once guard that spawns a long-lived background "pump" exactly once, no matter
 how many capabilities ask for it. See
-[`crates/deluge/src/pic_service.rs`](../crates/deluge/src/pic_service.rs):
+[`crates/deluge-sdk/src/pic_service.rs`](../crates/deluge-sdk/src/pic_service.rs):
 
 ```rust
 static STARTED: AtomicBool = AtomicBool::new(false);
@@ -213,7 +213,7 @@ sequenceDiagram
     Note over Task,Q: app awaits Channel.receive()
 ```
 
-From the encoder pump in [`crates/deluge/src/input.rs`](../crates/deluge/src/input.rs):
+From the encoder pump in [`crates/deluge-sdk/src/input.rs`](../crates/deluge-sdk/src/input.rs):
 
 ```rust
 poll_fn(|cx| {
@@ -535,7 +535,7 @@ Where the magic lives (in the fork): `probe-rs/targets/RZA1L.yaml` (chip def),
 If you have no probe, use the `usb-log` feature: the `log` macros stream to a USB CDC
 serial port (`/dev/ttyACM*`). It and `rtt` are mutually exclusive sinks — there's one
 global logger, and `usb-log` wins if both are enabled. The implementation
-([`crates/deluge/src/usb_debug.rs`](../crates/deluge/src/usb_debug.rs)) routes
+([`crates/deluge-sdk/src/usb_debug.rs`](../crates/deluge-sdk/src/usb_debug.rs)) routes
 `log::Log` → a `Pipe` → a drain task over `CdcAcmClass`, with the device built before
 IRQ-enable in `__rt::run`.
 

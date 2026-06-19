@@ -6,9 +6,15 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+readme = "README.md"
 description = "Embassy HAL for the Renesas RZ/A1L (ARM Cortex-A9, R7S721001)."
 categories = ["embedded", "no-std", "hardware-support"]
 keywords = ["rza1", "renesas", "cortex-a9", "embassy", "hal"]
+
+# docs.rs builds on the x86_64 host by default; the bare-metal driver code only
+# compiles for the device triple, so build the docs there.
+[package.metadata.docs.rs]
+default-target = "armv7a-none-eabihf"
 
 [lib]
 # Unit tests (in #[cfg(all(test, not(target_os="none")))]) run natively via

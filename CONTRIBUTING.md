@@ -48,11 +48,11 @@ touch still builds (`./tools/build-examples.sh`) before opening a PR.
 This repository is **dual-licensed**, and which license applies depends on the
 crate you are touching:
 
-- The SDK and core libraries (`crates/deluge`, `deluge-bsp`, `rza1l-hal`,
-  `deluge-fft`, `deluge-image`, `deluge-macros`, `fixedpoint`,
+- The SDK and core libraries (`crates/deluge-sdk`, `deluge-bsp`, `rza1l-hal`,
+  `deluge-fft`, `deluge-image`, `deluge-sdk-macros`, `deluge-fixedpoint`,
   `armv7-dsp-intrinsics`, the firmwares and examples) are
   **`MIT OR Apache-2.0`**.
-- The OLED UI toolkit (`crates/deluge-ui`) and its fonts
+- The OLED UI toolkit (`crates/deluge-ui-toolkit`) and its fonts
   (`crates/deluge-fonts`) are **`GPL-3.0-or-later`**.
 
 Unless you state otherwise, contributions you submit to a given crate are

@@ -138,7 +138,7 @@ The annotated function **must be `async`** and may take **at most one argument**
 — the `Deluge` handle. (If you don't need it, write `async fn main()` or
 `async fn main(_dlg: Deluge)`.)
 
-The macro ([`crates/deluge-macros/src/lib.rs`](../crates/deluge-macros/src/lib.rs))
+The macro ([`crates/deluge-sdk-macros/src/lib.rs`](../crates/deluge-sdk-macros/src/lib.rs))
 expands your function into:
 
 - an `#[embassy_executor::task]` wrapping your body,
@@ -146,7 +146,7 @@ expands your function into:
 - a `#[panic_handler]`.
 
 The runtime startup sequence
-([`crates/deluge/src/lib.rs`](../crates/deluge/src/lib.rs), `__rt::run`) is:
+([`crates/deluge-sdk/src/lib.rs`](../crates/deluge-sdk/src/lib.rs), `__rt::run`) is:
 
 > logging → heaps + clocks → optional `setup()` (interrupts masked) → enable
 > interrupts → start the executor and spawn your `main`.
