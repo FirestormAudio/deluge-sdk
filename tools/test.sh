@@ -31,8 +31,12 @@ QEMU=armv7-unknown-linux-gnueabihf
 HOST=x86_64-unknown-linux-gnu
 
 echo "==> QEMU ARM bucket ($QEMU)"
-cargo test --target "$QEMU" -p deluge-fixedpoint --lib
+# armv7-dsp-intrinsics has three code paths; firmware ships the raw-`asm!` one
+# (no `nightly` feature), so test BOTH it and the `core::arch` intrinsic path
+# under QEMU. The portable fallback is covered in the host bucket below.
+cargo test --target "$QEMU" -p armv7-dsp-intrinsics --lib
 cargo test --target "$QEMU" -p armv7-dsp-intrinsics --features nightly --lib
+cargo test --target "$QEMU" -p deluge-fixedpoint --lib
 # No --lib: also runs the cross-crate dsp_pipeline integration test.
 cargo test --target "$QEMU" -p deluge-fft --features test-utils
 cargo test --target "$QEMU" -p rza1l-hal --lib
@@ -40,9 +44,15 @@ cargo test --target "$QEMU" -p deluge-bsp --lib
 cargo test --target "$QEMU" -p deluge-fonts --lib
 
 echo "==> Host bucket ($HOST)"
+# Portable-fallback / non-NEON paths of the DSP crates (the QEMU bucket above
+# covers the ARM asm + intrinsic paths). deluge-fft here also runs the rustfft
+# external-oracle test, which is gated to non-ARM.
+cargo test --target "$HOST" -p armv7-dsp-intrinsics
+cargo test --target "$HOST" -p deluge-fixedpoint
+cargo test --target "$HOST" -p deluge-fft --features test-utils
 cargo test --target "$HOST" -p deluge-image
 cargo test --target "$HOST" -p deluge-ui-toolkit
-cargo test --target "$HOST" -p deluge-macros
+cargo test --target "$HOST" -p deluge-sdk-macros
 cargo test --target "$HOST" --manifest-path tools/cargo-deluge/Cargo.toml
 
 echo "==> All tests passed."

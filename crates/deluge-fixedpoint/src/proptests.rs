@@ -18,6 +18,17 @@ fn q16_float() -> impl Strategy<Value = f32> {
     -32768.0f32..32768.0f32
 }
 
+// Independent reference for Q31 saturating division (FRAC_BITS = 31, ROUNDED =
+// false). Re-derives the result from the documented semantics in plain i64 math
+// rather than reusing the crate's own expression.
+fn ref_q31_div(a_raw: i32, b_raw: i32) -> i32 {
+    if b_raw == 0 {
+        return if a_raw >= 0 { Q31::MAX.raw() } else { Q31::MIN.raw() };
+    }
+    let dividend = (a_raw as i64) << 31;
+    (dividend / b_raw as i64).clamp(i32::MIN as i64, i32::MAX as i64) as i32
+}
+
 proptest! {
     #[test]
     fn prop_addition_commutative(a in raw_value(), b in raw_value()) {
@@ -221,5 +232,44 @@ proptest! {
 
         // Should be identical
         assert_eq!(fused.raw(), separate.raw());
+    }
+
+    // --- Division (the path the absent `fuzz_division` target was meant to
+    // cover): exhaustively fuzz the operands, including the divide-by-zero edge,
+    // against an independent reference. ---
+
+    #[test]
+    fn prop_div_matches_reference(a in raw_value(), b in raw_value()) {
+        let q = Q31::from_raw(a).saturating_div(Q31::from_raw(b));
+        prop_assert_eq!(q.raw(), ref_q31_div(a, b));
+        // The `/` operator must agree with the inherent method.
+        prop_assert_eq!((Q31::from_raw(a) / Q31::from_raw(b)).raw(), q.raw());
+    }
+
+    #[test]
+    fn prop_div_by_zero_saturates_by_sign(a in raw_value()) {
+        let q = Q31::from_raw(a) / Q31::ZERO;
+        let expected = if a >= 0 { Q31::MAX } else { Q31::MIN };
+        prop_assert_eq!(q.raw(), expected.raw());
+    }
+
+    #[test]
+    fn prop_div_by_self_is_one(a in raw_value()) {
+        // x / x == ONE for any non-zero x (exactly, since dividend and divisor
+        // share the value and the << FRAC_BITS makes the quotient ONE).
+        prop_assume!(a != 0);
+        let q = Q31::from_raw(a) / Q31::from_raw(a);
+        prop_assert_eq!(q.raw(), Q31::ONE);
+    }
+
+    #[test]
+    fn prop_div_int_never_panics_and_matches(a in raw_value(), d in any::<i32>()) {
+        let q = Q31::from_raw(a).div_int(d);
+        let expected = if d == 0 {
+            if a >= 0 { Q31::MAX.raw() } else { Q31::MIN.raw() }
+        } else {
+            a / d
+        };
+        prop_assert_eq!(q.raw(), expected);
     }
 }

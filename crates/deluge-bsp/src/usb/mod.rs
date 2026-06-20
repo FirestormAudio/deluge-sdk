@@ -14,3 +14,4 @@
 
 pub mod bot;
 pub mod classes;
+pub mod ids;

@@ -125,6 +125,9 @@ checksum = "570304ff56d67c17f521f68d55a63dffbb067d63f675e2b4603283e2d50b9d59"
 [[package]]
 name = "armv7-dsp-intrinsics"
 version = "0.1.0"
+dependencies = [
+ "proptest",
+]
 
 [[package]]
 name = "as-slice"

@@ -9,7 +9,7 @@ A type-safe, `no_std` fixed-point arithmetic library for Rust.
 - **Saturating arithmetic**: All operations saturate on overflow/underflow instead of wrapping
 - **Optional rounding**: Control rounding behavior at the type level
 - **no_std compatible**: Works in embedded environments
-- **Comprehensive testing**: Includes unit tests, property-based tests, and fuzz targets
+- **Comprehensive testing**: unit + property-based tests, run on host and under QEMU against the real ARM DSP instructions
 - **Well-documented**: Extensive docs and examples
 
 ## Quick Start
@@ -123,26 +123,23 @@ assert_eq!(rounded.to_int(), 43);
 
 ## Safety and Correctness
 
-This library has been extensively tested:
+This library is tested on two fronts:
 
-- **61 unit tests** covering edge cases, overflow, underflow, and special values
-- **20+ property-based tests** using proptest to verify mathematical properties
-- **3 fuzz targets** for continuous fuzzing of arithmetic, conversions, and division
+- **Unit tests** covering edge cases, overflow, underflow, and special values.
+- **Property-based tests** (proptest) verifying mathematical properties —
+  commutativity, identities, saturation, round-trips, and division (including
+  the divide-by-zero edge) against independent references.
 
-Run the tests:
+Because the multiply/divide hot paths lower to ARM DSP instructions, the suite
+runs in two buckets (see `tools/test.sh` at the workspace root): on the host
+(portable path) **and** under QEMU on `armv7-unknown-linux-gnueabihf`, where
+e.g. `from_float` is the genuine `VCVT` instruction — so the hardware path is
+cross-checked against the portable one, not assumed equivalent.
+
+Run the tests (host):
 
 ```bash
-cargo test
-cargo test --release  # Faster property-based testing
-```
-
-Run fuzz tests (requires nightly):
-
-```bash
-cd fuzz
-cargo +nightly fuzz run fuzz_arithmetic
-cargo +nightly fuzz run fuzz_conversion
-cargo +nightly fuzz run fuzz_division
+cargo test --target x86_64-unknown-linux-gnu
 ```
 
 ## Performance

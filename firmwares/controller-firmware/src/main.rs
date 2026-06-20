@@ -214,7 +214,13 @@ pub extern "C" fn main() -> ! {
     } else {
         let (usb_device, ep_out, ep_in, cdc, midi_sender, midi_receiver) = unsafe {
             let (_port, driver) = init_device_mode(0);
-            let mut config = embassy_usb::Config::new(0x16D0, 0x0EDA);
+            // Example/development USB identity — self-contained, NOT a product
+            // ID. See `deluge_bsp::usb::ids` for the product-identity rules and
+            // why distinct PIDs matter on macOS. TODO: use IDs you own (e.g. a
+            // pid.codes prototype ID) before distributing this firmware.
+            const USB_VID: u16 = 0x16D0;
+            const USB_PID: u16 = 0x0EDA;
+            let mut config = embassy_usb::Config::new(USB_VID, USB_PID);
             config.manufacturer = Some("Synthstrom Audible");
             config.product = Some("Deluge");
             config.self_powered = false;

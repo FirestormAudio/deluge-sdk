@@ -512,31 +512,26 @@ impl<'d> Driver<'d> for Rusb1Driver {
                 SYSCFG_USBE,
             );
 
-            // Force a clean disconnect->re-attach so every boot re-enumerates
-            // from scratch.  On a warm reset (debugger flash with the cable still
-            // plugged) the module can retain DPRPU=1 from the previous session;
-            // driving it straight to 1 is then a no-op, the host never sees SE0,
-            // and it never re-enumerates.  That matters because the only paths
-            // that scrub the CDC pipe FIFOs are host-driven — `process_bus_reset`
-            // (bus reset) and `endpoint_set_enabled`->`pipe_reset` (SET_CONFIGURATION) —
-            // so without a re-enumeration, stale bytes the previous firmware left
-            // in the IN FIFO leak into the new session's stream and misalign it.
+            // Leave the D+ pull-up OFF here.  Per USB 2.0 §7.1.5 a device —
+            // especially a self-powered one like the Deluge (own PSU) — must not
+            // assert its bus pull-up until VBUS is present.  Asserting DPRPU at
+            // boot (VBUS-independent) makes the device signal "connected" before
+            // the host has powered the port and finished CC role detection:
+            // lenient hosts (Linux) tolerate it, but strict USB-C hosts
+            // (Apple-Silicon Macs) never register a clean attach and power-cycle
+            // the port forever.  The connect (DPRPU=1) is therefore deferred to
+            // `enable()`, which the device stack calls only after VBUS is detected
+            // (Bus::poll → PowerDetected).
             //
-            // Step 1: pull-up off — host sees SE0 (disconnect).
+            // Clearing DPRPU now also drives SE0 immediately, so a warm reset
+            // (debugger flash with the cable still plugged) that left DPRPU=1 from
+            // the previous session presents a clean disconnect; the later
+            // enable() re-asserts it, and the host re-enumerates from scratch
+            // (which is what scrubs the CDC pipe FIFOs via process_bus_reset /
+            // SET_CONFIGURATION, so stale IN-FIFO bytes don't leak across runs).
             rmw(core::ptr::addr_of_mut!((*regs).syscfg0), SYSCFG_DPRPU, 0);
-            // Step 2: hold SE0 long enough for the host to debounce the
-            // disconnect (~10 ms; the PLL-lock spin above is ~1 ms / 400 K iters).
-            for _ in 0u32..4_000_000 {
-                core::hint::spin_loop();
-            }
-            // Step 3: pull-up on — notifies the host of (re)connection.
-            rmw(
-                core::ptr::addr_of_mut!((*regs).syscfg0),
-                SYSCFG_DPRPU,
-                SYSCFG_DPRPU,
-            );
             log::debug!(
-                "usb{}: SYSCFG0={:#06x} (DPRPU pulsed low->high, D+ pull-up active)",
+                "usb{}: SYSCFG0={:#06x} (DPRPU off — connect deferred to VBUS/enable)",
                 self.port,
                 rd(core::ptr::addr_of!((*regs).syscfg0))
             );
@@ -677,6 +672,22 @@ impl Bus for Rusb1Bus {
 
             // Configure allocated pipes on the hardware.
             configure_all_pipes(self.port);
+
+            // Now signal connection: VBUS has been detected (enable() runs only
+            // after Bus::poll → PowerDetected) and the SIE is fully armed, so this
+            // is the spec-compliant moment to assert the D+ pull-up.  Deferring
+            // the connect to here (rather than boot) is what lets strict USB-C
+            // hosts — Apple-Silicon Macs — see a clean VBUS-then-attach sequence.
+            rmw(
+                core::ptr::addr_of_mut!((*regs).syscfg0),
+                SYSCFG_DPRPU,
+                SYSCFG_DPRPU,
+            );
+            log::debug!(
+                "usb{}: DPRPU set — D+ pull-up active (connected), SYSCFG0={:#06x}",
+                self.port,
+                rd(core::ptr::addr_of!((*regs).syscfg0))
+            );
             log::debug!("usb{}: Bus::enable done", self.port);
         }
     }

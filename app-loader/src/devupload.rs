@@ -120,7 +120,10 @@ unsafe fn build_usb() -> (
         }
 
         let (_port, driver) = init_device_mode(0);
-        let mut config = embassy_usb::Config::new(0x16D0, 0x0EDA);
+        let mut config = embassy_usb::Config::new(
+            deluge_bsp::usb::ids::VID,
+            deluge_bsp::usb::ids::PID_APP_LOADER_CDC,
+        );
         config.manufacturer = Some("Synthstrom Audible");
         config.product = Some("Deluge Dev Upload");
         config.self_powered = false;

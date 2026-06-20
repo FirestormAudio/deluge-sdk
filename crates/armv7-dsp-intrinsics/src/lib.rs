@@ -41,8 +41,15 @@
 // both unstable features in current nightlies — the DSP intrinsics were folded
 // in under the same gate as the NEON ones. Both are needed for the `nightly`
 // (intrinsic) path; the default path uses inline asm and needs neither.
+//
+// Also gate on `target_arch = "arm"`: these compiler features only exist for
+// ARM, so enabling them when the `nightly` feature is selected on a non-ARM host
+// (e.g. building this crate's host tests, or a host build of a dependent like
+// `deluge-fft` whose dev-dep turns `nightly` on) is a hard error. The intrinsic
+// path is itself `cfg(all(target_arch = "arm", …))`, so off-ARM the features are
+// unused anyway and the portable fallback compiles cleanly.
 #![cfg_attr(
-    feature = "nightly",
+    all(feature = "nightly", target_arch = "arm"),
     feature(stdarch_arm_dsp, stdarch_arm_neon_intrinsics)
 )]
 
@@ -416,6 +423,10 @@ pub fn usat<const BITS: u32>(val: i32) -> u32 {
 ///
 /// Shifts val left by SHIFT bits, then saturates to BITS.
 ///
+/// The shift is a 32-bit barrel-shift, exactly as the ARM instruction performs
+/// it: bits shifted past bit 31 are discarded *before* saturation, so a large
+/// input can change sign and saturate to the opposite rail.
+///
 /// # Examples
 /// ```
 /// use armv7_dsp_intrinsics::ssat_lsl;
@@ -445,16 +456,24 @@ pub fn ssat_lsl<const SHIFT: u32, const BITS: u32>(val: i32) -> i32 {
     }
     #[cfg(not(all(target_arch = "arm", target_feature = "dsp")))]
     {
-        let shifted = (val as i64) << SHIFT;
-        let min = -(1i64 << (BITS - 1));
-        let max = (1i64 << (BITS - 1)) - 1;
-        shifted.clamp(min, max) as i32
+        // `SSAT … , LSL #n` shifts the 32-bit register through the barrel
+        // shifter (bits past bit 31 are lost) and *then* saturates. Emulate that
+        // with a 32-bit wrapping shift so the portable path matches the
+        // instruction for every input, not just those that fit in 32 bits.
+        let shifted = val.wrapping_shl(SHIFT);
+        let min = -(1i32 << (BITS - 1));
+        let max = (1i32 << (BITS - 1)) - 1;
+        shifted.clamp(min, max)
     }
 }
 
 /// Unsigned saturate with left shift (USAT with LSL)
 ///
 /// Shifts val left by SHIFT bits, then saturates to BITS.
+///
+/// Like [`ssat_lsl`], the shift is a 32-bit barrel-shift, and USAT reads the
+/// shifted value as *signed* — so a shift that lands a 1 in bit 31 saturates to
+/// 0, matching the ARM instruction.
 #[inline]
 pub fn usat_lsl<const SHIFT: u32, const BITS: u32>(val: u32) -> u32 {
     debug_assert!(SHIFT < 32 && BITS <= 32);
@@ -476,12 +495,17 @@ pub fn usat_lsl<const SHIFT: u32, const BITS: u32>(val: u32) -> u32 {
     }
     #[cfg(not(all(target_arch = "arm", target_feature = "dsp")))]
     {
-        let shifted = (val as u64) << SHIFT;
-        if BITS == 32 {
-            shifted.min(u32::MAX as u64) as u32
+        // 32-bit barrel-shift (bits past bit 31 are lost), then USAT reads the
+        // result as a *signed* value before saturating into the unsigned range —
+        // so a shift that lands a 1 in bit 31 saturates to 0, matching the
+        // hardware instruction.
+        let shifted = val.wrapping_shl(SHIFT) as i32;
+        if shifted < 0 {
+            0
+        } else if BITS == 32 {
+            shifted as u32
         } else {
-            let max = (1u64 << BITS) - 1;
-            shifted.min(max) as u32
+            (shifted as u32).min((1u32 << BITS) - 1)
         }
     }
 }
@@ -722,6 +746,9 @@ pub fn qdsub(a: i32, b: i32) -> i32 {
         a.saturating_sub(doubled)
     }
 }
+
+#[cfg(test)]
+mod proptests;
 
 #[cfg(test)]
 mod tests {

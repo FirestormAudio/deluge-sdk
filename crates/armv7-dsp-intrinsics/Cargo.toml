@@ -13,6 +13,12 @@ keywords = ["arm", "dsp", "simd", "fixed-point", "intrinsics"]
 
 [dependencies]
 
+[dev-dependencies]
+# Property tests assert every op (asm / intrinsic / fallback path) matches an
+# independent wide-integer reference. Runs on host and under QEMU (see
+# tools/test.sh); proptest cross-compiles to armv7-unknown-linux-gnueabihf.
+proptest = "1"
+
 [features]
 default = []
 # Enable unstable ARM intrinsics (requires nightly)
