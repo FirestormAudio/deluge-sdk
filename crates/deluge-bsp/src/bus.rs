@@ -68,6 +68,25 @@ impl Rspi0 {
         }
     }
 
+    /// Re-apply the 8-bit transfer config (SPDCR/SPCMD0/SPBFCR including the
+    /// RX-FIFO reset) **unconditionally**, regardless of the cached mode.
+    ///
+    /// The cached [`enter_8bit`](Self::enter_8bit) skips reconfiguration when the
+    /// channel is already in 8-bit mode — fine for SPDCR/SPCMD0, which persist,
+    /// but the RX FIFO does *not*: a full-duplex OLED DMA clocks 768 dummy bytes
+    /// back into it every frame, and `SPBFCR.RXRST` must be re-asserted each time
+    /// or the next transfer mis-paces (visible as a horizontal "stretch"). With a
+    /// concurrent CV writer this was masked — CV flips the mode to 32-bit, so the
+    /// following frame's `enter_8bit` reconfigured anyway — but with CV idle the
+    /// reset was skipped. rza1 rewrites SPBFCR every frame for this exact reason.
+    /// Call once per OLED frame before arming the DMA.
+    #[inline]
+    pub fn reconfigure_8bit(&mut self) {
+        // SAFETY: we hold the only token, so no concurrent RSPI0 transfer.
+        unsafe { rspi::configure_8bit(RSPI0_CH) };
+        self.mode = Mode::Bits8;
+    }
+
     /// Ensure RSPI0 is in 32-bit frame mode (CV DAC). Reconfigures only if the
     /// channel is not already in 32-bit mode.
     #[inline]

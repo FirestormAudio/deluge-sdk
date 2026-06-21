@@ -401,8 +401,16 @@ pub async fn init() {
     pic::oled_dc_high().await;
     log::debug!("oled: dc_high sent");
 
-    // ---- 6. Deselect (fire-and-forget, matching C firmware) --------------
+    // ---- 6. Deselect, and wait for the PIC to confirm (byte 249) ----------
+    // Must wait for the echo before the bus guard drops at end of scope: the
+    // anchor we just set (pages 2–7, col 0) is never re-sent — send_frame relies
+    // on the 768-byte auto-wrap returning to it. If we released the bus while the
+    // OLED CS were still asserted, the first CV write would clock a word into the
+    // OLED and shift the column pointer *once* — and since it's never re-anchored,
+    // that shift is baked in for every subsequent frame (a fixed horizontal
+    // offset). Holding the bus until deselect is confirmed prevents it.
     pic::oled_deselect().await;
+    pic::wait_oled_deselected().await;
     INITIALISED.store(true, core::sync::atomic::Ordering::Release);
     log::debug!("oled: ready");
 }
@@ -472,17 +480,31 @@ pub unsafe fn draw_blocking(fb: &FrameBuffer) {
 /// **Must be called inside an Embassy task.**
 #[cfg(target_os = "none")]
 pub async fn send_frame(fb: &FrameBuffer) {
-    use embassy_time::Timer;
+    // Take exclusive ownership of RSPI0 for the ENTIRE select→DMA→deselect
+    // sequence — acquired BEFORE selecting the OLED. The OLED's chip-select is
+    // driven by the PIC asynchronously, so if the bus were free at any moment
+    // while the OLED CS is asserted, a concurrent CV write would clock its word
+    // on the shared SCK/MOSI into the still-selected OLED and drift its GDDRAM
+    // column pointer (horizontal shift). Selecting only after taking the bus
+    // closes the select-side window; deselecting + settling before releasing it
+    // (below) closes the deselect-side window. Matches oled::init's ordering.
+    let mut bus = crate::bus::lock_rspi0().await;
+
+    // Reconfigure 8-bit mode every frame (NOT the cached enter_8bit), and do it
+    // BEFORE selecting the OLED — while its CS is still de-asserted. Two reasons:
+    //  1. The OLED full-duplex DMA fills the RX FIFO, which must be reset per
+    //     frame via SPBFCR.RXRST or the next frame mis-paces (horizontal stretch).
+    //  2. When a CV write has left the bus in 32-bit mode, this is a real 32→8
+    //     reconfigure that rewrites SPCMD0 (clock polarity/phase, bit-rate, data
+    //     length). Doing that while the OLED CS is asserted clocks the switching
+    //     transient on SCK into the OLED as a phantom bit → the image shifts. With
+    //     CV idle the bus is already 8-bit so it's a no-op and the bug is hidden;
+    //     reconfiguring before select makes it safe in both cases. Matches
+    //     oled::init, which also reconfigures before it selects.
+    bus.reconfigure_8bit();
 
     pic::oled_select().await;
     pic::wait_oled_selected().await;
-
-    // Take exclusive ownership of RSPI0 for the whole transfer. The guard is
-    // held across the DMA-completion await below; any concurrent CV write waits.
-    // Dropping the guard (at end of scope) reconfiguring is unnecessary — the
-    // bus tracks that it is left in 8-bit mode, and the next CV write reconfigures.
-    let mut bus = crate::bus::lock_rspi0().await;
-    bus.enter_8bit();
 
     unsafe {
         // Copy frame into the uncached staging buffer so DMAC sees fresh data.
@@ -506,11 +528,29 @@ pub async fn send_frame(fb: &FrameBuffer) {
     // GDDRAM address pointer drifts, corrupting every subsequent frame.
     bus.wait_end();
 
-    // Release RSPI0 — a waiting CV write may now proceed.
-    drop(bus);
-
+    // Deselect the OLED *before* releasing the bus. The OLED's chip-select is
+    // driven by the PIC asynchronously (a UART round-trip), unlike the CV DAC's
+    // CS which is a direct GPIO toggle. If we dropped the bus first, a waiting CV
+    // write could acquire RSPI0 and clock its 32-bit word on the shared SCK/MOSI
+    // while the OLED CS is still physically asserted — the OLED would ingest the
+    // CV word and its GDDRAM column pointer would drift (horizontal offset /
+    // first-page corruption). Holding the bus until the deselect has settled
+    // guarantees nothing else clocks the bus while the OLED is still listening.
+    // Symmetric with the select path above, which waits via wait_oled_selected
+    // before touching the bus. (Sparse CV users rarely hit this window; a fast
+    // OLED+CV interleave — e.g. an external app driving CV every audio block —
+    // hits it constantly.)
+    //
+    // Wait for the PIC to *echo* the deselect (byte 249) rather than a blind
+    // delay: the DESELECT command is queued behind any other PIC TX traffic
+    // (e.g. pad-LED updates), so a fixed timeout can elapse while the CS is still
+    // asserted. The echo means the PIC has processed it and the CS is physically
+    // de-asserted — only then is it safe to release the bus.
     pic::oled_deselect().await;
-    Timer::after_millis(1).await;
+    pic::wait_oled_deselected().await;
+
+    // Release RSPI0 — only now, with the OLED deselected, may a CV write proceed.
+    drop(bus);
 }
 
 // ── Redraw signal (embedded only) ────────────────────────────────────────────
