@@ -104,17 +104,12 @@ SECTIONS {
     /* FSB metadata code_end: the FSB copies _start..code_end to SRAM. */
     __metadata_code_end = end;
 
-    /* SRAM heap: free space between the image and the stack reservation */
+    /* SRAM heap: free space between the image and the stack reservation. The
+     * Deluge C++ app gets these bounds via libdeluge/memory.h
+     * (deluge_memory_region, FAST_INTERNAL → [__sram_heap_start, __sram_heap_end));
+     * see src/bsp/rust/src/services.rs. */
     __sram_heap_start = end;
     __sram_heap_end   = INTERNAL_RAM_END - PROGRAM_STACK_SIZE - ABT_STACK_SIZE - SVC_STACK_SIZE - FIQ_STACK_SIZE - IRQ_STACK_SIZE;
-
-    /* HACK(DELUGE_APP_HEAP_HACK): the Synthstrom Deluge C++ app's
-     * GeneralMemoryAllocator reads &__heap_start as its internal heap BASE. It
-     * must be the end of the whole image (== __sram_heap_start), not anything
-     * earlier, or the app heap overlaps code/rodata. Point it there. REMOVE once
-     * the app sources its heap bounds via libdeluge/memory.h (deluge_memory_*). */
-    PROVIDE(__heap_start = __sram_heap_start);
-    PROVIDE(__heap_start__ = __sram_heap_start);
 
     /*
      * Exception-mode stacks — NOLOAD, placed just below the program stack.
@@ -137,15 +132,12 @@ SECTIONS {
 
     /* Program (SYS mode) stack at the very top of SRAM */
     .program_stack (INTERNAL_RAM_END - PROGRAM_STACK_SIZE) (NOLOAD) : {
-        /* HACK(DELUGE_APP_HEAP_HACK): the Synthstrom Deluge C++ app's
-         * GeneralMemoryAllocator reads &program_stack_start as the TOP of its
-         * internal heap (assuming the original single-stack layout). Here the
-         * per-mode exception stacks sit between the heap and the program stack,
-         * so the real usable heap top is __sram_heap_end — point the symbol there
-         * so the app's heap can't overrun the mode stacks. Only the C++ app reads
-         * this symbol; startup uses program_stack_end for the SP. REMOVE once the
-         * app sources its heap bounds via libdeluge/memory.h (deluge_memory_*). */
-        program_stack_start = __sram_heap_end;
+        /* program_stack_start is the stack base; the C++ app's checkStack() guard
+         * measures stack headroom against it. (Startup uses program_stack_end as
+         * the initial SP.) The app's internal *heap* bounds now come from
+         * libdeluge/memory.h, so this symbol is no longer overloaded as the heap
+         * top — it means the program stack, as the name says. */
+        program_stack_start = .;
         . += PROGRAM_STACK_SIZE;
         program_stack_end = .;
     } > RAM

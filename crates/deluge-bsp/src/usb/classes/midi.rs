@@ -145,6 +145,11 @@ static MIDI2_TX: Channel<CriticalSectionRawMutex, [u32; 4], 16> = Channel::new()
 /// `true` when the host has selected alt setting 1 (MIDI 2.0 UMP transport).
 static MIDI2_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+/// `true` while the host has the device configured (SET_CONFIGURATION). Tracks
+/// whether a USB-MIDI peer is actually present, so consumers can report port
+/// connectivity. Cleared on bus reset / deconfigure.
+static CONFIGURED: AtomicBool = AtomicBool::new(false);
+
 // ============================================================================
 // Public non-async API
 // ============================================================================
@@ -153,6 +158,25 @@ static MIDI2_ACTIVE: AtomicBool = AtomicBool::new(false);
 #[inline]
 pub fn midi2_active() -> bool {
     MIDI2_ACTIVE.load(Ordering::Acquire)
+}
+
+/// Returns `true` while the device is configured by a USB host (i.e. a USB-MIDI
+/// peer is present). Use to report port connectivity.
+#[inline]
+pub fn connected() -> bool {
+    CONFIGURED.load(Ordering::Acquire)
+}
+
+/// Free space (in bytes) in the MIDI 1.0 host-bound TX queue.
+#[inline]
+pub fn tx_free() -> usize {
+    MIDI_TX.free_capacity()
+}
+
+/// Bytes queued for transmission to the host but not yet packetised on the wire.
+#[inline]
+pub fn tx_pending() -> usize {
+    MIDI_TX.len()
 }
 
 /// Try to receive the next 3-byte MIDI 1.0 message from the host.
@@ -198,6 +222,15 @@ pub struct MidiClassHandler {
 }
 
 impl Handler for MidiClassHandler {
+    fn configured(&mut self, configured: bool) {
+        CONFIGURED.store(configured, Ordering::Release);
+    }
+
+    fn reset(&mut self) {
+        CONFIGURED.store(false, Ordering::Release);
+        MIDI2_ACTIVE.store(false, Ordering::Release);
+    }
+
     fn set_alternate_setting(&mut self, iface: InterfaceNumber, alternate_setting: u8) {
         if iface == self.ms_iface {
             MIDI2_ACTIVE.store(alternate_setting == 1, Ordering::Release);

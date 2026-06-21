@@ -14,6 +14,7 @@
 /// cache maintenance operations.
 pub const UNCACHED_MIRROR_OFFSET: usize = 0x4000_0000;
 
+pub mod adc;
 // startup, mmu and cache use ARM coprocessor assembly and cannot compile on the host.
 pub mod bsc;
 #[cfg(target_os = "none")]

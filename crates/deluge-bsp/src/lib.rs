@@ -8,6 +8,7 @@
 pub mod audio;
 #[cfg(target_os = "none")]
 pub mod audio_block;
+pub mod battery;
 #[cfg(target_os = "none")]
 pub mod bus;
 pub mod controls;
