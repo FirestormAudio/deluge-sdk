@@ -1,0 +1,29 @@
+[package]
+name = "deluge-simulator"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Desktop front-panel simulator for the Deluge. Renders OLED/pads/LEDs and forwards input over the deluge-protocol wire, driving a real firmware 'brain' (DelugeFirmware's deluge_host) — a true native emulator."
+
+[[bin]]
+name = "deluge-simulator"
+path = "src/main.rs"
+
+[dependencies]
+# The shared host↔device wire contract (panel role).
+deluge-protocol = { path = "../../crates/deluge-protocol", features = ["std"] }
+
+# GUI + faceplate rendering (ported from spark's simulator).
+iced = { version = "0.14", features = ["tokio", "canvas", "advanced", "image"] }
+resvg = "0.47"
+usvg = "0.47"
+tiny-skia = "0.12"
+embedded-graphics = "0.8"
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Logging
+log = "0.4"
+env_logger = "0.11"

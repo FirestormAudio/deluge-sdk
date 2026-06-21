@@ -1,0 +1,30 @@
+[package]
+name = "deluge-alloc"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Critical-section-guarded SRAM/SDRAM heap allocators for the Deluge (RZ/A1L)."
+categories = ["embedded", "no-std", "memory-management"]
+keywords = ["rza1", "allocator", "heap", "no-std", "embedded"]
+
+# docs.rs builds on the x86_64 host by default; this crate only compiles for the
+# device triple, so build the docs there.
+[package.metadata.docs.rs]
+default-target = "armv7a-none-eabihf"
+
+[lib]
+# Unit tests (in #[cfg(all(test, not(target_os="none")))]) run natively via
+# `cargo test` (host target). They cannot compile for armv7a-none-eabihf
+# because the `test` crate requires std.
+test = false
+
+[dependencies]
+critical-section = { workspace = true }
+linked_list_allocator = { version = "0.10", default-features = false }
+
+[target.'cfg(not(target_os = "none"))'.dev-dependencies]
+critical-section = { workspace = true, features = ["std"] }

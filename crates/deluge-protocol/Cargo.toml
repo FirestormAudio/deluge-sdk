@@ -1,0 +1,18 @@
+[package]
+name = "deluge-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Deluge host↔device front-panel wire protocol: message types, length-prefixed framing, and a no_std codec. Shared by the controller firmware (device), the host simulator (panel), and the C firmware's host_link bridge."
+
+[features]
+default = []
+## Pull in `alloc` for the `Vec`-returning convenience encoders.
+alloc = []
+## Host-side conveniences (implies `alloc`). Enable in std tools like the simulator.
+std = ["alloc"]
+
+[dependencies]

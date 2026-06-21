@@ -505,8 +505,16 @@ global_asm!(
     r#"
 _undef_rtt:
     /* On UNDEF entry: LR_und = faulting PC + 4 (ARM) or +2 (Thumb) */
-    push {{r5, r6, r7, r8, r9, r10}}
+    push {{r5, r6, r7, r8, r9, r10, r11}}
     sub  r5, lr, #4               /* faulting PC (ARM; Thumb: #2) */
+    /* Capture the faulting (SYS/USR) mode SP and LR: USR/SYS share r13/r14, so
+       briefly switching to System mode reads the app's stack pointer and its LR —
+       the return address of a wild blx, i.e. the call site to symbolize. IRQs
+       stay masked across the mode switch. */
+    cps  #0x1F                    /* System mode */
+    mov  r6, sp                   /* r6 = app SP */
+    mov  r7, lr                   /* r7 = app LR (wild-call return address) */
+    cps  #0x1B                    /* back to Undefined mode */
     ldr  r0, =_SEGGER_RTT
     ldr  r1, [r0, #0x1C]          /* buffer base */
     ldr  r2, [r0, #0x24]          /* WrOff */
@@ -542,8 +550,38 @@ _undef_rtt:
     write_char_u #0x3D   /* = */
     write_hex8_u r5
     write_char_u #0x0A
+    /* LR= : app return address — symbolize via the .map to find the wild call. */
+    write_char_u #0x4C   /* L */
+    write_char_u #0x52   /* R */
+    write_char_u #0x3D   /* = */
+    write_hex8_u r7
+    write_char_u #0x0A
+    /* SP= : app stack pointer. */
+    write_char_u #0x53   /* S */
+    write_char_u #0x50   /* P */
+    write_char_u #0x3D   /* = */
+    write_hex8_u r6
+    write_char_u #0x0A
+    /* Commit PC/LR/SP now, so they survive even if the stack walk below faults
+       (a bad SP would nest a data abort). */
     str  r2, [r0, #0x24]
-    pop  {{r5, r6, r7, r8, r9, r10}}
+    /* STK: 16 words from the app stack — scan for code-range return addresses to
+       reconstruct the call chain via the .map file. */
+    write_char_u #0x53   /* S */
+    write_char_u #0x54   /* T */
+    write_char_u #0x4B   /* K */
+    write_char_u #0x3A   /* : */
+    mov  r11, #16
+.Lstk_u:
+    ldr  r5, [r6]
+    add  r6, r6, #4
+    write_char_u #0x20   /* space */
+    write_hex8_u r5
+    subs r11, r11, #1
+    bne  .Lstk_u
+    write_char_u #0x0A
+    str  r2, [r0, #0x24]
+    pop  {{r5, r6, r7, r8, r9, r10, r11}}
     b    _boot_fault_loop
 "#
 );

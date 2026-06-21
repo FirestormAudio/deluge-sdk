@@ -12,7 +12,7 @@
 //!
 //! ```rust,ignore
 //! #![feature(allocator_api)]
-//! use rza1::allocator::{SRAM, SDRAM};
+//! use deluge_alloc::{SRAM, SDRAM};
 //!
 //! let buf: Box<[u8; 4096], _> = Box::new_in([0u8; 4096], &SDRAM);
 //! let vec: Vec<u32, _>        = Vec::new_in(&SRAM);
@@ -23,6 +23,9 @@
 //! for the duration of each allocation or deallocation.  This prevents
 //! deadlocks caused by IRQ handlers that also allocate, at the cost of a
 //! brief IRQ-latency bump.
+
+#![cfg_attr(target_os = "none", no_std)]
+#![feature(allocator_api)]
 
 use core::alloc::{AllocError, Allocator, Layout};
 use core::cell::UnsafeCell;
@@ -129,7 +132,7 @@ pub static SRAM: CsHeap = CsHeap::empty();
 
 /// Allocator backed by the external 64 MB SDRAM (CS3, 0x0C00_0000–0x0FFF_FFFF).
 ///
-/// Must be initialised *after* [`crate::sdram::init`] has completed and the
+/// Must be initialised *after* the SDRAM controller has been brought up and the
 /// SDRAM window is accessible:
 /// ```rust,ignore
 /// unsafe { SDRAM.init(0x0C00_0000 as *mut u8, 64 * 1024 * 1024) }

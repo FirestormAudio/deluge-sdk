@@ -2,6 +2,49 @@
   "version": "0.2.0",
   "configurations": [
     {
+      // VBUS-sense probe over J-Link. Leaves the USB port free (no USB upload),
+      // so VBUS reads ABSENT at boot; watch the OLED / RTT flip to PRESENT when
+      // a host or charger is plugged into the USB port.
+      // Build first: `cargo build-fw -p vbus-probe --features rtt`.
+      "name": "vbus-probe (debug, RTT)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/target/armv7a-none-eabihf/debug/vbus-probe",
+      "serverpath": "/usr/bin/JLinkGDBServerCLExe",
+      "servertype": "jlink",
+      "device": "R7S721020",
+      "interface": "swd",
+      "serverArgs": ["-jlinkscriptfile", "${workspaceFolder}/rza1_debug.JLinkScript"],
+      "overrideLaunchCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ],
+      "overrideResetCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ],
+      "rttConfig": {
+        "enabled": true,
+        "address": "auto",
+        "decoders": [
+          {
+            "port": 0,
+            "timestamp": true,
+            "type": "console",
+            "logfile": "${workspaceFolder}/rtt-vbus.log"
+          }
+        ]
+      },
+      "runToEntryPoint": "main"
+    },
+    {
       // probe-rs debug (trace-a9 fork). The fork does the Cortex-A9 bring-up
       // internally — no JLinkScript / cp15 monitor commands needed. Build the
       // target first (`cargo build-fw` for debug, `cargo build-fw-rel` for

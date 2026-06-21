@@ -87,6 +87,19 @@ SECTIONS {
         . = ALIGN(8);
     } > RAM
 
+    /* ARM EH unwind tables — kept (not discarded) so C++ exception unwinding
+     * works for consumers built with exceptions (the Deluge app throws/catches
+     * deluge::exception). In the image (before `end`). Rust firmwares emit
+     * little/none here — harmless. */
+    .ARM.extab : ALIGN(4) {
+        *(.ARM.extab* .gnu.linkonce.armextab.*)
+    } > RAM
+    .ARM.exidx : ALIGN(4) {
+        __exidx_start = .;
+        *(.ARM.exidx* .gnu.linkonce.armexidx.*)
+        __exidx_end = .;
+    } > RAM
+
     /*
      * Round up to next 64 KB boundary so the bootloader knows how much to
      * copy from SPI flash into SRAM (matches original linker script).
@@ -101,6 +114,13 @@ SECTIONS {
     /* SRAM heap: free space between the image and the RTT/stack reservation */
     __sram_heap_start = end;
     __sram_heap_end   = ORIGIN(RTT_RAM);
+
+    /* HACK(DELUGE_APP_HEAP_HACK): the Deluge C++ app reads &__heap_start as its
+     * internal heap BASE — must be the end of the whole image (== __sram_heap_start)
+     * or the heap overlaps code/rodata. REMOVE once the app sources its heap
+     * bounds via libdeluge/memory.h (deluge_memory_*). */
+    PROVIDE(__heap_start = __sram_heap_start);
+    PROVIDE(__heap_start__ = __sram_heap_start);
 
     /*
      * Exception-mode stacks — NOLOAD, placed just below the program stack.
@@ -123,13 +143,17 @@ SECTIONS {
 
     /* Program (SYS mode) stack at the very top of SRAM */
     .program_stack (INTERNAL_RAM_END - PROGRAM_STACK_SIZE) (NOLOAD) : {
-        program_stack_start = .;
+        /* HACK(DELUGE_APP_HEAP_HACK): the Synthstrom Deluge C++ app's
+         * GeneralMemoryAllocator reads &program_stack_start as the TOP of its
+         * internal heap (assuming the original single-stack layout). Here the
+         * per-mode exception stacks + RTT buffer sit between the heap and the
+         * program stack, so the real usable heap top is __sram_heap_end — point
+         * the symbol there so the app's heap can't overrun the stacks/RTT. Only
+         * the C++ app reads this symbol; startup uses program_stack_end for the
+         * SP. REMOVE once the app sources its heap bounds via libdeluge/memory.h
+         * (deluge_memory_*). */
+        program_stack_start = __sram_heap_end;
         . += PROGRAM_STACK_SIZE;
         program_stack_end = .;
     } > RAM
-
-    /DISCARD/ : {
-        *(.ARM.exidx*)
-        *(.ARM.extab*)
-    }
 }

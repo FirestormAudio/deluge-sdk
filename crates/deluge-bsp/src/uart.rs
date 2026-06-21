@@ -81,6 +81,13 @@ pub unsafe fn init_midi(baud_rate: u32) {
 /// SCIF1 RX uses DMAC channel [`crate::system::PIC_DMA_RX_CH`] and TX uses
 /// DMAC channel [`crate::system::PIC_DMA_TX_CH`].
 ///
+/// **Why DMA and not RXI:** on the RZ/A1 the SCIF "receive-FIFO-data-full"
+/// request is wired to the DMAC, not the GIC — setting RIE never raises a CPU
+/// interrupt (verified: with RIE=1 and RDF=1, no GIC line in the SCIF range
+/// 220–245 ever goes pending while bytes accumulate in the FIFO). The stock
+/// Renesas/Deluge firmware says as much: `SCSCR = 0x00F0; // Enable "interrupt"
+/// (which actually triggers DMA)`. So RX must go through the DMAC.
+///
 /// DMARS values: RX = 0x66, TX = 0x65 (SCIF1 resource selectors).
 ///
 /// # Safety
@@ -97,7 +104,7 @@ pub unsafe fn init_pic(baud_rate: u32) {
         rza1l_hal::uart::init(PIC_CH, baud_rate);
         rza1l_hal::gpio::set_pin_mux(3, 15, 5); // TxD1
         rza1l_hal::gpio::set_pin_mux(1, 9, 3); // RxD1
-        // RX via DMAC channel (crate::system::PIC_DMA_RX_CH); TX via (crate::system::PIC_DMA_TX_CH).
+        // RX via DMAC channel (PIC_DMA_RX_CH); TX via DMAC (PIC_DMA_TX_CH).
         rza1l_hal::uart::register_txi_for(PIC_CH);
         rza1l_hal::uart::init_dma_rx(PIC_CH, crate::system::PIC_DMA_RX_CH, 0x66);
         rza1l_hal::uart::init_dma_tx(PIC_CH, crate::system::PIC_DMA_TX_CH, 0x65);

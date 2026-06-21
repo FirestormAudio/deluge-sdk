@@ -27,6 +27,7 @@ path = "src/lib.rs"
 [dependencies]
 deluge-macros = { path = "../deluge-sdk-macros", version = "0.1.0", package = "deluge-sdk-macros" }
 deluge-bsp = { path = "../deluge-bsp", version = "0.1.0" }
+deluge-alloc = { path = "../deluge-alloc", version = "0.1.0" }
 rza1l-hal = { path = "../rza1l-hal", version = "0.1.0" }
 fixedpoint = { workspace = true }
 cortex-ar = { workspace = true }
@@ -45,11 +46,11 @@ embassy-usb = { workspace = true, optional = true }
 
 [features]
 default = []
-## Register the HAL's on-chip SRAM heap as the global allocator, so `alloc`
-## collections (`String`, `Vec`, `format!`) work. Needed by apps that use the GPL
-## `deluge-ui-toolkit`. Off by default — the SDK is otherwise allocator-free.
+## Register the on-chip SRAM heap (`deluge-alloc`) as the global allocator, so
+## `alloc` collections (`String`, `Vec`, `format!`) work. Needed by apps that use
+## the GPL `deluge-ui-toolkit`. Off by default — the SDK is otherwise allocator-free.
 ## SDRAM is left for bulk audio buffers (samples/delay lines), allocated
-## explicitly via `rza1l_hal::allocator::SDRAM`. Apps enabling this must also
+## explicitly via `deluge_alloc::SDRAM`. Apps enabling this must also
 ## build with `-Zbuild-std=core,alloc`.
 alloc = []
 ## Route the `log` crate to a USB CDC-ACM serial interface (a `/dev/ttyACM*`

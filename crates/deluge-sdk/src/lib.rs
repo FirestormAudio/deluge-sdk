@@ -42,7 +42,7 @@ pub use deluge_macros::app;
 ///
 /// SRAM (not SDRAM) backs the global heap on purpose: the large external SDRAM
 /// is reserved for bulk audio buffers (samples, delay lines), which apps allocate
-/// explicitly via [`rza1l_hal::allocator::SDRAM`]. The default SDK stays
+/// explicitly via [`deluge_alloc::SDRAM`]. The default SDK stays
 /// allocator-free and apps choose the arena per allocation.
 #[cfg(feature = "alloc")]
 mod global_alloc {
@@ -51,11 +51,11 @@ mod global_alloc {
 
     struct SramGlobal;
 
-    // SAFETY: delegates to `rza1l_hal::allocator::SRAM`, a critical-section
+    // SAFETY: delegates to `deluge_alloc::SRAM`, a critical-section
     // guarded heap initialised once during platform bring-up.
     unsafe impl GlobalAlloc for SramGlobal {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            match rza1l_hal::allocator::SRAM.allocate(layout) {
+            match deluge_alloc::SRAM.allocate(layout) {
                 Ok(p) => p.as_ptr().cast(),
                 Err(_) => ptr::null_mut(),
             }
@@ -64,7 +64,7 @@ mod global_alloc {
         unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
             if let Some(nn) = NonNull::new(ptr) {
                 // SAFETY: `ptr`/`layout` come from a prior `alloc` on this heap.
-                unsafe { rza1l_hal::allocator::SRAM.deallocate(nn, layout) };
+                unsafe { deluge_alloc::SRAM.deallocate(nn, layout) };
             }
         }
     }
@@ -115,6 +115,7 @@ pub use fixedpoint as fixed;
 
 // Re-export the underlying layers so apps can reach lower-level functionality
 // through the single `deluge` dependency while the capability API (M2+) grows.
+pub use deluge_alloc;
 pub use deluge_bsp;
 pub use rza1l_hal;
 
@@ -430,13 +431,16 @@ pub mod __rt {
     /// Size of the external SDRAM window in bytes.
     const SDRAM_SIZE: usize = 64 * 1024 * 1024;
 
-    /// Initialise the RTT logger (only with the `rtt` feature, and only when
-    /// `usb-log` is not also enabled — there can be just one global logger).
+    /// Set up RTT (only with the `rtt` feature).
     ///
-    /// Defines the `_SEGGER_RTT` control block (in the `.rtt_buffer` section
-    /// provided by the rtt linker script) that the HAL/BSP reference, and
-    /// registers the `log` backend.
-    #[cfg(all(feature = "rtt", not(feature = "usb-log")))]
+    /// Always defines the `_SEGGER_RTT` control block (in the `.rtt_buffer`
+    /// section provided by the rtt linker script) — the HAL's abort/panic
+    /// handlers reference this symbol whenever `rza1l-hal/rtt` is on, so it must
+    /// exist even when `usb-log` is the active logger (e.g. when both features
+    /// are unified on in a workspace build). The `log` backend is registered
+    /// only when `usb-log` is *not* enabled, since there can be just one global
+    /// logger and `usb-log` takes precedence.
+    #[cfg(feature = "rtt")]
     fn init_logging() {
         let channels = rtt_target::rtt_init! {
             up: {
@@ -444,8 +448,15 @@ pub mod __rt {
             }
             section_cb: ".rtt_buffer"
         };
-        rtt_target::set_print_channel(channels.up.0);
-        rtt_target::init_logger_with_level(log::LevelFilter::Debug);
+        #[cfg(not(feature = "usb-log"))]
+        {
+            rtt_target::set_print_channel(channels.up.0);
+            rtt_target::init_logger_with_level(log::LevelFilter::Debug);
+        }
+        // With `usb-log` active the RTT block still exists (for the HAL fault
+        // handlers) but RTT is not the `log` backend.
+        #[cfg(feature = "usb-log")]
+        let _ = channels;
     }
 
     /// Bring up the platform short of enabling interrupts: SRAM/SDRAM heaps and
@@ -462,13 +473,13 @@ pub mod __rt {
             // SRAM heap (internal RAM) — initialise before any allocation.
             let start = core::ptr::addr_of!(__sram_heap_start) as *mut u8;
             let size = core::ptr::addr_of!(__sram_heap_end) as usize - start as usize;
-            rza1l_hal::allocator::SRAM.init(start, size);
+            deluge_alloc::SRAM.init(start, size);
 
             // Module clocks, MMU, caches, SDRAM controller, GIC, OSTM time driver.
             deluge_bsp::system::init_clocks();
 
             // SDRAM heap — now that the SDRAM window is accessible.
-            rza1l_hal::allocator::SDRAM.init(SDRAM_BASE as *mut u8, SDRAM_SIZE);
+            deluge_alloc::SDRAM.init(SDRAM_BASE as *mut u8, SDRAM_SIZE);
         }
     }
 
@@ -485,9 +496,12 @@ pub mod __rt {
     /// apps that don't opt into `#[deluge::app(setup = …)]`.
     pub fn run(setup: impl FnOnce(), spawn: impl FnOnce(Spawner)) -> ! {
         // Pick the logger: `usb-log` takes precedence over `rtt` (one logger).
+        // `init_logging` still runs when `rtt` is on so the `_SEGGER_RTT` control
+        // block exists for the HAL fault handlers; it only registers the RTT log
+        // backend when `usb-log` is not also enabled.
         #[cfg(feature = "usb-log")]
         crate::usb_debug::init_logger();
-        #[cfg(all(feature = "rtt", not(feature = "usb-log")))]
+        #[cfg(feature = "rtt")]
         init_logging();
 
         unsafe { init_platform() };

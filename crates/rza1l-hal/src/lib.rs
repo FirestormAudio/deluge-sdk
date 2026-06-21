@@ -3,7 +3,6 @@
 //! Peripheral base addresses are taken from the RZ/A1L Hardware Manual.
 
 #![cfg_attr(target_os = "none", no_std)]
-#![feature(allocator_api)]
 #![allow(dead_code)]
 
 /// Offset from a cached address to its uncached mirror alias.
@@ -43,5 +42,4 @@ pub mod time_driver;
 pub mod uart;
 pub mod usb;
 
-pub mod allocator;
 pub mod gpio;

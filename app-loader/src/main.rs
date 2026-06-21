@@ -46,7 +46,7 @@ use core::panic::PanicInfo;
 
 use embassy_executor::{Executor, Spawner};
 use log::{error, info, warn};
-use rza1l_hal::allocator;
+use deluge_alloc as allocator;
 
 use deluge_bsp::{oled, sd};
 

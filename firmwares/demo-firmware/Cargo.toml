@@ -23,6 +23,7 @@ embassy-usb-host = { workspace = true }
 log = { workspace = true }
 embassy-futures = { workspace = true }
 deluge-fft = { path = "../../crates/deluge-fft" }
+rtt-target = { workspace = true, optional = true }
 
 [features]
 ## Enable RTT (SEGGER Real-Time Transfer) debug logging. The SDK's
@@ -30,4 +31,4 @@ deluge-fft = { path = "../../crates/deluge-fft" }
 ## feature also selects the rtt linker script via build.rs (CARGO_FEATURE_RTT).
 ## Disable for release builds: cargo build-fw --release --no-default-features
 default = []
-rtt = ["deluge/rtt"]
+rtt = ["dep:rtt-target", "rza1l-hal/rtt", "deluge/rtt"]

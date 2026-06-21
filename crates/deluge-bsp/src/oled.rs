@@ -70,9 +70,9 @@ const OLED_DMA_DMARS: u32 = 0x121;
 /// CHCFG for the OLED SPI DMA TX channel.
 ///
 /// From `oledDMAInit()`:
-///   `0b00000000_00100000_00000000_01101000 | (OLED_SPI_DMA_CHANNEL & 7)`
-///   = 0x00200068 | 4 = 0x0020006C
-const OLED_CHCFG: u32 = 0x0020_006C;
+///   `0b00000000_00100000_00000010_01101000 | (OLED_SPI_DMA_CHANNEL & 7)`
+///   = 0x00200268 | 4 = 0x0020026C
+const OLED_CHCFG: u32 = 0x0020_026C;
 
 /// Cache-line-aligned DMA staging buffer for OLED frame data.
 ///

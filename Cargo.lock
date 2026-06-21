@@ -77,6 +77,7 @@ name = "app-loader"
 version = "0.1.0"
 dependencies = [
  "cortex-ar",
+ "deluge-alloc",
  "deluge-bsp",
  "deluge-image",
  "embassy-executor",
@@ -477,6 +478,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "deluge-alloc"
+version = "0.1.0"
+dependencies = [
+ "critical-section",
+ "linked_list_allocator",
+]
+
+[[package]]
 name = "deluge-bsp"
 version = "0.1.0"
 dependencies = [
@@ -498,6 +507,7 @@ name = "deluge-controller"
 version = "0.1.0"
 dependencies = [
  "cortex-ar",
+ "deluge-alloc",
  "deluge-bsp",
  "embassy-executor",
  "embassy-futures",
@@ -542,10 +552,15 @@ name = "deluge-image"
 version = "0.1.0"
 
 [[package]]
+name = "deluge-protocol"
+version = "0.1.0"
+
+[[package]]
 name = "deluge-sdk"
 version = "0.1.0"
 dependencies = [
  "cortex-ar",
+ "deluge-alloc",
  "deluge-bsp",
  "deluge-fixedpoint",
  "deluge-sdk-macros",
@@ -597,6 +612,7 @@ dependencies = [
  "embassy-usb-driver",
  "embassy-usb-host",
  "log",
+ "rtt-target",
  "rza1l-hal",
 ]
 
@@ -1236,6 +1252,7 @@ name = "msc-firmware"
 version = "0.1.0"
 dependencies = [
  "cortex-ar",
+ "deluge-alloc",
  "deluge-bsp",
  "embassy-executor",
  "embassy-futures",
@@ -1673,7 +1690,6 @@ dependencies = [
  "embedded-hal 1.0.0",
  "embedded-hal-async",
  "embedded-io-async 0.7.0",
- "linked_list_allocator",
  "log",
  "rtt-target",
 ]
@@ -1931,13 +1947,6 @@ name = "toml_writer"
 version = "1.1.1+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
-
-[[package]]
-name = "trace-selftest"
-version = "0.1.0"
-dependencies = [
- "rza1l-hal",
-]
 
 [[package]]
 name = "tracing"
@@ -2270,6 +2279,7 @@ name = "wp-probe"
 version = "0.1.0"
 dependencies = [
  "cortex-ar",
+ "deluge-alloc",
  "deluge-bsp",
  "embassy-executor",
  "embassy-futures",

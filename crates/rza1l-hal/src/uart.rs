@@ -53,15 +53,21 @@ const SCLSR: usize = 0x24; // u16  Line Status Register
 const SCEMR: usize = 0x28; // u16  Serial Extended Mode Register
 
 // SCSCR bit masks
-const TE: u16 = 1 << 4; // Transmit Enable
-const RE: u16 = 1 << 5; // Receive Enable
-const RIE: u16 = 1 << 6; // Receive Interrupt Enable  (enables RXI + ERI)
+const TE: u16 = 1 << 5; // Transmit Enable  (SCSCR bit 5, HW manual §14.3.7)
+const RE: u16 = 1 << 4; // Receive Enable   (SCSCR bit 4, HW manual §14.3.7)
+const RIE: u16 = 1 << 6; // Receive Interrupt Enable  (routes RX request to DMAC)
 const TIE: u16 = 1 << 7; // Transmit Interrupt Enable (enables TXI)
 
 // SCFSR bit masks
+// SCFSR bit layout (RZ/A1L HW Manual §14.3.7, Table — low byte):
+//   bit7 ER | bit6 TEND | bit5 TDFE | bit4 BRK | bit3 FER | bit2 PER | bit1 RDF | bit0 DR
 const DR: u16 = 1 << 0; // Data Ready  (RX FIFO has data below trigger)
 const RDF: u16 = 1 << 1; // Receive FIFO Data Full  (count ≥ trigger)
+const PER: u16 = 1 << 2; // Parity Error
+const FER: u16 = 1 << 3; // Framing Error
+const BRK: u16 = 1 << 4; // Break detected
 const TDFE: u16 = 1 << 5; // TX FIFO Data Empty  (count ≤ trigger)
+const ER: u16 = 1 << 7; // Receive Error
 
 // TX FIFO depth
 const TX_FIFO_SIZE: usize = 16;
@@ -78,7 +84,8 @@ pub const NUM_CHANNELS: usize = 5;
 
 // GIC base IDs for SCIF0; per RZ/A1L HW Manual §A.2:
 //   SCIFn: BRI = 221+n*4, ERI = 222+n*4, RXI = 223+n*4, TXI = 224+n*4
-const BRI_BASE: u16 = 221;
+// (RX uses DMA, so only ERI/TXI are registered; RXI_BASE is kept for the
+//  ID-layout test, BRI is not used.)
 const ERI_BASE: u16 = 222;
 const RXI_BASE: u16 = 223;
 const TXI_BASE: u16 = 224;
@@ -336,49 +343,16 @@ pub unsafe fn set_baud(ch: usize, baud_rate: u32) {
         wr16(b + SCFSR, scfsr & 0xFF6E); // clear ER/BRK/DR/RDF
         let sclsr = rr16(b + SCLSR);
         wr16(b + SCLSR, sclsr & !1u16); // clear ORER
-        // Re-enable: DMA-RX channels need TIE|RIE set as DMA triggers; others just TE|RE.
-        let scscr = if DMA_RX_ACTIVE[ch] {
-            TIE | RIE | RE | TE
-        } else {
-            TE | RE
-        };
+        // Re-enable TE/RE, plus the DMA trigger-enable bits that route the SCIF
+        // request to the DMAC: RIE for DMA RX, TIE for DMA TX.
+        let mut scscr = TE | RE;
+        if DMA_RX_ACTIVE[ch] {
+            scscr |= RIE;
+        }
+        if DMA_TX_ACTIVE[ch] {
+            scscr |= TIE;
+        }
         wr16(b + SCSCR, scscr);
-    }
-}
-
-/// Register and enable the RXI, TXI, and ERI GIC interrupt sources for SCIF
-/// channel `ch`.
-///
-/// ERI (Error Interrupt) must be registered to clear SCFSR error flags
-/// (framing errors, overrun) that would otherwise permanently stall reception.
-///
-/// Must be called after [`init`] and before global IRQ is enabled.
-///
-/// # Safety
-/// Writes to memory-mapped GIC registers via [`crate::gic`].
-/// Caller must ensure `ch` < [`NUM_CHANNELS`].
-pub unsafe fn register_irqs_for(ch: usize) {
-    unsafe {
-        debug_assert!(ch < NUM_CHANNELS);
-        let eri = ERI_BASE + (ch as u16) * 4;
-        let rxi = RXI_BASE + (ch as u16) * 4;
-        let txi = TXI_BASE + (ch as u16) * 4;
-        log::trace!(
-            "uart: ch{} registering ERI={} RXI={} TXI={}",
-            ch,
-            eri,
-            rxi,
-            txi
-        );
-        gic::register(eri, ERI_HANDLERS[ch]);
-        gic::register(rxi, RXI_HANDLERS[ch]);
-        gic::register(txi, TXI_HANDLERS[ch]);
-        gic::set_priority(eri, UART_IRQ_PRIORITY);
-        gic::set_priority(rxi, UART_IRQ_PRIORITY);
-        gic::set_priority(txi, UART_IRQ_PRIORITY);
-        gic::enable(eri);
-        gic::enable(rxi);
-        gic::enable(txi);
     }
 }
 
@@ -411,6 +385,14 @@ pub unsafe fn register_txi_for(ch: usize) {
         gic::enable(txi);
     }
 }
+
+// NOTE: SCIF receive-interrupt (RXI) driven RX is intentionally NOT supported.
+// On RZ/A1 the SCIF receive-FIFO-data-full request is wired to the DMAC, not the
+// GIC: with RIE=1 and RDF=1 (data in the FIFO) no GIC line in the SCIF range
+// (220–245) ever goes pending, so an RXI handler never fires. Verified
+// empirically; the stock Renesas/Deluge driver documents the same with
+// `SCSCR = 0x00F0; // Enable "interrupt" (which actually triggers DMA)`. All RX
+// therefore goes through [`init_dma_rx`].
 
 /// Set up circular DMA RX for SCIF channel `ch`.
 ///
@@ -520,12 +502,17 @@ pub unsafe fn init_dma_tx(ch: usize, dma_ch: u8, dmars: u32) {
         crate::dmac::register_completion_irq(dma_ch);
         DMA_TX_DMACH[ch] = dma_ch;
         DMA_TX_ACTIVE[ch] = true;
-        // TIE in SCSCR controls both the TXI GIC interrupt AND the SCIF→DMAC
-        // DREQ signal.  The on_txi ISR clears TIE to stop repeated TXI fire —
-        // but that also kills the DREQ, stalling any active DMA mid-transfer.
-        // Fix: disable TXI at the GIC distributor so on_txi never runs.
-        // TIE remains set in SCSCR (written by init_dma_rx), so DREQ pulses
-        // continue to reach the DMAC uninterrupted.
+        // Enable the SCIF TX path and the SCIF→DMAC TX request, independently of
+        // how RX is set up. TIE drives both the TXI GIC interrupt AND the DREQ to
+        // the DMAC; TE enables transmission. We OR (rather than overwrite) so the
+        // RX side's RE/RIE bits are preserved whether RX is DMA- or IRQ-driven —
+        // previously this relied on init_dma_rx() having written SCSCR first.
+        let b = base(ch);
+        let scscr = rr16(b + SCSCR);
+        wr16(b + SCSCR, scscr | TIE | TE);
+        // The on_txi ISR clears TIE to stop repeated TXI fire — but that would
+        // also kill the DREQ, stalling an active DMA TX. Disable TXI at the GIC
+        // distributor so on_txi never runs and TIE stays set for the DMAC.
         let txi_id = TXI_BASE + (ch as u16) * 4;
         gic::disable(txi_id);
         log::info!(
@@ -542,35 +529,30 @@ pub unsafe fn init_dma_tx(ch: usize, dma_ch: u8, dmars: u32) {
 // Interrupt handlers
 // ---------------------------------------------------------------------------
 
-/// Called from GIC dispatch when ERI fires for SCIF `ch`.
-///
-/// Clears error flags in SCFSR (ER, BRK) and SCLSR (ORER) so the SCIF can
-/// resume forwarding received bytes.  Without this, a single framing error
-/// permanently stalls RX because the SCIF holds RDF=0 until ER is cleared.
-/// Wakes the RX task so it retries after recovery.
-fn on_eri(ch: usize) {
+/// Clear sticky receive-error flags so the SCIF resumes forwarding bytes.
+/// Writes 0 to the genuine receive-error flags (ER, BRK, FER, PER); SCLSR.ORER
+/// is bit 0. Shared by the ERI and BRI handlers.
+fn clear_rx_errors(ch: usize) {
     let b = base(ch);
     unsafe {
-        // Clear sticky error bits.  The mask 0xFF6E preserves non-error status
-        // bits while writing 0 to ER(bit3)/BRK(bit6)/DR(bit0) — matching the
-        // pattern used in init() and set_baud().
+        // Write 0 to the genuine receive-error flags (ER, BRK, FER, PER) to clear
+        // them; preserve RDF/DR (data) and the TX flags. A status flag is only
+        // cleared by writing 0 after it has been read as 1, so the read-modify-
+        // write below is required. NOTE: the previous mask (0xFF6E) used wrong bit
+        // positions and silently left ER/FER/PER set, which would stall RX after
+        // the first real framing error.
         let scfsr = rr16(b + SCFSR);
-        wr16(b + SCFSR, scfsr & 0xFF6E);
-        // Clear overrun error in SCLSR (ORER = bit 0).
+        wr16(b + SCFSR, scfsr & !(ER | BRK | FER | PER));
         let sclsr = rr16(b + SCLSR);
-        wr16(b + SCLSR, sclsr & !1u16);
+        wr16(b + SCLSR, sclsr & !1u16); // ORER = bit 0
     }
-    UART_STATE[ch].rx_waker.wake();
 }
 
-/// Called from GIC dispatch when RXI fires for SCIF `ch`.
-/// Disables RIE (stops further RXI) and wakes any pending rx future.
-fn on_rxi(ch: usize) {
-    let b = base(ch);
-    unsafe {
-        let scscr = rr16(b + SCSCR);
-        wr16(b + SCSCR, scscr & !RIE);
-    }
+/// Called from GIC dispatch when ERI (framing/parity error) fires for SCIF `ch`.
+/// Clears the receive-error flags so the SCIF can resume forwarding bytes —
+/// without this a single framing error permanently stalls RX. Wakes the RX task.
+fn on_eri(ch: usize) {
+    clear_rx_errors(ch);
     UART_STATE[ch].rx_waker.wake();
 }
 
@@ -600,32 +582,17 @@ fn eri3_handler() {
 fn eri4_handler() {
     on_eri(4);
 }
-fn rxi0_handler() {
-    on_rxi(0);
-}
 fn txi0_handler() {
     on_txi(0);
-}
-fn rxi1_handler() {
-    on_rxi(1);
 }
 fn txi1_handler() {
     on_txi(1);
 }
-fn rxi2_handler() {
-    on_rxi(2);
-}
 fn txi2_handler() {
     on_txi(2);
 }
-fn rxi3_handler() {
-    on_rxi(3);
-}
 fn txi3_handler() {
     on_txi(3);
-}
-fn rxi4_handler() {
-    on_rxi(4);
 }
 fn txi4_handler() {
     on_txi(4);
@@ -638,13 +605,6 @@ static ERI_HANDLERS: [HandlerFn; NUM_CHANNELS] = [
     eri2_handler,
     eri3_handler,
     eri4_handler,
-];
-static RXI_HANDLERS: [HandlerFn; NUM_CHANNELS] = [
-    rxi0_handler,
-    rxi1_handler,
-    rxi2_handler,
-    rxi3_handler,
-    rxi4_handler,
 ];
 static TXI_HANDLERS: [HandlerFn; NUM_CHANNELS] = [
     txi0_handler,
@@ -660,68 +620,15 @@ static TXI_HANDLERS: [HandlerFn; NUM_CHANNELS] = [
 
 /// Read a single byte from SCIF channel `ch`, waiting asynchronously.
 ///
-/// Dispatches to DMA-polled RX if the channel was set up with [`init_dma_rx`],
-/// otherwise uses the interrupt-driven path.
+/// RX is always DMA-backed on RZ/A1 (see [`init_dma_rx`]); the channel must
+/// have been set up with it. There is no interrupt-driven (RXI) RX path because
+/// the SCIF receive request never reaches the GIC on this part.
 pub async fn read_byte(ch: usize) -> u8 {
-    if unsafe { DMA_RX_ACTIVE[ch] } {
-        read_byte_dma(ch).await
-    } else {
-        log::warn!(
-            "uart: ch{} DMA_RX_ACTIVE=false — falling back to IRQ RX (no RXI registered!)",
-            ch
-        );
-        read_byte_irq(ch).await
-    }
-}
-
-/// Interrupt-driven RX path (original implementation).
-async fn read_byte_irq(ch: usize) -> u8 {
-    let b = base(ch);
-    poll_fn(|cx| {
-        // Register waker BEFORE checking the FIFO so we cannot miss a wakeup
-        // from an ISR that fires between the check and returning Pending.
-        UART_STATE[ch].rx_waker.register(cx.waker());
-
-        let scfsr = unsafe { rr16(b + SCFSR) };
-        if scfsr & (RDF | DR) != 0 {
-            // Data is available: read one byte and clear the status flags.
-            let byte = unsafe { rr8(b + SCFRDR) };
-            // Clear RDF/DR.  Hardware will re-assert RDF if the FIFO still
-            // holds data at or above the trigger level after this write.
-            unsafe { wr16(b + SCFSR, scfsr & !(RDF | DR)) };
-            // Re-enable RIE now so the next byte (or any bytes already sitting
-            // in the FIFO that cleared RDF) will wake the future on the next
-            // poll.  Without this, RIE stays off after the ISR cleared it and
-            // pick-up of subsequent bytes depends entirely on whether RDF
-            // happened to be asserted at the moment poll_fn is called again —
-            // which fails for the first byte of a new burst after a quiet period.
-            unsafe {
-                let scscr = rr16(b + SCSCR);
-                wr16(b + SCSCR, scscr | RIE);
-            }
-            Poll::Ready(byte)
-        } else {
-            // No data yet: enable RIE so the ISR wakes us when data arrives.
-            unsafe {
-                let scscr = rr16(b + SCSCR);
-                wr16(b + SCSCR, scscr | RIE);
-            }
-            // Re-check after enabling RIE to close the race where data arrived
-            // between our initial FIFO check and the RIE write.
-            let scfsr = unsafe { rr16(b + SCFSR) };
-            if scfsr & (RDF | DR) != 0 {
-                // Data arrived in the window — read it (ISR will fire but waker
-                // is already registered; the next poll will see RIE enabled).
-                unsafe {
-                    let byte = rr8(b + SCFRDR);
-                    wr16(b + SCFSR, scfsr & !(RDF | DR));
-                    return Poll::Ready(byte);
-                }
-            }
-            Poll::Pending
-        }
-    })
-    .await
+    debug_assert!(
+        unsafe { DMA_RX_ACTIVE[ch] },
+        "read_byte requires DMA RX (init_dma_rx); SCIF RXI does not work on RZ/A1"
+    );
+    read_byte_dma(ch).await
 }
 
 // ---------------------------------------------------------------------------
