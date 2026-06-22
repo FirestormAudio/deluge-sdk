@@ -700,6 +700,17 @@ _irq_handler:
     /* Save caller-saved AAPCS registers. */
     push    {{r0-r3, r12}}
 
+    /* Save the interrupted context's VFP/NEON state. Required because the audio
+     * interrupt-executor runs the NEON-heavy audio render inside an IRQ handler;
+     * without this it would clobber d0-d31/FPSCR of whatever thread-mode code it
+     * preempted. r0 is already saved above, so it is free as scratch here.
+     * (vpush is word-aligned; the bl below is realigned to 8 bytes separately.) */
+    vpush   {{d0-d15}}
+    vpush   {{d16-d31}}
+    vmrs    r0, fpscr
+    sub     sp, sp, #8
+    str     r0, [sp]
+
     /* ---- ARM Errata 801120: dummy HPPIR read before ICCIAR ---- */
     ldr     r2, =GICC_HPPIR_ADDR
     ldr     r2, [r2]
@@ -764,6 +775,16 @@ _irq_handler:
     ldr     r2, =GICC_EOIR_ADDR
     str     r0, [r2]
 .Lirq_skip_eoi:
+
+    /* Restore the interrupted context's VFP/NEON state (reverse of the save).
+     * SP points at the FPSCR slot here: the alignment pad and the gic_dispatch
+     * call frame have already been unwound (pop {{r0-r4,lr}} + add sp,sp,r1).
+     * r0 holds the (now-consumed) icciar and is restored by the pop below. */
+    ldr     r0, [sp]
+    add     sp, sp, #8
+    vmsr    fpscr, r0
+    vpop    {{d16-d31}}
+    vpop    {{d0-d15}}
 
     /* Restore caller-saved registers. */
     pop     {{r0-r3, r12}}
