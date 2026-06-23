@@ -159,6 +159,8 @@ compile-proves all of them on the firmware target).
   apps: build and flash the app-loader, enable dev mode, install apps.
 - **[Getting started](docs/getting-started.md)** — toolchain, `cargo deluge`,
   and a tour of every capability. Read this first.
+- **[Desktop simulator](docs/simulator.md)** — build and debug apps without
+  hardware: the panel, audio/MIDI/SD bridges, and headless golden-frame testing.
 - **[Advanced developer guide](docs/advanced-guide.md)** — Embassy tasks,
   interrupts, the HAL/BSP layers, and Cortex-A9 trace tooling.
 

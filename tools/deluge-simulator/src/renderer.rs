@@ -588,70 +588,42 @@ impl DynamicElementsRenderer {
             let scaled_y = offset_y + y * scale;
             let scaled_r = radius * scale;
 
-            // Check if this button's LED is on
             let led = HardwareLED::from(button);
             let led_on = self.hardware.is_led_on(led);
-            let is_sticky = self.sticky_keys_enabled && self.pressed_buttons.contains(&button);
+            let pressed = self.pressed_buttons.contains(&button);
+            let is_sticky = self.sticky_keys_enabled && pressed;
 
-            // Always draw static button outline
-            frame.stroke(
-                &canvas::Path::circle(Point::new(scaled_x, scaled_y), scaled_r),
-                iced::widget::canvas::Stroke::default()
-                    .with_color(Color::from_rgb(0.4, 0.4, 0.4)) // Gray outline for unpressed
-                    .with_width(1.5 * scale),
-            );
-
-            // Draw LED indicator when lit (colored glow through translucent button)
-            if led_on && !self.pressed_buttons.contains(&button) {
-                // LED on but button not pressed - show colored glow with diffusion
+            // Button *illumination* is the app's job: draw the coloured LED glow
+            // whenever the app lights the LED — independent of whether the button
+            // is physically held. (Drawn first so the ring stays visible on top.)
+            if led_on {
                 let (r, g, b) = led.color();
                 let led_color = Color::from_rgb(r, g, b);
-
-                // Layer 1: Outer glow (soft halo)
                 Self::draw_radial_glow(frame, scaled_x, scaled_y, scaled_r * 1.3, led_color, 0.4);
-
-                // Layer 2: Medium glow
                 Self::draw_radial_glow(frame, scaled_x, scaled_y, scaled_r * 0.9, led_color, 0.6);
-
-                // Layer 3: Bright center
                 Self::draw_radial_glow(frame, scaled_x, scaled_y, scaled_r * 0.5, led_color, 1.0);
-
-                // Translucent button cap overlay
                 frame.fill(
                     &canvas::Path::circle(Point::new(scaled_x, scaled_y), scaled_r * 0.8),
                     Color::from_rgba(0.95, 0.95, 0.97, 0.1),
                 );
             }
 
-            // Draw bright overlay when pressed (takes precedence over LED)
-            if self.pressed_buttons.contains(&button) {
-                // Use different color for sticky buttons
-                let (fill_color, border_color) = if is_sticky {
-                    // Sticky: cyan/turquoise to distinguish from normal press
-                    (
-                        Color::from_rgba(0.0, 0.9, 1.0, 0.85),
-                        Color::from_rgba(0.0, 1.0, 1.0, 1.0),
-                    )
-                } else {
-                    // Normal press: orange/yellow
-                    (
-                        Color::from_rgba(1.0, 0.8, 0.0, 0.85),
-                        Color::from_rgba(1.0, 1.0, 0.0, 1.0),
-                    )
-                };
-
-                frame.fill(
-                    &canvas::Path::circle(Point::new(scaled_x, scaled_y), scaled_r),
-                    fill_color,
-                );
-
-                frame.stroke(
-                    &canvas::Path::circle(Point::new(scaled_x, scaled_y), scaled_r),
-                    iced::widget::canvas::Stroke::default()
-                        .with_color(border_color)
-                        .with_width(3.0 * scale),
-                );
-            }
+            // The only press feedback is the ring: a brighter/thicker outline
+            // while held (cyan for a sticky-held button). A press never lights
+            // the cap — that would impersonate an app-controlled LED.
+            let (ring_color, ring_width) = if is_sticky {
+                (Color::from_rgb(0.0, 0.9, 1.0), 2.5)
+            } else if pressed {
+                (Color::from_rgb(0.9, 0.9, 0.95), 2.5)
+            } else {
+                (Color::from_rgb(0.4, 0.4, 0.4), 1.5)
+            };
+            frame.stroke(
+                &canvas::Path::circle(Point::new(scaled_x, scaled_y), scaled_r),
+                iced::widget::canvas::Stroke::default()
+                    .with_color(ring_color)
+                    .with_width(ring_width * scale),
+            );
         }
     }
 
