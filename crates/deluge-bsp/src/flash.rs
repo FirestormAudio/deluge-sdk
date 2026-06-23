@@ -53,12 +53,25 @@ pub const SETTINGS_OFFSET: u32 = 0x003C_0000;
 /// Memory-mapped (read-window) address of the settings block.
 pub const SETTINGS_ADDR: u32 = spibsc::SPI_FLASH_BASE + SETTINGS_OFFSET;
 
-/// The board's app-writable windows: the app slot and the settings block.  Erase
-/// and program through [`MAP`] refuse any range outside these (and outside the
-/// chip), keeping a caller bug away from the FSB / settings / SSB.
+/// Flash-relative base of the **Deluge app's** device settings (the firmware's
+/// `FlashStorage`), as opposed to the app-loader's own [`SETTINGS_OFFSET`] above.
+/// This is the *canonical* location shared with the original rza1 firmware
+/// (`0x80000 - 0x1000 = 0x7F000`), inside the reserved device-settings region
+/// (`0x040000..0x080000`). It MUST be distinct from the loader's settings: the app
+/// and the loader each persist here, and if they shared a sector they would clobber
+/// each other every boot. Its 64 KB erase block is `0x70000..0x80000`.
+pub const DELUGE_SETTINGS_OFFSET: u32 = 0x0007_F000;
+/// The 64 KB erase block containing [`DELUGE_SETTINGS_OFFSET`].
+const DELUGE_SETTINGS_SECTOR: u32 = 0x0007_0000;
+
+/// The board's app-writable windows: the app slot, the app-loader settings block,
+/// and the Deluge app's device-settings block.  Erase and program through [`MAP`]
+/// refuse any range outside these (and outside the chip), keeping a caller bug away
+/// from the FSB / SSB.
 const WRITABLE: &[core::ops::Range<u32>] = &[
     SLOT_OFFSET..SLOT_OFFSET + SLOT_LEN,
     SETTINGS_OFFSET..SETTINGS_OFFSET + SECTOR_SIZE,
+    DELUGE_SETTINGS_SECTOR..DELUGE_SETTINGS_SECTOR + SECTOR_SIZE,
 ];
 
 /// The Deluge flash profile: geometry + writable-window policy.  Hand this to the

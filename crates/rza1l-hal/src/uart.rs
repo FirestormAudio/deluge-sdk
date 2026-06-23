@@ -105,9 +105,9 @@ const DMA_AM_FOR_SCIF: u32 = 0x0200;
 
 /// Ring-buffer size for DMA RX.  Must be a power of two ≤ 256.
 ///
-/// Matches `PIC_RX_BUFFER_SIZE` / `MIDI_RX_BUFFER_SIZE` from the original C
-/// firmware (`cpu_specific.h`).
-const DMA_RX_BUF_SIZE: usize = 64;
+/// Originally 64, to match `PIC_RX_BUFFER_SIZE` / `MIDI_RX_BUFFER_SIZE` from the
+/// original C firmware (`cpu_specific.h`).
+const DMA_RX_BUF_SIZE: usize = 256;
 
 /// Cache-line-aligned ring buffer for one SCIF DMA RX channel.
 #[repr(C, align(32))]

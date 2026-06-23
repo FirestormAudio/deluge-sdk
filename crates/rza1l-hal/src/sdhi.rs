@@ -910,6 +910,11 @@ pub async unsafe fn write_blocks_sw(port: u8, buf: *const u8, count: u32) -> Res
         })
         .await?;
 
+        // No separate card-busy wait is needed here: per the RZ/A1 TRM (§38.2.6,
+        // SD_INFO1 Access End), the Access End flag we awaited above is only set
+        // for a write *after reception of the busy state following the CRC status*
+        // completes. So once INFO1_DATA_TRNS is observed the card has already
+        // released D0/CBSY, and the next command can be issued safely.
         reg16(base, OFF_INFO1_MASK).write_volatile(0xFFFF);
         reg16(base, OFF_INFO2_MASK).write_volatile(0xFFFF);
         clear_info(port);
@@ -1148,6 +1153,13 @@ pub async unsafe fn write_blocks_dma(
             Poll::Pending
         })
         .await;
+
+        // No separate card-busy wait is needed here: per the RZ/A1 TRM (§38.2.6,
+        // SD_INFO1 Access End), the Access End flag we awaited above (DATA_TRNS) is
+        // only set for a write *after reception of the busy state following the CRC
+        // status of the last block* completes (or, with auto-CMD12, after the CMD12
+        // response-busy completes). So once DATA_TRNS is observed the card has
+        // already released D0/CBSY and the next command can be issued safely.
 
         // 6. Restore software transfer mode.
         reg16(base, OFF_INFO1_MASK).write_volatile(0xFFFF);
