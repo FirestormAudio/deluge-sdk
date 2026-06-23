@@ -13,6 +13,7 @@
 mod app;
 mod audio;
 mod display;
+mod headless;
 mod hardware;
 mod hardware_state;
 mod link;
@@ -22,6 +23,8 @@ mod rack;
 mod renderer;
 mod rgb;
 mod scope;
+
+pub use headless::run_headless;
 
 use app::DelugeSimulator;
 use deluge_sim_link::SharedPanel;

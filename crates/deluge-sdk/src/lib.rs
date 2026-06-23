@@ -685,9 +685,15 @@ pub mod __rt {
                 })
                 .expect("spawning the deluge brain thread");
 
-            // Panel: the simulator GUI owns the main thread and blocks until the
-            // window closes, after which the whole process exits.
-            deluge_simulator::run_in_process(gui_panel, gui_audio);
+            // Panel: the simulator owns the main thread and blocks until done,
+            // after which the whole process exits. `DELUGE_HEADLESS` (set by
+            // `cargo deluge sim --headless`) runs a scripted, GUI-less driver for
+            // CI / golden-frame testing instead of the iced window.
+            if std::env::var_os("DELUGE_HEADLESS").is_some() {
+                deluge_simulator::run_headless(gui_panel, gui_audio);
+            } else {
+                deluge_simulator::run_in_process(gui_panel, gui_audio);
+            }
             std::process::exit(0);
         }
     }

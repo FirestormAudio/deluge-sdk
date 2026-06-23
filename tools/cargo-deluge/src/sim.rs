@@ -41,7 +41,23 @@ pub(crate) fn cmd_sim(args: &[String]) -> Result<(), String> {
         cmd.env("DELUGE_SIM_AUDIO_OUT", absolute(&p));
     }
 
-    println!("building for {host} and launching the simulator…");
+    // Headless mode: no window — replay a script and dump golden-frame snapshots.
+    let headless = args.iter().any(|a| a == "--headless");
+    if headless {
+        cmd.env("DELUGE_HEADLESS", "1");
+    }
+    if let Some(p) = flag_value(args, "--script") {
+        cmd.env("DELUGE_SIM_SCRIPT", absolute(&p));
+    }
+    if let Some(p) = flag_value(args, "--out") {
+        cmd.env("DELUGE_SIM_OUT", absolute(&p));
+    }
+
+    if headless {
+        println!("building for {host} and running headless…");
+    } else {
+        println!("building for {host} and launching the simulator…");
+    }
     let status = cmd
         .status()
         .map_err(|e| format!("failed to run cargo: {e}"))?;
