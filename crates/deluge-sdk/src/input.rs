@@ -8,10 +8,13 @@
 //!
 //! Apps drain the queue via [`Input::next`].
 
-use core::future::poll_fn;
 use core::sync::atomic::{AtomicBool, Ordering};
+#[cfg(target_os = "none")]
+use core::future::poll_fn;
+#[cfg(target_os = "none")]
 use core::task::Poll;
 
+#[cfg(target_os = "none")]
 use deluge_bsp::{encoder, pic};
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -62,6 +65,7 @@ impl Input {
 ///
 /// Called by the PIC pump for every non-OLED event; OLED chip-select echoes are
 /// handled by the pump itself. Drops the event if the queue is full.
+#[cfg(target_os = "none")]
 pub(crate) fn route_pic_event(ev: pic::Event) {
     let mapped = match ev {
         pic::Event::PadPress { id } => {
@@ -90,10 +94,46 @@ pub(crate) fn route_pic_event(ev: pic::Event) {
 
 static STARTED: AtomicBool = AtomicBool::new(false);
 
+/// Host: input is delivered by the GUI-driven pump started in the host runtime,
+/// so the `input()` accessor has nothing to bring up.
+#[cfg(not(target_os = "none"))]
+pub(crate) fn ensure_started(_spawner: Spawner) {}
+
+/// Host: start the pump that forwards GUI input from the shared panel into the
+/// SDK event queue. Called once by the host runtime before the app runs.
+#[cfg(not(target_os = "none"))]
+pub(crate) fn start_host_pump(spawner: Spawner) {
+    if STARTED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    spawner.spawn(host_input_pump().unwrap());
+}
+
+/// Host: poll the shared panel for GUI input and enqueue it as [`Event`]s.
+#[cfg(not(target_os = "none"))]
+#[embassy_executor::task]
+async fn host_input_pump() {
+    use deluge_sim_link::InputEvent;
+    use embassy_time::{Duration, Timer};
+    loop {
+        while let Some(ev) = crate::host::panel().pop_event() {
+            let mapped = match ev {
+                InputEvent::Pad { x, y, pressed } => Event::Pad { x, y, pressed },
+                InputEvent::Button { id, pressed } => Event::Button { id, pressed },
+                InputEvent::Encoder { index, delta } => Event::Encoder { index, delta },
+            };
+            let _ = EVENTS.try_send(mapped);
+        }
+        // Poll cadence: low enough latency to feel instant, cheap on the host.
+        Timer::after(Duration::from_millis(1)).await;
+    }
+}
+
 /// Configure the encoder GPIO interrupts and spawn the encoder pump. Idempotent.
 ///
 /// Pads/buttons additionally require the PIC service; [`Deluge::input`] starts
 /// that too.
+#[cfg(target_os = "none")]
 pub(crate) fn ensure_started(spawner: Spawner) {
     if STARTED.swap(true, Ordering::Relaxed) {
         return;
@@ -105,6 +145,7 @@ pub(crate) fn ensure_started(spawner: Spawner) {
 }
 
 /// Wake on encoder IRQ, drain detent deltas, and enqueue [`Event::Encoder`].
+#[cfg(target_os = "none")]
 #[embassy_executor::task]
 async fn encoder_pump() {
     let mut acc = [0i8; encoder::NUM_ENCODERS];

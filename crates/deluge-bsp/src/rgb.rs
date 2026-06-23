@@ -57,6 +57,14 @@ impl PadLeds {
         self.grid = [[[0u8; 3]; ROWS]; COLS];
     }
 
+    /// Borrow the raw `grid[col][row] = [r,g,b]` buffer. Host backends (the
+    /// desktop simulator) read this to mirror the pad surface; on the device the
+    /// PIC-packed [`flush`](PadLeds::flush) is used instead.
+    #[inline]
+    pub fn grid(&self) -> &[[[u8; 3]; ROWS]; COLS] {
+        &self.grid
+    }
+
     /// Pack one column-pair into the PIC wire layout: rows 0–7 of the left column
     /// (`2*pair`) then rows 0–7 of the right column (`2*pair + 1`).
     fn pack_pair(&self, pair: usize) -> [[u8; 3]; 16] {

@@ -111,16 +111,33 @@ impl Pads {
         }
     }
 
-    /// Push the buffer to the pad LEDs (only changed columns are sent).
+    /// Push the buffer to the pad LEDs (only changed columns are sent). On the
+    /// host simulator the whole grid is copied into the shared panel.
     #[inline]
     pub async fn flush(&mut self) {
+        #[cfg(target_os = "none")]
         self.leds.flush().await;
+        #[cfg(not(target_os = "none"))]
+        {
+            let grid = self.leds.grid();
+            let mut buf = [0u8; deluge_sim_link::ALL_PADS_BYTES];
+            for col in 0..Self::COLS {
+                for row in 0..Self::ROWS {
+                    let o = (col * Self::ROWS + row) * 3;
+                    buf[o..o + 3].copy_from_slice(&grid[col][row]);
+                }
+            }
+            crate::host::panel().set_all_pads(&buf);
+        }
     }
 
     /// Set the global LED refresh interval (`0`–`25`); lower is brighter. This is
-    /// a single PIC-wide setting, not per-pad.
+    /// a single PIC-wide setting, not per-pad. No-op on the host simulator.
     #[inline]
     pub async fn set_brightness_interval(&self, interval: u8) {
+        #[cfg(target_os = "none")]
         deluge_bsp::pic::set_refresh_time(interval).await;
+        #[cfg(not(target_os = "none"))]
+        let _ = interval;
     }
 }

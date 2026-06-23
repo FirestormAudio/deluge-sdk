@@ -5,8 +5,8 @@
 //! `#[deluge::app]`, and the LED is an owned capability taken from the handle —
 //! no `unsafe`, no raw register pokes.
 
-#![no_std]
-#![no_main]
+#![cfg_attr(target_os = "none", no_std)]
+#![cfg_attr(target_os = "none", no_main)]
 // Required by `#[embassy_executor::task]`, which the `#[deluge::app]` expansion
 // uses to wrap `main`.
 #![feature(impl_trait_in_assoc_type)]

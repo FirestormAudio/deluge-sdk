@@ -35,14 +35,39 @@ log = { workspace = true }
 embedded-hal = "1"
 embedded-graphics-core = "0.4"
 rtt-target = { workspace = true, optional = true }
+embassy-sync = { workspace = true }
+embassy-usb = { workspace = true, optional = true }
+# The time-driver `_embassy_time_now` impl is target-specific (see below): the
+# device's `rza1l-hal` OSTM driver, or embassy-time's own `std` wall-clock driver
+# on host. Here we only fix the tick rate, which is identical on both targets.
+embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
+
+# ── Device (the Deluge, armv7a-none-eabihf) ──────────────────────────────────
+# The SDK owns the executor so apps depend only on `deluge`; on the device that
+# is the Cortex-A bare-metal thread executor + integrated 1 MHz time driver.
+[target.'cfg(target_os = "none")'.dependencies]
 embassy-executor = { workspace = true, features = [
     "nightly",
     "platform-cortex-ar",
     "executor-thread",
 ] }
-embassy-sync = { workspace = true }
-embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
-embassy-usb = { workspace = true, optional = true }
+
+# ── Host (the desktop simulator, `cargo deluge sim`) ─────────────────────────
+# Same source, but the executor is std-backed and the capability modules drive
+# the in-process simulator panel (deluge-sim-link) instead of real peripherals.
+# `platform-std` does NOT bring a time driver, so we enable embassy-time's `std`
+# feature, which provides the wall-clock `_embassy_time_now` impl.
+[target.'cfg(not(target_os = "none"))'.dependencies]
+embassy-executor = { workspace = true, features = [
+    "nightly",
+    "platform-std",
+    "executor-thread",
+] }
+embassy-time = { workspace = true, features = ["std"] }
+critical-section = { version = "1", features = ["std"] }
+env_logger = "0.11"
+deluge-sim-link = { path = "../deluge-sim-link" }
+deluge-simulator = { path = "../../tools/deluge-simulator" }
 
 [features]
 default = []

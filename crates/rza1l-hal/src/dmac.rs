@@ -172,6 +172,8 @@ pub unsafe fn channel_start(ch: u8) {
         // CHCTRL bits are write-1-to-trigger; write as clean values, not RMW.
         chctrl.write_volatile(CHCTRL_SWRST);
         // DSB required: drain write buffer so SWRST reaches the DMAC before SETEN.
+        // (Host builds — the simulator — have no DMAC and no barrier instruction.)
+        #[cfg(target_os = "none")]
         core::arch::asm!("dsb", options(nostack));
         chctrl.write_volatile(CHCTRL_SETEN);
     }
@@ -191,6 +193,7 @@ pub unsafe fn stop(ch: u8) {
     unsafe {
         let chctrl = ch_reg(ch, OFF_CHCTRL);
         chctrl.write_volatile(CHCTRL_CLREN);
+        #[cfg(target_os = "none")]
         core::arch::asm!("dsb", options(nostack));
         chctrl.write_volatile(CHCTRL_SWRST);
     }

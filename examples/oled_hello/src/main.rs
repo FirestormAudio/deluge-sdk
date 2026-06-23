@@ -5,8 +5,8 @@
 //! works directly; `dlg.oled().await` also brings up the PIC service the
 //! display's chip-select handshake needs.
 
-#![no_std]
-#![no_main]
+#![cfg_attr(target_os = "none", no_std)]
+#![cfg_attr(target_os = "none", no_main)]
 #![feature(impl_trait_in_assoc_type)]
 
 use deluge::prelude::*;

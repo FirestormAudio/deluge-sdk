@@ -6,12 +6,15 @@
 //! (see [`Gate`](crate::Gate)), so the channel it claims should not also be
 //! driven through `Gate`.
 
-use core::future::poll_fn;
 use core::sync::atomic::{AtomicBool, Ordering};
+#[cfg(target_os = "none")]
+use core::future::poll_fn;
+#[cfg(target_os = "none")]
 use core::task::Poll;
 
 use embassy_time::{Duration, Instant, Timer};
 
+#[cfg(target_os = "none")]
 use deluge_bsp::trigger_clock;
 
 // ── Clock input ─────────────────────────────────────────────────────────────
@@ -26,6 +29,7 @@ pub struct ClockIn {
     prev_ticks: Option<u64>,
 }
 
+#[cfg(target_os = "none")]
 impl ClockIn {
     pub(crate) fn new() -> Self {
         static DONE: AtomicBool = AtomicBool::new(false);
@@ -76,6 +80,33 @@ impl ClockIn {
     }
 }
 
+/// Host: there is no trigger-clock jack in the simulator, so the input never
+/// pulses. `tick` waits forever, `count`/`last_edge` report nothing.
+#[cfg(not(target_os = "none"))]
+impl ClockIn {
+    pub(crate) fn new() -> Self {
+        Self { prev_ticks: None }
+    }
+
+    /// Await the next external clock pulse — never arrives in the simulator.
+    pub async fn tick(&mut self) -> Option<Duration> {
+        core::future::pending::<()>().await;
+        None
+    }
+
+    /// Total number of pulses seen since boot (always 0 in the simulator).
+    #[inline]
+    pub fn count(&self) -> u32 {
+        0
+    }
+
+    /// The time of the most recent pulse (never any in the simulator).
+    #[inline]
+    pub fn last_edge(&self) -> Option<Instant> {
+        None
+    }
+}
+
 // ── Clock output ────────────────────────────────────────────────────────────
 
 /// Default high time of an emitted clock pulse.
@@ -112,9 +143,19 @@ impl ClockOut {
     /// release it.
     pub async fn pulse(&mut self) {
         // SAFETY: GPIO writes to the gate line this handle owns.
-        unsafe { deluge_bsp::cv_gate::gate_set(self.channel, true) };
+        #[cfg(target_os = "none")]
+        unsafe {
+            deluge_bsp::cv_gate::gate_set(self.channel, true)
+        };
+        #[cfg(not(target_os = "none"))]
+        crate::host::panel().set_gate(self.channel as usize, true);
         Timer::after(self.pulse_width).await;
-        unsafe { deluge_bsp::cv_gate::gate_set(self.channel, false) };
+        #[cfg(target_os = "none")]
+        unsafe {
+            deluge_bsp::cv_gate::gate_set(self.channel, false)
+        };
+        #[cfg(not(target_os = "none"))]
+        crate::host::panel().set_gate(self.channel as usize, false);
     }
 
     /// Free-run: emit a pulse every `period`, forever.

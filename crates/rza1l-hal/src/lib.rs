@@ -39,6 +39,11 @@ pub mod ssi;
 #[cfg(target_os = "none")]
 pub mod startup;
 pub mod stb;
+// The OSTM-backed embassy time driver does raw MMIO and registers the global
+// `_embassy_time_now`/`_embassy_time_schedule_wake` symbols. On host the
+// simulator uses embassy-time's `std` wall-clock driver instead, so keep this
+// device-only to avoid a faulting driver and a duplicate-symbol link error.
+#[cfg(target_os = "none")]
 pub mod time_driver;
 pub mod uart;
 pub mod usb;

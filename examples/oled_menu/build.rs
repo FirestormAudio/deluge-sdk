@@ -3,6 +3,11 @@ use std::fs;
 use std::path::PathBuf;
 
 fn main() {
+    // Host (simulator) builds link with the platform's default linker, so
+    // skip the embedded memory layout / linker script entirely.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("none") {
+        return;
+    }
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
 

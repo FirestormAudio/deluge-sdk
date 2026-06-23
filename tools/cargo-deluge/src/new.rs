@@ -54,6 +54,7 @@ pub(crate) fn cmd_new(args: &[String]) -> Result<(), String> {
 
     println!("created Deluge app `{name}`");
     println!("  cd {name}");
+    println!("  cargo deluge sim        # run in the desktop simulator (no hardware)");
     println!("  cargo deluge run        # build + upload over USB (DEV MODE)");
     println!("  cargo deluge deploy --dest <sd-mount>   # or copy to the SD card");
     Ok(())
@@ -133,7 +134,8 @@ test = false
 
 [dependencies]
 {deluge_dep}
-embassy-executor = {{ version = "0.10", features = ["nightly", "platform-cortex-ar", "executor-thread"] }}
+# The SDK owns the async executor (selected per-target), so apps depend only on
+# `deluge` for it. embassy-time is used directly for `Timer`.
 embassy-time = {{ version = "0.5", features = ["tick-hz-1_000_000"] }}
 
 [features]
@@ -181,7 +183,9 @@ mod tests {
         let t = cargo_toml("blinky", "deluge = \"0.1\"");
         assert!(t.contains("name = \"blinky\""));
         assert!(t.contains("deluge = \"0.1\""));
-        assert!(t.contains("embassy-executor"));
+        // The SDK owns the executor now; apps don't depend on embassy-executor.
+        assert!(!t.contains("embassy-executor"));
+        assert!(t.contains("embassy-time"));
         assert!(t.contains("rtt = [\"deluge/rtt\"]"));
         // The parser must be able to read the name back out.
         assert_eq!(parse_package_name(&t).as_deref(), Some("blinky"));
@@ -189,8 +193,10 @@ mod tests {
 
     #[test]
     fn main_rs_template_is_an_app() {
-        assert!(TPL_MAIN.contains("#![no_std]"));
-        assert!(TPL_MAIN.contains("#![no_main]"));
+        // Crate attrs are target-gated so the same source builds for the device
+        // and the host simulator.
+        assert!(TPL_MAIN.contains(r#"#![cfg_attr(target_os = "none", no_std)]"#));
+        assert!(TPL_MAIN.contains(r#"#![cfg_attr(target_os = "none", no_main)]"#));
         assert!(TPL_MAIN.contains("#[deluge::app]"));
         assert!(TPL_MAIN.contains("async fn main"));
     }

@@ -1,14 +1,28 @@
 //! Audio DSP — a per-block callback over the codec.
 
+#[cfg(target_os = "none")]
 use core::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(target_os = "none")]
 use deluge_bsp::audio_block::{self, BlockState};
-#[cfg(not(feature = "audio-irq"))]
+#[cfg(all(target_os = "none", not(feature = "audio-irq")))]
 use embassy_time::{Duration, Ticker};
 
 /// One stereo audio frame; samples in `[-1.0, 1.0]`. `l` = left, `r` = right.
+#[cfg(target_os = "none")]
 pub use deluge_bsp::audio_block::Frame as StereoFrame;
 
+/// One stereo audio frame; samples in `[-1.0, 1.0]`. `l` = left, `r` = right.
+/// Host simulator definition (mirrors `deluge_bsp::audio_block::Frame`).
+#[cfg(not(target_os = "none"))]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[repr(C)]
+pub struct StereoFrame {
+    pub l: f32,
+    pub r: f32,
+}
+
+#[cfg(target_os = "none")]
 fn ensure_init() {
     static DONE: AtomicBool = AtomicBool::new(false);
     if DONE.swap(true, Ordering::Relaxed) {
@@ -35,6 +49,7 @@ pub struct Audio {
 
 impl Audio {
     pub(crate) fn new() -> Self {
+        #[cfg(target_os = "none")]
         ensure_init();
         Self { _private: () }
     }
@@ -49,6 +64,7 @@ impl Audio {
     ///     for f in block { f.l *= 0.5; f.r *= 0.5; }
     /// }).await
     /// ```
+    #[cfg(target_os = "none")]
     pub async fn process<F: FnMut(&mut [StereoFrame])>(self, mut f: F) -> ! {
         // Prime the TX ring with dither, then anchor read/write heads.
         audio_block::prime_tx();
@@ -82,6 +98,42 @@ impl Audio {
             while state.try_read_block(&mut block) {
                 f(&mut block);
                 state.write_output_block(&block);
+            }
+        }
+    }
+
+    /// Host: exchange audio blocks with the simulator over the in-memory bridge.
+    /// The GUI's audio callback drains output and fills input at the device rate,
+    /// so this loop is paced by real time without a hardware clock.
+    #[cfg(not(target_os = "none"))]
+    pub async fn process<F: FnMut(&mut [StereoFrame])>(self, mut f: F) -> ! {
+        use deluge_sim_link::audio::{self as au, Consumer, Observer, Producer};
+        use embassy_time::{Duration, Timer};
+
+        let mut ends = crate::host::take_audio().expect("audio bridge already taken");
+        let mut block = [StereoFrame::default(); au::BLOCK_FRAMES];
+
+        let period_us = (au::BLOCK_FRAMES as u64 * 1_000_000) / au::SAMPLE_RATE_HZ as u64;
+        let wait = Duration::from_micros(period_us / 2);
+
+        loop {
+            // Paced by output demand: produce a block whenever the GUI's audio
+            // callback has drained room for one. Input is opportunistic — read
+            // what the input callback has captured, padding with silence on
+            // underrun — so the loop runs even with no input device.
+            if ends.out.vacant_len() < au::BLOCK_FRAMES {
+                Timer::after(wait).await;
+                continue;
+            }
+
+            for fr in block.iter_mut() {
+                let s = ends.in_.try_pop().unwrap_or([0.0, 0.0]);
+                fr.l = s[0];
+                fr.r = s[1];
+            }
+            f(&mut block);
+            for fr in &block {
+                let _ = ends.out.try_push([fr.l, fr.r]);
             }
         }
     }

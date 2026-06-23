@@ -7,7 +7,7 @@
 use crate::display::SimulatorDisplay;
 use crate::hardware::{HardwareButton, HardwareEncoder, HardwareLED};
 use crate::hardware_state::DelugeHardware;
-use crate::link::{self, PanelLink};
+use crate::link::{self, LinkKind};
 use crate::pad_grid::PadGrid;
 use crate::renderer::DynamicElementsRenderer;
 use crate::rgb::RGB;
@@ -40,12 +40,12 @@ pub struct DelugeSimulator {
     renderer: DynamicElementsRenderer,
     /// Pre-rasterised SVG faceplate (drawn behind the canvas).
     svg_background: Option<image::Handle>,
-    /// The protocol link to the brain (`None` = passive, nothing connected).
-    link: Option<PanelLink>,
+    /// How the panel is driven (protocol brain, in-process SDK app, or passive).
+    link: LinkKind,
 }
 
 impl DelugeSimulator {
-    pub fn new(link: Option<PanelLink>, svg_background: Option<image::Handle>) -> Self {
+    pub fn new(link: LinkKind, svg_background: Option<image::Handle>) -> Self {
         Self {
             renderer: DynamicElementsRenderer::new(
                 SimulatorDisplay::new(),
@@ -113,17 +113,30 @@ impl DelugeSimulator {
     }
 
     fn send(&self, msg: FromDeluge) {
-        if let Some(link) = &self.link {
-            let _ = link.outbound.send(msg);
+        match &self.link {
+            LinkKind::Protocol(link) => {
+                let _ = link.outbound.send(msg);
+            }
+            LinkKind::InProcess(link) => link.send_input(msg),
+            LinkKind::None => {}
         }
     }
 
-    /// Drain inbound illumination frames and apply them to the panel.
+    /// Drain inbound illumination and apply it to the panel.
     fn drain_inbound(&mut self) {
+        match &self.link {
+            LinkKind::Protocol(_) => self.drain_protocol(),
+            LinkKind::InProcess(_) => self.apply_shared_panel(),
+            LinkKind::None => {}
+        }
+    }
+
+    /// Protocol link: decode framed `ToDeluge` messages and apply them.
+    fn drain_protocol(&mut self) {
         // Collect first so we don't hold an immutable borrow of `self.link` while
         // applying (which borrows `self` mutably).
         let mut frames = Vec::new();
-        if let Some(link) = &self.link {
+        if let LinkKind::Protocol(link) = &self.link {
             while let Ok(frame) = link.inbound.try_recv() {
                 frames.push(frame);
             }
@@ -132,6 +145,53 @@ impl DelugeSimulator {
             if let Some(msg) = ToDeluge::decode(type_byte, &data) {
                 self.apply(msg);
             }
+        }
+    }
+
+    /// In-process link: mirror the shared panel into the renderer, repainting only
+    /// the categories whose change-generation advanced since the last frame.
+    fn apply_shared_panel(&mut self) {
+        // Snapshot what changed, dropping the `&self.link` borrow before mutating.
+        let LinkKind::InProcess(link) = &self.link else {
+            return;
+        };
+        let panel = link.panel.clone();
+        let (seen_d, seen_p, seen_c) = (link.seen_display, link.seen_pads, link.seen_controls);
+        let (gen_d, gen_p, gen_c) = (panel.display_gen(), panel.pads_gen(), panel.controls_gen());
+
+        let display = (gen_d != seen_d).then(|| panel.display_snapshot());
+        let pads = (gen_p != seen_p).then(|| panel.pads_snapshot());
+        let controls = (gen_c != seen_c)
+            .then(|| (panel.leds_snapshot(), panel.knobs_snapshot(), panel.synced_led()));
+
+        if let Some(buf) = display {
+            self.update_display_from_buffer(&buf);
+        }
+        if let Some(grid) = pads {
+            for (col, rows) in grid.iter().enumerate() {
+                for (row, rgb) in rows.iter().enumerate() {
+                    self.renderer.grid.set(col, row, RGB::new(rgb[0], rgb[1], rgb[2]));
+                }
+            }
+            self.renderer.pad_cache.clear();
+        }
+        if let Some((leds, knobs, synced)) = controls {
+            for (index, on) in leds.iter().enumerate() {
+                if let Some(led) = link::led_index_to_led(index as u8) {
+                    self.renderer.hardware.set_led_state(led, *on);
+                }
+            }
+            self.renderer.hardware.set_led_state(HardwareLED::Synced, synced);
+            self.set_knob_indicator(0, knobs[0]);
+            self.set_knob_indicator(1, knobs[1]);
+            self.renderer.controls_cache.clear();
+        }
+
+        // Record the generations we've now applied.
+        if let LinkKind::InProcess(link) = &mut self.link {
+            link.seen_display = gen_d;
+            link.seen_pads = gen_p;
+            link.seen_controls = gen_c;
         }
     }
 

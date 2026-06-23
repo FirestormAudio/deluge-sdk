@@ -9,8 +9,8 @@
 //! Needs the `deluge/alloc` global allocator (the GPL `deluge-ui-toolkit`);
 //! build with `cargo build-fw-alloc -p oled_hmenu`.
 
-#![no_std]
-#![no_main]
+#![cfg_attr(target_os = "none", no_std)]
+#![cfg_attr(target_os = "none", no_main)]
 #![feature(impl_trait_in_assoc_type)]
 
 use deluge::prelude::*;

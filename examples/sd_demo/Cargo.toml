@@ -12,11 +12,6 @@ test = false
 
 [dependencies]
 deluge = { path = "../../crates/deluge-sdk", package = "deluge-sdk" }
-embassy-executor = { workspace = true, features = [
-    "nightly",
-    "platform-cortex-ar",
-    "executor-thread",
-] }
 embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
 
 [features]

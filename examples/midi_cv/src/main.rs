@@ -8,8 +8,8 @@
 //! on any channel and skips other messages. It does not implement running
 //! status, so a real synth would want a fuller parser.
 
-#![no_std]
-#![no_main]
+#![cfg_attr(target_os = "none", no_std)]
+#![cfg_attr(target_os = "none", no_main)]
 #![feature(impl_trait_in_assoc_type)]
 
 use deluge::prelude::*;

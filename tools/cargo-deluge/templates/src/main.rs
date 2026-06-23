@@ -1,7 +1,9 @@
 //! A Deluge app.
 
-#![no_std]
-#![no_main]
+// `no_std`/`no_main` only on the device; `cargo deluge sim` builds the same
+// source as a normal std binary for the desktop simulator.
+#![cfg_attr(target_os = "none", no_std)]
+#![cfg_attr(target_os = "none", no_main)]
 // Required by the Embassy task the `#[deluge::app]` macro generates.
 #![feature(impl_trait_in_assoc_type)]
 

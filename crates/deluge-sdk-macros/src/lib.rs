@@ -105,12 +105,18 @@ pub fn app(args: TokenStream, item: TokenStream) -> TokenStream {
 
     quote! {
         #(#attrs)*
-        #[::embassy_executor::task]
+        // The SDK re-exports the embassy task attribute so the app doesn't need a
+        // direct embassy-executor dependency (and so the right — device or host —
+        // executor is selected automatically by target).
+        #[::deluge::__rt::task(embassy_executor = ::deluge::__rt::embassy_executor)]
         async fn __deluge_app_main(spawner: ::deluge::__rt::Spawner) {
             #bind_handle
             #body
         }
 
+        // Device entry point: a C `main` plus the panic handler the bare-metal
+        // runtime needs.
+        #[cfg(target_os = "none")]
         #[unsafe(no_mangle)]
         pub extern "C" fn main() -> ! {
             ::deluge::__rt::run(
@@ -124,9 +130,22 @@ pub fn app(args: TokenStream, item: TokenStream) -> TokenStream {
             )
         }
 
+        #[cfg(target_os = "none")]
         #[panic_handler]
         fn __deluge_panic(info: &::core::panic::PanicInfo) -> ! {
             ::deluge::__rt::panic(info)
+        }
+
+        // Host entry point (the desktop simulator, via `cargo deluge sim`): a normal
+        // `fn main` that hands off to the host runtime (which owns the GUI).
+        #[cfg(not(target_os = "none"))]
+        fn main() {
+            ::deluge::__rt::host::run(
+                || { #setup_call; },
+                |spawner: ::deluge::__rt::Spawner| {
+                    spawner.spawn(__deluge_app_main(spawner).unwrap());
+                },
+            )
         }
     }
     .into()
