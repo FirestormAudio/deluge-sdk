@@ -104,9 +104,11 @@ pub fn run_in_process(panel: SharedPanel, gui_audio: GuiEnds) {
     // Master volume shared between the faceplate Volume knob and the audio
     // output callback.
     let volume = audio::new_volume();
-    // Kept alive until the window closes (dropping the streams stops audio).
-    // `monitor` is a stereo tap of the output for the rack's audio oscilloscopes.
-    let (_audio, monitor) = audio::start(gui_audio, volume.clone());
+    // Kept alive until the window closes (dropping the streams stops audio and
+    // finalises any --audio-out recording). `monitor` is a stereo tap of the
+    // output for the rack's audio oscilloscopes.
+    let (_audio, monitor) =
+        audio::start(gui_audio, volume.clone(), audio::AudioConfig::from_env());
     // Host MIDI bridge: virtual ports ⇄ the panel (kept alive for the session).
     let _midi = midi::start(panel.clone());
     let link = LinkKind::InProcess(InProcessLink::new(panel));

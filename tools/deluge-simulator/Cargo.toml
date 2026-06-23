@@ -23,6 +23,8 @@ deluge-sim-link = { path = "../../crates/deluge-sim-link" }
 cpal = "0.18"
 # Host MIDI I/O bridge (virtual ports to/from the in-process panel).
 midir = "0.11"
+# WAV read/write for the --audio-in / --audio-out file bridges.
+hound = "3.5"
 
 # GUI + faceplate rendering (ported from spark's simulator).
 iced = { version = "0.14", features = ["tokio", "canvas", "advanced", "image"] }

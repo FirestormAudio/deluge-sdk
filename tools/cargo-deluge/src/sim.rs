@@ -6,7 +6,14 @@
 //! real peripherals for the in-process simulator panel (OLED/pads/LEDs/audio).
 //! The app binary opens the simulator window itself, so this just runs it and
 //! streams its output.
+//!
+//! Flags:
+//!   - `--release`              optimized build
+//!   - `--audio-in <file.wav>`  feed a WAV as the codec input (looped) instead
+//!                              of the mic — handy for deterministic DSP runs
+//!   - `--audio-out <file.wav>` record the codec output to a WAV
 
+use std::path::PathBuf;
 use std::process::Command;
 
 pub(crate) fn cmd_sim(args: &[String]) -> Result<(), String> {
@@ -23,6 +30,17 @@ pub(crate) fn cmd_sim(args: &[String]) -> Result<(), String> {
         cmd.arg("--release");
     }
 
+    // Audio file bridges: passed to the simulator via env vars (read by
+    // `run_in_process`). `--audio-in <wav>` feeds a WAV as the codec input;
+    // `--audio-out <wav>` records the output. Paths are absolutised so they
+    // resolve against the user's shell cwd, not cargo's package dir.
+    if let Some(p) = flag_value(args, "--audio-in") {
+        cmd.env("DELUGE_SIM_AUDIO_IN", absolute(&p));
+    }
+    if let Some(p) = flag_value(args, "--audio-out") {
+        cmd.env("DELUGE_SIM_AUDIO_OUT", absolute(&p));
+    }
+
     println!("building for {host} and launching the simulator…");
     let status = cmd
         .status()
@@ -31,6 +49,33 @@ pub(crate) fn cmd_sim(args: &[String]) -> Result<(), String> {
         return Err("simulator exited with an error".to_string());
     }
     Ok(())
+}
+
+/// The value following `flag` in `args` (`--flag value` or `--flag=value`).
+fn flag_value(args: &[String], flag: &str) -> Option<String> {
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if let Some(v) = a.strip_prefix(flag) {
+            if let Some(v) = v.strip_prefix('=') {
+                return Some(v.to_string());
+            }
+            if v.is_empty() {
+                return it.next().cloned();
+            }
+        }
+    }
+    None
+}
+
+/// Absolutise a path against the current dir so it's stable when cargo runs the
+/// app from the package directory.
+fn absolute(p: &str) -> PathBuf {
+    let path = PathBuf::from(p);
+    if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir().map(|d| d.join(&path)).unwrap_or(path)
+    }
 }
 
 /// The host target triple (`rustc -vV` → `host:`), used to override the
