@@ -1,0 +1,25 @@
+[package]
+publish = false  # binary crate — not for crates.io
+name = "test_osc"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Deluge SDK example: the pad grid as an isomorphic polyphonic synth."
+
+[[bin]]
+name = "test_osc"
+test = false
+
+[dependencies]
+deluge = { path = "../../crates/deluge-sdk", package = "deluge-sdk" }
+# Run the audio (DSP) and UI (pads/input) halves concurrently on the one app
+# task. Pure futures — no arch-specific executor feature, so it builds for both
+# the device and the desktop simulator.
+embassy-futures = { workspace = true }
+# Paces the OLED scope refresh.
+embassy-time = { workspace = true }
+
+[features]
+default = []
+## Opt-in RTT (SEGGER) logging over a debug probe.
+rtt = ["deluge/rtt"]

@@ -28,6 +28,7 @@ members = [
   "examples/sd_demo",
   "examples/audio_passthru",
   "examples/audio_passthru_irq",
+  "examples/test_osc",
   "examples/button_leds",
   "examples/usb_log",
 ]
