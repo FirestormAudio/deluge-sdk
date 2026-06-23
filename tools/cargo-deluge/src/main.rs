@@ -30,6 +30,7 @@ mod log;
 mod new;
 mod probe;
 mod run;
+mod sim;
 mod util;
 
 use std::env;
@@ -67,6 +68,7 @@ fn main() -> ExitCode {
         "run" => run::cmd_run(rest),
         "deploy" => deploy::cmd_deploy(rest),
         "log" => log::cmd_log(rest),
+        "sim" => sim::cmd_sim(rest),
         "debug" => probe::cmd_debug(rest),
         "trace" => probe::cmd_trace(rest),
         "" | "help" | "-h" | "--help" => {
@@ -102,6 +104,8 @@ Commands:
   log [--port <path>]        Connect to a running app's USB serial-log channel
                              (the `usb-log` feature) and stream it to stdout.
                                --port <path>  serial port override (else auto)
+  sim [--release]            Build for the host and run the app in the desktop
+                             simulator (OLED/pads/LEDs/audio), no hardware needed.
   debug [--release] [-- ...] Build, then `probe-rs run` over J-Link (--chip set)
   trace [--release] [opts]   Build, then `probe-rs read-trace` (trace-a9 fork):
                                --flow         compact execution-flow view

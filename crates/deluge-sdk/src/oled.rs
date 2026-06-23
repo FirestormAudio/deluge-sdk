@@ -2,6 +2,16 @@
 
 use deluge_bsp::oled::{self, FrameBuffer};
 use embedded_graphics_core::Pixel;
+
+/// Run the panel init sequence. On the device this is the SSD1309 bring-up over
+/// RSPI0; on the host simulator the panel needs no init, so it is a no-op.
+#[cfg(target_os = "none")]
+pub(crate) async fn init_panel() {
+    oled::init().await;
+}
+/// Host no-op panel init (the simulator renders the shared framebuffer directly).
+#[cfg(not(target_os = "none"))]
+pub(crate) async fn init_panel() {}
 use embedded_graphics_core::draw_target::DrawTarget;
 use embedded_graphics_core::geometry::{OriginDimensions, Point, Size};
 use embedded_graphics_core::pixelcolor::BinaryColor;
@@ -62,10 +72,14 @@ impl Oled {
     /// Push the current buffer to the panel.
     ///
     /// Acquires the shared RSPI0 bus (waiting out any concurrent CV write) and
-    /// streams the frame over DMA — see `deluge_bsp::bus`.
+    /// streams the frame over DMA — see `deluge_bsp::bus`. On the host simulator
+    /// it copies the frame into the shared panel for the GUI to render.
     #[inline]
     pub async fn flush(&self) {
+        #[cfg(target_os = "none")]
         oled::send_frame(&self.fb).await;
+        #[cfg(not(target_os = "none"))]
+        crate::host::panel().set_display(self.fb.as_bytes());
     }
 
     /// Direct access to the underlying frame buffer (raw pixel ops).

@@ -1,5 +1,8 @@
-# Build for the Deluge (RZ/A1L, Cortex-A9) by default, with build-std so a plain
-# `cargo build` works. `cargo deluge build` passes the same flags explicitly.
+# Build for the Deluge (RZ/A1L, Cortex-A9) by default. `cargo deluge build`/`run`
+# pass `-Zbuild-std` explicitly (the embedded target has no prebuilt `core`), so
+# use those rather than a plain `cargo build`. `cargo deluge sim` overrides this
+# with `--target <host>` to run the app in the desktop simulator against the
+# host's prebuilt std — so build-std must NOT be forced globally here.
 [build]
 target = "armv7a-none-eabihf"
 
@@ -10,7 +13,3 @@ rustflags = [
     "-C", "link-arg=--gc-sections",
     "-C", "force-frame-pointers=yes",
 ]
-
-[unstable]
-build-std = ["core"]
-build-std-features = ["compiler-builtins-mem"]

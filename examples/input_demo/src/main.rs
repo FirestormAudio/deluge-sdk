@@ -4,8 +4,8 @@
 //! minimal demonstration of `dlg.input()` merging pad/button (PIC) and encoder
 //! (GPIO IRQ) sources into one `async` queue.
 
-#![no_std]
-#![no_main]
+#![cfg_attr(target_os = "none", no_std)]
+#![cfg_attr(target_os = "none", no_main)]
 #![feature(impl_trait_in_assoc_type)]
 
 use deluge::prelude::*;

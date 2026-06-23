@@ -6,6 +6,10 @@ license = "MIT OR Apache-2.0"
 publish = false
 description = "Desktop front-panel simulator for the Deluge. Renders OLED/pads/LEDs and forwards input over the deluge-protocol wire, driving a real firmware 'brain' (DelugeFirmware's deluge_host) — a true native emulator."
 
+[lib]
+name = "deluge_simulator"
+path = "src/lib.rs"
+
 [[bin]]
 name = "deluge-simulator"
 path = "src/main.rs"
@@ -13,6 +17,10 @@ path = "src/main.rs"
 [dependencies]
 # The shared host↔device wire contract (panel role).
 deluge-protocol = { path = "../../crates/deluge-protocol", features = ["std"] }
+# The in-process panel/brain link (for `cargo deluge sim`).
+deluge-sim-link = { path = "../../crates/deluge-sim-link" }
+# Host audio I/O for the in-process link.
+cpal = "0.18"
 
 # GUI + faceplate rendering (ported from spark's simulator).
 iced = { version = "0.14", features = ["tokio", "canvas", "advanced", "image"] }

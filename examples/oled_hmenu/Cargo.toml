@@ -14,11 +14,6 @@ test = false
 [dependencies]
 deluge = { path = "../../crates/deluge-sdk", package = "deluge-sdk", features = ["alloc"] }
 deluge-ui-toolkit = { path = "../../crates/deluge-ui-toolkit" }
-embassy-executor = { workspace = true, features = [
-    "nightly",
-    "platform-cortex-ar",
-    "executor-thread",
-] }
 
 [features]
 default = []

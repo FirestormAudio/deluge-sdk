@@ -169,6 +169,80 @@ fn writer_loop<W: Write>(mut stream: W, rx: Receiver<FromDeluge>) {
     }
 }
 
+// ── In-process link (an SDK app running in the same process) ──────────────────
+
+use deluge_sim_link::{InputEvent, SharedPanel};
+
+/// How the panel is driven: a wire `PanelLink` to an external brain, a shared
+/// in-memory [`SharedPanel`] for an SDK app in the same process, or nothing.
+pub enum LinkKind {
+    /// No brain connected — a passive, blank panel.
+    None,
+    /// An external brain over `deluge-protocol` (e.g. DelugeFirmware's `deluge_host`).
+    Protocol(PanelLink),
+    /// An SDK app in this process (`cargo deluge sim`).
+    InProcess(InProcessLink),
+}
+
+/// The panel side of the in-process link: read illumination from the shared
+/// panel (tracking change generations to skip redundant repaints) and push input
+/// straight into it. No serialization — the same [`FromDeluge`]/[`ToDeluge`]
+/// vocabulary, passed as owned state.
+pub struct InProcessLink {
+    pub panel: SharedPanel,
+    pub seen_display: u64,
+    pub seen_pads: u64,
+    pub seen_controls: u64,
+    pub seen_cv: u64,
+    pub seen_gate: u64,
+    pub seen_midi_in: u64,
+    pub seen_midi_out: u64,
+}
+
+impl InProcessLink {
+    pub fn new(panel: SharedPanel) -> Self {
+        Self {
+            panel,
+            seen_display: 0,
+            seen_pads: 0,
+            seen_controls: 0,
+            seen_cv: 0,
+            seen_gate: 0,
+            seen_midi_in: 0,
+            seen_midi_out: 0,
+        }
+    }
+
+    /// Translate a panel input event into the SDK-native event and enqueue it.
+    /// Buttons carry the wire id (raw + [`deluge_protocol::BUTTON_ID_BASE`]); the
+    /// SDK expects the raw id, so subtract the base here.
+    pub fn send_input(&self, msg: FromDeluge) {
+        let ev = match msg {
+            FromDeluge::PadPressed { col, row } => InputEvent::Pad {
+                x: col,
+                y: row,
+                pressed: true,
+            },
+            FromDeluge::PadReleased { col, row } => InputEvent::Pad {
+                x: col,
+                y: row,
+                pressed: false,
+            },
+            FromDeluge::ButtonPressed { id } => InputEvent::Button {
+                id: id.wrapping_sub(deluge_protocol::BUTTON_ID_BASE),
+                pressed: true,
+            },
+            FromDeluge::ButtonReleased { id } => InputEvent::Button {
+                id: id.wrapping_sub(deluge_protocol::BUTTON_ID_BASE),
+                pressed: false,
+            },
+            FromDeluge::EncoderRotated { id, delta } => InputEvent::Encoder { index: id, delta },
+            _ => return,
+        };
+        self.panel.push_event(ev);
+    }
+}
+
 // ── Wire-id ↔ control-enum mappings (from spark's protocol.rs) ────────────────
 
 /// Map a [`HardwareButton`] to its wire button id (`9*(y+16)+x` per `hid/button.h`), for

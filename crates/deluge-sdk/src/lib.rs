@@ -25,11 +25,14 @@
 //! See the [Advanced developer guide](https://github.com/FirestormAudio/deluge-sdk/blob/main/docs/advanced-guide.md)
 //! for the architecture and internals.
 
-#![no_std]
+// `no_std` only on the device; the host build (the desktop simulator, via
+// `cargo deluge sim`) is a normal std binary.
+#![cfg_attr(target_os = "none", no_std)]
 // The internal PIC service uses `#[embassy_executor::task]`, which needs this.
 #![feature(impl_trait_in_assoc_type)]
-// The optional global allocator delegates to the HAL's allocator-api heap.
-#![cfg_attr(feature = "alloc", feature(allocator_api))]
+// The optional global allocator (device only) delegates to the HAL's
+// allocator-api heap; on the host the system allocator is used.
+#![cfg_attr(all(feature = "alloc", target_os = "none"), feature(allocator_api))]
 
 pub use deluge_macros::app;
 
@@ -44,7 +47,7 @@ pub use deluge_macros::app;
 /// is reserved for bulk audio buffers (samples, delay lines), which apps allocate
 /// explicitly via [`deluge_alloc::SDRAM`]. The default SDK stays
 /// allocator-free and apps choose the arena per allocation.
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", target_os = "none"))]
 mod global_alloc {
     use core::alloc::{Allocator, GlobalAlloc, Layout};
     use core::ptr::{self, NonNull};
@@ -87,6 +90,10 @@ mod sd;
 mod sync_led;
 #[cfg(feature = "usb-log")]
 mod usb_debug;
+
+/// Host (desktop-simulator) backend, active when built for the host triple.
+#[cfg(not(target_os = "none"))]
+mod host;
 pub use audio::{Audio, StereoFrame};
 pub use clock::{ClockIn, ClockOut};
 pub use cv_gate::{Cv, Gate};
@@ -104,9 +111,14 @@ pub use sync_led::SyncLed;
 pub use deluge_bsp::controls;
 
 /// Filesystem error from [`Sd`] read/write operations.
+#[cfg(target_os = "none")]
 pub use deluge_bsp::fat::FatError;
 /// SD-card hardware error from [`Deluge::sd`].
+#[cfg(target_os = "none")]
 pub use deluge_bsp::sd::SdError;
+/// Filesystem / SD error types (host simulator definitions; see [`Sd`]).
+#[cfg(not(target_os = "none"))]
+pub use sd::{FatError, SdError};
 
 /// Type-safe fixed-point arithmetic (`Q31`, `Q16`, …), re-exported for DSP code
 /// in [`audio`](crate::audio) callbacks. ARMv7 = the Deluge's Cortex-A9, so its
@@ -115,8 +127,12 @@ pub use fixedpoint as fixed;
 
 // Re-export the underlying layers so apps can reach lower-level functionality
 // through the single `deluge` dependency while the capability API (M2+) grows.
+// The allocator and HAL are device-only escape hatches (no host equivalent); an
+// app reaching for them directly won't run in the desktop simulator.
+#[cfg(target_os = "none")]
 pub use deluge_alloc;
 pub use deluge_bsp;
+#[cfg(target_os = "none")]
 pub use rza1l_hal;
 
 /// The app capability handle, passed to `#[deluge::app] async fn main`.
@@ -191,9 +207,9 @@ impl Deluge {
         // Bring up the PIC co-processor (UART + RX pump) — the OLED chip-select
         // handshake rides on it — then wait for it to finish configuring.
         pic_service::ensure_started(self.spawner);
-        deluge_bsp::pic::wait_ready().await;
+        pic_service::wait_ready().await;
         // Run the panel init sequence (SSD1309 over RSPI0, via the bus guard).
-        deluge_bsp::oled::init().await;
+        oled::init_panel().await;
         Oled::new()
     }
 
@@ -238,7 +254,7 @@ impl Deluge {
             panic!("Deluge::leds() called more than once");
         }
         pic_service::ensure_started(self.spawner);
-        deluge_bsp::pic::wait_ready().await;
+        pic_service::wait_ready().await;
         Leds::new()
     }
 
@@ -260,7 +276,7 @@ impl Deluge {
             panic!("Deluge::pads() called more than once");
         }
         pic_service::ensure_started(self.spawner);
-        deluge_bsp::pic::wait_ready().await;
+        pic_service::wait_ready().await;
         Pads::new()
     }
 
@@ -373,7 +389,7 @@ impl Deluge {
         if TAKEN.swap(true, Ordering::Relaxed) {
             panic!("Deluge::sd() called more than once");
         }
-        deluge_bsp::sd::init().await?;
+        sd::init_card().await?;
         Ok(Sd::new())
     }
 
@@ -416,6 +432,23 @@ pub mod prelude {
 pub mod __rt {
     pub use embassy_executor::Spawner;
 
+    // Re-export the task attribute *and* the embassy-executor crate so
+    // `#[deluge::app]` can wrap the app's `main` without the app depending on
+    // embassy-executor directly (the SDK owns the executor). The macro points the
+    // task expansion at this re-export via `embassy_executor = …`, so the
+    // generated code resolves against the SDK's (device or host) executor.
+    pub use embassy_executor::task;
+    #[doc(hidden)]
+    pub use ::embassy_executor;
+
+    /// Device entry points used by the `#[deluge::app]` expansion on the Deluge.
+    #[cfg(target_os = "none")]
+    pub use device::{panic, run};
+
+    /// The bare-metal platform runtime: heaps, clocks, interrupts, executor.
+    #[cfg(target_os = "none")]
+    mod device {
+    use super::Spawner;
     use core::mem::MaybeUninit;
     use embassy_executor::Executor;
 
@@ -603,6 +636,59 @@ pub mod __rt {
                 }
             }
             Ok(())
+        }
+    }
+    } // mod device
+
+    /// Host (desktop-simulator) runtime.
+    ///
+    /// The app and the simulator GUI share one process: the app's `async fn main`
+    /// runs on a std Embassy executor on a worker thread (the "brain"), while
+    /// `iced` owns the main thread (the "panel"). They communicate through the
+    /// in-memory [`deluge_sim_link::SharedPanel`] and audio bridge — no protocol,
+    /// no sockets.
+    #[cfg(not(target_os = "none"))]
+    pub mod host {
+        use super::Spawner;
+        use embassy_executor::Executor;
+
+        /// Entry point emitted by `#[deluge::app]` for host builds.
+        ///
+        /// Sets up the shared panel + audio bridge, runs `setup`, spawns the app
+        /// (and the input pump) on a std executor on a worker thread, then hands
+        /// the main thread to the simulator GUI. Returns when the window closes.
+        pub fn run(setup: impl FnOnce() + Send + 'static, spawn: impl FnOnce(Spawner) + Send + 'static) -> ! {
+            // Logs to stderr (RUST_LOG controls level), mirroring the device's
+            // RTT/USB logger so `info!`/`warn!` from app code are visible.
+            let _ = env_logger::try_init();
+
+            // Create the shared panel + the audio bridge, splitting the audio
+            // endpoints between the brain (app) and the GUI.
+            let panel = deluge_sim_link::SharedPanel::new();
+            let (brain_audio, gui_audio) = deluge_sim_link::audio::new_bridge();
+            crate::host::init(panel.clone(), brain_audio);
+
+            // Brain: run the app on a std executor on a worker thread. The
+            // executor (and thus the app) lives for the process lifetime.
+            let gui_panel = panel.clone();
+            std::thread::Builder::new()
+                .name("deluge-brain".into())
+                .spawn(move || {
+                    setup();
+                    let executor: &'static mut Executor =
+                        Box::leak(Box::new(Executor::new()));
+                    executor.run(move |spawner| {
+                        // Bridge GUI input → the SDK event queue.
+                        crate::input::start_host_pump(spawner);
+                        spawn(spawner);
+                    });
+                })
+                .expect("spawning the deluge brain thread");
+
+            // Panel: the simulator GUI owns the main thread and blocks until the
+            // window closes, after which the whole process exits.
+            deluge_simulator::run_in_process(gui_panel, gui_audio);
+            std::process::exit(0);
         }
     }
 }

@@ -1,9 +1,11 @@
 //! The Deluge SYNC LED.
 
 use embedded_hal::digital::{OutputPin, StatefulOutputPin};
+#[cfg(target_os = "none")]
 use rza1l_hal::gpio::{Output, Pin};
 
 /// The SYNC LED is wired to port 6, pin 7.
+#[cfg(target_os = "none")]
 type SyncLedPin = Pin<6, 7, Output>;
 
 /// The Deluge SYNC LED (P6_7).
@@ -15,10 +17,12 @@ type SyncLedPin = Pin<6, 7, Output>;
 /// Beyond the convenience methods, `SyncLed` is an `embedded-hal`
 /// [`OutputPin`]/[`StatefulOutputPin`], and [`SyncLed::pin`] hands the underlying
 /// pin to driver crates that expect one.
+#[cfg(target_os = "none")]
 pub struct SyncLed {
     pin: SyncLedPin,
 }
 
+#[cfg(target_os = "none")]
 impl SyncLed {
     /// Configure P6_7 as an output and return the handle.
     ///
@@ -68,11 +72,7 @@ impl SyncLed {
     }
 }
 
-// Let `SyncLed` itself stand in wherever an `embedded-hal` output pin is expected.
-impl embedded_hal::digital::ErrorType for SyncLed {
-    type Error = core::convert::Infallible;
-}
-
+#[cfg(target_os = "none")]
 impl OutputPin for SyncLed {
     #[inline]
     fn set_high(&mut self) -> Result<(), Self::Error> {
@@ -84,6 +84,7 @@ impl OutputPin for SyncLed {
     }
 }
 
+#[cfg(target_os = "none")]
 impl StatefulOutputPin for SyncLed {
     #[inline]
     fn is_set_high(&mut self) -> Result<bool, Self::Error> {
@@ -93,4 +94,81 @@ impl StatefulOutputPin for SyncLed {
     fn is_set_low(&mut self) -> Result<bool, Self::Error> {
         self.pin.is_set_low()
     }
+}
+
+// ── Host (desktop simulator) ─────────────────────────────────────────────────
+
+/// The Deluge SYNC LED, backed by the shared panel on the host simulator.
+#[cfg(not(target_os = "none"))]
+pub struct SyncLed {
+    state: bool,
+}
+
+#[cfg(not(target_os = "none"))]
+impl SyncLed {
+    pub(crate) fn new() -> Self {
+        SyncLed { state: false }
+    }
+
+    /// Turn the LED on.
+    #[inline]
+    pub fn on(&mut self) {
+        self.set(true);
+    }
+
+    /// Turn the LED off.
+    #[inline]
+    pub fn off(&mut self) {
+        self.set(false);
+    }
+
+    /// Set the LED on (`true`) or off (`false`).
+    #[inline]
+    pub fn set(&mut self, on: bool) {
+        self.state = on;
+        crate::host::panel().set_synced_led(on);
+    }
+
+    /// Toggle the LED.
+    #[inline]
+    pub fn toggle(&mut self) {
+        self.set(!self.state);
+    }
+
+    /// Borrow the underlying `embedded-hal` output pin.
+    #[inline]
+    pub fn pin(&mut self) -> &mut impl OutputPin {
+        self
+    }
+}
+
+#[cfg(not(target_os = "none"))]
+impl OutputPin for SyncLed {
+    #[inline]
+    fn set_high(&mut self) -> Result<(), Self::Error> {
+        self.set(true);
+        Ok(())
+    }
+    #[inline]
+    fn set_low(&mut self) -> Result<(), Self::Error> {
+        self.set(false);
+        Ok(())
+    }
+}
+
+#[cfg(not(target_os = "none"))]
+impl StatefulOutputPin for SyncLed {
+    #[inline]
+    fn is_set_high(&mut self) -> Result<bool, Self::Error> {
+        Ok(self.state)
+    }
+    #[inline]
+    fn is_set_low(&mut self) -> Result<bool, Self::Error> {
+        Ok(!self.state)
+    }
+}
+
+// `SyncLed` stands in wherever an `embedded-hal` output pin is expected.
+impl embedded_hal::digital::ErrorType for SyncLed {
+    type Error = core::convert::Infallible;
 }

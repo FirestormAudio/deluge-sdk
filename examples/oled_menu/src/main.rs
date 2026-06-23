@@ -10,8 +10,8 @@
 //! `deluge-ui-toolkit` needs; build with `-Zbuild-std=core,alloc`
 //! (`cargo build-fw-alloc -p oled_menu`).
 
-#![no_std]
-#![no_main]
+#![cfg_attr(target_os = "none", no_std)]
+#![cfg_attr(target_os = "none", no_main)]
 #![feature(impl_trait_in_assoc_type)]
 
 use deluge::prelude::*;

@@ -14,7 +14,10 @@ pub(crate) fn ensure_init() {
     // linearity init (poll-based delays). Acquire CV/gate before entering a
     // loop that also drives the OLED, so this one-time RSPI0 setup can't race an
     // in-flight OLED transfer (see docs/advanced-guide.md §7).
-    unsafe { deluge_bsp::cv_gate::init() };
+    #[cfg(target_os = "none")]
+    unsafe {
+        deluge_bsp::cv_gate::init()
+    };
 }
 
 /// The CV (control-voltage) outputs — a MAX5136 16-bit DAC.
@@ -35,10 +38,14 @@ impl Cv {
         Self { _private: () }
     }
 
-    /// Write a raw 16-bit DAC code to channel `ch`.
+    /// Write a raw 16-bit DAC code to channel `ch`. On the host simulator the
+    /// value is recorded in the shared panel (not yet rendered).
     #[inline]
     pub async fn set(&mut self, ch: u8, code: u16) {
+        #[cfg(target_os = "none")]
         deluge_bsp::cv_gate::cv_set(ch, code).await;
+        #[cfg(not(target_os = "none"))]
+        crate::host::panel().set_cv(ch as usize, code);
     }
 
     /// Write a voltage to channel `ch` (~6552 counts/V, clamped to 0–full scale).
@@ -69,6 +76,11 @@ impl Gate {
     #[inline]
     pub fn set(&mut self, ch: u8, on: bool) {
         // SAFETY: GPIO write to a gate line we own; pins configured by init.
-        unsafe { deluge_bsp::cv_gate::gate_set(ch, on) };
+        #[cfg(target_os = "none")]
+        unsafe {
+            deluge_bsp::cv_gate::gate_set(ch, on)
+        };
+        #[cfg(not(target_os = "none"))]
+        crate::host::panel().set_gate(ch as usize, on);
     }
 }

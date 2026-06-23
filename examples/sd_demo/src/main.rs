@@ -3,8 +3,8 @@
 //! Writes a small file to the card root, reads it back, and signals the result
 //! on the SYNC LED: solid = round-trip OK, fast blink = no card / mismatch.
 
-#![no_std]
-#![no_main]
+#![cfg_attr(target_os = "none", no_std)]
+#![cfg_attr(target_os = "none", no_main)]
 #![feature(impl_trait_in_assoc_type)]
 
 use deluge::prelude::*;

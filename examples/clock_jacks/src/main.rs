@@ -11,8 +11,8 @@
 //! For a free-running clock instead of an echo, drop the `clock_in` half and do:
 //! `clk_out.run(ClockOut::period_from_bpm(120.0, 24)).await`.
 
-#![no_std]
-#![no_main]
+#![cfg_attr(target_os = "none", no_std)]
+#![cfg_attr(target_os = "none", no_main)]
 #![feature(impl_trait_in_assoc_type)]
 
 use deluge::prelude::*;
