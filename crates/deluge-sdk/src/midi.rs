@@ -45,16 +45,22 @@ impl Midi {
         crate::host::panel().push_midi_out(data);
     }
 
-    /// Await the next received MIDI byte. Never arrives on the host simulator.
+    /// Await the next received MIDI byte.
     #[inline]
     pub async fn recv(&self) -> u8 {
         #[cfg(target_os = "none")]
         {
             deluge_bsp::uart::read_midi_byte().await
         }
+        // On the host, drain bytes the simulator's MIDI bridge pushed into the
+        // panel, polling at ~1 ms when the queue is empty (DIN MIDI is slow, so
+        // the latency is inaudible).
         #[cfg(not(target_os = "none"))]
-        {
-            core::future::pending::<u8>().await
+        loop {
+            if let Some(b) = crate::host::panel().pop_midi_in() {
+                return b;
+            }
+            embassy_time::Timer::after_millis(1).await;
         }
     }
 
@@ -67,7 +73,7 @@ impl Midi {
         }
         #[cfg(not(target_os = "none"))]
         {
-            None
+            crate::host::panel().pop_midi_in()
         }
     }
 }

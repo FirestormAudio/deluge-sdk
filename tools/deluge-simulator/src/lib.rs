@@ -16,6 +16,7 @@ mod display;
 mod hardware;
 mod hardware_state;
 mod link;
+mod midi;
 mod pad_grid;
 mod rack;
 mod renderer;
@@ -44,15 +45,19 @@ fn render_svg() -> Option<iced::widget::image::Handle> {
 
 /// Launch the iced window with the given link and optional audio-scope monitor.
 /// Blocks until the window closes.
-fn run_app(link: LinkKind, audio_monitor: Option<HeapCons<[f32; 2]>>) -> iced::Result {
+fn run_app(
+    link: LinkKind,
+    audio_monitor: Option<HeapCons<[f32; 2]>>,
+    volume: audio::Volume,
+) -> iced::Result {
     let svg = render_svg();
     // iced's init closure must be `Fn` (called once); hand the link + svg +
-    // monitor through a Mutex<Option<_>> so the first call can `take()` them.
-    let init = std::sync::Mutex::new(Some((link, svg, audio_monitor)));
+    // monitor + volume through a Mutex<Option<_>> so the first call can `take()` them.
+    let init = std::sync::Mutex::new(Some((link, svg, audio_monitor, volume)));
     iced::application(
         move || {
-            let (link, svg, mon) = init.lock().unwrap().take().expect("init called once");
-            (DelugeSimulator::new(link, svg, mon), iced::Task::none())
+            let (link, svg, mon, vol) = init.lock().unwrap().take().expect("init called once");
+            (DelugeSimulator::new(link, svg, mon, vol), iced::Task::none())
         },
         DelugeSimulator::update,
         DelugeSimulator::view,
@@ -83,8 +88,9 @@ pub fn run_connected(target: Option<&str>) -> Result<(), Box<dyn std::error::Err
             LinkKind::None
         }
     };
-    // No in-process audio over the protocol link, so no scope monitor.
-    run_app(link, None)?;
+    // No in-process audio over the protocol link, so no scope monitor; the
+    // volume knob is inert (nothing to attenuate).
+    run_app(link, None, audio::new_volume())?;
     Ok(())
 }
 
@@ -95,11 +101,16 @@ pub fn run_connected(target: Option<&str>) -> Result<(), Box<dyn std::error::Err
 /// illumination + input; `gui_audio` carries the audio rings to the host's
 /// speakers/mic.
 pub fn run_in_process(panel: SharedPanel, gui_audio: GuiEnds) {
+    // Master volume shared between the faceplate Volume knob and the audio
+    // output callback.
+    let volume = audio::new_volume();
     // Kept alive until the window closes (dropping the streams stops audio).
-    // `monitor` is a mono tap of the output for the rack's audio oscilloscope.
-    let (_audio, monitor) = audio::start(gui_audio);
+    // `monitor` is a stereo tap of the output for the rack's audio oscilloscopes.
+    let (_audio, monitor) = audio::start(gui_audio, volume.clone());
+    // Host MIDI bridge: virtual ports ⇄ the panel (kept alive for the session).
+    let _midi = midi::start(panel.clone());
     let link = LinkKind::InProcess(InProcessLink::new(panel));
-    if let Err(e) = run_app(link, Some(monitor)) {
+    if let Err(e) = run_app(link, Some(monitor), volume) {
         eprintln!("deluge-simulator: {e}");
     }
 }

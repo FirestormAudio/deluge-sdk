@@ -60,24 +60,35 @@ pub struct DelugeSimulator {
     /// Stereo tap of the output audio (in-process link only) feeding the rack's
     /// L/R audio oscilloscopes. Drained each frame.
     audio_monitor: Option<HeapCons<[f32; 2]>>,
+    /// Master output volume, driven by the faceplate Volume knob (0.0–1.0).
+    volume: crate::audio::Volume,
 }
+
+/// Percentage points the Volume knob moves per scroll detent.
+const VOLUME_STEP: i32 = 4;
 
 impl DelugeSimulator {
     pub fn new(
         link: LinkKind,
         svg_background: Option<image::Handle>,
         audio_monitor: Option<HeapCons<[f32; 2]>>,
+        volume: crate::audio::Volume,
     ) -> Self {
+        let mut renderer = DynamicElementsRenderer::new(
+            SimulatorDisplay::new(),
+            PadGrid::new(),
+            DelugeHardware::new(),
+        );
+        // The Volume knob is a pot (0–100 %); start at full to match the default
+        // master gain (1.0).
+        renderer.hardware.set_encoder_value(HardwareEncoder::Volume, 100);
         Self {
-            renderer: DynamicElementsRenderer::new(
-                SimulatorDisplay::new(),
-                PadGrid::new(),
-                DelugeHardware::new(),
-            ),
+            renderer,
             rack: InstrumentRack::new(),
             svg_background,
             link,
             audio_monitor,
+            volume,
         }
     }
 
@@ -120,6 +131,19 @@ impl DelugeSimulator {
             }
 
             SimulatorMessage::EncoderRotated { encoder, delta } => {
+                if encoder == HardwareEncoder::Volume {
+                    // The Volume knob is the sim's master output level, not an app
+                    // control: a 0–100 % pot driving the audio output gain.
+                    let cur = self.renderer.hardware.get_encoder_value(encoder);
+                    let pct = (cur + delta * VOLUME_STEP).clamp(0, 100);
+                    self.renderer.hardware.set_encoder_value(encoder, pct);
+                    self.volume.store(
+                        (pct as f32 / 100.0).to_bits(),
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                    self.renderer.controls_cache.clear();
+                    return Task::none();
+                }
                 self.renderer.hardware.rotate_encoder(encoder, delta);
                 self.renderer.controls_cache.clear();
                 if let Some(id) = link::encoder_to_id(encoder) {

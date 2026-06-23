@@ -549,12 +549,18 @@ impl DynamicElementsRenderer {
                     .with_width(2.0 * scale),
             );
 
-            // Get encoder value to draw rotation indicator
-            // Use modulo to wrap the angle so the indicator keeps spinning
+            // Rotation indicator angle. The Volume knob is a pot: its 0–100 %
+            // value sweeps a fixed ~270° arc (8 o'clock → 4 o'clock through the
+            // top). Every other encoder is endless, so its accumulated value just
+            // keeps spinning.
             let value = self.hardware.get_encoder_value(encoder);
-            let raw_angle = value as f32 * 0.1;
-            // Wrap angle to keep it in a reasonable range (full circle = 2π ≈ 6.28)
-            let angle = raw_angle.rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+            let angle = if encoder == HardwareEncoder::Volume {
+                let frac = (value.clamp(0, 100) as f32) / 100.0;
+                -std::f32::consts::FRAC_PI_2 + (frac - 0.5) * 1.5 * std::f32::consts::PI
+            } else {
+                let raw_angle = value as f32 * 0.1;
+                raw_angle.rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
+            };
 
             // Draw rotation indicator line
             let line_len = scaled_r * 0.6;
