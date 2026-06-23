@@ -9,14 +9,11 @@
 //! device and fills `in` from the input device at the hardware rate, so the app's
 //! block loop is paced by real time without a timer.
 
-use ringbuf::HeapRb;
-use ringbuf::traits::Split;
-
-// Re-export the ring traits so consumers (the BSP host backend, the simulator)
-// can call `try_push` / `try_pop` / `occupied_len` without a direct `ringbuf`
-// dependency.
-pub use ringbuf::traits::{Consumer, Observer, Producer};
-pub use ringbuf::{HeapCons, HeapProd};
+// Re-export the ring traits + types so consumers (the BSP host backend, the
+// simulator) can build and drive rings without a direct `ringbuf` dependency.
+// `HeapRb` + `Split` let the simulator build its own mono scope-monitor ring.
+pub use ringbuf::traits::{Consumer, Observer, Producer, Split};
+pub use ringbuf::{HeapCons, HeapProd, HeapRb};
 
 /// Codec sample rate the simulator presents (matches the device).
 pub const SAMPLE_RATE_HZ: u32 = 44_100;

@@ -6,6 +6,8 @@
     "rust-lang.rust-analyzer",
     // TOML support for Cargo.toml / config.toml.
     "tamasfe.even-better-toml",
+    // Native debugging for the desktop simulator (the "Simulator" launch).
+    "vadimcn.vscode-lldb",
     // ARM Cortex debugging over a J-Link probe (the "Debug (J-Link)" launch).
     "marus25.cortex-debug"
   ]

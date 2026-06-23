@@ -193,6 +193,10 @@ pub struct InProcessLink {
     pub seen_display: u64,
     pub seen_pads: u64,
     pub seen_controls: u64,
+    pub seen_cv: u64,
+    pub seen_gate: u64,
+    pub seen_midi_in: u64,
+    pub seen_midi_out: u64,
 }
 
 impl InProcessLink {
@@ -202,6 +206,10 @@ impl InProcessLink {
             seen_display: 0,
             seen_pads: 0,
             seen_controls: 0,
+            seen_cv: 0,
+            seen_gate: 0,
+            seen_midi_in: 0,
+            seen_midi_out: 0,
         }
     }
 

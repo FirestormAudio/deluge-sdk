@@ -9,6 +9,28 @@
   "version": "0.2.0",
   "configurations": [
     {
+      // Debug your app in the desktop simulator — no hardware, no probe. This
+      // is the debuggable equivalent of `cargo deluge sim`: it builds the app
+      // for the HOST triple (overriding the bare-metal target forced by
+      // .cargo/config.toml), where the SDK swaps the real peripherals for the
+      // in-process simulator panel (OLED/pads/LEDs/audio). The app opens the
+      // simulator window itself.
+      //
+      // Needs the CodeLLDB extension ("vadimcn.vscode-lldb"), which drives the
+      // `cargo build` below and resolves the host binary automatically. The
+      // host triple here is x86_64 Linux; on macOS/Windows change it to your
+      // `rustc -vV` host (e.g. "aarch64-apple-darwin", "x86_64-pc-windows-msvc").
+      "name": "Simulator (CodeLLDB)",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": ["build", "--target=x86_64-unknown-linux-gnu"],
+        "filter": { "name": "__APP_NAME__", "kind": "bin" }
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}"
+    },
+    {
       "name": "Debug (J-Link)",
       "type": "cortex-debug",
       "request": "launch",

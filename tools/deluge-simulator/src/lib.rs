@@ -17,12 +17,14 @@ mod hardware;
 mod hardware_state;
 mod link;
 mod pad_grid;
+mod rack;
 mod renderer;
 mod rgb;
+mod scope;
 
 use app::DelugeSimulator;
 use deluge_sim_link::SharedPanel;
-use deluge_sim_link::audio::GuiEnds;
+use deluge_sim_link::audio::{GuiEnds, HeapCons};
 use link::{InProcessLink, LinkKind, PanelLink};
 
 /// The faceplate art, rasterised at launch.
@@ -40,22 +42,27 @@ fn render_svg() -> Option<iced::widget::image::Handle> {
     Some(iced::widget::image::Handle::from_rgba(WIDTH, HEIGHT, pixmap.data().to_vec()))
 }
 
-/// Launch the iced window with the given link. Blocks until the window closes.
-fn run_app(link: LinkKind) -> iced::Result {
+/// Launch the iced window with the given link and optional audio-scope monitor.
+/// Blocks until the window closes.
+fn run_app(link: LinkKind, audio_monitor: Option<HeapCons<[f32; 2]>>) -> iced::Result {
     let svg = render_svg();
-    // iced's init closure must be `Fn` (called once); hand the link + svg through
-    // a Mutex<Option<_>> so the first call can `take()` them.
-    let init = std::sync::Mutex::new(Some((link, svg)));
+    // iced's init closure must be `Fn` (called once); hand the link + svg +
+    // monitor through a Mutex<Option<_>> so the first call can `take()` them.
+    let init = std::sync::Mutex::new(Some((link, svg, audio_monitor)));
     iced::application(
         move || {
-            let (link, svg) = init.lock().unwrap().take().expect("init called once");
-            (DelugeSimulator::new(link, svg), iced::Task::none())
+            let (link, svg, mon) = init.lock().unwrap().take().expect("init called once");
+            (DelugeSimulator::new(link, svg, mon), iced::Task::none())
         },
         DelugeSimulator::update,
         DelugeSimulator::view,
     )
     .title(|s: &DelugeSimulator| s.title())
-    .window_size(iced::Size::new(1089.0, 741.0)) // half the SVG's 2178×1482
+    // The CV/gate rack strip above + the faceplate (half the SVG's 2178×1482).
+    // Not resizable: a tiling Wayland compositor would otherwise tile (and
+    // letterbox) the window, and Wayland blocks client-side resize/reposition
+    // anyway — so collapsing the rack hides its contents rather than resizing.
+    .window_size(iced::Size::new(app::WINDOW_WIDTH, app::FACEPLATE_HEIGHT + app::RACK_HEIGHT))
     .resizable(false)
     .theme(|s: &DelugeSimulator| s.theme())
     .subscription(|s: &DelugeSimulator| s.subscription())
@@ -76,7 +83,8 @@ pub fn run_connected(target: Option<&str>) -> Result<(), Box<dyn std::error::Err
             LinkKind::None
         }
     };
-    run_app(link)?;
+    // No in-process audio over the protocol link, so no scope monitor.
+    run_app(link, None)?;
     Ok(())
 }
 
@@ -88,9 +96,10 @@ pub fn run_connected(target: Option<&str>) -> Result<(), Box<dyn std::error::Err
 /// speakers/mic.
 pub fn run_in_process(panel: SharedPanel, gui_audio: GuiEnds) {
     // Kept alive until the window closes (dropping the streams stops audio).
-    let _audio = audio::start(gui_audio);
+    // `monitor` is a mono tap of the output for the rack's audio oscilloscope.
+    let (_audio, monitor) = audio::start(gui_audio);
     let link = LinkKind::InProcess(InProcessLink::new(panel));
-    if let Err(e) = run_app(link) {
+    if let Err(e) = run_app(link, Some(monitor)) {
         eprintln!("deluge-simulator: {e}");
     }
 }

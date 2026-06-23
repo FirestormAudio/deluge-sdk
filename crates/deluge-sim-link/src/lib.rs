@@ -72,9 +72,22 @@ struct Inner {
     pads_gen: AtomicU64,
     /// Bumped on any LED / knob / synced-LED change.
     controls_gen: AtomicU64,
+    /// Bumped on any CV change.
+    cv_gen: AtomicU64,
+    /// Bumped on any gate change.
+    gate_gen: AtomicU64,
 
     /// GUI → app input. Bounded; oldest dropped if the app stalls.
     input: Mutex<VecDeque<InputEvent>>,
+
+    /// App → GUI MIDI output bytes (e.g. forwarded to a host MIDI port).
+    midi_out: Mutex<VecDeque<u8>>,
+    /// Bumped on each MIDI-out write (drives the OUT activity indicator).
+    midi_out_gen: AtomicU64,
+    /// GUI → app MIDI input bytes (from a host MIDI port / virtual keyboard).
+    midi_in: Mutex<VecDeque<u8>>,
+    /// Bumped on each MIDI-in push (drives the IN activity indicator).
+    midi_in_gen: AtomicU64,
 }
 
 /// Cap on queued input events before the oldest are dropped (mirrors the SDK's
@@ -102,7 +115,13 @@ impl SharedPanel {
                 display_gen: AtomicU64::new(0),
                 pads_gen: AtomicU64::new(0),
                 controls_gen: AtomicU64::new(0),
+                cv_gen: AtomicU64::new(0),
+                gate_gen: AtomicU64::new(0),
                 input: Mutex::new(VecDeque::with_capacity(INPUT_CAP)),
+                midi_out: Mutex::new(VecDeque::new()),
+                midi_out_gen: AtomicU64::new(0),
+                midi_in: Mutex::new(VecDeque::new()),
+                midi_in_gen: AtomicU64::new(0),
             }),
         }
     }
@@ -185,18 +204,59 @@ impl SharedPanel {
         self.inner.controls_gen.fetch_add(1, Ordering::Release);
     }
 
-    /// Record a CV channel value (no panel rendering yet).
+    /// Record a CV channel value (16-bit DAC code; ~6552 codes/V on the device).
     pub fn set_cv(&self, channel: usize, value: u16) {
         if let Some(v) = self.inner.cv.lock().unwrap().get_mut(channel) {
             *v = value;
+            self.inner.cv_gen.fetch_add(1, Ordering::Release);
         }
     }
 
-    /// Record a gate channel state (no panel rendering yet).
+    /// Record a gate channel state.
     pub fn set_gate(&self, channel: usize, on: bool) {
         if let Some(g) = self.inner.gate.lock().unwrap().get_mut(channel) {
             *g = on;
+            self.inner.gate_gen.fetch_add(1, Ordering::Release);
         }
+    }
+
+    // ── MIDI: app writes out, GUI writes in ──────────────────────────────────
+
+    /// Queue MIDI bytes sent by the app (app → GUI). Bumps the out activity gen.
+    pub fn push_midi_out(&self, data: &[u8]) {
+        if data.is_empty() {
+            return;
+        }
+        self.inner.midi_out.lock().unwrap().extend(data.iter().copied());
+        self.inner.midi_out_gen.fetch_add(1, Ordering::Release);
+    }
+
+    /// Drain all queued MIDI-out bytes (GUI forwards them to a host port).
+    pub fn drain_midi_out(&self) -> Vec<u8> {
+        self.inner.midi_out.lock().unwrap().drain(..).collect()
+    }
+
+    /// Push MIDI bytes from the GUI (GUI → app). Bumps the in activity gen.
+    pub fn push_midi_in(&self, data: &[u8]) {
+        if data.is_empty() {
+            return;
+        }
+        self.inner.midi_in.lock().unwrap().extend(data.iter().copied());
+        self.inner.midi_in_gen.fetch_add(1, Ordering::Release);
+    }
+
+    /// Pop the next MIDI-in byte for the app, if any.
+    pub fn pop_midi_in(&self) -> Option<u8> {
+        self.inner.midi_in.lock().unwrap().pop_front()
+    }
+
+    /// Current MIDI-out activity generation (compare to detect new traffic).
+    pub fn midi_out_gen(&self) -> u64 {
+        self.inner.midi_out_gen.load(Ordering::Acquire)
+    }
+    /// Current MIDI-in activity generation.
+    pub fn midi_in_gen(&self) -> u64 {
+        self.inner.midi_in_gen.load(Ordering::Acquire)
     }
 
     // ── illumination: read by the GUI (panel) ────────────────────────────────
@@ -212,6 +272,14 @@ impl SharedPanel {
     /// Current LED/knob/synced-change generation.
     pub fn controls_gen(&self) -> u64 {
         self.inner.controls_gen.load(Ordering::Acquire)
+    }
+    /// Current CV-change generation.
+    pub fn cv_gen(&self) -> u64 {
+        self.inner.cv_gen.load(Ordering::Acquire)
+    }
+    /// Current gate-change generation.
+    pub fn gate_gen(&self) -> u64 {
+        self.inner.gate_gen.load(Ordering::Acquire)
     }
 
     /// Copy the OLED framebuffer out.
@@ -233,6 +301,14 @@ impl SharedPanel {
     /// Current SYNC LED state.
     pub fn synced_led(&self) -> bool {
         *self.inner.synced_led.lock().unwrap()
+    }
+    /// Copy the CV channel codes out (16-bit DAC code per channel).
+    pub fn cv_snapshot(&self) -> [u16; 4] {
+        *self.inner.cv.lock().unwrap()
+    }
+    /// Copy the gate channel states out.
+    pub fn gate_snapshot(&self) -> [bool; 4] {
+        *self.inner.gate.lock().unwrap()
     }
 
     // ── input: GUI pushes, app drains ────────────────────────────────────────

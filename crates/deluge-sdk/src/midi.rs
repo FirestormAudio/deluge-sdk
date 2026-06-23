@@ -39,8 +39,10 @@ impl Midi {
     pub async fn send(&self, data: &[u8]) {
         #[cfg(target_os = "none")]
         deluge_bsp::uart::write_midi(data).await;
+        // On the host, hand the bytes to the simulator panel (lights the MIDI
+        // OUT activity indicator; the GUI can forward them to a host port).
         #[cfg(not(target_os = "none"))]
-        let _ = data;
+        crate::host::panel().push_midi_out(data);
     }
 
     /// Await the next received MIDI byte. Never arrives on the host simulator.

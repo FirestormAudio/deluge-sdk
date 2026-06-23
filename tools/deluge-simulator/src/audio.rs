@@ -7,7 +7,11 @@
 
 use cpal::Sample;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use deluge_sim_link::audio::{Consumer, GuiEnds, HeapCons, HeapProd, Producer};
+use deluge_sim_link::audio::{Consumer, GuiEnds, HeapCons, HeapProd, HeapRb, Producer, Split};
+
+/// Depth (stereo frames) of the scope-monitor ring. A few output callbacks'
+/// worth of headroom so the GUI can drain it once per frame without overflow.
+const MONITOR_CAP: usize = 8192;
 
 /// Keeps the cpal streams alive for the lifetime of the simulator window
 /// (dropping a `cpal::Stream` stops it).
@@ -19,11 +23,17 @@ pub struct AudioStreams {
 /// Open the default output (and, best-effort, input) device and wire them to the
 /// app's audio rings. Failures are logged and degrade to silence so the app
 /// still runs.
-pub fn start(gui: GuiEnds) -> AudioStreams {
+///
+/// Returns the live streams plus a **scope-monitor** consumer: a stereo copy of
+/// the output going to the speakers, which the GUI drains into the rack's audio
+/// oscilloscopes (one per channel).
+pub fn start(gui: GuiEnds) -> (AudioStreams, HeapCons<[f32; 2]>) {
     let GuiEnds { out, in_ } = gui;
     let host = cpal::default_host();
 
-    let output = match start_output(&host, out) {
+    let (mon_prod, mon_cons) = HeapRb::<[f32; 2]>::new(MONITOR_CAP).split();
+
+    let output = match start_output(&host, out, mon_prod) {
         Ok(s) => Some(s),
         Err(e) => {
             log::warn!("simulator audio: no output ({e}); running silent");
@@ -38,13 +48,20 @@ pub fn start(gui: GuiEnds) -> AudioStreams {
         }
     };
 
-    AudioStreams {
-        _output: output,
-        _input: input,
-    }
+    (
+        AudioStreams {
+            _output: output,
+            _input: input,
+        },
+        mon_cons,
+    )
 }
 
-fn start_output(host: &cpal::Host, out: HeapCons<[f32; 2]>) -> Result<cpal::Stream, String> {
+fn start_output(
+    host: &cpal::Host,
+    out: HeapCons<[f32; 2]>,
+    mon: HeapProd<[f32; 2]>,
+) -> Result<cpal::Stream, String> {
     let dev = host
         .default_output_device()
         .ok_or("no default output device")?;
@@ -54,9 +71,9 @@ fn start_output(host: &cpal::Host, out: HeapCons<[f32; 2]>) -> Result<cpal::Stre
     let fmt = cfg.sample_format();
     let config: cpal::StreamConfig = cfg.into();
     let stream = match fmt {
-        cpal::SampleFormat::F32 => build_output::<f32>(&dev, &config, out),
-        cpal::SampleFormat::I16 => build_output::<i16>(&dev, &config, out),
-        cpal::SampleFormat::U16 => build_output::<u16>(&dev, &config, out),
+        cpal::SampleFormat::F32 => build_output::<f32>(&dev, &config, out, mon),
+        cpal::SampleFormat::I16 => build_output::<i16>(&dev, &config, out, mon),
+        cpal::SampleFormat::U16 => build_output::<u16>(&dev, &config, out, mon),
         other => return Err(format!("unsupported output sample format {other:?}")),
     }
     .map_err(|e| format!("build output stream: {e}"))?;
@@ -68,6 +85,7 @@ fn build_output<T>(
     dev: &cpal::Device,
     config: &cpal::StreamConfig,
     mut out: HeapCons<[f32; 2]>,
+    mut mon: HeapProd<[f32; 2]>,
 ) -> Result<cpal::Stream, cpal::Error>
 where
     T: cpal::SizedSample + cpal::FromSample<f32>,
@@ -78,6 +96,8 @@ where
         move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
             for frame in data.chunks_mut(channels.max(1)) {
                 let s = out.try_pop().unwrap_or([0.0, 0.0]);
+                // Tee the stereo frame to the scope monitor (best-effort).
+                let _ = mon.try_push(s);
                 for (i, ch) in frame.iter_mut().enumerate() {
                     let v = match i {
                         0 => s[0],
