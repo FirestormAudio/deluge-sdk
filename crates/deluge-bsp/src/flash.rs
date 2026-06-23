@@ -136,8 +136,8 @@ mod tests {
         }
         assert_eq!(
             MAP.writable.len(),
-            2,
-            "exactly the slot and the settings block"
+            3,
+            "exactly the slot, the loader settings block, and the Deluge device-settings block"
         );
         assert_eq!(MAP.sector_size, SECTOR_SIZE);
         assert_eq!(MAP.page, PAGE);
