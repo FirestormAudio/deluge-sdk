@@ -31,6 +31,8 @@ members = [
   "examples/test_osc",
   "examples/button_leds",
   "examples/usb_log",
+  "wren-sys",
+  "wren-firmware",
 ]
 # Host-side tooling: built for the host triple, not the embedded armv7a target,
 # so it must not be a member of this no_std cross-compiled workspace.

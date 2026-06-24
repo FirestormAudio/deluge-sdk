@@ -6689,6 +6689,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "wren-firmware"
+version = "0.1.0"
+dependencies = [
+ "cortex-ar",
+ "deluge-sdk",
+ "embassy-executor",
+ "embassy-futures",
+ "embassy-sync",
+ "embassy-time",
+ "embassy-usb",
+ "log",
+ "wren-sys",
+]
+
+[[package]]
+name = "wren-sys"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "deluge-alloc",
+]
+
+[[package]]
 name = "x11-dl"
 version = "2.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,28 @@
+[package]
+name = "wren-firmware"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Deluge on-device Wren scripting firmware (RZ/A1L) via Embassy"
+
+[[bin]]
+name = "wren-firmware"
+test = false
+
+[dependencies]
+# The Deluge SDK re-exports `deluge_bsp` and `rza1l_hal`, so the firmware depends
+# only on `deluge` and reaches the lower layers through it where still needed
+# (e.g. the hand-built USB CDC stack).
+deluge-sdk = { path = "../crates/deluge-sdk", default-features = false }
+wren-sys = { path = "../wren-sys" }
+cortex-ar.workspace = true
+embassy-executor = { workspace = true, features = ["nightly", "platform-cortex-ar", "executor-thread"] }
+embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
+embassy-sync.workspace = true
+embassy-futures.workspace = true
+embassy-usb.workspace = true
+log.workspace = true
+
+[features]
+default = ["rtt"]
+rtt = ["deluge-sdk/rtt"]
