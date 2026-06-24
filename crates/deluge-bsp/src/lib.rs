@@ -24,7 +24,9 @@ pub mod encoder_detent;
 #[cfg(target_os = "none")]
 pub mod fat;
 /// Deluge SPI-NOR flash profile (chip geometry + board memory map).  Pure
-/// data + re-exports over the SoC `rza1l_hal::spibsc` controller.
+/// data + re-exports over the SoC `rza1l_hal::spibsc` controller.  Opt-in via
+/// the `flash` feature — only the app-loader writes to flash.
+#[cfg(feature = "flash")]
 pub mod flash;
 pub mod jacks;
 #[cfg(target_os = "none")]

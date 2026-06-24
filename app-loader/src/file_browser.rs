@@ -204,7 +204,13 @@ pub fn list_apps(
     let mut lfn_storage = [0u8; 260];
     let mut lfn_buf = LfnBuffer::new(&mut lfn_storage);
     vm.iterate_dir_lfn(apps_dir, &mut lfn_buf, |e, lfn| {
-        if !e.attributes.is_directory() {
+        if e.attributes.is_directory() {
+            return;
+        }
+        let is_mac_hidden = lfn
+            .map(|n| n.starts_with("._"))
+            .unwrap_or_else(|| e.name.base_name().starts_with(b"._"));
+        if !is_mac_hidden {
             list.push(e.clone(), lfn);
         }
     })?;

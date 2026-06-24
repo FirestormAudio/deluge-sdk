@@ -11,15 +11,12 @@
 //! `foreign.rs`) to bind native Rust classes (`Osc`, `Output`, …).
 
 #![no_std]
-#![feature(allocator_api)]
+// `allocator_api` is only used by the device SDRAM heap (`deluge_alloc`); the
+// host build routes the VM through the C runtime allocator and doesn't need it.
+#![cfg_attr(target_os = "none", feature(allocator_api))]
 
-use core::alloc::{Allocator, Layout};
-use core::cmp::min;
 use core::ffi::{c_char, c_int, c_void};
-use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicUsize, Ordering};
-
-use deluge_alloc as allocator;
+use core::ptr;
 
 pub mod foreign;
 pub use foreign::{ClassEntry, Finalizer, ForeignMethod, MethodEntry, Vm, WrenForeign, WrenType};
@@ -150,7 +147,9 @@ unsafe extern "C" {
     fn wren_host_write(text: *const c_char);
     /// Receives a VM error: `line` (-1 when not applicable) + NUL-terminated message.
     fn wren_host_error(line: c_int, message: *const c_char);
-    /// Diagnostic numeric trace (M0 bring-up only): `tag` + value.
+    /// Diagnostic numeric trace (M0 bring-up only): `tag` + value. Only the
+    /// device SDRAM heap reports through this (runaway-size OOM); unused on host.
+    #[cfg(target_os = "none")]
     fn wren_host_debug(tag: c_int, value: usize);
 }
 
@@ -172,91 +171,207 @@ unsafe extern "C" fn error_trampoline(
     }
 }
 
-// ── SDRAM-backed reallocate ──────────────────────────────────────────────────
+// ── VM heap ──────────────────────────────────────────────────────────────────
 //
-// A 16-byte header stores the user size and keeps the returned pointer
-// 16-aligned. The VM's whole heap lives in the 64 MB SDRAM, not the small
-// static `_sbrk` arena.
+// The VM allocates exclusively through `wren_reallocate`. On the device the heap
+// is tiered (`deluge_alloc::Spill`): allocations come from the fast on-chip SRAM
+// until it is full, then spill to the large 64 MB external SDRAM — so hot/young
+// objects land in fast RAM. On the host (desktop simulator) there is no
+// SRAM/SDRAM split, so it routes to the C runtime allocator instead. `heap` is
+// selected by target and re-exports the `wren_reallocate` hook plus the per-tier
+// peak accounting accessors.
 
-/// Header size / allocation alignment for VM allocations.
-const HDR: usize = 16;
+/// Peak VM-heap bytes ever outstanding at once (device only; the host reports 0).
+pub use heap::peak_bytes;
+/// Current + peak SRAM / SDRAM bytes the VM heap holds (device only; host: 0).
+pub use heap::{peak_sdram_bytes, peak_sram_bytes, sdram_bytes, sram_bytes};
+use heap::wren_reallocate;
 
-/// Live VM-owned bytes currently allocated from SDRAM.
-static LIVE: AtomicUsize = AtomicUsize::new(0);
-/// High-water mark of [`LIVE`].
-static PEAK: AtomicUsize = AtomicUsize::new(0);
+#[cfg(target_os = "none")]
+mod heap {
+    //! Device VM heap: SRAM-first, SDRAM-spill (`deluge_alloc::Spill`). A 16-byte
+    //! header stores the user size and keeps the returned pointer 16-aligned. The
+    //! tier each block landed in is recovered by address (`CsHeap::contains`) for
+    //! accounting and on free, so no tier tag is stored in the header.
+    use core::alloc::{Allocator, Layout};
+    use core::cmp::min;
+    use core::ffi::c_void;
+    use core::ptr::{self, NonNull};
+    use core::sync::atomic::{AtomicUsize, Ordering};
 
-/// Peak SDRAM bytes the VM allocator has ever had outstanding at once.
-pub fn peak_bytes() -> usize {
-    PEAK.load(Ordering::Relaxed)
-}
+    use deluge_alloc::{SDRAM, SRAM, Spill};
 
-#[inline]
-fn block_layout(user: usize) -> Layout {
-    // SAFETY: HDR is a valid non-zero power-of-two alignment; user + HDR never
-    // overflows for any size the VM requests.
-    unsafe { Layout::from_size_align_unchecked(user + HDR, HDR) }
-}
+    use super::wren_host_debug;
 
-/// Reject obviously-bogus allocation sizes (the SDRAM heap is 64 MB) so a
-/// runaway length surfaces as a logged, clean OOM instead of a hard fault.
-const MAX_ALLOC: usize = 48 * 1024 * 1024;
+    /// The VM heap: serve from SRAM, spill to SDRAM.
+    static SPILL: Spill = Spill::new(&SRAM, &SDRAM);
 
-unsafe fn alloc_block(user: usize) -> *mut c_void {
-    if user > MAX_ALLOC {
-        // M0 diagnostic: a request this large means a corrupt/runaway size.
-        unsafe { wren_host_debug(1, user) };
-        return ptr::null_mut();
+    /// Header size / allocation alignment for VM allocations.
+    const HDR: usize = 16;
+
+    /// Live VM-owned bytes currently allocated (total) and its high-water mark.
+    static LIVE: AtomicUsize = AtomicUsize::new(0);
+    static PEAK: AtomicUsize = AtomicUsize::new(0);
+    /// Live + peak bytes the VM holds in each tier (the SRAM/SDRAM split).
+    static LIVE_SRAM: AtomicUsize = AtomicUsize::new(0);
+    static PEAK_SRAM: AtomicUsize = AtomicUsize::new(0);
+    static LIVE_SDRAM: AtomicUsize = AtomicUsize::new(0);
+    static PEAK_SDRAM: AtomicUsize = AtomicUsize::new(0);
+
+    /// Peak total bytes the VM allocator has ever had outstanding at once.
+    pub fn peak_bytes() -> usize {
+        PEAK.load(Ordering::Relaxed)
     }
-    match allocator::SDRAM.allocate(block_layout(user)) {
-        Ok(p) => {
-            let base = p.as_ptr() as *mut u8;
-            // Store the user size in the header word.
-            unsafe { (base as *mut usize).write(user) };
-            let live = LIVE.fetch_add(user, Ordering::Relaxed) + user;
-            PEAK.fetch_max(live, Ordering::Relaxed);
-            unsafe { base.add(HDR) as *mut c_void }
+    /// Peak bytes the VM has ever held in fast SRAM.
+    pub fn peak_sram_bytes() -> usize {
+        PEAK_SRAM.load(Ordering::Relaxed)
+    }
+    /// Peak bytes the VM has ever held in spilled-to SDRAM.
+    pub fn peak_sdram_bytes() -> usize {
+        PEAK_SDRAM.load(Ordering::Relaxed)
+    }
+    /// Bytes the VM currently holds in fast SRAM.
+    pub fn sram_bytes() -> usize {
+        LIVE_SRAM.load(Ordering::Relaxed)
+    }
+    /// Bytes the VM currently holds in spilled-to SDRAM.
+    pub fn sdram_bytes() -> usize {
+        LIVE_SDRAM.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    fn block_layout(user: usize) -> Layout {
+        // SAFETY: HDR is a valid non-zero power-of-two alignment; user + HDR
+        // never overflows for any size the VM requests.
+        unsafe { Layout::from_size_align_unchecked(user + HDR, HDR) }
+    }
+
+    /// Reject obviously-bogus allocation sizes (the heap is at most ~64 MB) so a
+    /// runaway length surfaces as a logged, clean OOM instead of a hard fault.
+    const MAX_ALLOC: usize = 48 * 1024 * 1024;
+
+    unsafe fn alloc_block(user: usize) -> *mut c_void {
+        if user > MAX_ALLOC {
+            // M0 diagnostic: a request this large means a corrupt/runaway size.
+            unsafe { wren_host_debug(1, user) };
+            return ptr::null_mut();
         }
-        Err(_) => ptr::null_mut(),
-    }
-}
-
-unsafe fn free_block(user_ptr: *mut c_void) {
-    let base = unsafe { (user_ptr as *mut u8).sub(HDR) };
-    let user = unsafe { (base as *const usize).read() };
-    LIVE.fetch_sub(user, Ordering::Relaxed);
-    // SAFETY: `base` came from `alloc_block` with this exact layout.
-    unsafe {
-        allocator::SDRAM.deallocate(NonNull::new_unchecked(base), block_layout(user));
-    }
-}
-
-unsafe extern "C" fn wren_reallocate(
-    memory: *mut c_void,
-    new_size: usize,
-    _user_data: *mut c_void,
-) -> *mut c_void {
-    if new_size == 0 {
-        if !memory.is_null() {
-            unsafe { free_block(memory) };
+        match SPILL.allocate(block_layout(user)) {
+            Ok(p) => {
+                let base = p.as_ptr() as *mut u8;
+                // Store the user size in the header word.
+                unsafe { (base as *mut usize).write(user) };
+                let live = LIVE.fetch_add(user, Ordering::Relaxed) + user;
+                PEAK.fetch_max(live, Ordering::Relaxed);
+                // Account by the tier the spill served from (recovered by address).
+                // SAFETY: `base` is non-null (allocation succeeded).
+                let (tier_live, tier_peak) =
+                    if SRAM.contains(unsafe { NonNull::new_unchecked(base) }) {
+                        (&LIVE_SRAM, &PEAK_SRAM)
+                    } else {
+                        (&LIVE_SDRAM, &PEAK_SDRAM)
+                    };
+                let n = tier_live.fetch_add(user, Ordering::Relaxed) + user;
+                tier_peak.fetch_max(n, Ordering::Relaxed);
+                unsafe { base.add(HDR) as *mut c_void }
+            }
+            Err(_) => ptr::null_mut(),
         }
-        return ptr::null_mut();
     }
-    if memory.is_null() {
-        return unsafe { alloc_block(new_size) };
+
+    unsafe fn free_block(user_ptr: *mut c_void) {
+        let base = unsafe { (user_ptr as *mut u8).sub(HDR) };
+        let user = unsafe { (base as *const usize).read() };
+        LIVE.fetch_sub(user, Ordering::Relaxed);
+        // SAFETY: `base` is non-null and came from `alloc_block`.
+        if SRAM.contains(unsafe { NonNull::new_unchecked(base) }) {
+            LIVE_SRAM.fetch_sub(user, Ordering::Relaxed);
+        } else {
+            LIVE_SDRAM.fetch_sub(user, Ordering::Relaxed);
+        }
+        // SAFETY: `base` came from `alloc_block` with this exact layout; `Spill`
+        // routes the free back to the arena it came from.
+        unsafe {
+            SPILL.deallocate(NonNull::new_unchecked(base), block_layout(user));
+        }
     }
-    // Realloc: allocate new, copy min(old, new), free old.
-    let base = unsafe { (memory as *mut u8).sub(HDR) };
-    let old_size = unsafe { (base as *const usize).read() };
-    let np = unsafe { alloc_block(new_size) };
-    if np.is_null() {
-        return ptr::null_mut();
+
+    pub unsafe extern "C" fn wren_reallocate(
+        memory: *mut c_void,
+        new_size: usize,
+        _user_data: *mut c_void,
+    ) -> *mut c_void {
+        if new_size == 0 {
+            if !memory.is_null() {
+                unsafe { free_block(memory) };
+            }
+            return ptr::null_mut();
+        }
+        if memory.is_null() {
+            return unsafe { alloc_block(new_size) };
+        }
+        // Realloc: allocate new, copy min(old, new), free old.
+        let base = unsafe { (memory as *mut u8).sub(HDR) };
+        let old_size = unsafe { (base as *const usize).read() };
+        let np = unsafe { alloc_block(new_size) };
+        if np.is_null() {
+            return ptr::null_mut();
+        }
+        unsafe {
+            ptr::copy_nonoverlapping(memory as *const u8, np as *mut u8, min(old_size, new_size));
+            free_block(memory);
+        }
+        np
     }
-    unsafe {
-        ptr::copy_nonoverlapping(memory as *const u8, np as *mut u8, min(old_size, new_size));
-        free_block(memory);
+}
+
+#[cfg(not(target_os = "none"))]
+mod heap {
+    //! Host (desktop simulator) VM heap: routes the VM's reallocate hook straight
+    //! to the C runtime's `realloc`/`free`. That is exactly wren's contract —
+    //! `realloc(NULL, n)` allocates and we treat `new_size == 0` as a free — so
+    //! the header/accounting and SRAM/SDRAM tiering aren't needed here; the peak
+    //! accessors are device-only and report 0.
+    use core::ffi::c_void;
+    use core::ptr;
+
+    unsafe extern "C" {
+        fn realloc(ptr: *mut c_void, size: usize) -> *mut c_void;
+        fn free(ptr: *mut c_void);
     }
-    np
+
+    /// Peak-bytes accounting (and the SRAM/SDRAM tiering it measures) is
+    /// device-only; on the host there is one unified heap, so these report 0.
+    pub fn peak_bytes() -> usize {
+        0
+    }
+    pub fn peak_sram_bytes() -> usize {
+        0
+    }
+    pub fn peak_sdram_bytes() -> usize {
+        0
+    }
+    pub fn sram_bytes() -> usize {
+        0
+    }
+    pub fn sdram_bytes() -> usize {
+        0
+    }
+
+    pub unsafe extern "C" fn wren_reallocate(
+        memory: *mut c_void,
+        new_size: usize,
+        _user_data: *mut c_void,
+    ) -> *mut c_void {
+        if new_size == 0 {
+            if !memory.is_null() {
+                unsafe { free(memory) };
+            }
+            return ptr::null_mut();
+        }
+        // `realloc(NULL, n)` behaves as `malloc(n)`, matching wren's contract.
+        unsafe { realloc(memory, new_size) }
+    }
 }
 
 // ── Convenience bring-up ─────────────────────────────────────────────────────

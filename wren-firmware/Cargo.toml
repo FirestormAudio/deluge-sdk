@@ -15,14 +15,25 @@ test = false
 # (e.g. the hand-built USB CDC stack).
 deluge-sdk = { path = "../crates/deluge-sdk", default-features = false }
 wren-sys = { path = "../wren-sys" }
-cortex-ar.workspace = true
-embassy-executor = { workspace = true, features = ["nightly", "platform-cortex-ar", "executor-thread"] }
 embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
 embassy-sync.workspace = true
 embassy-futures.workspace = true
-embassy-usb.workspace = true
 log.workspace = true
 
+# ── Device (the Deluge, armv7a-none-eabihf) ──────────────────────────────────
+# The Cortex-A executor backend and the USB-CDC REPL transport (`embassy-usb` +
+# the `rza1l_hal` device stack) are device-only. Mirrors crates/deluge-sdk's
+# per-target embassy-executor split so cargo unifies to one executor build.
+[target.'cfg(target_os = "none")'.dependencies]
+cortex-ar.workspace = true
+embassy-executor = { workspace = true, features = ["nightly", "platform-cortex-ar", "executor-thread"] }
+embassy-usb.workspace = true
+
+# ── Host (the desktop simulator, `cargo deluge sim`) ─────────────────────────
+# The std executor backend; the REPL runs over stdin/stdout (no USB in the sim).
+[target.'cfg(not(target_os = "none"))'.dependencies]
+embassy-executor = { workspace = true, features = ["nightly", "platform-std", "executor-thread"] }
+
 [features]
-default = ["rtt"]
+default = []
 rtt = ["deluge-sdk/rtt"]

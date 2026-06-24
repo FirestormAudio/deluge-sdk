@@ -18,6 +18,14 @@ use std::process::Command;
 const MULTILIB_FLAGS: &[&str] = &["-mcpu=cortex-a9", "-mfloat-abi=hard", "-mfpu=neon-vfpv3"];
 
 fn main() {
+    // Host (simulator) builds link with the platform's default linker and libc,
+    // so skip the embedded linker script and the bare-metal newlib archives
+    // entirely — the host libc resolves the wren VM's libc references, and
+    // wren-sys's host build doesn't pull newlib (see wren-sys/build.rs).
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("none") {
+        return;
+    }
+
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
 

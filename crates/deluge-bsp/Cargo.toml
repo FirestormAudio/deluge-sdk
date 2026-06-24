@@ -27,6 +27,10 @@ default = []
 ## Drive `audio::init_direct` from a per-block RX DMA interrupt (the audio SDK's
 ## v2 cadence) instead of the default poll loop. Selected by `deluge/audio-irq`.
 audio-irq = []
+## Expose the [`flash`] module (SPI-NOR chip profile + board memory map over the
+## SoC `rza1l_hal::spibsc` controller). Opt-in because only the app-loader writes
+## to flash; gating it keeps it out of every other firmware's build.
+flash = []
 
 [dependencies]
 rza1l-hal = { path = "../rza1l-hal", version = "0.1.0" }

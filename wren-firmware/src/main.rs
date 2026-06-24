@@ -14,6 +14,7 @@
 //! - `^^w` ends the upload, runs it, and persists it to `/MAIN.WREN`.
 //! - `^^c` cancels/clears the accumulator.
 //! - `^^v` prints a version banner.
+//! - `^^m` prints the VM heap's SRAM/SDRAM spill split (live / peak per tier).
 //!
 //! `/MAIN.WREN` is loaded and run at boot.
 //!
@@ -27,8 +28,8 @@
 //! Later milestones add the `deluge` foreign bindings (CV/gate, MIDI, timing,
 //! pads/encoders/OLED/LEDs) and the native DSP audio engine.
 
-#![no_std]
-#![no_main]
+#![cfg_attr(target_os = "none", no_std)]
+#![cfg_attr(target_os = "none", no_main)]
 #![feature(impl_trait_in_assoc_type)]
 
 use core::cell::RefCell;
@@ -36,16 +37,24 @@ use core::ffi::c_char;
 use core::ptr::addr_of_mut;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU16, AtomicUsize, Ordering};
 
+use deluge::deluge_bsp;
 use deluge::prelude::*;
-use deluge::{deluge_bsp, rza1l_hal};
 use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::{Mutex, raw::CriticalSectionRawMutex};
 use embassy_time::{Duration, Instant, Timer};
-use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver, Sender, State};
-use embassy_usb::{Builder, Config, UsbDevice};
-
-use rza1l_hal::usb::{Rusb1Driver, USB0_IRQ, dcd_int_handler, init_device_mode};
 use wren_sys::{Vm, WrenVM};
+
+// The USB-CDC REPL transport is device-only — the desktop simulator has no USB,
+// so the host build drives the REPL over stdin/stdout instead (see `host_repl`
+// and `host_tx_task`). `rza1l_hal` is only re-exported by the SDK on the device.
+#[cfg(target_os = "none")]
+use deluge::rza1l_hal;
+#[cfg(target_os = "none")]
+use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver, Sender, State};
+#[cfg(target_os = "none")]
+use embassy_usb::{Builder, Config, UsbDevice};
+#[cfg(target_os = "none")]
+use rza1l_hal::usb::{Rusb1Driver, USB0_IRQ, dcd_int_handler, init_device_mode};
 
 mod audio;
 mod bindings;
@@ -171,6 +180,33 @@ fn tx_push(data: &[u8]) {
     TX.lock(|r| r.borrow_mut().push(data));
 }
 
+/// Tiny fixed-capacity `core::fmt::Write` sink for formatting short REPL replies
+/// (e.g. the `^^m` heap report) without an allocator. Overflow is silently
+/// truncated — replies are well under the buffer.
+struct TxFmt {
+    buf: [u8; 128],
+    len: usize,
+}
+
+impl TxFmt {
+    fn new() -> Self {
+        Self { buf: [0; 128], len: 0 }
+    }
+    fn as_bytes(&self) -> &[u8] {
+        &self.buf[..self.len]
+    }
+}
+
+impl core::fmt::Write for TxFmt {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let b = s.as_bytes();
+        let n = b.len().min(self.buf.len() - self.len);
+        self.buf[self.len..self.len + n].copy_from_slice(&b[..n]);
+        self.len += n;
+        Ok(())
+    }
+}
+
 /// Push a MIDI message toward the DIN TX ring (called by the `Midi.*` bindings).
 pub(crate) fn midi_tx_push(data: &[u8]) {
     MIDI_TX.lock(|r| r.borrow_mut().push(data));
@@ -287,7 +323,9 @@ extern "C" fn wren_host_error(line: i32, message: *const c_char) {
     }
 }
 
-/// Diagnostic numeric trace from wren-sys (bring-up only).
+/// Diagnostic numeric trace from wren-sys (bring-up only). Only the device VM
+/// heap reports through this (see wren-sys), so it's device-only here too.
+#[cfg(target_os = "none")]
 #[unsafe(no_mangle)]
 extern "C" fn wren_host_debug(tag: i32, value: usize) {
     error!("wren-dbg: tag={} value=0x{:x} ({})", tag, value, value);
@@ -295,10 +333,15 @@ extern "C" fn wren_host_debug(tag: i32, value: usize) {
 
 // ── USB device static buffers (need 'static for embassy_usb::Builder) ───────
 
+#[cfg(target_os = "none")]
 static mut USB_CONFIG_DESC: [u8; 256] = [0; 256];
+#[cfg(target_os = "none")]
 static mut USB_BOS_DESC: [u8; 64] = [0; 64];
+#[cfg(target_os = "none")]
 static mut USB_MSOS_DESC: [u8; 0] = [];
+#[cfg(target_os = "none")]
 static mut USB_CONTROL_BUF: [u8; 64] = [0; 64];
+#[cfg(target_os = "none")]
 static mut CDC_ACM_STATE: State<'static> = State::new();
 
 // ── Pre-interrupt setup (runs with IRQs masked) ──────────────────────────────
@@ -314,7 +357,17 @@ fn setup() {
 
     // USB0 device-mode interrupt. Registering here (before global enable) is
     // sufficient; the interrupt source is only raised once `usb_task` runs.
-    unsafe { rza1l_hal::gic::register(USB0_IRQ, || dcd_int_handler(0)) };
+    // Device-only — the host REPL uses stdin/stdout, not USB.
+    #[cfg(target_os = "none")]
+    unsafe {
+        rza1l_hal::gic::register(USB0_IRQ, || dcd_int_handler(0))
+    };
+
+    // Host: start the blocking stdin reader that feeds the REPL `RX` ring. Runs
+    // on the brain thread before the executor, alongside the GUI on the main
+    // thread (see the SDK host runtime).
+    #[cfg(not(target_os = "none"))]
+    host_repl::spawn_stdin();
 
     // Boot the VM and load the prelude (declares the foreign classes + the
     // `output[]` / `gate[]` accessors). ~0.6 s; mirrors crow's ordering.
@@ -327,7 +380,11 @@ fn setup() {
         }
     }
     VM_PTR.store(vm, Ordering::Release);
-    info!("wren: VM up — peak SDRAM {} B", wren_sys::peak_bytes());
+    info!(
+        "wren: VM up — peak SRAM {} B / SDRAM {} B",
+        wren_sys::peak_sram_bytes(),
+        wren_sys::peak_sdram_bytes()
+    );
     info!("wren: loading prelude...");
     run_source(vm, bindings::prelude_ptr(), "prelude");
 }
@@ -336,31 +393,44 @@ fn setup() {
 async fn main(dlg: Deluge) {
     let spawner = dlg.spawner();
 
-    // ── Build the USB-CDC-ACM device (ISR registered in `setup`) ─────────────
-    let (device, cdc) = unsafe {
-        let (_port, driver) = init_device_mode(0);
-        let mut config = Config::new(0x1209, 0x5741);
-        config.manufacturer = Some("skyline");
-        config.product = Some("wren: deluge");
-        config.serial_number = Some("deluge-wren");
-        config.self_powered = false;
-        config.max_power = 250;
+    // ── REPL transport ───────────────────────────────────────────────────────
+    // Device: a USB-CDC-ACM port (ISR registered in `setup`). Host: stdin/stdout
+    // (reader started in `setup`; `host_tx_task` drains the TX ring to stdout).
+    #[cfg(target_os = "none")]
+    {
+        let (device, cdc) = unsafe {
+            let (_port, driver) = init_device_mode(0);
+            let mut config = Config::new(0x1209, 0x5741);
+            config.manufacturer = Some("skyline");
+            config.product = Some("wren: deluge");
+            config.serial_number = Some("deluge-wren");
+            config.self_powered = false;
+            config.max_power = 250;
 
-        let mut builder = Builder::new(
-            driver,
-            config,
-            &mut *addr_of_mut!(USB_CONFIG_DESC),
-            &mut *addr_of_mut!(USB_BOS_DESC),
-            &mut *addr_of_mut!(USB_MSOS_DESC),
-            &mut *addr_of_mut!(USB_CONTROL_BUF),
-        );
-        // 512-byte bulk endpoints: the RUSB1 PHY negotiates high speed, where
-        // USB 2.0 requires HS bulk wMaxPacketSize 512.
-        let cdc = CdcAcmClass::new(&mut builder, &mut *addr_of_mut!(CDC_ACM_STATE), 512);
-        (builder.build(), cdc)
-    };
-    let (tx, rx) = cdc.split();
-    info!("USB: CDC-ACM device built (1209:5741)");
+            let mut builder = Builder::new(
+                driver,
+                config,
+                &mut *addr_of_mut!(USB_CONFIG_DESC),
+                &mut *addr_of_mut!(USB_BOS_DESC),
+                &mut *addr_of_mut!(USB_MSOS_DESC),
+                &mut *addr_of_mut!(USB_CONTROL_BUF),
+            );
+            // 512-byte bulk endpoints: the RUSB1 PHY negotiates high speed, where
+            // USB 2.0 requires HS bulk wMaxPacketSize 512.
+            let cdc = CdcAcmClass::new(&mut builder, &mut *addr_of_mut!(CDC_ACM_STATE), 512);
+            (builder.build(), cdc)
+        };
+        let (tx, rx) = cdc.split();
+        info!("USB: CDC-ACM device built (1209:5741)");
+        spawner.spawn(usb_task(device).unwrap());
+        spawner.spawn(cdc_tx_task(tx).unwrap());
+        spawner.spawn(cdc_rx_task(rx).unwrap());
+    }
+    #[cfg(not(target_os = "none"))]
+    {
+        spawner.spawn(host_tx_task().unwrap());
+        info!("REPL: stdin/stdout — type wren at the terminal");
+    }
 
     // ── Acquire SDK capability handles (each take-once; one owner per task) ───
     let audio = dlg.audio();
@@ -372,10 +442,7 @@ async fn main(dlg: Deluge) {
     let midi = dlg.midi();
     info!("deluge: capabilities acquired");
 
-    // ── Spawn tasks ──────────────────────────────────────────────────────────
-    spawner.spawn(usb_task(device).unwrap());
-    spawner.spawn(cdc_tx_task(tx).unwrap());
-    spawner.spawn(cdc_rx_task(rx).unwrap());
+    // ── Spawn tasks (REPL transport tasks were spawned above, per target) ─────
     spawner.spawn(vm_task().unwrap());
     spawner.spawn(midi_task(midi).unwrap());
     spawner.spawn(input_task(input).unwrap());
@@ -393,11 +460,15 @@ async fn main(dlg: Deluge) {
 
 // ── Tasks ───────────────────────────────────────────────────────────────────
 
+// ── REPL transport: device (USB-CDC) ─────────────────────────────────────────
+
+#[cfg(target_os = "none")]
 #[embassy_executor::task]
 async fn usb_task(mut device: UsbDevice<'static, Rusb1Driver>) {
     device.run().await;
 }
 
+#[cfg(target_os = "none")]
 #[embassy_executor::task]
 async fn cdc_rx_task(mut rx: Receiver<'static, Rusb1Driver>) {
     let mut buf = [0u8; 512];
@@ -412,6 +483,7 @@ async fn cdc_rx_task(mut rx: Receiver<'static, Rusb1Driver>) {
     }
 }
 
+#[cfg(target_os = "none")]
 #[embassy_executor::task]
 async fn cdc_tx_task(mut tx: Sender<'static, Rusb1Driver>) {
     let mut buf = [0u8; 64];
@@ -427,6 +499,48 @@ async fn cdc_tx_task(mut tx: Sender<'static, Rusb1Driver>) {
                 break; // host disconnected
             }
         }
+    }
+}
+
+// ── REPL transport: host (stdin/stdout, for `cargo deluge sim`) ───────────────
+
+/// Host REPL input: a blocking stdin reader thread feeds typed bytes into the
+/// `RX` ring (the same ring `cdc_rx_task` fills on the device). It lives on its
+/// own std thread because a blocking read would otherwise stall the executor.
+#[cfg(not(target_os = "none"))]
+mod host_repl {
+    use super::RX;
+    use std::io::Read;
+
+    pub fn spawn_stdin() {
+        std::thread::Builder::new()
+            .name("wren-stdin".into())
+            .spawn(|| {
+                let mut stdin = std::io::stdin().lock();
+                let mut byte = [0u8; 1];
+                while let Ok(1) = stdin.read(&mut byte) {
+                    RX.lock(|r| r.borrow_mut().push(&byte));
+                }
+            })
+            .expect("spawning wren-stdin thread");
+    }
+}
+
+/// Host REPL output: drain the `TX` ring to stdout (mirrors `cdc_tx_task`).
+#[cfg(not(target_os = "none"))]
+#[embassy_executor::task]
+async fn host_tx_task() {
+    use std::io::Write;
+    let mut buf = [0u8; 256];
+    loop {
+        let n = TX.lock(|r| r.borrow_mut().pop(&mut buf));
+        if n == 0 {
+            Timer::after(Duration::from_millis(5)).await;
+            continue;
+        }
+        let mut out = std::io::stdout().lock();
+        let _ = out.write_all(&buf[..n]);
+        let _ = out.flush();
     }
 }
 
@@ -611,7 +725,7 @@ impl MidiParser {
 async fn vm_task() {
     let vm = VM_PTR.load(Ordering::Acquire);
     let vmw = Vm(vm);
-    info!("wren: REPL live over USB-CDC");
+    info!("wren: REPL live");
 
     let mut repl = Repl::new();
     let mut frame = [0u8; 256];
@@ -794,6 +908,20 @@ impl Repl {
             }
             b"v" => {
                 tx_push(b"wren: deluge (M1)\r\n");
+            }
+            b"m" => {
+                // Heap report: the SRAM/SDRAM spill split (live / peak per tier).
+                use core::fmt::Write;
+                let mut f = TxFmt::new();
+                let _ = write!(
+                    f,
+                    "-- heap: SRAM {}/{} B  SDRAM {}/{} B  (live/peak)\r\n",
+                    wren_sys::sram_bytes(),
+                    wren_sys::peak_sram_bytes(),
+                    wren_sys::sdram_bytes(),
+                    wren_sys::peak_sdram_bytes(),
+                );
+                tx_push(f.as_bytes());
             }
             other => {
                 tx_push(b"-- unknown command ^^");

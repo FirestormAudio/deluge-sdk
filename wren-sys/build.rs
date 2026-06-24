@@ -46,6 +46,12 @@ fn main() {
         vm.display()
     );
 
+    // The device (`target_os = "none"`) cross-compiles the VM with the bare ARM
+    // toolchain; the host build (the desktop simulator) lets `cc` pick the
+    // default host compiler so the VM runs in-process. `CARGO_CFG_TARGET_OS` is
+    // "none" only for the embedded triple.
+    let embedded = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("none");
+
     let mut build = cc::Build::new();
 
     for f in VM_FILES {
@@ -54,8 +60,6 @@ fn main() {
     for f in OPT_FILES {
         build.file(optional.join(f));
     }
-    // newlib support: _sbrk arena (for snprintf's incidental malloc) + EH stubs.
-    build.file(csrc.join("csupport.c"));
 
     build
         .include(&include)
@@ -64,15 +68,6 @@ fn main() {
         // Enable the optional Meta + Random modules bundled with the VM.
         .define("WREN_OPT_META", "1")
         .define("WREN_OPT_RANDOM", "1")
-        // Cortex-A9 hard-float, matching the Rust target ABI (see crow-sys).
-        .flag("-mcpu=cortex-a9")
-        .flag("-mfloat-abi=hard")
-        .flag("-mfpu=neon-vfpv3")
-        .flag("-ffunction-sections")
-        .flag("-fdata-sections")
-        .flag("-fno-unwind-tables")
-        .flag("-fno-asynchronous-unwind-tables")
-        .flag("-fno-common")
         // NOTE: deliberately NOT `-fsingle-precision-constant` (which crow uses
         // for its LUA_32BITS single-precision Lua). Wren is a strictly f64/double
         // VM with NaN-tagging; truncating double constants miscompiles value
@@ -80,10 +75,28 @@ fn main() {
         // in NaN-tagging well-behaved under optimization.
         .flag("-fno-strict-aliasing")
         .opt_level(2)
-        .warnings(false)
-        .compiler("arm-none-eabi-gcc")
-        .archiver("arm-none-eabi-ar")
-        .compile("wrencore");
+        .warnings(false);
+
+    if embedded {
+        // newlib support: _sbrk arena (for snprintf's incidental malloc) + ARM
+        // EH stubs. The host libc supplies all of this itself, and redefining
+        // `_sbrk` there would clash with glibc — so this is device-only.
+        build.file(csrc.join("csupport.c"));
+        build
+            // Cortex-A9 hard-float, matching the Rust target ABI (see crow-sys).
+            .flag("-mcpu=cortex-a9")
+            .flag("-mfloat-abi=hard")
+            .flag("-mfpu=neon-vfpv3")
+            .flag("-ffunction-sections")
+            .flag("-fdata-sections")
+            .flag("-fno-unwind-tables")
+            .flag("-fno-asynchronous-unwind-tables")
+            .flag("-fno-common")
+            .compiler("arm-none-eabi-gcc")
+            .archiver("arm-none-eabi-ar");
+    }
+
+    build.compile("wrencore");
 
     for f in VM_FILES {
         println!("cargo:rerun-if-changed={}", vm.join(f).display());

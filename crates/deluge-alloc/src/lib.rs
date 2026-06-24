@@ -41,6 +41,7 @@
 use core::alloc::{AllocError, Allocator, Layout};
 use core::cell::UnsafeCell;
 use core::ptr::NonNull;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use rlsf::Tlsf;
 
@@ -92,10 +93,20 @@ struct HeapState {
 ///
 /// # Safety invariant
 /// [`init`][Self::init] must be called exactly once before any allocation.
-pub struct CsHeap(UnsafeCell<HeapState>);
+pub struct CsHeap {
+    state: UnsafeCell<HeapState>,
+    /// Base of the region passed to [`init`][Self::init], for [`contains`].
+    /// Write-once at init, then read-only — so it lives outside the lock and is
+    /// read without taking a critical section (see [`contains`][Self::contains]).
+    region_start: AtomicUsize,
+    /// Size of the region passed to [`init`][Self::init] (the raw request, not
+    /// the post-trim TLSF [`size`][HeapState::size]). Write-once at init.
+    region_size: AtomicUsize,
+}
 
 // SAFETY: All accesses go through `critical_section::with`, which disables
-// IRQs on single-core targets, providing the required mutual exclusion.
+// IRQs on single-core targets, providing the required mutual exclusion. The
+// `region_*` atomics are write-once at init and otherwise read-only.
 unsafe impl Sync for CsHeap {}
 unsafe impl Send for CsHeap {}
 
@@ -103,11 +114,15 @@ impl CsHeap {
     /// Creates a new, uninitialised heap.  Must be initialised with
     /// [`init`][Self::init] before any allocation attempt.
     pub const fn empty() -> Self {
-        Self(UnsafeCell::new(HeapState {
-            tlsf: Tlsf::new(),
-            size: 0,
-            used: 0,
-        }))
+        Self {
+            state: UnsafeCell::new(HeapState {
+                tlsf: Tlsf::new(),
+                size: 0,
+                used: 0,
+            }),
+            region_start: AtomicUsize::new(0),
+            region_size: AtomicUsize::new(0),
+        }
     }
 
     /// Initialises the heap to cover `start..start+size`.
@@ -118,9 +133,12 @@ impl CsHeap {
     /// - Must be called exactly once per instance, before the first
     ///   allocation.
     pub unsafe fn init(&self, start: *mut u8, size: usize) {
+        // Record the raw region bounds for `contains` before TLSF trims them.
+        self.region_start.store(start as usize, Ordering::Relaxed);
+        self.region_size.store(size, Ordering::Relaxed);
         critical_section::with(|_| {
             // SAFETY: exclusive via critical section; caller upholds the rest.
-            let state = unsafe { &mut *self.0.get() };
+            let state = unsafe { &mut *self.state.get() };
             // SAFETY: caller guarantees `start` is non-null and the region is
             // valid, exclusively owned, and lives for the whole program — so a
             // `'static` block is sound.
@@ -132,15 +150,27 @@ impl CsHeap {
         });
     }
 
+    /// Returns `true` if `ptr` points within the region this heap manages.
+    ///
+    /// Used to route a pointer back to the arena it came from (e.g. by
+    /// [`Spill`]). Lock-free: reads the write-once region bounds, so it is safe
+    /// to call concurrently with allocation/deallocation.
+    pub fn contains(&self, ptr: NonNull<u8>) -> bool {
+        let start = self.region_start.load(Ordering::Relaxed);
+        let size = self.region_size.load(Ordering::Relaxed);
+        let addr = ptr.as_ptr() as usize;
+        addr >= start && addr < start + size
+    }
+
     /// Returns the number of bytes currently in use (sum of live allocation
     /// sizes). Useful as a high-water diagnostic.
     pub fn used(&self) -> usize {
-        critical_section::with(|_| unsafe { (*self.0.get()).used })
+        critical_section::with(|_| unsafe { (*self.state.get()).used })
     }
 
     /// Returns the total number of bytes managed by this allocator.
     pub fn size(&self) -> usize {
-        critical_section::with(|_| unsafe { (*self.0.get()).size })
+        critical_section::with(|_| unsafe { (*self.state.get()).size })
     }
 
     /// Returns the number of free bytes remaining (`size - used`).
@@ -149,7 +179,7 @@ impl CsHeap {
     /// block — it does not reflect fragmentation.
     pub fn free(&self) -> usize {
         critical_section::with(|_| unsafe {
-            let s = &*self.0.get();
+            let s = &*self.state.get();
             s.size - s.used
         })
     }
@@ -159,7 +189,7 @@ unsafe impl Allocator for CsHeap {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         critical_section::with(|_| {
             // SAFETY: exclusive via critical section.
-            let state = unsafe { &mut *self.0.get() };
+            let state = unsafe { &mut *self.state.get() };
             match state.tlsf.allocate(layout) {
                 Some(ptr) => {
                     state.used += layout.size();
@@ -173,7 +203,7 @@ unsafe impl Allocator for CsHeap {
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
         critical_section::with(|_| {
             // SAFETY: exclusive via critical section.
-            let state = unsafe { &mut *self.0.get() };
+            let state = unsafe { &mut *self.state.get() };
             // SAFETY: caller guarantees `ptr` came from this allocator with a
             // matching layout, so `layout.align()` is the original alignment.
             unsafe { state.tlsf.deallocate(ptr, layout.align()) };
@@ -181,6 +211,68 @@ unsafe impl Allocator for CsHeap {
         });
     }
 }
+
+// ---------------------------------------------------------------------------
+// Spill — tiered (fast-first, fall back to slow) allocator
+// ---------------------------------------------------------------------------
+
+/// A two-tier allocator that serves from a fast `primary` arena until it is
+/// full, then spills to a larger `fallback` arena.
+///
+/// Built for the Deluge's split memory: allocate from on-chip [`SRAM`] first
+/// (small, fast) and fall back to external [`SDRAM`] (large, slow), so hot/young
+/// allocations land in fast RAM. Deallocation routes each pointer back to the
+/// arena it came from by address ([`CsHeap::contains`]), which works because the
+/// two arenas occupy disjoint, non-overlapping address ranges.
+///
+/// Both tiers must be [`init`][CsHeap::init]ialised before first use. Implements
+/// the nightly [`Allocator`] trait; the default `grow`/`shrink` (allocate-copy-
+/// free through this allocator) are correct, so they need no override.
+///
+/// ```rust,ignore
+/// use deluge_alloc::{Spill, SRAM, SDRAM};
+/// static HEAP: Spill = Spill::new(&SRAM, &SDRAM);
+/// ```
+///
+/// Note: there is no budget cap — the primary fills completely before any spill.
+/// A `with_budget` variant could be added if the primary gains other consumers
+/// that need reserved headroom.
+pub struct Spill {
+    primary: &'static CsHeap,
+    fallback: &'static CsHeap,
+}
+
+impl Spill {
+    /// Creates a tiered allocator that prefers `primary` and spills to
+    /// `fallback`. Both arenas must be `init`ialised before allocating.
+    pub const fn new(primary: &'static CsHeap, fallback: &'static CsHeap) -> Self {
+        Self { primary, fallback }
+    }
+}
+
+unsafe impl Allocator for Spill {
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        match self.primary.allocate(layout) {
+            Ok(p) => Ok(p),
+            Err(_) => self.fallback.allocate(layout),
+        }
+    }
+
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+        // Route by address: the arenas occupy disjoint ranges, so the pointer
+        // tells us which one it came from.
+        if self.primary.contains(ptr) {
+            unsafe { self.primary.deallocate(ptr, layout) };
+        } else {
+            unsafe { self.fallback.deallocate(ptr, layout) };
+        }
+    }
+}
+
+// SAFETY: both fields are `&'static CsHeap`, which is `Sync`; `Spill` adds no
+// interior mutability of its own.
+unsafe impl Sync for Spill {}
+unsafe impl Send for Spill {}
 
 // ---------------------------------------------------------------------------
 // Public allocator instances
@@ -258,5 +350,57 @@ mod tests {
         // Requesting far more than the arena holds must fail, not panic/UB.
         let too_big = Layout::from_size_align(64 * 1024, 8).unwrap();
         assert!(h.allocate(too_big).is_err());
+    }
+
+    #[test]
+    fn contains_reports_region_membership() {
+        let mut buf = vec![0u8; 8192];
+        let start = buf.as_mut_ptr();
+        let h = CsHeap::empty();
+        unsafe { h.init(start, buf.len()) };
+
+        let layout = Layout::from_size_align(64, 8).unwrap();
+        let p = h.allocate(layout).expect("alloc").cast::<u8>();
+        assert!(h.contains(p), "an allocation from this heap is contained");
+
+        // A clearly-outside pointer is not contained.
+        let outside = NonNull::new((start as usize).wrapping_sub(0x1000) as *mut u8).unwrap();
+        assert!(!h.contains(outside));
+        unsafe { h.deallocate(p, layout) };
+    }
+
+    // `Spill::new` takes `&'static CsHeap`, so back the test arenas with leaked
+    // buffers and leaked heaps to obtain `'static` references.
+    fn leak_heap(bytes: usize) -> &'static CsHeap {
+        let buf = vec![0u8; bytes].leak();
+        let h: &'static CsHeap = Box::leak(Box::new(CsHeap::empty()));
+        unsafe { h.init(buf.as_mut_ptr(), buf.len()) };
+        h
+    }
+
+    #[test]
+    fn spill_fills_primary_then_falls_back() {
+        // Tiny primary, roomy fallback.
+        let primary = leak_heap(1024);
+        let fallback = leak_heap(64 * 1024);
+        let spill = Spill::new(primary, fallback);
+
+        // First allocation fits the primary.
+        let small = Layout::from_size_align(256, 8).unwrap();
+        let a = spill.allocate(small).expect("primary alloc").cast::<u8>();
+        assert!(primary.contains(a), "young allocation lands in the primary");
+        assert_eq!(fallback.used(), 0, "fallback untouched while primary has room");
+
+        // A request the primary can't satisfy spills to the fallback.
+        let big = Layout::from_size_align(16 * 1024, 8).unwrap();
+        let b = spill.allocate(big).expect("spill to fallback").cast::<u8>();
+        assert!(fallback.contains(b), "oversized allocation spills to the fallback");
+        assert!(!primary.contains(b));
+
+        // Each frees back to the arena it came from.
+        unsafe { spill.deallocate(a, small) };
+        unsafe { spill.deallocate(b, big) };
+        assert_eq!(primary.used(), 0, "primary block freed to primary");
+        assert_eq!(fallback.used(), 0, "fallback block freed to fallback");
     }
 }
