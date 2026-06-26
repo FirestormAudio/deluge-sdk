@@ -1407,6 +1407,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "deluge-grid-toolkit"
+version = "0.1.0"
+dependencies = [
+ "deluge-bsp",
+ "heapless 0.9.3",
+ "libm",
+ "uuid",
+]
+
+[[package]]
 name = "deluge-image"
 version = "0.1.0"
 
