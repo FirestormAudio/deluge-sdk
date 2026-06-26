@@ -4,6 +4,9 @@
 pub mod automation_column;
 pub mod clip_cell;
 pub mod clip_grid;
+pub mod clip_list;
+pub mod clip_row;
+pub mod sidebar;
 pub mod text_keyboard;
 pub mod waveform_display;
 
@@ -13,5 +16,8 @@ pub use automation_column::{
 };
 pub use clip_cell::{CellPlaybackState, ClipCellComponent};
 pub use clip_grid::{ClipGridDims, ClipGridEvent, ClipGridState, SHORT_PRESS_MS, clip_grid};
+pub use clip_list::{ClipListEvent, ClipListState, clip_list};
+pub use clip_row::{ClipRowData, draw_clip_row};
+pub use sidebar::{SidebarRow, status_sidebar};
 pub use text_keyboard::{KeyPress, KeyboardLayout, TextKeyboardComponent};
 pub use waveform_display::draw_waveform;
