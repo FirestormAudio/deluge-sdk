@@ -4,8 +4,8 @@
 //! visual state into a colour on a single grid pad.
 
 use crate::color::ColorExt as _;
-use crate::component::{Component, Size};
-use crate::Grid;
+use crate::imode::{Frame, Response};
+use crate::Pad;
 use deluge_bsp::rgb::Color as RGB;
 use uuid::Uuid;
 
@@ -173,21 +173,17 @@ impl ClipCellComponent {
 
         color.dim_float(0.25)
     }
-}
 
-impl Component for ClipCellComponent {
-    fn render(&self) -> Grid {
-        let mut grid = Grid::new();
-        grid.set_pad(0, 0, self.get_color());
-        grid
-    }
-
-    fn needs_redraw(&self) -> bool {
+    /// Whether the cell is animating (pulsing). The caller should keep the
+    /// repaint gate open (e.g. `f.request_repaint_after(33)`) while true.
+    pub fn animating(&self) -> bool {
         self.selected || self.playback.armed_for_launch || self.armed_for_recording
     }
 
-    fn get_size(&self) -> Size {
-        Size { rows: 1, cols: 1 }
+    /// Paint the cell on `pad` and report interaction in one pass.
+    pub fn show(&self, f: &mut Frame, pad: Pad) -> Response {
+        f.paint(pad, self.get_color());
+        f.interact(pad)
     }
 }
 

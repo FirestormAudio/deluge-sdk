@@ -11,11 +11,15 @@ project:
 - **`Grid`** — an 18 × 8 frame buffer with drawing ops; `Grid::blit` writes it
   into a `deluge_bsp::rgb::PadLeds` for the hardware.
 - **`GridLayer` / `GridCompositor`** — compositable colour layers.
-- **`Component` / `FlexibleComponent`** — the resizable-component contract. The
-  grid is a fixed 18 × 8, but components placed onto it are resizable.
-- **`animations`** — transition animations (fade, scroll, smear, zoom, explode,
-  expand/collapse) that interpolate one `Grid` to another.
-- **`widgets`** — stateless render widgets.
+- **`imode`** — immediate-mode UI with a built-in **repaint gate**. One pass per
+  frame both paints the grid and reports interactions (`GridUi::run` →
+  `Frame`/`Response`); a clean frame is skipped entirely so it costs ~nothing.
+  Layout is sub-rectangles via `Frame::region` / `split_rows` / `split_cols`,
+  and panes route their own input by geometry.
+- **`animations`** — screen transitions (fade, scroll, smear, zoom, explode,
+  expand/collapse) that interpolate one `Grid` to another. These stay retained
+  (stateful over time); per-frame UI is immediate-mode.
+- **`widgets`** — immediate-mode render widgets (`draw`/`show` into a `Frame`).
 
 `no_std` by default. The optional `simd` feature enables NEON-accelerated colour
 interpolation (requires nightly `core::simd`); a scalar fallback is always

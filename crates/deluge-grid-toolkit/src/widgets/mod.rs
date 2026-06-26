@@ -11,5 +11,5 @@ pub use automation_column::{
     bipolar_pad_value, unipolar_pad_value,
 };
 pub use clip_cell::{CellPlaybackState, ClipCellComponent};
-pub use text_keyboard::{KeyboardLayout, TextKeyboardComponent};
-pub use waveform_display::WaveformDisplayComponent;
+pub use text_keyboard::{KeyPress, KeyboardLayout, TextKeyboardComponent};
+pub use waveform_display::draw_waveform;

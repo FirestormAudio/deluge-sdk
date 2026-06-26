@@ -10,9 +10,8 @@
 //! - Row 6: space bar (6 pads wide)
 
 use crate::color::ColorExt as _;
-use crate::component::{Component, FlexibleComponent, Size};
-use crate::pad::{GRID_MAIN_COLS, GRID_ROWS};
-use crate::Grid;
+use crate::imode::Frame;
+use crate::Pad;
 use deluge_bsp::rgb::Color as RGB;
 
 const QWERTY_HOME_ROW: usize = 4;
@@ -23,6 +22,15 @@ pub enum KeyboardLayout {
     Azerty,
     Qwertz,
     Dvorak,
+}
+
+/// A key activated by a pad press on the keyboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyPress {
+    Char(char),
+    Backspace,
+    Enter,
+    Shift,
 }
 
 /// The character layout for each keyboard type: `[layout][row][column]`.
@@ -63,22 +71,12 @@ const KEYBOARD_CHARS: [[[char; 11]; 5]; 4] = [
 
 #[derive(Debug, Clone)]
 pub struct TextKeyboardComponent {
-    size: Size,
     layout: KeyboardLayout,
-    pub shift_held: bool,
 }
 
-#[allow(dead_code)] // input-handling methods used when the keyboard is wired up
 impl TextKeyboardComponent {
     pub fn new(layout: KeyboardLayout) -> Self {
-        Self {
-            size: Size {
-                rows: GRID_ROWS,
-                cols: GRID_MAIN_COLS,
-            },
-            layout,
-            shift_held: false,
-        }
+        Self { layout }
     }
 
     pub fn set_layout(&mut self, layout: KeyboardLayout) {
@@ -137,71 +135,79 @@ impl Default for TextKeyboardComponent {
     }
 }
 
-impl Component for TextKeyboardComponent {
-    fn render(&self) -> Grid {
-        let mut grid = Grid::new();
-
+impl TextKeyboardComponent {
+    /// Paint the keyboard into the current frame. `shift_held` is caller-owned.
+    pub fn draw(&self, f: &mut Frame, shift_held: bool) {
         for i in 0..11 {
             if i < 10 {
-                grid.set_pad(QWERTY_HOME_ROW - 2, 3 + i, RGB::new(64, 64, 64));
-                grid.set_pad(QWERTY_HOME_ROW - 1, 3 + i, RGB::new(10, 10, 10));
+                f.paint(Pad::new(QWERTY_HOME_ROW - 2, 3 + i), RGB::new(64, 64, 64));
+                f.paint(Pad::new(QWERTY_HOME_ROW - 1, 3 + i), RGB::new(10, 10, 10));
             }
-            grid.set_pad(QWERTY_HOME_ROW, 3 + i, RGB::new(10, 10, 10));
+            f.paint(Pad::new(QWERTY_HOME_ROW, 3 + i), RGB::new(10, 10, 10));
             if i < 9 {
-                grid.set_pad(QWERTY_HOME_ROW + 1, 3 + i, RGB::new(10, 10, 10));
+                f.paint(Pad::new(QWERTY_HOME_ROW + 1, 3 + i), RGB::new(10, 10, 10));
             }
         }
 
-        grid.set_pad(QWERTY_HOME_ROW - 2, 13, RGB::new(10, 10, 10));
-        grid.set_pad(QWERTY_HOME_ROW, 3, RGB::new(64, 64, 64));
-        grid.set_pad(QWERTY_HOME_ROW, 4, RGB::new(64, 64, 64));
-        grid.set_pad(QWERTY_HOME_ROW, 5, RGB::new(64, 64, 64));
-        grid.set_pad(QWERTY_HOME_ROW, 6, RGB::new(160, 160, 160));
-        grid.set_pad(QWERTY_HOME_ROW, 9, RGB::new(160, 160, 160));
-        grid.set_pad(QWERTY_HOME_ROW, 10, RGB::new(64, 64, 64));
-        grid.set_pad(QWERTY_HOME_ROW, 11, RGB::new(64, 64, 64));
-        grid.set_pad(QWERTY_HOME_ROW, 12, RGB::new(64, 64, 64));
+        f.paint(Pad::new(QWERTY_HOME_ROW - 2, 13), RGB::new(10, 10, 10));
+        f.paint(Pad::new(QWERTY_HOME_ROW, 3), RGB::new(64, 64, 64));
+        f.paint(Pad::new(QWERTY_HOME_ROW, 4), RGB::new(64, 64, 64));
+        f.paint(Pad::new(QWERTY_HOME_ROW, 5), RGB::new(64, 64, 64));
+        f.paint(Pad::new(QWERTY_HOME_ROW, 6), RGB::new(160, 160, 160));
+        f.paint(Pad::new(QWERTY_HOME_ROW, 9), RGB::new(160, 160, 160));
+        f.paint(Pad::new(QWERTY_HOME_ROW, 10), RGB::new(64, 64, 64));
+        f.paint(Pad::new(QWERTY_HOME_ROW, 11), RGB::new(64, 64, 64));
+        f.paint(Pad::new(QWERTY_HOME_ROW, 12), RGB::new(64, 64, 64));
         for i in 0..6 {
-            grid.set_pad(QWERTY_HOME_ROW + 2, 5 + i, RGB::new(160, 160, 160));
+            f.paint(Pad::new(QWERTY_HOME_ROW + 2, 5 + i), RGB::new(160, 160, 160));
         }
 
         for x in 14..16 {
-            grid.set_pad(QWERTY_HOME_ROW - 2, x, RGB::new(255, 0, 0));
+            f.paint(Pad::new(QWERTY_HOME_ROW - 2, x), RGB::new(255, 0, 0));
         }
         for x in 14..16 {
-            grid.set_pad(QWERTY_HOME_ROW, x, RGB::new(0, 255, 0));
+            f.paint(Pad::new(QWERTY_HOME_ROW, x), RGB::new(0, 255, 0));
         }
         for x in 1..3 {
-            grid.set_pad(QWERTY_HOME_ROW + 1, x, RGB::new(0, 0, 255));
+            f.paint(Pad::new(QWERTY_HOME_ROW + 1, x), RGB::new(0, 0, 255));
         }
         for x in 13..15 {
-            grid.set_pad(QWERTY_HOME_ROW + 1, x, RGB::new(0, 0, 255));
+            f.paint(Pad::new(QWERTY_HOME_ROW + 1, x), RGB::new(0, 0, 255));
         }
 
-        if self.shift_held {
+        if shift_held {
             for x in 1..3 {
-                grid.set_pad(QWERTY_HOME_ROW + 1, x, RGB::new(100, 100, 255));
+                f.paint(Pad::new(QWERTY_HOME_ROW + 1, x), RGB::new(100, 100, 255));
             }
             for x in 13..15 {
-                grid.set_pad(QWERTY_HOME_ROW + 1, x, RGB::new(100, 100, 255));
+                f.paint(Pad::new(QWERTY_HOME_ROW + 1, x), RGB::new(100, 100, 255));
             }
         }
-
-        grid
     }
 
-    fn needs_redraw(&self) -> bool {
-        false
-    }
-
-    fn get_size(&self) -> Size {
-        self.size
-    }
-}
-
-impl FlexibleComponent for TextKeyboardComponent {
-    fn set_size(&mut self, size: Size) {
-        self.size = size;
+    /// Paint the keyboard and read input in one pass, returning the first key
+    /// pressed this frame (if any).
+    pub fn show(&self, f: &mut Frame, shift_held: bool) -> Option<KeyPress> {
+        self.draw(f, shift_held);
+        for ev in f.input().events.iter() {
+            if !ev.pressed {
+                continue;
+            }
+            let (x, y) = (ev.pad.col, ev.pad.row);
+            if let Some(ch) = self.char_at(x, y) {
+                return Some(KeyPress::Char(ch));
+            }
+            if self.is_backspace(x, y) {
+                return Some(KeyPress::Backspace);
+            }
+            if self.is_enter(x, y) {
+                return Some(KeyPress::Enter);
+            }
+            if self.is_shift(x, y) {
+                return Some(KeyPress::Shift);
+            }
+        }
+        None
     }
 }
 
@@ -237,9 +243,19 @@ mod tests {
     }
 
     #[test]
-    fn test_render_size() {
-        let keyboard = TextKeyboardComponent::default();
-        assert_eq!(keyboard.get_size(), Size::new(GRID_ROWS, GRID_MAIN_COLS));
-        let _ = keyboard.render();
+    fn draws_and_reports_keypress() {
+        use crate::imode::{GridUi, PadInput};
+        let kb = TextKeyboardComponent::new(KeyboardLayout::Qwerty);
+
+        let mut ui = GridUi::new();
+        ui.run(0, PadInput::new(), |f| kb.draw(f, false));
+        // Enter key (green) at the home row, col 14.
+        assert_eq!(ui.grid().get_pad(QWERTY_HOME_ROW, 14), RGB::new(0, 255, 0));
+
+        // `show` reads input: pressing the home-row col-3 pad yields 'A'.
+        let mut input = PadInput::new();
+        input.press(Pad::new(QWERTY_HOME_ROW, 3));
+        let pressed = ui.run(16, input, |f| kb.show(f, false)).painted().unwrap();
+        assert_eq!(pressed, Some(KeyPress::Char('A')));
     }
 }

@@ -4,13 +4,11 @@
 //! area. Zoom/scroll is handled externally. Based on the Deluge firmware's
 //! `WaveformRenderer`.
 
-use crate::color::ColorExt as _;
-use crate::component::{Component, FlexibleComponent, Size};
 #[allow(unused_imports)] // needed on targets whose `core` lacks inherent f32 math
 use crate::float_ext::F32Ext as _;
-use crate::Grid;
+use crate::imode::Frame;
+use crate::{Color, Pad};
 use alloc::vec::Vec;
-use deluge_bsp::rgb::Color as RGB;
 
 #[cfg(all(feature = "simd", target_arch = "aarch64"))]
 use core::arch::aarch64::*;
@@ -101,176 +99,129 @@ impl ColumnPeaks {
     }
 }
 
-/// Waveform display component.
-pub struct WaveformDisplayComponent {
-    size: Size,
-    sample_data: Vec<f32>,
-    color: RGB,
+/// Draw a waveform that fills the current frame, resampling `samples` to the
+/// frame's column count. `samples` are amplitudes normalized to `-1.0..=1.0`.
+pub fn draw_waveform(f: &mut Frame, samples: &[f32], color: Color) {
+    let (rows, cols) = f.size();
+    if samples.is_empty() || rows == 0 || cols == 0 {
+        return;
+    }
+    for (col, peak) in find_peaks_per_col(samples, cols).iter().enumerate() {
+        if let Some(p) = peak {
+            draw_col_bar(f, col, p, 200, color, rows);
+        }
+    }
 }
 
-impl WaveformDisplayComponent {
-    pub fn new(size: Size, data: &[f32]) -> Self {
-        Self {
-            size,
-            sample_data: data.to_vec(),
-            color: RGB::cyan(),
-        }
+fn find_peaks_per_col(samples: &[f32], num_cols: usize) -> Vec<Option<ColumnPeaks>> {
+    let num_samples = samples.len();
+    if num_samples == 0 {
+        return alloc::vec![None; num_cols];
     }
 
-    /// The current sample data.
-    pub fn sample_data(&self) -> &[f32] {
-        &self.sample_data
-    }
+    let samples_per_col = num_samples as f64 / num_cols as f64;
 
-    /// Set the sample data to display (rendered to fit the available area).
-    pub fn set_sample_data(&mut self, data: &[f32]) {
-        self.sample_data = data.to_vec();
-    }
+    (0..num_cols)
+        .map(|col| {
+            let start_idx = (col as f64 * samples_per_col) as usize;
+            let end_idx = ((col + 1) as f64 * samples_per_col).min(num_samples as f64) as usize;
 
-    /// Set the waveform colour.
-    pub fn set_color(&mut self, color: RGB) {
-        self.color = color;
-    }
+            if start_idx >= end_idx || start_idx >= num_samples {
+                return None;
+            }
 
-    fn find_peaks_per_col(&self) -> Vec<Option<ColumnPeaks>> {
-        let num_cols = self.size.cols;
-        let num_samples = self.sample_data.len();
+            let chunk = &samples[start_idx..end_idx];
 
-        if num_samples == 0 {
-            return alloc::vec![None; num_cols];
-        }
+            let max_samples_to_read = 1 << SAMPLES_TO_READ_PER_COL_MAGNITUDE;
+            let step = (chunk.len() / max_samples_to_read).max(1);
 
-        let samples_per_col = num_samples as f64 / num_cols as f64;
+            #[cfg(all(feature = "simd", any(target_arch = "aarch64", target_arch = "arm")))]
+            if step == 1 && chunk.len() >= 4 {
+                let (min, max) = unsafe { find_min_max_f32_neon(chunk) };
+                return Some(ColumnPeaks {
+                    min: min.clamp(-1.0, 1.0),
+                    max: max.clamp(-1.0, 1.0),
+                });
+            }
 
-        (0..num_cols)
-            .map(|col| {
-                let start_idx = (col as f64 * samples_per_col) as usize;
-                let end_idx = ((col + 1) as f64 * samples_per_col).min(num_samples as f64) as usize;
-
-                if start_idx >= end_idx || start_idx >= num_samples {
-                    return None;
-                }
-
-                let chunk = &self.sample_data[start_idx..end_idx];
-
-                let max_samples_to_read = 1 << SAMPLES_TO_READ_PER_COL_MAGNITUDE;
-                let step = (chunk.len() / max_samples_to_read).max(1);
-
-                #[cfg(all(feature = "simd", any(target_arch = "aarch64", target_arch = "arm")))]
-                if step == 1 && chunk.len() >= 4 {
-                    let (min, max) = unsafe { find_min_max_f32_neon(chunk) };
-                    return Some(ColumnPeaks {
-                        min: min.clamp(-1.0, 1.0),
-                        max: max.clamp(-1.0, 1.0),
-                    });
-                }
-
-                chunk
-                    .iter()
-                    .step_by(step)
-                    .copied()
-                    .fold(None::<(f32, f32)>, |acc, sample| {
-                        Some(match acc {
-                            None => (sample, sample),
-                            Some((min, max)) => (min.min(sample), max.max(sample)),
-                        })
+            chunk
+                .iter()
+                .step_by(step)
+                .copied()
+                .fold(None::<(f32, f32)>, |acc, sample| {
+                    Some(match acc {
+                        None => (sample, sample),
+                        Some((min, max)) => (min.min(sample), max.max(sample)),
                     })
-                    .map(|(min, max)| ColumnPeaks {
-                        min: min.clamp(-1.0, 1.0),
-                        max: max.clamp(-1.0, 1.0),
-                    })
-            })
-            .collect()
-    }
+                })
+                .map(|(min, max)| ColumnPeaks {
+                    min: min.clamp(-1.0, 1.0),
+                    max: max.clamp(-1.0, 1.0),
+                })
+        })
+        .collect()
+}
 
-    fn calculate_edge_coverage(
-        y: i32,
-        y_start: i32,
-        y_stop: i32,
-        peaks: &ColumnPeaks,
-        half_rows: f32,
-    ) -> f32 {
-        if y == y_start {
-            let edge_pos = -peaks.max * half_rows;
-            (edge_pos - edge_pos.floor()).max(0.5)
-        } else if y == y_stop {
-            let edge_pos = -peaks.min * half_rows;
-            (edge_pos.ceil() - edge_pos).max(0.5)
-        } else {
-            1.0
-        }
-    }
-
-    fn apply_color_with_brightness(&self, brightness: u8, coverage: f32) -> RGB {
-        let color_amount = (brightness as f32 * coverage.clamp(0.0, 1.0)) as u32;
-        let value = (color_amount * color_amount) >> 8;
-        RGB::new(
-            ((value * self.color.r as u32) >> 8) as u8,
-            ((value * self.color.g as u32) >> 8) as u8,
-            ((value * self.color.b as u32) >> 8) as u8,
-        )
-    }
-
-    fn draw_col_bar(&self, grid: &mut Grid, col: usize, peaks: &ColumnPeaks, brightness: u8) {
-        let half_rows = self.size.rows as f32 / 2.0;
-        let adjusted_peaks = peaks.with_min_height(MIN_WAVEFORM_HEIGHT);
-        let (y_start, y_stop) = adjusted_peaks.to_row_range(half_rows);
-
-        (y_start..=y_stop).for_each(|y| {
-            let coverage =
-                Self::calculate_edge_coverage(y, y_start, y_stop, &adjusted_peaks, half_rows);
-            let final_color = self.apply_color_with_brightness(brightness, coverage);
-            let grid_row = (half_rows as i32 + y).clamp(0, self.size.rows as i32 - 1) as usize;
-            grid.set_pad(grid_row, col, final_color);
-        });
+fn edge_coverage(y: i32, y_start: i32, y_stop: i32, peaks: &ColumnPeaks, half_rows: f32) -> f32 {
+    if y == y_start {
+        let edge_pos = -peaks.max * half_rows;
+        (edge_pos - edge_pos.floor()).max(0.5)
+    } else if y == y_stop {
+        let edge_pos = -peaks.min * half_rows;
+        (edge_pos.ceil() - edge_pos).max(0.5)
+    } else {
+        1.0
     }
 }
 
-impl Component for WaveformDisplayComponent {
-    fn render(&self) -> Grid {
-        let mut grid = Grid::new();
-        if self.sample_data.is_empty() {
-            return grid;
-        }
-
-        let peaks_data = self.find_peaks_per_col();
-        peaks_data
-            .iter()
-            .enumerate()
-            .filter_map(|(col, peaks)| peaks.map(|p| (col, p)))
-            .for_each(|(col, peaks)| {
-                self.draw_col_bar(&mut grid, col, &peaks, 200);
-            });
-
-        grid
-    }
-
-    fn needs_redraw(&self) -> bool {
-        !self.sample_data.is_empty()
-    }
-
-    fn get_size(&self) -> Size {
-        self.size
-    }
+fn apply_color_with_brightness(color: Color, brightness: u8, coverage: f32) -> Color {
+    let color_amount = (brightness as f32 * coverage.clamp(0.0, 1.0)) as u32;
+    let value = (color_amount * color_amount) >> 8;
+    Color::rgb(
+        ((value * color.r as u32) >> 8) as u8,
+        ((value * color.g as u32) >> 8) as u8,
+        ((value * color.b as u32) >> 8) as u8,
+    )
 }
 
-impl FlexibleComponent for WaveformDisplayComponent {
-    fn set_size(&mut self, size: Size) {
-        self.size = size;
+fn draw_col_bar(
+    f: &mut Frame,
+    col: usize,
+    peaks: &ColumnPeaks,
+    brightness: u8,
+    color: Color,
+    num_rows: usize,
+) {
+    let half_rows = num_rows as f32 / 2.0;
+    let adjusted = peaks.with_min_height(MIN_WAVEFORM_HEIGHT);
+    let (y_start, y_stop) = adjusted.to_row_range(half_rows);
+
+    for y in y_start..=y_stop {
+        let coverage = edge_coverage(y, y_start, y_stop, &adjusted, half_rows);
+        let final_color = apply_color_with_brightness(color, brightness, coverage);
+        let grid_row = (half_rows as i32 + y).clamp(0, num_rows as i32 - 1) as usize;
+        f.paint(Pad::new(grid_row, col), final_color);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Grid;
+    use crate::imode::{GridUi, PadInput};
+
+    fn render_wave(samples: &[f32]) -> Grid {
+        let mut ui = GridUi::new();
+        ui.run(0, PadInput::new(), |f| draw_waveform(f, samples, Color::CYAN));
+        ui.grid().clone()
+    }
 
     #[test]
     fn empty_data_renders_blank() {
-        let comp = WaveformDisplayComponent::new(Size::new(8, 16), &[]);
-        let grid = comp.render();
+        let grid = render_wave(&[]);
         for row in 0..8 {
             for col in 0..16 {
-                assert_eq!(grid.get_pad(row, col), RGB::BLACK);
+                assert_eq!(grid.get_pad(row, col), Color::BLACK);
             }
         }
     }
@@ -278,11 +229,10 @@ mod tests {
     #[test]
     fn nonempty_data_lights_pads() {
         let data: Vec<f32> = (0..256).map(|i| ((i as f32) / 128.0 - 1.0)).collect();
-        let comp = WaveformDisplayComponent::new(Size::new(8, 16), &data);
-        let grid = comp.render();
+        let grid = render_wave(&data);
         let lit = (0..8)
             .flat_map(|r| (0..16).map(move |c| (r, c)))
-            .filter(|&(r, c)| grid.get_pad(r, c) != RGB::BLACK)
+            .filter(|&(r, c)| grid.get_pad(r, c) != Color::BLACK)
             .count();
         assert!(lit > 0);
     }

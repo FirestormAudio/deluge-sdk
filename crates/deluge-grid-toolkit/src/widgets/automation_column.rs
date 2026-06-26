@@ -1,11 +1,11 @@
 //! Vertical bar-graph columns for automation / velocity values.
 
 use crate::color::ColorExt as _;
-use crate::component::{Component, Size};
 #[allow(unused_imports)] // needed on targets whose `core` lacks inherent f32 math
 use crate::float_ext::F32Ext as _;
+use crate::imode::Frame;
 use crate::pad::GRID_ROWS;
-use crate::Grid;
+use crate::Pad;
 use deluge_bsp::rgb::Color as RGB;
 
 // Normalized thresholds for the 8-row bar graph. Each element is the minimum
@@ -78,9 +78,9 @@ impl UnipolarAutomationColumn {
     }
 }
 
-impl Component for UnipolarAutomationColumn {
-    fn render(&self) -> Grid {
-        let mut grid = Grid::new();
+impl UnipolarAutomationColumn {
+    /// Paint the column into the current frame (column 0, rows 0..8).
+    pub fn draw(&self, f: &mut Frame) {
         for (row, &threshold) in UNIPOLAR_THRESHOLDS.iter().enumerate() {
             if self.value >= threshold {
                 let color = if self.is_automated {
@@ -88,18 +88,9 @@ impl Component for UnipolarAutomationColumn {
                 } else {
                     self.color.get_tail_color(row)
                 };
-                grid.set_pad(row, 0, color);
+                f.paint(Pad::new(row, 0), color);
             }
         }
-        grid
-    }
-
-    fn needs_redraw(&self) -> bool {
-        true
-    }
-
-    fn get_size(&self) -> Size {
-        Size::new(GRID_ROWS, 1)
     }
 }
 
@@ -133,12 +124,11 @@ impl BipolarAutomationColumn {
     }
 }
 
-impl Component for BipolarAutomationColumn {
-    fn render(&self) -> Grid {
-        let mut grid = Grid::new();
-
+impl BipolarAutomationColumn {
+    /// Paint the column into the current frame (column 0, rows 0..8).
+    pub fn draw(&self, f: &mut Frame) {
         if self.value.abs() < 0.001 {
-            return grid;
+            return;
         }
 
         let is_positive = self.value > 0.0;
@@ -170,19 +160,9 @@ impl Component for BipolarAutomationColumn {
                 } else {
                     self.color.get_bipolar_down_tail_color(row)
                 };
-                grid.set_pad(row, 0, color);
+                f.paint(Pad::new(row, 0), color);
             }
         }
-
-        grid
-    }
-
-    fn needs_redraw(&self) -> bool {
-        true
-    }
-
-    fn get_size(&self) -> Size {
-        Size::new(GRID_ROWS, 1)
     }
 }
 
@@ -347,11 +327,11 @@ impl NoteVelocityColumn {
     }
 }
 
-impl Component for NoteVelocityColumn {
-    fn render(&self) -> Grid {
-        let mut grid = Grid::new();
+impl NoteVelocityColumn {
+    /// Paint the column into the current frame (column 0, rows 0..8).
+    pub fn draw(&self, f: &mut Frame) {
         if self.value < 0.001 {
-            return grid;
+            return;
         }
 
         let color = AutomationColor::blue_red();
@@ -362,29 +342,28 @@ impl Component for NoteVelocityColumn {
                 } else {
                     color.get_tail_color(y)
                 };
-                grid.set_pad(y, 0, pad_color);
+                f.paint(Pad::new(y, 0), pad_color);
             }
         }
-        grid
-    }
-
-    fn needs_redraw(&self) -> bool {
-        true
-    }
-
-    fn get_size(&self) -> Size {
-        Size::new(GRID_ROWS, 1)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Grid;
+    use crate::imode::{Frame, GridUi, PadInput};
+
+    fn render(draw: impl FnOnce(&mut Frame)) -> Grid {
+        let mut ui = GridUi::new();
+        ui.run(0, PadInput::new(), draw);
+        ui.grid().clone()
+    }
 
     #[test]
     fn test_unipolar_extremes() {
-        let zero = UnipolarAutomationColumn::new(0.0, true).render();
-        let max = UnipolarAutomationColumn::new(1.0, true).render();
+        let zero = render(|f| UnipolarAutomationColumn::new(0.0, true).draw(f));
+        let max = render(|f| UnipolarAutomationColumn::new(1.0, true).draw(f));
         for y in 0..8 {
             assert_eq!(zero.get_pad(y, 0), RGB::new(0, 0, 0));
             assert_ne!(max.get_pad(y, 0), RGB::new(0, 0, 0));
@@ -393,20 +372,13 @@ mod tests {
 
     #[test]
     fn test_bipolar_split() {
-        let pos = BipolarAutomationColumn::new(1.0, true).render();
+        let pos = render(|f| BipolarAutomationColumn::new(1.0, true).draw(f));
         for y in 0..4 {
             assert_eq!(pos.get_pad(y, 0), RGB::new(0, 0, 0));
         }
         for y in 4..8 {
             assert_ne!(pos.get_pad(y, 0), RGB::new(0, 0, 0));
         }
-    }
-
-    #[test]
-    fn test_component_size() {
-        assert_eq!(UnipolarAutomationColumn::new(0.5, true).get_size(), Size::new(8, 1));
-        assert_eq!(BipolarAutomationColumn::new(0.0, true).get_size(), Size::new(8, 1));
-        assert_eq!(NoteVelocityColumn::new(0.5, true).get_size(), Size::new(8, 1));
     }
 
     #[test]
