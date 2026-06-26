@@ -12,6 +12,10 @@
 //!   - `--audio-in <file.wav>`  feed a WAV as the codec input (looped) instead
 //!                              of the mic — handy for deterministic DSP runs
 //!   - `--audio-out <file.wav>` record the codec output to a WAV
+//!   - `--hardware [<port>]`    drive the in-process app from a physical Deluge
+//!                              running controller-firmware over USB-CDC (and
+//!                              mirror illumination back to it); auto-detects the
+//!                              port if omitted
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -39,6 +43,15 @@ pub(crate) fn cmd_sim(args: &[String]) -> Result<(), String> {
     }
     if let Some(p) = flag_value(args, "--audio-out") {
         cmd.env("DELUGE_SIM_AUDIO_OUT", absolute(&p));
+    }
+
+    // Physical Deluge control surface: attach a real Deluge running
+    // controller-firmware over USB-CDC as an additional panel for the in-process
+    // brain. `--hardware <port>` names the serial device; bare `--hardware`
+    // auto-detects by USB VID/PID. Read by `run_in_process`.
+    if args.iter().any(|a| a == "--hardware" || a.starts_with("--hardware=")) {
+        let port = flag_value(args, "--hardware").filter(|v| !v.starts_with('-'));
+        cmd.env("DELUGE_SIM_HARDWARE", port.unwrap_or_else(|| "auto".to_string()));
     }
 
     // Headless mode: no window — replay a script and dump golden-frame snapshots.

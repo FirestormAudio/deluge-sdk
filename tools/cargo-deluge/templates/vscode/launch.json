@@ -31,6 +31,28 @@
       "cwd": "${workspaceFolder}"
     },
     {
+      // Same as "Simulator (CodeLLDB)", but also drives the in-process app from a
+      // physical Deluge running controller-firmware, attached over USB-CDC: real
+      // pads/buttons/encoders control the app and the app's illumination
+      // (OLED/pads/LEDs/CV-gate) is mirrored back onto the hardware. The on-screen
+      // simulator window still runs as a peer panel.
+      //
+      // DELUGE_SIM_HARDWARE selects the serial port (read by the SDK's host
+      // runtime); "auto" auto-detects the Deluge by its USB VID/PID. Replace it
+      // with an explicit port (e.g. "/dev/ttyACM0", "COM3") to pin one device. A
+      // missing/unopenable device is non-fatal — the sim runs GUI-only and warns.
+      "name": "Simulator + Hardware (CodeLLDB)",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": ["build", "--target=x86_64-unknown-linux-gnu"],
+        "filter": { "name": "__APP_NAME__", "kind": "bin" }
+      },
+      "args": [],
+      "env": { "DELUGE_SIM_HARDWARE": "auto" },
+      "cwd": "${workspaceFolder}"
+    },
+    {
       "name": "Debug (J-Link)",
       "type": "cortex-debug",
       "request": "launch",

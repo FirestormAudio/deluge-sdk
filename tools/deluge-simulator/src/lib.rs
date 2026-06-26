@@ -15,6 +15,7 @@ mod audio;
 mod display;
 mod headless;
 mod hardware;
+mod hardware_link;
 mod hardware_state;
 mod link;
 mod midi;
@@ -29,6 +30,7 @@ pub use headless::run_headless;
 use app::DelugeSimulator;
 use deluge_sim_link::SharedPanel;
 use deluge_sim_link::audio::{GuiEnds, HeapCons};
+use hardware_link::HardwareMirror;
 use link::{InProcessLink, LinkKind, PanelLink};
 
 /// The faceplate art, rasterised at launch.
@@ -52,15 +54,17 @@ fn run_app(
     link: LinkKind,
     audio_monitor: Option<HeapCons<[f32; 2]>>,
     volume: audio::Volume,
+    hardware: Option<HardwareMirror>,
 ) -> iced::Result {
     let svg = render_svg();
     // iced's init closure must be `Fn` (called once); hand the link + svg +
-    // monitor + volume through a Mutex<Option<_>> so the first call can `take()` them.
-    let init = std::sync::Mutex::new(Some((link, svg, audio_monitor, volume)));
+    // monitor + volume + hardware through a Mutex<Option<_>> so the first call can
+    // `take()` them.
+    let init = std::sync::Mutex::new(Some((link, svg, audio_monitor, volume, hardware)));
     iced::application(
         move || {
-            let (link, svg, mon, vol) = init.lock().unwrap().take().expect("init called once");
-            (DelugeSimulator::new(link, svg, mon, vol), iced::Task::none())
+            let (link, svg, mon, vol, hw) = init.lock().unwrap().take().expect("init called once");
+            (DelugeSimulator::new(link, svg, mon, vol, hw), iced::Task::none())
         },
         DelugeSimulator::update,
         DelugeSimulator::view,
@@ -92,8 +96,9 @@ pub fn run_connected(target: Option<&str>) -> Result<(), Box<dyn std::error::Err
         }
     };
     // No in-process audio over the protocol link, so no scope monitor; the
-    // volume knob is inert (nothing to attenuate).
-    run_app(link, None, audio::new_volume())?;
+    // volume knob is inert (nothing to attenuate). The `--hardware` mirror is
+    // in-process only (it re-encodes the shared panel), so none here.
+    run_app(link, None, audio::new_volume(), None)?;
     Ok(())
 }
 
@@ -114,8 +119,39 @@ pub fn run_in_process(panel: SharedPanel, gui_audio: GuiEnds) {
         audio::start(gui_audio, volume.clone(), audio::AudioConfig::from_env());
     // Host MIDI bridge: virtual ports ⇄ the panel (kept alive for the session).
     let _midi = midi::start(panel.clone());
+    // Optional physical Deluge control surface (`cargo deluge sim --hardware`,
+    // forwarded as `DELUGE_SIM_HARDWARE`). An empty value or `auto` auto-detects
+    // by USB VID/PID. A connect failure is non-fatal: warn and run GUI-only.
+    let hardware = connect_hardware(panel.clone());
     let link = LinkKind::InProcess(InProcessLink::new(panel));
-    if let Err(e) = run_app(link, Some(monitor), volume) {
+    if let Err(e) = run_app(link, Some(monitor), volume, hardware) {
         eprintln!("deluge-simulator: {e}");
+    }
+}
+
+/// Build the optional hardware control-surface mirror from `DELUGE_SIM_HARDWARE`.
+/// Returns `None` (and warns) when unset or when the device can't be opened.
+fn connect_hardware(panel: SharedPanel) -> Option<HardwareMirror> {
+    let spec = std::env::var("DELUGE_SIM_HARDWARE").ok()?;
+    let port = if spec.is_empty() || spec == "auto" {
+        match HardwareMirror::detect() {
+            Some(p) => p,
+            None => {
+                log::warn!("--hardware: no Deluge found by USB VID/PID");
+                return None;
+            }
+        }
+    } else {
+        spec
+    };
+    match HardwareMirror::connect(&port, panel) {
+        Ok(hw) => {
+            log::info!("hardware control surface on {port}");
+            Some(hw)
+        }
+        Err(e) => {
+            log::warn!("--hardware: could not open {port}: {e}");
+            None
+        }
     }
 }

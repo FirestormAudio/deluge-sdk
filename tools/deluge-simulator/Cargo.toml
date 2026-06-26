@@ -23,6 +23,9 @@ deluge-sim-link = { path = "../../crates/deluge-sim-link" }
 cpal = "0.18"
 # Host MIDI I/O bridge (virtual ports to/from the in-process panel).
 midir = "0.11"
+# Serial (USB-CDC) transport to a physical Deluge running controller-firmware,
+# used as an additional control surface for the in-process brain (`--hardware`).
+serialport = "4"
 # WAV read/write for the --audio-in / --audio-out file bridges.
 hound = "3.5"
 # PNG output for headless OLED golden-frame snapshots.
