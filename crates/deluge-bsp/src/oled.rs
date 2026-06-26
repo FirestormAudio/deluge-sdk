@@ -198,6 +198,52 @@ impl FrameBuffer {
     }
 }
 
+// ── embedded-graphics integration (optional) ──────────────────────────────────
+
+/// `DrawTarget`/`OriginDimensions` over the page-major [`FrameBuffer`], so the whole
+/// `embedded-graphics` ecosystem (text, fonts, shapes) draws straight onto it and the
+/// result is read back as the 768-byte hardware frame via [`FrameBuffer::as_bytes`].
+///
+/// This is the runtime-agnostic counterpart to `deluge-sdk`'s async `Oled` wrapper:
+/// it carries no panel I/O, so hosts that own their render loop (e.g. the spark
+/// simulator/engine) can render here on the host target and stream `as_bytes()` to the
+/// panel themselves. The surface is the full `128 × 48` panel; offset content down by
+/// [`VISIBLE_TOP`] to clear the faceplate bezel.
+#[cfg(feature = "embedded-graphics")]
+mod eg {
+    use super::{FrameBuffer, HEIGHT, WIDTH};
+    use embedded_graphics_core::draw_target::DrawTarget;
+    use embedded_graphics_core::geometry::{OriginDimensions, Point, Size};
+    use embedded_graphics_core::pixelcolor::BinaryColor;
+    use embedded_graphics_core::Pixel;
+
+    impl OriginDimensions for FrameBuffer {
+        #[inline]
+        fn size(&self) -> Size {
+            Size::new(WIDTH as u32, HEIGHT as u32)
+        }
+    }
+
+    impl DrawTarget for FrameBuffer {
+        type Color = BinaryColor;
+        type Error = core::convert::Infallible;
+
+        #[inline]
+        fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+        where
+            I: IntoIterator<Item = Pixel<Self::Color>>,
+        {
+            for Pixel(Point { x, y }, color) in pixels {
+                if x >= 0 && y >= 0 {
+                    // `set_pixel` bounds-checks the upper edge.
+                    self.set_pixel(x as usize, y as usize, color.is_on());
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
 // ── Text rendering (minimal 5×7 bitmap font) ──────────────────────────────────
 
 /// Minimal 5×7 bitmap text rendering for the OLED frame buffer.
@@ -710,5 +756,33 @@ mod tests {
             page_cmd_pos.is_some(),
             "SET PAGE ADDRESS (0x22) not found in init commands"
         );
+    }
+
+    #[cfg(feature = "embedded-graphics")]
+    #[test]
+    fn draw_target_writes_page_major() {
+        use embedded_graphics_core::draw_target::DrawTarget;
+        use embedded_graphics_core::geometry::{OriginDimensions, Point, Size};
+        use embedded_graphics_core::pixelcolor::BinaryColor;
+        use embedded_graphics_core::Pixel;
+
+        let mut fb = FrameBuffer::new();
+        assert_eq!(fb.size(), Size::new(WIDTH as u32, HEIGHT as u32));
+
+        // Drawing through the DrawTarget must land in the same page-major bytes
+        // `as_bytes()` reinterprets, so a host render is the hardware frame for free.
+        fb.draw_iter([
+            Pixel(Point::new(0, 0), BinaryColor::On),
+            Pixel(Point::new(127, 47), BinaryColor::On),
+            // Off-canvas pixels are silently dropped (no panic, no wrap).
+            Pixel(Point::new(-1, 5), BinaryColor::On),
+            Pixel(Point::new(200, 5), BinaryColor::On),
+        ])
+        .unwrap();
+
+        assert!(fb.get_pixel(0, 0));
+        assert!(fb.get_pixel(127, 47));
+        assert_eq!(fb.pages[0][0], 0b0000_0001);
+        assert_eq!(fb.pages[5][127], 0b1000_0000);
     }
 }

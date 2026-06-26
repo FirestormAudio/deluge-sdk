@@ -31,12 +31,18 @@ audio-irq = []
 ## SoC `rza1l_hal::spibsc` controller). Opt-in because only the app-loader writes
 ## to flash; gating it keeps it out of every other firmware's build.
 flash = []
+## Implement `embedded-graphics` `DrawTarget`/`OriginDimensions` for `oled::FrameBuffer`
+## so the page-major buffer is a runtime-agnostic draw surface (host + device) without
+## the async `deluge-sdk::Oled` wrapper. Used by hosts (e.g. spark) that render their
+## own UI into the frame buffer and read it back via `FrameBuffer::as_bytes`.
+embedded-graphics = ["dep:embedded-graphics-core"]
 
 [dependencies]
 rza1l-hal = { path = "../rza1l-hal", version = "0.1.0" }
 embedded-sdmmc = { version = "0.9", default-features = false, features = ["log"] }
 critical-section = { workspace = true }
 log = { workspace = true }
+embedded-graphics-core = { version = "0.4", optional = true }
 
 [target.'cfg(target_os = "none")'.dependencies]
 cortex-ar = { workspace = true }

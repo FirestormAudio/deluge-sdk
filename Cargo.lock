@@ -1355,6 +1355,7 @@ dependencies = [
  "embassy-usb",
  "embassy-usb-driver",
  "embassy-usb-host",
+ "embedded-graphics-core",
  "embedded-sdmmc",
  "log",
  "rza1l-hal",

@@ -172,6 +172,25 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> HMenu<'a, D> {
         .draw(self.d);
     }
 
+    /// Advance to the next column: bump the column index/count, report whether it
+    /// is focused, and give its visible slot x (`None` when outside the horizontal
+    /// scroll window). The layout backbone shared by every column kind — value
+    /// widgets, [`text_value`](Self::text_value), and [`placeholder`](Self::placeholder).
+    fn next_slot(&mut self) -> (Option<i32>, bool) {
+        let i = self.idx;
+        self.idx += 1;
+        self.cols = self.idx as u16;
+        let focused = i == self.state.cursor();
+        let scroll = self.state.scroll();
+        let max_visible = self.max_visible();
+        let slot_x = if i < scroll || i >= scroll + max_visible {
+            None
+        } else {
+            Some((i - scroll) as i32 * self.col_w())
+        };
+        (slot_x, focused)
+    }
+
     /// Column index + focus + visible slot x; applies an `Edit` delta to `value`.
     /// Returns `(visible_slot_x, focused, changed)`; `visible_slot_x` is `None`
     /// when the column is outside the horizontal scroll window.
@@ -180,10 +199,7 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> HMenu<'a, D> {
         value: &mut f32,
         range: &RangeInclusive<f32>,
     ) -> (Option<i32>, bool, bool) {
-        let i = self.idx;
-        self.idx += 1;
-        self.cols = self.idx as u16;
-        let focused = i == self.state.cursor();
+        let (slot_x, focused) = self.next_slot();
         let mut changed = false;
 
         if focused && let MenuInput::Edit(n) = self.pending {
@@ -197,13 +213,6 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> HMenu<'a, D> {
             self.pending = MenuInput::None;
         }
 
-        let scroll = self.state.scroll();
-        let max_visible = self.max_visible();
-        let slot_x = if i < scroll || i >= scroll + max_visible {
-            None
-        } else {
-            Some((i - scroll) as i32 * self.col_w())
-        };
         (slot_x, focused, changed)
     }
 
@@ -517,6 +526,68 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> HMenu<'a, D> {
             entered: false,
         }
     }
+
+    /// A text / enum read-out column: `text` centred in the widget band with the
+    /// `label` below it.
+    ///
+    /// Unlike the value widgets this has **no numeric binding** — it does not
+    /// consume `Edit`. It is for params whose value is a word (an enum variant, an
+    /// on/off toggle) rendered by a caller that owns the value and its cycling
+    /// (e.g. spark's menu engine driving a CLAP enum). It still takes part in
+    /// column layout and selection, so it highlights when focused like any column.
+    pub fn text_value(&mut self, label: &str, text: &str) -> Response {
+        let (slot, focused) = self.next_slot();
+        if let Some(x) = slot {
+            let inset = self.style.top_inset;
+            let cx = x + self.col_w() / 2;
+            let band_center = (inset + UNDERLINE_Y + 1 + inset + LABEL_Y - 2) / 2;
+            let h = self.style.item_font.height() as i32;
+            let style = TextStyle::new(self.style.item_font)
+                .with_alignment(Alignment::Center)
+                .with_color(BinaryColor::On);
+            let _ = draw_text(self.d, text, Point::new(cx, band_center - h / 2), style);
+            self.label(x, label, focused);
+        }
+        Response {
+            changed: false,
+            focused,
+            entered: false,
+        }
+    }
+
+    /// An empty-slot column: a dotted box marking an unused param slot (matching
+    /// the Deluge firmware's placeholder), occupying a column so neighbouring
+    /// columns lay out correctly. It carries no label and is not meant to be the
+    /// focused column.
+    pub fn placeholder(&mut self) {
+        let (slot, _focused) = self.next_slot();
+        if let Some(x) = slot {
+            self.draw_placeholder_box(x);
+        }
+    }
+
+    /// Dotted rectangle outline centred in the column's widget band.
+    fn draw_placeholder_box(&mut self, slot_x: i32) {
+        const DOT: i32 = 5;
+        let inset = self.style.top_inset;
+        let start_x = slot_x + 7;
+        let end_x = start_x + 17;
+        let start_y = inset + UNDERLINE_Y + 2; // just below the underline
+        let end_y = inset + LABEL_Y + 2; // a little past the label row
+
+        let mut x = start_x + 1;
+        while x < end_x {
+            let _ = Pixel(Point::new(x, start_y), BinaryColor::On).draw(self.d);
+            let _ = Pixel(Point::new(x, end_y), BinaryColor::On).draw(self.d);
+            x += DOT;
+        }
+        let mut y = start_y + 3;
+        while y < end_y {
+            let _ = Pixel(Point::new(start_x - 2, y), BinaryColor::On).draw(self.d);
+            let _ = Pixel(Point::new(end_x + 2, y), BinaryColor::On).draw(self.d);
+            y += DOT;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -611,6 +682,44 @@ mod tests {
         }
         assert_eq!(st.cursor(), 5);
         assert_eq!(st.scroll(), 2); // 4-wide window [2..6] keeps column 5 visible
+    }
+
+    #[test]
+    fn text_and_placeholder_columns_take_slots() {
+        // A page mixing a value column, a text/enum column, and trailing empties:
+        // every column kind must advance the layout so selection lands correctly.
+        let mut st = MenuState::new();
+        let mut cut = 0.5;
+        let mut render = |st: &mut MenuState, input: MenuInput| {
+            let mut d = NullTarget;
+            let style = MenuStyle {
+                top_inset: 0,
+                ..Default::default()
+            };
+            let mut ui = HMenu::begin(&mut d, st, input, &style);
+            ui.title("OSC");
+            let r0 = ui.knob("LEV", &mut cut, 0.0..=1.0);
+            let r1 = ui.text_value("WAVE", "SAW");
+            ui.placeholder();
+            ui.placeholder();
+            ui.end();
+            (r0, r1)
+        };
+
+        // 4 columns established (2 real + 2 placeholders).
+        let (_r0, _r1) = render(&mut st, MenuInput::None);
+        assert_eq!(st.rows_last(), 4);
+
+        // Focus starts on column 0 (the knob); the text column is not focused.
+        let (r0, r1) = render(&mut st, MenuInput::None);
+        assert!(r0.focused);
+        assert!(!r1.focused);
+
+        // Turn moves focus onto the text/enum column; it does not consume Edit.
+        let (r0, r1) = render(&mut st, MenuInput::Turn(1));
+        assert!(!r0.focused);
+        assert!(r1.focused);
+        assert!(!r1.changed);
     }
 
     #[test]
