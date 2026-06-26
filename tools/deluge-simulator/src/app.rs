@@ -7,6 +7,7 @@
 use crate::display::SimulatorDisplay;
 use crate::hardware::{HardwareButton, HardwareEncoder, HardwareLED};
 use crate::hardware_state::DelugeHardware;
+use crate::hardware_link::HardwareMirror;
 use crate::link::{self, LinkKind};
 use crate::pad_grid::PadGrid;
 use crate::rack::InstrumentRack;
@@ -57,6 +58,10 @@ pub struct DelugeSimulator {
     svg_background: Option<image::Handle>,
     /// How the panel is driven (protocol brain, in-process SDK app, or passive).
     link: LinkKind,
+    /// A physical Deluge attached over serial as an additional control surface,
+    /// mirroring the in-process brain (`--hardware`). `None` when not attached;
+    /// dropped if the device disconnects mid-session.
+    hardware: Option<HardwareMirror>,
     /// Stereo tap of the output audio (in-process link only) feeding the rack's
     /// L/R audio oscilloscopes. Drained each frame.
     audio_monitor: Option<HeapCons<[f32; 2]>>,
@@ -73,6 +78,7 @@ impl DelugeSimulator {
         svg_background: Option<image::Handle>,
         audio_monitor: Option<HeapCons<[f32; 2]>>,
         volume: crate::audio::Volume,
+        hardware: Option<HardwareMirror>,
     ) -> Self {
         let mut renderer = DynamicElementsRenderer::new(
             SimulatorDisplay::new(),
@@ -87,6 +93,7 @@ impl DelugeSimulator {
             rack: InstrumentRack::new(),
             svg_background,
             link,
+            hardware,
             audio_monitor,
             volume,
         }
@@ -96,6 +103,7 @@ impl DelugeSimulator {
         match message {
             SimulatorMessage::Tick => {
                 self.drain_inbound();
+                self.service_hardware();
                 // Drain the audio monitor (mono output tap) into the rack's audio
                 // scope history before sampling CV/gate for the same frame.
                 if let Some(mon) = self.audio_monitor.as_mut() {
@@ -178,6 +186,33 @@ impl DelugeSimulator {
             SimulatorMessage::ToggleRackCollapsed => self.rack.toggle_collapsed(),
         }
         Task::none()
+    }
+
+    /// Service the physical control surface (if attached): feed its input into
+    /// the brain like a GUI click, and push the brain's illumination back out so
+    /// the real OLED/pads/LEDs/CV-gate track the screen. Drops the mirror if the
+    /// device has disconnected.
+    fn service_hardware(&mut self) {
+        if self.hardware.is_none() {
+            return;
+        }
+        if !self.hardware.as_ref().unwrap().is_alive() {
+            eprintln!("deluge-simulator: hardware control surface disconnected");
+            self.hardware = None;
+            return;
+        }
+        // Drain input and push illumination while borrowing the mirror, then drop
+        // the borrow before forwarding input (which borrows `self` for `send`).
+        let input = {
+            let hw = self.hardware.as_mut().unwrap();
+            let input = hw.poll_input();
+            hw.retry_handshake();
+            hw.mirror();
+            input
+        };
+        for msg in input {
+            self.send(msg);
+        }
     }
 
     fn send(&self, msg: FromDeluge) {
