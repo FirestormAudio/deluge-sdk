@@ -43,7 +43,7 @@ pub use imode::{Frame, FrameOutput, GridUi, PadEvent, PadInput, PadMask, Rect, R
 pub use layer::{BlendMode, GridCompositor, GridLayer};
 pub use pad::{GRID_COLS, GRID_MAIN_COLS, GRID_ROWS, GRID_SIDE_COLS, Pad};
 pub use widgets::{
-    AutomationColor, BipolarAutomationColumn, CellPlaybackState, ClipCellComponent, KeyPress,
-    KeyboardLayout, NoteVelocityColumn, TextKeyboardComponent, UnipolarAutomationColumn,
-    draw_waveform,
+    AutomationColor, BipolarAutomationColumn, CellPlaybackState, ClipCellComponent, ClipGridDims,
+    ClipGridEvent, ClipGridState, KeyPress, KeyboardLayout, NoteVelocityColumn,
+    TextKeyboardComponent, UnipolarAutomationColumn, clip_grid, draw_waveform,
 };

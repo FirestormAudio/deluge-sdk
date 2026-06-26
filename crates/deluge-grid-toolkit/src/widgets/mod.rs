@@ -3,6 +3,7 @@
 
 pub mod automation_column;
 pub mod clip_cell;
+pub mod clip_grid;
 pub mod text_keyboard;
 pub mod waveform_display;
 
@@ -11,5 +12,6 @@ pub use automation_column::{
     bipolar_pad_value, unipolar_pad_value,
 };
 pub use clip_cell::{CellPlaybackState, ClipCellComponent};
+pub use clip_grid::{ClipGridDims, ClipGridEvent, ClipGridState, SHORT_PRESS_MS, clip_grid};
 pub use text_keyboard::{KeyPress, KeyboardLayout, TextKeyboardComponent};
 pub use waveform_display::draw_waveform;

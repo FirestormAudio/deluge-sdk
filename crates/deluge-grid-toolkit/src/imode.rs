@@ -234,9 +234,28 @@ pub struct Frame<'a> {
 }
 
 impl<'a> Frame<'a> {
-    /// This frame's pad input.
+    /// This frame's pad input. Note `events` here are in **global** coordinates;
+    /// inside a [`region`](Frame::region) use [`events`](Frame::events) for
+    /// local, region-filtered events.
     pub fn input(&self) -> &PadInput {
         self.input
+    }
+
+    /// This frame's press/release events, translated into the frame's **local**
+    /// coordinates and filtered to its region. Use this (not `input().events`)
+    /// for multi-touch widgets, where `interact` only reports one pad and raw
+    /// events are global.
+    pub fn events(&self) -> impl Iterator<Item = PadEvent> + '_ {
+        let clip = self.clip;
+        self.input.events.iter().filter_map(move |ev| {
+            clip.contains(ev.pad).then(|| PadEvent {
+                pad: Pad {
+                    row: ev.pad.row - clip.top,
+                    col: ev.pad.col - clip.left,
+                },
+                pressed: ev.pressed,
+            })
+        })
     }
 
     /// The caller-supplied timestamp for this frame.
@@ -569,6 +588,27 @@ mod tests {
 
         assert!(!top_hit, "press must not leak into the top pane");
         assert_eq!(bottom_local, Some(Pad::new(2, 2)), "press is local to the pane");
+    }
+
+    #[test]
+    fn region_events_are_local() {
+        let mut ui = GridUi::new();
+        ui.run(0, PadInput::new(), |_| {});
+
+        let mut input = PadInput::new();
+        input.press(Pad::new(5, 2)); // global
+
+        let locals = ui
+            .run(16, input, |f| {
+                let (_top, bottom) = f.split_rows(3); // bottom origin = global row 3
+                f.region(bottom, |p| {
+                    let v: alloc::vec::Vec<_> = p.events().map(|e| e.pad).collect();
+                    v
+                })
+            })
+            .painted()
+            .unwrap();
+        assert_eq!(locals, alloc::vec![Pad::new(2, 2)]); // 5 - 3 = local row 2
     }
 
     #[test]

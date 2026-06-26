@@ -175,9 +175,11 @@ impl ClipCellComponent {
     }
 
     /// Whether the cell is animating (pulsing). The caller should keep the
-    /// repaint gate open (e.g. `f.request_repaint_after(33)`) while true.
+    /// repaint gate open (e.g. `f.request_repaint_after(33)`) while true. An
+    /// empty slot never animates — it renders black regardless of selection.
     pub fn animating(&self) -> bool {
-        self.selected || self.playback.armed_for_launch || self.armed_for_recording
+        !self.is_empty()
+            && (self.selected || self.playback.armed_for_launch || self.armed_for_recording)
     }
 
     /// Paint the cell on `pad` and report interaction in one pass.
