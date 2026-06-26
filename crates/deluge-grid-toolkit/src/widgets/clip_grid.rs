@@ -34,6 +34,12 @@ pub struct ClipGridDims {
 /// current mode (launch / open / create / clone).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClipGridEvent {
+    /// A pad was just pressed (the press edge of a new primary gesture). Hosts
+    /// that act immediately on touch — select, create, launch — handle this; the
+    /// later [`Tap`](ClipGridEvent::Tap) is the short-release follow-up. A second
+    /// finger that becomes a [`Clone`](ClipGridEvent::Clone) target does not emit
+    /// `Press` (when the clone gesture is enabled).
+    Press { section: usize, track: usize },
     /// A pad was pressed and released within [`SHORT_PRESS_MS`].
     Tap { section: usize, track: usize },
     /// A pad was held for at least [`SHORT_PRESS_MS`].
@@ -43,6 +49,23 @@ pub enum ClipGridEvent {
         from: (usize, usize),
         to: (usize, usize),
     },
+}
+
+/// Per-call behaviour for [`clip_grid`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClipGridConfig {
+    /// Whether a second finger while one pad is held is a clone gesture
+    /// (suppressing the primary's tap/hold and emitting [`ClipGridEvent::Clone`]
+    /// on the target's release). When `false`, every press is independent: it
+    /// emits its own [`ClipGridEvent::Press`] and becomes the held cell — suited
+    /// to modes (e.g. macros) where multi-touch is many launches, not a clone.
+    pub clone: bool,
+}
+
+impl Default for ClipGridConfig {
+    fn default() -> Self {
+        Self { clone: true }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -70,6 +93,14 @@ pub struct ClipGridState {
 impl ClipGridState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The currently-held primary cell `(section, track)`, if any. Tracks the
+    /// active press across frames (through a hold, and while a clone target is
+    /// being chosen) until release — letting hosts drive encoder-while-held /
+    /// delete-held gestures without their own press bookkeeping.
+    pub fn held(&self) -> Option<(usize, usize)> {
+        self.press.map(|p| p.cell)
     }
 
     /// Set the scroll origin, clamped so the `win = (rows, cols)` window stays
@@ -100,6 +131,7 @@ pub fn clip_grid<F>(
     f: &mut Frame,
     state: &mut ClipGridState,
     dims: ClipGridDims,
+    config: ClipGridConfig,
     cell: F,
 ) -> Vec<ClipGridEvent, MAX_PAD_EVENTS>
 where
@@ -123,7 +155,15 @@ where
         };
         if ev.pressed {
             match state.press {
-                None => {
+                // Second finger while one is held, clone enabled → clone target;
+                // suppress the primary's tap/hold.
+                Some(ref mut p) if config.clone => {
+                    state.clone_target = Some(cell_pos);
+                    p.consumed = true;
+                }
+                // Primary press, or (clone disabled) an independent press: start a
+                // fresh press, select, and announce the press edge.
+                _ => {
                     state.press = Some(Press {
                         cell: cell_pos,
                         at_ms: now,
@@ -131,14 +171,13 @@ where
                         consumed: false,
                     });
                     state.selected = Some(cell_pos);
-                }
-                Some(ref mut p) => {
-                    // second finger → clone target; suppress the primary's tap/hold
-                    state.clone_target = Some(cell_pos);
-                    p.consumed = true;
+                    let _ = events.push(ClipGridEvent::Press {
+                        section: cell_pos.0,
+                        track: cell_pos.1,
+                    });
                 }
             }
-        } else if state.clone_target == Some(cell_pos) {
+        } else if config.clone && state.clone_target == Some(cell_pos) {
             if let Some(p) = state.press {
                 let _ = events.push(ClipGridEvent::Clone {
                     from: p.cell,
@@ -233,7 +272,7 @@ mod tests {
 
         // scroll (0,0): target at (row 5, col 9)
         ui.run(0, PadInput::new(), |f| {
-            clip_grid(f, &mut state, DIMS, cf);
+            clip_grid(f, &mut state, DIMS, ClipGridConfig::default(), cf);
         });
         assert_ne!(ui.grid().get_pad(5, 9), Color::BLACK);
         assert_eq!(ui.grid().get_pad(0, 0), Color::BLACK);
@@ -242,7 +281,7 @@ mod tests {
         state.scroll_to(2, 4, DIMS, (8, 16));
         ui.request_repaint();
         ui.run(16, PadInput::new(), |f| {
-            clip_grid(f, &mut state, DIMS, cf);
+            clip_grid(f, &mut state, DIMS, ClipGridConfig::default(), cf);
         });
         assert_ne!(ui.grid().get_pad(1, 7), Color::BLACK);
         assert_eq!(ui.grid().get_pad(5, 9), Color::BLACK);
@@ -268,15 +307,22 @@ mod tests {
         let mut input = PadInput::new();
         input.press(Pad::new(2, 3));
         let evs = ui
-            .run(0, input, |f| clip_grid(f, &mut state, DIMS, empty))
+            .run(0, input, |f| {
+                clip_grid(f, &mut state, DIMS, ClipGridConfig::default(), empty)
+            })
             .painted()
             .unwrap();
-        assert!(evs.is_empty()); // press alone is not a tap
+        // the press edge announces itself; the tap follows on release
+        assert_eq!(
+            evs.as_slice(),
+            &[ClipGridEvent::Press { section: 2, track: 3 }]
+        );
+        assert_eq!(state.held(), Some((2, 3)));
 
         let mut input = PadInput::new();
         input.release(Pad::new(2, 3));
         let evs = ui
-            .run(100, input, |f| clip_grid(f, &mut state, DIMS, empty))
+            .run(100, input, |f| clip_grid(f, &mut state, DIMS, ClipGridConfig::default(), empty))
             .painted()
             .unwrap();
         assert_eq!(
@@ -292,13 +338,13 @@ mod tests {
 
         let mut input = PadInput::new();
         input.press(Pad::new(1, 1));
-        ui.run(0, input, |f| clip_grid(f, &mut state, DIMS, empty));
+        ui.run(0, input, |f| clip_grid(f, &mut state, DIMS, ClipGridConfig::default(), empty));
         // the press should have scheduled a wake at the hold threshold
         assert_eq!(ui.next_repaint_at(), Some(SHORT_PRESS_MS));
 
         let evs = ui
             .run(SHORT_PRESS_MS, PadInput::new(), |f| {
-                clip_grid(f, &mut state, DIMS, empty)
+                clip_grid(f, &mut state, DIMS, ClipGridConfig::default(), empty)
             })
             .painted()
             .unwrap();
@@ -311,7 +357,7 @@ mod tests {
         ui.request_repaint();
         let evs = ui
             .run(SHORT_PRESS_MS + 100, PadInput::new(), |f| {
-                clip_grid(f, &mut state, DIMS, empty)
+                clip_grid(f, &mut state, DIMS, ClipGridConfig::default(), empty)
             })
             .painted()
             .unwrap();
@@ -325,18 +371,18 @@ mod tests {
 
         let mut i = PadInput::new();
         i.press(Pad::new(0, 0)); // source
-        ui.run(0, i, |f| clip_grid(f, &mut state, DIMS, empty));
+        ui.run(0, i, |f| clip_grid(f, &mut state, DIMS, ClipGridConfig::default(), empty));
 
         let mut i = PadInput::new();
         i.press(Pad::new(1, 2)); // target (second finger)
         i.held.set(Pad::new(0, 0), true);
-        ui.run(10, i, |f| clip_grid(f, &mut state, DIMS, empty));
+        ui.run(10, i, |f| clip_grid(f, &mut state, DIMS, ClipGridConfig::default(), empty));
 
         let mut i = PadInput::new();
         i.release(Pad::new(1, 2));
         i.held.set(Pad::new(0, 0), true);
         let evs = ui
-            .run(20, i, |f| clip_grid(f, &mut state, DIMS, empty))
+            .run(20, i, |f| clip_grid(f, &mut state, DIMS, ClipGridConfig::default(), empty))
             .painted()
             .unwrap();
         assert_eq!(
@@ -351,7 +397,7 @@ mod tests {
         let mut i = PadInput::new();
         i.release(Pad::new(0, 0));
         let evs = ui
-            .run(30, i, |f| clip_grid(f, &mut state, DIMS, empty))
+            .run(30, i, |f| clip_grid(f, &mut state, DIMS, ClipGridConfig::default(), empty))
             .painted()
             .unwrap();
         assert!(evs.is_empty());
@@ -366,11 +412,66 @@ mod tests {
         let mut input = PadInput::new();
         input.press(Pad::new(0, 0));
         // now=250 → pulse phase 0.25 so the selection blend is visible
-        ui.run(250, input, |f| clip_grid(f, &mut state, DIMS, cf));
+        ui.run(250, input, |f| clip_grid(f, &mut state, DIMS, ClipGridConfig::default(), cf));
 
         assert_eq!(state.selected, Some((0, 0)));
         let selected = ui.grid().get_pad(0, 0); // selected RED cell
         let plain = ui.grid().get_pad(1, 1); // identical unselected RED cell
         assert!(selected.g > plain.g, "selected cell should be brighter");
+    }
+
+    #[test]
+    fn held_tracks_press_and_clears_on_release() {
+        let mut state = ClipGridState::new();
+        let mut ui = GridUi::new();
+        assert_eq!(state.held(), None);
+
+        let mut input = PadInput::new();
+        input.press(Pad::new(3, 4));
+        ui.run(0, input, |f| {
+            clip_grid(f, &mut state, DIMS, ClipGridConfig::default(), empty)
+        });
+        assert_eq!(state.held(), Some((3, 4)));
+
+        let mut input = PadInput::new();
+        input.release(Pad::new(3, 4));
+        ui.run(50, input, |f| {
+            clip_grid(f, &mut state, DIMS, ClipGridConfig::default(), empty)
+        });
+        assert_eq!(state.held(), None);
+    }
+
+    #[test]
+    fn clone_disabled_makes_each_press_independent() {
+        let cfg = ClipGridConfig { clone: false };
+        let mut state = ClipGridState::new();
+        let mut ui = GridUi::new();
+
+        // First finger lands.
+        let mut i = PadInput::new();
+        i.press(Pad::new(0, 0));
+        let evs = ui
+            .run(0, i, |f| clip_grid(f, &mut state, DIMS, cfg, empty))
+            .painted()
+            .unwrap();
+        assert_eq!(
+            evs.as_slice(),
+            &[ClipGridEvent::Press { section: 0, track: 0 }]
+        );
+
+        // Second finger while the first is held → its own Press (no Clone), and
+        // it becomes the held cell.
+        let mut i = PadInput::new();
+        i.press(Pad::new(1, 2));
+        i.held.set(Pad::new(0, 0), true);
+        let evs = ui
+            .run(10, i, |f| clip_grid(f, &mut state, DIMS, cfg, empty))
+            .painted()
+            .unwrap();
+        assert_eq!(
+            evs.as_slice(),
+            &[ClipGridEvent::Press { section: 1, track: 2 }]
+        );
+        assert_eq!(state.held(), Some((1, 2)));
     }
 }

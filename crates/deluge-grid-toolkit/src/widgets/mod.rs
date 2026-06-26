@@ -15,7 +15,9 @@ pub use automation_column::{
     bipolar_pad_value, unipolar_pad_value,
 };
 pub use clip_cell::{CellPlaybackState, ClipCellComponent};
-pub use clip_grid::{ClipGridDims, ClipGridEvent, ClipGridState, SHORT_PRESS_MS, clip_grid};
+pub use clip_grid::{
+    ClipGridConfig, ClipGridDims, ClipGridEvent, ClipGridState, SHORT_PRESS_MS, clip_grid,
+};
 pub use clip_list::{ClipListEvent, ClipListState, clip_list};
 pub use clip_row::{ClipRowData, draw_clip_row};
 pub use sidebar::{SidebarRow, status_sidebar};
