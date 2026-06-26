@@ -148,6 +148,7 @@ compile-proves all of them on the firmware target).
 | [`clock_jacks`](examples/clock_jacks/) | clock I/O + jack detection |
 | [`audio_passthru`](examples/audio_passthru/) | a line-in audio effect |
 | [`audio_passthru_irq`](examples/audio_passthru_irq/) | the same, on the per-block IRQ clock |
+| [`additive_osc`](examples/additive_osc/) | additive synth with a C++/[Argon](https://github.com/stellar-aria/argon) (NEON SIMD) DSP core over FFI — needs `ARGON_SRC` (see its README) |
 | [`sd_demo`](examples/sd_demo/) | SD-card write/read round-trip |
 | [`usb_log`](examples/usb_log/) | stream `log` output over USB — no probe |
 

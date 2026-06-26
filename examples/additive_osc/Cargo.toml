@@ -1,0 +1,30 @@
+[package]
+publish = false  # binary crate — not for crates.io
+name = "additive_osc"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Deluge SDK example: a polyphonic additive synth whose DSP core is C++/Argon (NEON SIMD) called over FFI."
+
+[[bin]]
+name = "additive_osc"
+test = false
+
+[dependencies]
+deluge = { path = "../../crates/deluge-sdk", package = "deluge-sdk" }
+# Run the audio (DSP) and UI (pads/input) halves concurrently on the one app
+# task. Pure futures — no arch-specific executor feature, so it builds for both
+# the device and the desktop simulator.
+embassy-futures = { workspace = true }
+# Paces the OLED scope refresh.
+embassy-time = { workspace = true }
+
+[build-dependencies]
+# Compiles the C++/Argon additive-oscillator core (csrc/additive.cpp) into the
+# app: arm-none-eabi-g++ (NEON) for the device, host g++ (SIMDe) for the sim.
+cc = "1"
+
+[features]
+default = []
+## Opt-in RTT (SEGGER) logging over a debug probe.
+rtt = ["deluge/rtt"]

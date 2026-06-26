@@ -32,6 +32,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "366ffbaa4442f4684d91e2cd7c5ea7c4ed8add41959a31447066e279e432b618"
 
 [[package]]
+name = "additive_osc"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "deluge-sdk",
+ "embassy-futures",
+ "embassy-time",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
