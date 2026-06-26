@@ -30,6 +30,7 @@ pub mod color;
 pub mod component;
 mod float_ext;
 mod grid;
+pub mod imode;
 pub mod layer;
 pub mod pad;
 pub mod palette;
@@ -40,6 +41,7 @@ pub use color::ColorExt;
 pub use component::{Component, FlexibleComponent, Size};
 pub use deluge_bsp::rgb::Color;
 pub use grid::{Grid, GridRgb};
+pub use imode::{Frame, FrameOutput, GridUi, PadEvent, PadInput, PadMask, Rect, Response};
 pub use layer::{BlendMode, GridCompositor, GridLayer};
 pub use pad::{GRID_COLS, GRID_MAIN_COLS, GRID_ROWS, GRID_SIDE_COLS, Pad};
 pub use widgets::{
