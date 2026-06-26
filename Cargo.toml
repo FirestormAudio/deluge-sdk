@@ -16,6 +16,7 @@ members = [
   "crates/deluge-fixedpoint",
   "crates/deluge-fonts",
   "crates/deluge-ui-toolkit",
+  "crates/deluge-grid-toolkit",
   "crates/deluge-protocol",
   "examples/blinky",
   "examples/oled_hello",
@@ -83,6 +84,7 @@ fixedpoint = { package = "deluge-fixedpoint", path = "crates/deluge-fixedpoint",
 # into; the permissive `deluge` facade must NOT depend on these).
 deluge-fonts = { path = "crates/deluge-fonts", version = "0.1.0" }
 deluge-ui-toolkit = { path = "crates/deluge-ui-toolkit", version = "0.1.0" }
+deluge-grid-toolkit = { path = "crates/deluge-grid-toolkit", version = "0.1.0" }
 
 [profile.release]
 opt-level = "s"

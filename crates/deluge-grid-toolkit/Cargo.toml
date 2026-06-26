@@ -1,0 +1,35 @@
+[package]
+name = "deluge-grid-toolkit"
+version.workspace = true
+edition.workspace = true
+authors = ["Firestorm Community"]
+description = "Reusable, resizable UI components for the Deluge 18×8 RGB pad grid"
+license = "GPL-3.0-or-later"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+categories = ["embedded", "no-std", "graphics"]
+keywords = ["deluge", "grid", "pads", "ui", "rgb"]
+
+# docs.rs builds on the host; the crate is host-buildable (no device-only deps).
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+# Canonical `Color`, `PadLeds`, and `COLS`/`ROWS` for the pad grid. The plain
+# colour type lives in the permissive BSP; the rich colour maths is the
+# `ColorExt` trait in this (GPL) crate.
+deluge-bsp = { path = "../deluge-bsp", version = "0.1.0" }
+# no_std floating-point math (sin/cos/abs/round/…) for HSV and animations.
+libm = { version = "0.2", default-features = false }
+# Alloc-free fixed-capacity buffers.
+heapless = "0.9"
+# IDs on clip-cell data (no_std, no serde needed).
+uuid = { version = "1", default-features = false }
+
+[features]
+default = []
+## SIMD-accelerated colour lerp and waveform min/max (nightly `core::simd` +
+## ARM NEON intrinsics). Off by default so the crate builds on stable; a scalar
+## fallback is always available.
+simd = []

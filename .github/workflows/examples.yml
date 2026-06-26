@@ -17,6 +17,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Checkout Argon
+        uses: actions/checkout@v7
+        with:
+          repository: stellar-aria/argon
+          path: argon
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
@@ -28,4 +34,6 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Compile-prove examples
+        env:
+          ARGON_SRC: ${{ github.workspace }}/argon
         run: ./tools/build-examples.sh

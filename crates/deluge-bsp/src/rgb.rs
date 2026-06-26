@@ -18,6 +18,102 @@ pub const ROWS: usize = 8;
 /// Column-pairs sent to the PIC (`COLS / 2`).
 const PAIRS: usize = COLS / 2;
 
+/// An RGB colour (0–255 per channel).
+///
+/// The canonical colour type for the Deluge pad grid. Kept deliberately minimal
+/// here; richer colour maths (blending, HSV-from-float, hue ramps, dimming) lives
+/// in the GPL `deluge-grid-toolkit` as a `ColorExt` trait so the permissive SDK
+/// type stays lean and dependency-free.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Color {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
+impl Color {
+    /// All channels off.
+    pub const BLACK: Color = Color::rgb(0, 0, 0);
+    /// Full white.
+    pub const WHITE: Color = Color::rgb(255, 255, 255);
+    pub const RED: Color = Color::rgb(255, 0, 0);
+    pub const GREEN: Color = Color::rgb(0, 255, 0);
+    pub const BLUE: Color = Color::rgb(0, 0, 255);
+    pub const YELLOW: Color = Color::rgb(255, 255, 0);
+    pub const CYAN: Color = Color::rgb(0, 255, 255);
+    pub const MAGENTA: Color = Color::rgb(255, 0, 255);
+    pub const ORANGE: Color = Color::rgb(255, 96, 0);
+
+    /// A colour from raw 8-bit channels.
+    #[inline]
+    pub const fn rgb(r: u8, g: u8, b: u8) -> Color {
+        Color { r, g, b }
+    }
+
+    /// A grey shade with all channels set to `brightness`.
+    #[inline]
+    pub const fn monochrome(brightness: u8) -> Color {
+        Color {
+            r: brightness,
+            g: brightness,
+            b: brightness,
+        }
+    }
+
+    /// Dim a colour by right-shifting each channel by `level` (÷2^`level`).
+    ///
+    /// Kept here (rather than in the toolkit's `ColorExt`) because it is a
+    /// trivial const operation needed to build palette colour constants in
+    /// `const` contexts, where trait methods cannot be used.
+    #[inline]
+    pub const fn dim(self, level: u8) -> Color {
+        Color {
+            r: self.r >> level,
+            g: self.g >> level,
+            b: self.b >> level,
+        }
+    }
+
+    /// Scale all channels by `factor`/255 (brightness). `255` = unchanged,
+    /// `0` = off, `128` ≈ half.
+    #[inline]
+    pub const fn scale(self, factor: u8) -> Color {
+        Color {
+            r: ((self.r as u16 * factor as u16) / 255) as u8,
+            g: ((self.g as u16 * factor as u16) / 255) as u8,
+            b: ((self.b as u16 * factor as u16) / 255) as u8,
+        }
+    }
+
+    /// A colour from hue/saturation/value, each 0–255 (`h` wraps the colour
+    /// wheel). Handy for rainbows.
+    pub fn hsv(h: u8, s: u8, v: u8) -> Color {
+        if s == 0 {
+            return Color { r: v, g: v, b: v };
+        }
+        let h6 = (h as u32 * 6) >> 8; // sector 0–5
+        let f = (h as u32 * 6) & 0xFF; // fractional part 0–255
+        let p = ((v as u32 * (255 - s as u32)) >> 8) as u8;
+        let q = ((v as u32 * (255 - ((s as u32 * f) >> 8))) >> 8) as u8;
+        let t = ((v as u32 * (255 - ((s as u32 * (255 - f)) >> 8))) >> 8) as u8;
+        let (r, g, b) = match h6 {
+            0 => (v, t, p),
+            1 => (q, v, p),
+            2 => (p, v, t),
+            3 => (p, q, v),
+            4 => (t, p, v),
+            _ => (v, p, q),
+        };
+        Color { r, g, b }
+    }
+
+    /// The raw `[r, g, b]` channels.
+    #[inline]
+    pub const fn to_rgb(self) -> [u8; 3] {
+        [self.r, self.g, self.b]
+    }
+}
+
 /// An RGB pad-LED frame buffer.
 ///
 /// Index with [`set`](PadLeds::set) using `x` 0–17, `y` 0–7 (matching
