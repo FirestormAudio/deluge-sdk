@@ -1,6 +1,7 @@
 # `deluge-audio-graph` vs. glicol_synth — capability gap analysis
 
-**Status:** reference note, not a plan. Companion to
+**Status:** reference note. Written as an evaluation; the items it raised have
+since been built (see the priority table at the end). Companion to
 [`audio-graph-vs-scsynth.md`](audio-graph-vs-scsynth.md). Written 2026-08-31
 against `crates/deluge-audio-graph` at commit `79201c3` and
 [glicol] `0317db2` (`rs/synth`, workspace version `0.14.0-dev`, last commit
@@ -51,7 +52,7 @@ changing*; we optimise for *the patch running*.
 
 ## What glicol has that we don't
 
-### GL1 — Sink-driven topological evaluation, with dead-branch culling — *supersedes part of G4*
+### GL1 — Sink-driven topological evaluation, with dead-branch culling — ✅ **DONE**
 
 `process` resets a `DfsPostOrder` over the **reversed** graph from the
 destination node and walks it (`graph.rs:143-145`, in `process`, `graph.rs:133`). Two consequences we don't
@@ -77,7 +78,28 @@ deliberate feedback case rather than the primary ordering mechanism.
 Reachability culling is the same pass: mark from the root bus backwards while
 sorting, skip unmarked nodes in the render loop.
 
-### GL2 — Incremental graph update from a source description — *strictly beyond G3*
+**Resolved** (`arena.rs`, `Arena::sort`). Kahn's algorithm in place, no
+allocation, run from `render_block` when the graph is dirty — so a whole patch
+build costs one sort, not one per command. Stable: it always takes the earliest
+ready node in the current order, so parallel chains keep their authored order
+and a `move_before`/`move_after` that respects dependencies survives. Cycles
+keep their existing relative order (their order is what decides where the loop's
+one-block delay falls); self-edges and `Input::Bus` reads are not treated as
+dependencies, both being one block delayed by design.
+
+`Move{Before,After}` is now an override rather than the primary mechanism: it
+applies immediately and holds until the graph's shape changes again. The old
+`move_after_fixes_a_stale_by_one_block_read` test could no longer pass — the
+engine repairs that order itself — and was replaced by one pinning the full new
+contract.
+
+Culling shipped as **opt-in** (`Engine::set_cull_unreachable`), default off, and
+should stay that way: the engine cannot see what the host reads (`node_output`,
+`fill_usb`, a prefetch cursor), so culling by default would silently freeze a
+node someone is legitimately reading. glicol can only get away with it because
+its output is *defined* as one destination node.
+
+### GL2 — Incremental graph update from a source description — ✅ **DONE**
 
 `update_with_code` (`rs/main/src/lib.rs:172`) parses new source, **diffs the new
 AST against the old**, and applies only the delta: nodes whose `Component` is
@@ -121,6 +143,38 @@ editor's Run calls `sim_reset()` and rebuilds the project from scratch, so every
 ⌘↵ tears down the graph and drops audio. M3/M4 of the web-editor plan are done
 and shipping. That is glicol's exact workflow, live in this repo, with the
 click.
+
+**Resolved.** `Cmd::BeginUpdate` advances an epoch that each `NewNode` stamps;
+`Cmd::EndUpdate` frees every live node still carrying an older one. Inside an
+update, `NewNode` on a live id with the same kind keeps the node and its DSP
+state; a different kind replaces it. Host-side, `deluge-wren-core` gained
+`begin_update()` / `end_update()` — `reset()` minus the reset — and
+`re_running_a_script_under_an_update_emits_the_identical_command_stream` pins
+the deterministic-id claim: the second run's command stream is byte-identical
+to the first.
+
+Three things that came out of building it, none of them predicted by the glicol
+reading:
+
+- **The sweep needs no retire list.** A node the new patch omits has no path to
+  an output any more — omission is what severed it — so there is no audible tail
+  to protect. It reuses the existing `Cmd::Free` path verbatim, so a swept node
+  is never cleaned up less thoroughly than an explicitly freed one.
+- **The real hazard was bookkeeping, not audio.** Sweeping an envelope node
+  leaves `VoiceAllocator` lanes waiting on a `VoiceDone` that can never
+  arrive — G1's bug returning through the update path. `Event::Freed` reports
+  each swept node and the allocator treats a freed gate as permanently reported,
+  for waiting lanes and later notes alike.
+- **Two idempotency bugs that only an update path exposes.** `bus_write_gains`
+  appended unconditionally, so a re-emitted `BusWrite` stacked a second entry
+  and added 6 dB per edit; `Cmd::BindTable` overwrote a binding without
+  releasing the pooled region it held, leaking a wavetable pyramid per edit.
+  Both are now idempotent. The pooled fix lives at the rebind seam rather than
+  in a host-side handle cache, which cannot be made safe without refcounting the
+  pool.
+
+Still open: mid-script *insertions* renumber every later id, so `(id, kind)`
+matching reattaches state to the wrong node. That is what GL6 names are for.
 
 ### GL3 — Musical time is an engine-level concept
 
@@ -191,20 +245,29 @@ cheap. Second, it stops being cosmetic the moment GL2 lands — stable keys are
 what make an insertion in the middle of a script survive an incremental update
 instead of shifting every subsequent id and reattaching state to the wrong node.
 
-### GL7 — Typed errors from the control surface
+### GL7 — Typed errors from the control surface — ✅ **DONE**
 
 `update_with_code` returns `Result<(), EngineError>` with parse spans, and
 `clean_up` rolls back the partially-built graph on failure (`main/src/lib.rs:557`).
 Our `Cmd` surface is infallible-by-silence: capacity exhaustion returns `false`
 from `Arena::create`, a dangling `Input::Node` renders silence. That's the right
 call for the audio thread, but there's no channel by which the *host* learns
-that the patch it just built is missing three nodes. Now that `event.rs` exists,
-a `Event::CmdFailed { cmd_seq, reason }` is nearly free.
+that the patch it just built is missing three nodes.
+
+**Resolved.** `Event::CmdFailed { node, reason }` with
+`CmdError::{CreateFailed, DeadNode, UnsupportedRate}`, emitted by the commands
+that shape the graph. Performance-rate commands (`Gate`, `Trigger`,
+`GateVoice`, `TriggerVoice`, `StreamFill`) stay silent deliberately: they arrive
+at note rate, and a host bug there would flood the fixed queue and evict the
+envelope-completion events the voice allocator depends on.
 
 ### GL8 — Assorted
 
 - Sample rate is a runtime broadcast (`Message::SetSampleRate`); ours is fixed
   at `Engine::new` (`engine.rs:92`).
+- The engine now has a free-running sample clock (`Engine::sample_time`) — the
+  prerequisite for G7 that GL3 exposed. Still not a transport: tempo stays in
+  firmware, and a host converts bars or milliseconds on its own side.
 - `send_msg_to_all` (`context.rs:256`) — no broadcast `Cmd` on our side.
 - Arbitrary per-node channel counts (`multi_chan_node`, `graph.rs:101`); we are
   mono / stereo / `VOICES`-wide and nothing else. Only relevant if we ever want
@@ -331,24 +394,26 @@ the host learns its patch didn't fully build costs one variant.
 Only the changes relative to the scsynth note's table. Everything not listed is
 unchanged.
 
-The four `Cmd`-surface items below want to be **one change**, landed before the
-first production `Engine<…>` instantiation freezes the API. G2 (control rate)
-follows: it is still the larger CPU win, but it touches kernels rather than the
-`Cmd` surface, so it is the one that can wait.
+The four `Cmd`-surface items below were landed as **one branch**, before the
+first production `Engine<…>` instantiation freezes the API.
 
-| # | Item | Value | Effort | Change |
+| # | Item | Value | Effort | Status |
 |---|------|-------|--------|--------|
-| **P2.5a** | sample counter (`u64` on `Engine`) | — | trivial | **new**, from GL3; a prerequisite for G7, not a feature |
-| **P2.5b** | GL7 — `Event::CmdFailed` | low-med | trivial | **new**; `event.rs` already carries it |
-| **P2.5c** | **G11 — topological sort on mutation + reachability culling** | high | low | **new**, from GL1; makes G4 a guarantee and saves per-block work |
-| **P2.5d** | **GL2 — epoch mark-and-sweep patch update** | **high** | low-med | **replaces G3**; identity is already solved, so this is far cheaper than P4 implied |
-| P3 | G2 — control rate | high | med | unchanged — glicol has no control rate either, so it is a second data point, not a counterexample |
-| — | GL6 — Wren-side name→id map | med | low | follow-on to GL2; **no engine change**, makes mid-script edits sound |
-| — | GL5 — bounded `Kind::Expr` | low | med | **new**; filed, not scheduled |
+| ~~P2.5a~~ | ~~sample counter (`u64` on `Engine`)~~ | — | trivial | ✅ **done** — `Engine::sample_time`; unblocks G7 |
+| ~~P2.5b~~ | ~~GL7 — `Event::CmdFailed`~~ | low-med | trivial | ✅ **done** — three `CmdError` reasons |
+| ~~P2.5c~~ | ~~G11 — topological sort on mutation~~ | high | low | ✅ **done** — `Arena::sort`; culling opt-in |
+| ~~P2.5d~~ | ~~GL2 — epoch mark-and-sweep patch update~~ | **high** | low-med | ✅ **done** — engine + `deluge-wren-core` plumbing |
+| **P3** | G2 — control rate | high | med | ✅ **done for width-1 nodes** (`c2ef2c6`); poly/stereo still open |
+| **P4** | GL6 — Wren-side name→id map | med | low | **next** — no engine change; without it a mid-script insert reattaches state to the wrong node |
+| P5 | Switch the editor's Run to `begin_update` | med | low | product-facing; `sim.ts` still calls `sim_reset()` |
+| P6 | G7 — scheduled commands | med | med | now unblocked by the sample clock |
+| — | GL5 — bounded `Kind::Expr` | low | med | filed, not scheduled |
 | — | GL3 — tempo/patterns in-engine | — | high | **declined** — transport stays in firmware |
 | — | GL4/GL8 — wider inputs, broadcast, runtime SR, N-channel | low | — | unchanged, host-side, or YAGNI |
 
-G7 (scheduled commands) keeps its P6 slot, now unblocked by P2.5a. G3 as
-originally specced — instantiate-N templates — is retired in favour of P2.5d;
-if template instantiation is ever wanted, it falls out of the same id-relocation
-machinery.
+Landed as `09af3a0` (sample clock + `CmdFailed`), `5bb968e` (G11), `cf180e9`
+(GL2), `cfc2f9e` (pooled-table rebind), `9dc01e9` (Wren `begin_update`).
+
+G3 as originally specced — instantiate-N templates — is retired in favour of
+P2.5d; if template instantiation is ever wanted, it falls out of the same
+id-relocation machinery.
