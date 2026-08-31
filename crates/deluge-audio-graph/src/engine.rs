@@ -170,6 +170,25 @@ impl<
         self.arena.node_mut(id)?.input_mut(port)
     }
 
+    /// Move `node` so it evaluates immediately before `target`. `false` if
+    /// either id is not live, or if they are equal. Takes effect next render.
+    pub fn move_before(&mut self, node: NodeId, target: NodeId) -> bool {
+        self.arena.move_before(node, target)
+    }
+
+    /// Move `node` so it evaluates immediately after `target`. `false` if
+    /// either id is not live, or if they are equal. Takes effect next render.
+    pub fn move_after(&mut self, node: NodeId, target: NodeId) -> bool {
+        self.arena.move_after(node, target)
+    }
+
+    /// Current eval order, as `NodeId` raw values. Eval order is creation
+    /// order as modified by `move_before` / `move_after`; a node reading a
+    /// source that appears later here sees that source's *previous* block.
+    pub fn eval_order(&self) -> &[u16] {
+        self.arena.eval_order()
+    }
+
     /// Apply one control-rate `Cmd`, mutating the arena/engine state it names.
     pub fn apply(&mut self, cmd: crate::cmd::Cmd) {
         use crate::cmd::Cmd;
@@ -270,6 +289,12 @@ impl<
                 Some(eq) => eq.set_params(freq, gain_db, q, eq_type),
                 None => self.master_eq = Some(MasterEq::new(freq, gain_db, q, eq_type)),
             },
+            Cmd::MoveBefore { node, target } => {
+                self.arena.move_before(node, target);
+            }
+            Cmd::MoveAfter { node, target } => {
+                self.arena.move_after(node, target);
+            }
             Cmd::Free { node } => {
                 // Free a pooled table region (if bound) BEFORE reclaiming the
                 // node's arena slot: `table_src()` reads through the node,
@@ -1745,6 +1770,128 @@ mod tests {
             (d_shifted - 0.2).abs() < 0.05,
             "width=0.2 broadcast ⇒ ~0.2 duty, got {d_shifted}"
         );
+    }
+
+    // ── G4b: reordering ───────────────────────────────────────────────────
+
+    #[test]
+    fn move_after_fixes_a_stale_by_one_block_read() {
+        // Build the chain 0 → 1 → 2 in the WRONG creation order (0, 2, 1), so
+        // node 2 reads node 1's slot before node 1 has written it this block —
+        // the one-block-stale hazard that eval-order-is-creation-order implies.
+        // `MoveAfter` repairs it without rebuilding any node.
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        let add = |e: &mut ME, id: u16, src: Input, k: f32| {
+            e.apply(Cmd::NewNode {
+                node: NodeId(id),
+                kind: Kind::Add,
+                args: [src, Input::Const(k), Input::Const(0.0)],
+            });
+        };
+        add(&mut e, 0, Input::Const(1.0), 0.0); // → 1.0
+        add(
+            &mut e,
+            2,
+            Input::Node {
+                node: NodeId(1),
+                port: 0,
+            },
+            0.0,
+        ); // → node1
+        add(
+            &mut e,
+            1,
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            10.0,
+        ); // → 11.0
+
+        assert_eq!(e.eval_order(), &[0, 2, 1]);
+        e.render_block();
+        assert_eq!(e.node_output(NodeId(1), 0)[0], 11.0);
+        assert_eq!(
+            e.node_output(NodeId(2), 0)[0],
+            0.0,
+            "reads node 1's slot before node 1 wrote it: stale"
+        );
+        e.render_block();
+        assert_eq!(
+            e.node_output(NodeId(2), 0)[0],
+            11.0,
+            "still one block behind, just no longer zero"
+        );
+
+        // Repair the order; node 2 now sees node 1's current block.
+        e.apply(Cmd::MoveAfter {
+            node: NodeId(2),
+            target: NodeId(1),
+        });
+        assert_eq!(e.eval_order(), &[0, 1, 2]);
+        // Change node 1's value so a stale read would be visibly the old 11.0.
+        *e.node_input_mut(NodeId(1), 1).unwrap() = Input::Const(20.0); // node1 → 21.0
+        e.render_block();
+        assert_eq!(e.node_output(NodeId(1), 0)[0], 21.0);
+        assert_eq!(
+            e.node_output(NodeId(2), 0)[0],
+            21.0,
+            "same block, not the previous one"
+        );
+    }
+
+    #[test]
+    fn reordering_preserves_bus_routing_and_output() {
+        // Bus writes are keyed by source `Input`, not eval position, so moving
+        // a routed node must not drop or duplicate its contribution.
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        for (id, v) in [(0u16, 0.25f32), (1, 0.5)] {
+            e.apply(Cmd::NewNode {
+                node: NodeId(id),
+                kind: Kind::Add,
+                args: [Input::Const(v), Input::Const(0.0), Input::Const(0.0)],
+            });
+            e.apply(Cmd::BusWrite {
+                src: Input::Node {
+                    node: NodeId(id),
+                    port: 0,
+                },
+                bus: BusId(0),
+            });
+        }
+        e.apply(Cmd::SetRoot { bus: BusId(0) });
+        let mut out = [StereoFrame::default(); 8];
+        let sil = [StereoFrame::default(); 8];
+        e.render(&mut out, &sil);
+        let before = out[0].l;
+        assert!((before - 0.75).abs() < 1e-6);
+
+        e.apply(Cmd::MoveBefore {
+            node: NodeId(1),
+            target: NodeId(0),
+        });
+        e.render(&mut out, &sil);
+        assert!(
+            (out[0].l - before).abs() < 1e-6,
+            "routing survives the move: {} vs {before}",
+            out[0].l
+        );
+    }
+
+    #[test]
+    fn move_of_a_freed_node_is_a_noop() {
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        for id in 0..3u16 {
+            e.create(NodeId(id), Kind::Saw);
+        }
+        e.apply(Cmd::Free { node: NodeId(1) });
+        assert!(!e.move_after(NodeId(1), NodeId(0)));
+        assert!(!e.move_after(NodeId(0), NodeId(1)));
+        assert_eq!(e.eval_order(), &[0, 2]);
+        e.render_block(); // must not panic on a stale order entry
     }
 
     // ── G1: engine → host events ──────────────────────────────────────────

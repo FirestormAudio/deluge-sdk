@@ -105,6 +105,20 @@ pub enum Cmd {
         q: f32,
         eq_type: u8,
     },
+    /// Move `node` so it evaluates immediately before `target` (scsynth
+    /// `/n_before`). No-op if either id is not live, or if they are equal.
+    MoveBefore {
+        node: NodeId,
+        target: NodeId,
+    },
+    /// Move `node` so it evaluates immediately after `target` (scsynth
+    /// `/n_after`). The insert-into-a-chain primitive: `NewNode` appends to the
+    /// end of eval order, then `MoveAfter` places it onto its upstream without
+    /// rebuilding anything downstream.
+    MoveAfter {
+        node: NodeId,
+        target: NodeId,
+    },
     Free {
         node: NodeId,
     },

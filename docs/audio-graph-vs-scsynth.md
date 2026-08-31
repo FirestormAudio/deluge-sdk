@@ -140,16 +140,33 @@ scsynth's `/d_recv` + `/s_new` split is a better factoring and is what makes
 "load a preset" cheap. A recorded `Cmd` sequence with `NodeId` relocation would
 be a serviceable first version.
 
-### G4 — Eval order is creation order, and cannot be changed
+### G4 — Eval order is creation order — ✅ **DONE**
 
 **Nothing sorts.** `Arena::create` appends to the order list and `free` does a
 stable compaction. Correct signal flow is entirely the author's obligation — to
 create nodes in dependency order.
 
-*(G4a resolved: the doc comments in `lib.rs`, `arena.rs`, and `engine.rs` used
+**G4a resolved.** The doc comments in `lib.rs`, `arena.rs`, and `engine.rs` used
 to claim "topological" order, which read as a promise the engine sorts for you.
-They now say creation order and spell out the consequence. G4b — reordering
-commands — is still open.)*
+They now say creation order and spell out the consequence.
+
+**G4b resolved.** `Arena::move_before` / `move_after` (scsynth `/n_before`,
+`/n_after`), surfaced as `Cmd::MoveBefore` / `Cmd::MoveAfter` and as direct
+`Engine` methods returning `bool`; `Engine::eval_order()` exposes the current
+order for inspection. Reordering is a remove-then-insert on the existing
+`order` list — every other node keeps its relative position.
+
+The move is purely local to eval order: output slots, bus writes, stream
+cursors and envelope history are all keyed by `NodeId`, so nothing else has to
+move with it (pinned by `reordering_does_not_disturb_output_slots` and
+`reordering_preserves_bus_routing_and_output`). Inserting into an existing
+chain is now `NewNode` (lands at the end) then `MoveAfter` onto its upstream —
+no teardown of anything downstream.
+
+Still true, and still the author's obligation: **nothing sorts.** A node that
+reads a source appearing later in eval order sees that source's *previous*
+block. `move_after_fixes_a_stale_by_one_block_read` demonstrates both the
+hazard and the repair.
 
 Consequences:
 
@@ -236,8 +253,8 @@ not calendar time.
 |---|-----|-------|--------|-------|
 | ~~P0~~ | ~~G4a — fix misleading doc comments~~ | med | trivial | ✅ **done** |
 | ~~P1~~ | ~~G1 — engine→host event channel~~ | **high** | **low** | ✅ **done** — `event.rs` |
-| **P2** | G4b — node reordering commands | high | low | **next** — order list is already explicit |
-| **P3** | G2 — control rate | high | med | Exploits existing `as_const()` paths |
+| ~~P2~~ | ~~G4b — node reordering commands~~ | high | low | ✅ **done** — `Move{Before,After}` |
+| **P3** | G2 — control rate | high | med | **next** — exploits existing `as_const()` paths |
 | **P4** | G3 — graph templates / SynthDef | high | med-high | Gateway to the OSC front-end |
 | **P5** | G6 — control buses | med | med | **Blocked by P3 (G2)** |
 | **P6** | G7 — scheduled commands | med | med | Independent; matters for sequencing |
@@ -272,15 +289,18 @@ was plumbing it out. Shipped:
 15 new tests. See the G1 entry above for the two deliberate limits (held lanes
 are not reclaimed; overflow degrades to the old stealing behaviour).
 
-**P2 · G4b — node reordering. ← next.** Cheaper than it looks: eval order is already an
-explicit `[u16; NODES]` list with a stable-compaction path (`arena.rs:74-78`),
-so insertion is a memmove within an array we already maintain. Add
-`Cmd::MoveBefore { node, target }` / `MoveAfter`. This is what makes live
-patching safe — today, inserting an effect mid-chain means tearing down and
-rebuilding everything downstream, and a freed-then-recreated id silently gains a
-one-block delay.
+**P2 · G4b — node reordering. ✅ done.** As predicted, cheap: eval order was
+already an explicit `[u16; NODES]` list with a stable-compaction path, so the
+move is a remove-then-insert on an array we already maintain. Shipped
+`Arena::move_before` / `move_after`, `Cmd::MoveBefore` / `MoveAfter`, matching
+`Engine` methods returning `bool`, and `Engine::eval_order()`.
 
-**P3 · G2 — control rate.** The cheap path avoids touching any kernel signature:
+Invalid moves (dead node, dead target, self-move) return `false` and change
+nothing, in keeping with the crate's no-panic discipline. 12 new tests,
+including the behavioural one that builds a chain in the wrong creation order,
+shows the read is a block stale, and repairs it with a single `MoveAfter`.
+
+**P3 · G2 — control rate. ← next.** The cheap path avoids touching any kernel signature:
 
 1. Mark a node as control-rate (a flag on `Node`, or a `Kind` property).
 2. The engine renders it with a 1-sample block instead of `BLOCK`.

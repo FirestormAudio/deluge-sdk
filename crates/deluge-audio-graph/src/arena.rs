@@ -121,6 +121,61 @@ impl<const NODES: usize, const OUTS: usize> Arena<NODES, OUTS> {
     pub fn eval_order(&self) -> &[u16] {
         &self.order[..self.order_len]
     }
+
+    fn order_pos(&self, id: u16) -> Option<usize> {
+        self.order[..self.order_len].iter().position(|&x| x == id)
+    }
+
+    /// Move `node` so it evaluates immediately before `target`.
+    ///
+    /// `false` (and no change) if either id is not live or the two are equal.
+    /// Every other node keeps its relative order. Output slots, bus writes,
+    /// stream cursors and envelope history are all keyed by `NodeId`, not by
+    /// eval position, so nothing else has to move with it.
+    pub fn move_before(&mut self, node: NodeId, target: NodeId) -> bool {
+        self.reorder(node, target, false)
+    }
+
+    /// Move `node` so it evaluates immediately after `target`. This is the
+    /// insert-into-an-existing-chain primitive: create the new node (it lands
+    /// at the end of eval order), then `move_after` it onto its upstream.
+    pub fn move_after(&mut self, node: NodeId, target: NodeId) -> bool {
+        self.reorder(node, target, true)
+    }
+
+    /// Remove `node` from the eval-order list and re-insert it adjacent to
+    /// `target`. Takes effect on the next `render_block`.
+    fn reorder(&mut self, node: NodeId, target: NodeId, after: bool) -> bool {
+        if node.0 == target.0 {
+            return false;
+        }
+        let (Some(from), Some(tpos0)) = (self.order_pos(node.0), self.order_pos(target.0)) else {
+            return false;
+        };
+
+        // Remove `node`, shifting the tail left.
+        let v = self.order[from];
+        for i in from..self.order_len - 1 {
+            self.order[i] = self.order[i + 1];
+        }
+        self.order_len -= 1;
+
+        // The removal shifts `target` left by one iff it sat after `node`.
+        // Computing this is exact, so no re-search and no infallible lookup.
+        let tpos = if tpos0 > from { tpos0 - 1 } else { tpos0 };
+        let dest = if after { tpos + 1 } else { tpos };
+
+        // Insert at `dest`, shifting the tail right. `order_len` was just
+        // decremented, so the write at `order_len` is always in bounds.
+        let mut i = self.order_len;
+        while i > dest {
+            self.order[i] = self.order[i - 1];
+            i -= 1;
+        }
+        self.order[dest] = v;
+        self.order_len += 1;
+        true
+    }
 }
 
 impl<const NODES: usize, const OUTS: usize> Default for Arena<NODES, OUTS> {
@@ -178,6 +233,112 @@ mod tests {
         a.free(NodeId(99)); // out of range: must not panic, must be a no-op
         assert_eq!(a.eval_order(), &[0]);
         assert_eq!(a.out_base(NodeId(0)), Some(0));
+    }
+
+    // ── G4b: eval-order reordering ────────────────────────────────────────
+
+    fn chain(n: u16) -> A {
+        let mut a = A::new();
+        for i in 0..n {
+            assert!(a.create(NodeId(i), Kind::Saw));
+        }
+        a
+    }
+
+    #[test]
+    fn move_after_inserts_into_a_chain() {
+        // The motivating case: a node created last (so it evaluates last) is
+        // dropped in immediately after its upstream, without touching anything
+        // downstream of it.
+        let mut a = chain(4); // [0,1,2,3]
+        assert!(a.move_after(NodeId(3), NodeId(0)));
+        assert_eq!(a.eval_order(), &[0, 3, 1, 2]);
+    }
+
+    #[test]
+    fn move_before_inserts_into_a_chain() {
+        let mut a = chain(4);
+        assert!(a.move_before(NodeId(3), NodeId(1)));
+        assert_eq!(a.eval_order(), &[0, 3, 1, 2]);
+    }
+
+    #[test]
+    fn moves_work_in_both_directions() {
+        // Backward (later → earlier) and forward (earlier → later) hit
+        // different shift paths in `reorder`.
+        let mut a = chain(5);
+        assert!(a.move_after(NodeId(4), NodeId(1))); // backward
+        assert_eq!(a.eval_order(), &[0, 1, 4, 2, 3]);
+        assert!(a.move_after(NodeId(0), NodeId(3))); // forward
+        assert_eq!(a.eval_order(), &[1, 4, 2, 3, 0]);
+        assert!(a.move_before(NodeId(3), NodeId(1))); // backward to head
+        assert_eq!(a.eval_order(), &[3, 1, 4, 2, 0]);
+    }
+
+    #[test]
+    fn move_to_head_and_tail() {
+        let mut a = chain(4);
+        assert!(a.move_before(NodeId(2), NodeId(0)));
+        assert_eq!(a.eval_order(), &[2, 0, 1, 3], "to head");
+        assert!(a.move_after(NodeId(0), NodeId(3)));
+        assert_eq!(a.eval_order(), &[2, 1, 3, 0], "to tail");
+    }
+
+    #[test]
+    fn adjacent_move_is_stable() {
+        let mut a = chain(3);
+        assert!(a.move_after(NodeId(1), NodeId(0))); // already there
+        assert_eq!(a.eval_order(), &[0, 1, 2]);
+        assert!(a.move_before(NodeId(1), NodeId(2))); // also already there
+        assert_eq!(a.eval_order(), &[0, 1, 2]);
+    }
+
+    #[test]
+    fn invalid_moves_are_refused_and_change_nothing() {
+        let mut a = chain(3);
+        assert!(!a.move_after(NodeId(0), NodeId(0)), "self-move");
+        assert!(!a.move_after(NodeId(9), NodeId(0)), "dead node");
+        assert!(!a.move_after(NodeId(0), NodeId(9)), "dead target");
+        a.free(NodeId(1));
+        assert!(!a.move_before(NodeId(1), NodeId(0)), "freed node");
+        assert!(!a.move_before(NodeId(0), NodeId(1)), "freed target");
+        assert_eq!(a.eval_order(), &[0, 2]);
+    }
+
+    #[test]
+    fn reordering_does_not_disturb_output_slots() {
+        // Output runs are keyed by NodeId, not by eval position: a move must
+        // not renumber them, or every existing `Input::Node` edge would break.
+        let mut a = A::new();
+        a.create(NodeId(0), Kind::Saw);
+        a.create(NodeId(1), Kind::Split2);
+        a.create(NodeId(2), Kind::Saw);
+        let bases = [
+            a.out_base(NodeId(0)),
+            a.out_base(NodeId(1)),
+            a.out_base(NodeId(2)),
+        ];
+        assert!(a.move_before(NodeId(2), NodeId(0)));
+        assert_eq!(a.eval_order(), &[2, 0, 1]);
+        assert_eq!(
+            [
+                a.out_base(NodeId(0)),
+                a.out_base(NodeId(1)),
+                a.out_base(NodeId(2))
+            ],
+            bases
+        );
+    }
+
+    #[test]
+    fn free_after_move_compacts_the_moved_order() {
+        let mut a = chain(4);
+        a.move_after(NodeId(3), NodeId(0)); // [0,3,1,2]
+        a.free(NodeId(3));
+        assert_eq!(a.eval_order(), &[0, 1, 2]);
+        // A recreated id still lands at the end — move is what places it.
+        assert!(a.create(NodeId(3), Kind::Saw));
+        assert_eq!(a.eval_order(), &[0, 1, 2, 3]);
     }
 
     #[test]
