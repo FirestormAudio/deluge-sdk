@@ -451,6 +451,29 @@ impl Node {
         }
     }
 
+    /// Envelope-completion state, as a bitmask of finished lanes.
+    ///
+    /// `None` for kinds that carry no envelope. For the mono envelopes
+    /// (`Env`/`Adsr`) bit 0 tracks the single envelope; for the poly envelopes
+    /// bit `v` tracks lane `v`. The engine diffs this against the previous
+    /// block's mask and emits [`crate::Event`]s on the rising edge — a fresh
+    /// envelope reads as idle, so the level alone is not a completion signal.
+    pub fn idle_mask(&self) -> Option<u32> {
+        match &self.state {
+            State::Ar(a) => Some(a.is_idle() as u32),
+            State::Adsr(a) => Some(a.is_idle() as u32),
+            State::PolyAr(a) => Some(a.idle_mask()),
+            State::PolyAdsr(a) => Some(a.idle_mask()),
+            _ => None,
+        }
+    }
+
+    /// `true` if this kind reports completion per voice lane rather than as a
+    /// single mono envelope — selects `VoiceDone` over `Done`.
+    pub fn is_poly_env(&self) -> bool {
+        matches!(self.state, State::PolyAr(_) | State::PolyAdsr(_))
+    }
+
     /// Set a non-signal scalar parameter. For oscillators, `param 0` = feedback.
     pub fn set_param(&mut self, param: u8, value: f32) {
         match &mut self.state {

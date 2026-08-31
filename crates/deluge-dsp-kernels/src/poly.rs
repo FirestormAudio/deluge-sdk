@@ -212,6 +212,18 @@ impl PolyAr {
             self.voices[v].trigger();
         }
     }
+    /// Bit `v` set iff lane `v`'s envelope has fully decayed. A fresh `PolyAr`
+    /// reports every lane idle, so consumers must diff against a previous mask
+    /// and act on the rising edge (see `deluge-audio-graph`'s `Event`).
+    pub fn idle_mask(&self) -> u32 {
+        let mut m = 0;
+        for (v, a) in self.voices.iter().enumerate() {
+            if a.is_idle() {
+                m |= 1 << v;
+            }
+        }
+        m
+    }
     /// attack/release mono controls; writes a voice-interleaved env tile.
     pub fn process(&mut self, attack: In, release: In, dt: f32, out: &mut [f32]) {
         let n = out.len() / VOICES;
@@ -251,6 +263,17 @@ impl PolyAdsr {
         if v < VOICES {
             self.voices[v].trigger();
         }
+    }
+    /// Bit `v` set iff lane `v`'s envelope has fully decayed. See
+    /// [`PolyAr::idle_mask`] for the edge-vs-level caveat.
+    pub fn idle_mask(&self) -> u32 {
+        let mut m = 0;
+        for (v, a) in self.voices.iter().enumerate() {
+            if a.is_idle() {
+                m |= 1 << v;
+            }
+        }
+        m
     }
     pub fn set_sustain(&mut self, s: f32) {
         for a in &mut self.voices {

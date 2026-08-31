@@ -1,5 +1,6 @@
 //! The block-rendering engine. Owns the arena and the per-slot output arena and
-//! evaluates nodes in topological (eval-order) order, a block at a time.
+//! evaluates nodes in eval order — i.e. **creation order**, not a topological
+//! sort — a block at a time.
 //!
 //! ## Borrow model (spec §3.5)
 //! The output arena is one `UnsafeCell<[[f32; BLOCK]; OUTS]>`. Each `render_block`
@@ -8,9 +9,9 @@
 //! writes the node's own slot-run. Memory-safety comes from this copy-out
 //! discipline: every read is copied into `scratch` before the mutable-write
 //! `unsafe` deref is created, so the write borrow never overlaps a read. This
-//! holds regardless of eval order — topological order is what makes the
-//! *values* correct (so a node sees its inputs' current-block outputs), not
-//! what makes the borrow sound.
+//! holds regardless of eval order — creating nodes in dependency order is what
+//! makes the *values* correct (so a node sees its inputs' current-block
+//! outputs), not what makes the borrow sound.
 
 use core::cell::UnsafeCell;
 
@@ -70,6 +71,13 @@ pub struct Engine<
     // Opt-in master EQ on the root bus, applied at the render seam between the
     // DC-block and the limiter. `None` = disabled (render path byte-unchanged).
     master_eq: Option<MasterEq>,
+    // Envelope-completion tracking (G1). Previous block's `Node::idle_mask` per
+    // node slot; diffed at the end of `render_block` so completion is reported
+    // as a rising edge, never a level. Seeded on create (see `seed_prev_idle`)
+    // so a freshly created envelope never announces a release it never played.
+    prev_idle: [u32; NODES],
+    // Engine → host events drained by the host after render. See `event.rs`.
+    events: crate::event::EventQueue,
 }
 
 impl<
@@ -103,7 +111,38 @@ impl<
             master_limiter: None,
             master_dcblock: None,
             master_eq: None,
+            prev_idle: [0; NODES],
+            events: crate::event::EventQueue::new(),
         }
+    }
+
+    /// Seed a node's previous-idle mask from its current state, so a freshly
+    /// created envelope (which reads as idle before its first gate) does not
+    /// register a spurious rising edge on its first render.
+    fn seed_prev_idle(&mut self, id: NodeId) {
+        let idx = id.0 as usize;
+        if idx < NODES {
+            self.prev_idle[idx] = self.arena.node(id).and_then(|n| n.idle_mask()).unwrap_or(0);
+        }
+    }
+
+    /// Dequeue one engine event, oldest first. Drain until `None` after each
+    /// `render` to keep the queue from overflowing.
+    pub fn pop_event(&mut self) -> Option<crate::event::Event> {
+        self.events.pop()
+    }
+
+    /// Drain every pending event through `f`, oldest first.
+    pub fn drain_events(&mut self, mut f: impl FnMut(crate::event::Event)) {
+        while let Some(ev) = self.events.pop() {
+            f(ev);
+        }
+    }
+
+    /// Events lost to queue overflow since construction. Non-zero means the
+    /// host is not draining every block, or `EVENT_QUEUE` is undersized.
+    pub fn events_dropped(&self) -> u16 {
+        self.events.dropped()
     }
 
     pub fn pool_alloc(&mut self, len: usize) -> Option<crate::pool::PoolHandle> {
@@ -120,7 +159,11 @@ impl<
     }
 
     pub fn create(&mut self, id: NodeId, kind: crate::node::Kind) -> bool {
-        self.arena.create(id, kind)
+        let ok = self.arena.create(id, kind);
+        if ok {
+            self.seed_prev_idle(id);
+        }
+        ok
     }
 
     pub fn node_input_mut(&mut self, id: NodeId, port: u8) -> Option<&mut Input> {
@@ -141,6 +184,7 @@ impl<
                             }
                         }
                     }
+                    self.seed_prev_idle(node);
                 }
             }
             Cmd::SetInput { node, port, src } => {
@@ -238,6 +282,9 @@ impl<
                 let idx = node.0 as usize;
                 if idx < NODES {
                     self.stream_state[idx] = None;
+                    // A recreated id re-seeds this on create; clearing here
+                    // keeps a dead slot from spuriously edging in between.
+                    self.prev_idle[idx] = 0;
                 }
                 self.arena.free(node);
                 // Invalidate this node's bus writes so a reused id inherits no
@@ -265,6 +312,8 @@ impl<
                 self.bus_sends_len = 0;
                 self.bus_l = [[0.0; BLOCK]; BUSES];
                 self.bus_r = [[0.0; BLOCK]; BUSES];
+                self.prev_idle = [0; NODES];
+                self.events.clear();
             }
         }
     }
@@ -437,6 +486,50 @@ impl<
                 if let Some(n) = self.arena.node_mut(id) {
                     n.process_resolved(&ins, self.dt, &mut view, pool_region);
                 }
+            }
+        }
+
+        self.collect_events(&order[..live]);
+    }
+
+    /// Diff every live node's envelope-completion mask against last block's and
+    /// enqueue an [`crate::Event`] per rising (not-idle → idle) lane.
+    ///
+    /// Rising-edge only: an envelope reads as idle both before its first gate
+    /// and after its release decays, so a level would announce completions that
+    /// never happened. `seed_prev_idle` covers the create-time case.
+    fn collect_events(&mut self, order: &[u16]) {
+        for &raw in order {
+            let id = NodeId(raw);
+            let idx = raw as usize;
+            if idx >= NODES {
+                continue;
+            }
+            // Disjoint field borrows: `self.arena` (shared) vs `self.prev_idle`
+            // / `self.events` (mutable) — same discipline as the render loop.
+            let (mask, poly) = match self.arena.node(id) {
+                Some(n) => match n.idle_mask() {
+                    Some(m) => (m, n.is_poly_env()),
+                    None => continue, // not an envelope kind
+                },
+                None => continue,
+            };
+            let rising = mask & !self.prev_idle[idx];
+            self.prev_idle[idx] = mask;
+            if rising == 0 {
+                continue;
+            }
+            if poly {
+                for v in 0..VOICES {
+                    if rising & (1 << v) != 0 {
+                        self.events.push(crate::event::Event::VoiceDone {
+                            node: id,
+                            voice: v as u8,
+                        });
+                    }
+                }
+            } else if rising & 1 != 0 {
+                self.events.push(crate::event::Event::Done { node: id });
             }
         }
     }
@@ -1652,6 +1745,201 @@ mod tests {
             (d_shifted - 0.2).abs() < 0.05,
             "width=0.2 broadcast ⇒ ~0.2 duty, got {d_shifted}"
         );
+    }
+
+    // ── G1: engine → host events ──────────────────────────────────────────
+
+    /// Render blocks until `f` reports done or `max` blocks elapse; returns the
+    /// blocks consumed. Envelope releases take many blocks to decay.
+    fn render_until(
+        e: &mut Engine<64, 8, 40, 4, 45056, 2048>,
+        max: usize,
+        mut f: impl FnMut(&mut Engine<64, 8, 40, 4, 45056, 2048>) -> bool,
+    ) -> usize {
+        for n in 0..max {
+            e.render_block();
+            if f(e) {
+                return n + 1;
+            }
+        }
+        max
+    }
+
+    type EvE = Engine<64, 8, 40, 4, 45056, 2048>;
+
+    fn poly_env(e: &mut EvE) {
+        e.create(NodeId(0), Kind::PolyAr);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.0005); // fast attack
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.001); // fast release
+    }
+
+    #[test]
+    fn fresh_envelope_emits_no_event() {
+        // A newly created envelope reads as Idle. If completion were reported as
+        // a level rather than a rising edge, this would announce a release that
+        // never happened. `seed_prev_idle` is what prevents it.
+        let mut e = EvE::new(48_000.0);
+        poly_env(&mut e);
+        for _ in 0..8 {
+            e.render_block();
+        }
+        assert_eq!(e.pop_event(), None, "fresh envelope must stay silent");
+        assert_eq!(e.events_dropped(), 0);
+    }
+
+    #[test]
+    fn poly_release_completion_emits_voice_done_once() {
+        let mut e = EvE::new(48_000.0);
+        poly_env(&mut e);
+        e.apply(Cmd::GateVoice {
+            node: NodeId(0),
+            voice: 3,
+            on: true,
+        });
+        // Held: attack then sustain, never idle → no event.
+        for _ in 0..16 {
+            e.render_block();
+        }
+        assert_eq!(e.pop_event(), None, "a held voice has not completed");
+
+        e.apply(Cmd::GateVoice {
+            node: NodeId(0),
+            voice: 3,
+            on: false,
+        });
+        render_until(&mut e, 200, |e| !e.events.is_empty());
+
+        assert_eq!(
+            e.pop_event(),
+            Some(crate::event::Event::VoiceDone {
+                node: NodeId(0),
+                voice: 3
+            })
+        );
+        // Rising edge only: the lane stays idle but must not re-announce.
+        for _ in 0..32 {
+            e.render_block();
+        }
+        assert_eq!(
+            e.pop_event(),
+            None,
+            "idle is a level, completion is an edge"
+        );
+    }
+
+    #[test]
+    fn only_the_released_lane_reports() {
+        let mut e = EvE::new(48_000.0);
+        poly_env(&mut e);
+        for v in [1u8, 5] {
+            e.apply(Cmd::GateVoice {
+                node: NodeId(0),
+                voice: v,
+                on: true,
+            });
+        }
+        for _ in 0..16 {
+            e.render_block();
+        }
+        e.apply(Cmd::GateVoice {
+            node: NodeId(0),
+            voice: 5,
+            on: false,
+        });
+        render_until(&mut e, 200, |e| !e.events.is_empty());
+
+        let mut got = [0u8; 8];
+        let mut n = 0;
+        e.drain_events(|ev| {
+            if let crate::event::Event::VoiceDone { voice, .. } = ev {
+                got[n] = voice;
+                n += 1;
+            }
+        });
+        assert_eq!(&got[..n], &[5], "lane 1 is still held");
+    }
+
+    #[test]
+    fn mono_envelope_reports_done_not_voice_done() {
+        let mut e = EvE::new(48_000.0);
+        e.create(NodeId(0), Kind::Env);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.0005);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.001);
+        e.apply(Cmd::Gate {
+            node: NodeId(0),
+            on: true,
+        });
+        for _ in 0..16 {
+            e.render_block();
+        }
+        e.apply(Cmd::Gate {
+            node: NodeId(0),
+            on: false,
+        });
+        render_until(&mut e, 200, |e| !e.events.is_empty());
+        assert_eq!(
+            e.pop_event(),
+            Some(crate::event::Event::Done { node: NodeId(0) })
+        );
+    }
+
+    #[test]
+    fn non_envelope_kinds_never_emit() {
+        let mut e = EvE::new(48_000.0);
+        e.create(NodeId(0), Kind::Saw);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(220.0);
+        e.create(NodeId(1), Kind::Lpf);
+        *e.node_input_mut(NodeId(1), 1).unwrap() = Input::Const(800.0);
+        for _ in 0..32 {
+            e.render_block();
+        }
+        assert_eq!(e.pop_event(), None);
+    }
+
+    #[test]
+    fn freed_node_does_not_edge_on_a_reused_slot() {
+        // Free a released envelope, then recreate the id as a fresh envelope.
+        // The new node must not inherit the old slot's idle history.
+        let mut e = EvE::new(48_000.0);
+        poly_env(&mut e);
+        e.apply(Cmd::GateVoice {
+            node: NodeId(0),
+            voice: 0,
+            on: true,
+        });
+        for _ in 0..8 {
+            e.render_block();
+        }
+        e.apply(Cmd::Free { node: NodeId(0) });
+        e.drain_events(|_| {});
+        poly_env(&mut e); // same id, fresh PolyAr
+        for _ in 0..16 {
+            e.render_block();
+        }
+        assert_eq!(e.pop_event(), None);
+    }
+
+    #[test]
+    fn reset_clears_pending_events_and_history() {
+        let mut e = EvE::new(48_000.0);
+        poly_env(&mut e);
+        e.apply(Cmd::GateVoice {
+            node: NodeId(0),
+            voice: 2,
+            on: true,
+        });
+        for _ in 0..16 {
+            e.render_block();
+        }
+        e.apply(Cmd::GateVoice {
+            node: NodeId(0),
+            voice: 2,
+            on: false,
+        });
+        render_until(&mut e, 200, |e| !e.events.is_empty());
+        assert!(!e.events.is_empty());
+        e.apply(Cmd::Reset);
+        assert_eq!(e.pop_event(), None, "Reset drops queued events");
     }
 
     #[test]

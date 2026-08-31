@@ -1,8 +1,12 @@
 //! Node + output-slot lifecycle. Node slots are indexed by `NodeId`. Output
 //! slots are a separate index space (engine-internal) allocated first-fit and
-//! reclaimed on free. An explicit eval-order list keeps topological order valid
+//! reclaimed on free.
+//!
+//! An explicit eval-order list records **creation order** and keeps it stable
 //! across free/reuse (memory order no longer equals eval order once slots are
-//! recycled — see spec §3.5).
+//! recycled — see spec §3.5). Nothing here sorts: `create` appends and `free`
+//! stable-compacts, so a freed-then-recreated `NodeId` moves to the *end* of
+//! eval order. Building a patch in dependency order is the author's obligation.
 
 use crate::node::Kind;
 use crate::{Node, NodeId};
