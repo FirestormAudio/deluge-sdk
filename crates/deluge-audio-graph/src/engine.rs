@@ -327,6 +327,20 @@ impl<
         }
     }
 
+    /// Is any live node bound to this pooled table region?
+    ///
+    /// A linear scan rather than a refcount: regions are few, binding is a
+    /// build-time act, and a count would be one more thing to keep honest
+    /// across `Free`, the update sweep and rebinding.
+    fn pooled_region_in_use(&self, h: crate::pool::PoolHandle) -> bool {
+        (0..NODES).any(|i| {
+            self.arena
+                .node(NodeId(i as u16))
+                .and_then(|n| n.table_src())
+                .is_some_and(|t| matches!(t, crate::node::TableSrc::Pooled(x) if x == h))
+        })
+    }
+
     /// Record that `node` belongs to the patch as of the current epoch.
     fn stamp(&mut self, node: NodeId) {
         let idx = node.0 as usize;
@@ -465,10 +479,24 @@ impl<
                 None => self.fail(node, CmdError::DeadNode),
             },
             Cmd::BindTable { node, src } => {
+                // Rebinding releases the pooled region this node held, unless
+                // another live node still holds it. Without this, a patch
+                // update — which re-uploads and re-binds a surviving
+                // wavetable node's table on every run — leaks one pyramid per
+                // edit and exhausts the pool in a handful of them.
+                let prev = self.arena.node(node).and_then(|n| n.table_src());
                 if let Some(n) = self.arena.node_mut(node) {
                     n.bind_table(src);
                 } else {
                     self.fail(node, CmdError::DeadNode);
+                    return;
+                }
+                if let Some(crate::node::TableSrc::Pooled(old)) = prev {
+                    let rebound_to_itself =
+                        matches!(src, crate::node::TableSrc::Pooled(h) if h == old);
+                    if !rebound_to_itself && !self.pooled_region_in_use(old) {
+                        self.pool.free(old);
+                    }
                 }
             }
             Cmd::Gate { node, on } => {
@@ -4209,5 +4237,113 @@ mod tests {
         e.apply(write);
         e.render(&mut out, &[]);
         assert_eq!(out[0].l, once, "the second write replaced, not stacked");
+    }
+
+    // ── Pooled-table rebinding (GL2 pool hygiene) ────────────────────────
+
+    /// Allocate a pooled pyramid region, as the runtime upload path does.
+    fn upload(e: &mut E) -> crate::pool::PoolHandle {
+        let compact_len = deluge_dsp_kernels::wavetable::COMPACT_LEN;
+        let h = e.pool_alloc(compact_len).expect("pool room");
+        let mut base = [0.0f32; mipgen::N];
+        for (i, s) in base.iter_mut().enumerate() {
+            *s = 2.0 * (i as f32 / mipgen::N as f32) - 1.0;
+        }
+        mipgen::build_pyramid_flat_compact(&base, e.pool_slice_mut(h));
+        h
+    }
+
+    #[test]
+    fn rebinding_a_pooled_table_releases_the_region_it_replaced() {
+        // Under an incremental update a surviving wavetable node is re-bound to
+        // a freshly uploaded table on every run. Without releasing the region
+        // it held, the pool leaks one pyramid per edit and exhausts in a
+        // handful of them.
+        let mut e = E::new(48_000.0);
+        let first = upload(&mut e);
+        e.create(NodeId(0), Kind::Wavetable);
+        e.apply(Cmd::BindTable {
+            node: NodeId(0),
+            src: TableSrc::Pooled(first),
+        });
+        let second = upload(&mut e);
+        e.apply(Cmd::BindTable {
+            node: NodeId(0),
+            src: TableSrc::Pooled(second),
+        });
+        // First-fit: the freed region is the lowest free run, so the next
+        // allocation of the same size hands back exactly that handle.
+        assert_eq!(
+            e.pool_alloc(deluge_dsp_kernels::wavetable::COMPACT_LEN),
+            Some(first),
+            "the replaced region went back to the pool"
+        );
+    }
+
+    #[test]
+    fn rebinding_keeps_a_region_another_node_still_uses() {
+        // Two nodes sharing one table: rebinding one must not reclaim the
+        // region out from under the other.
+        let mut e = E::new(48_000.0);
+        let shared = upload(&mut e);
+        for id in [0u16, 1] {
+            e.create(NodeId(id), Kind::Wavetable);
+            e.apply(Cmd::BindTable {
+                node: NodeId(id),
+                src: TableSrc::Pooled(shared),
+            });
+        }
+        let other = upload(&mut e);
+        e.apply(Cmd::BindTable {
+            node: NodeId(0),
+            src: TableSrc::Pooled(other),
+        });
+        assert_ne!(
+            e.pool_alloc(deluge_dsp_kernels::wavetable::COMPACT_LEN),
+            Some(shared),
+            "node 1 still holds it"
+        );
+    }
+
+    #[test]
+    fn rebinding_to_a_static_table_also_releases_the_pooled_region() {
+        let mut e = E::new(48_000.0);
+        let h = upload(&mut e);
+        e.create(NodeId(0), Kind::Wavetable);
+        e.apply(Cmd::BindTable {
+            node: NodeId(0),
+            src: TableSrc::Pooled(h),
+        });
+        e.apply(Cmd::BindTable {
+            node: NodeId(0),
+            src: TableSrc::Static(deluge_dsp_kernels::wavetable::TableId(0)),
+        });
+        assert_eq!(
+            e.pool_alloc(deluge_dsp_kernels::wavetable::COMPACT_LEN),
+            Some(h)
+        );
+    }
+
+    #[test]
+    fn rebinding_a_node_to_the_same_region_keeps_it() {
+        // The idempotent case: re-emitting an unchanged binding must not free
+        // the very region it is re-binding.
+        let mut e = E::new(48_000.0);
+        let h = upload(&mut e);
+        e.create(NodeId(0), Kind::Wavetable);
+        for _ in 0..2 {
+            e.apply(Cmd::BindTable {
+                node: NodeId(0),
+                src: TableSrc::Pooled(h),
+            });
+        }
+        e.render_block();
+        let out = e.node_output(NodeId(0), 0);
+        assert!(out.iter().all(|s| s.is_finite()));
+        assert_ne!(
+            e.pool_alloc(deluge_dsp_kernels::wavetable::COMPACT_LEN),
+            Some(h),
+            "still bound, so still held"
+        );
     }
 }
