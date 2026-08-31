@@ -84,6 +84,20 @@ pub struct Engine<
     // commands timestamp against it, and a host converts musical time (bars,
     // ms) to sample positions on its side of the `Cmd` seam.
     sample_clock: u64,
+    // Set whenever the graph's shape changes (a node created or freed, an input
+    // rewired). `render_block` re-sorts eval order when it is set, so a burst of
+    // edits inside one block costs one sort. Explicit `move_before` /
+    // `move_after` deliberately do NOT set it: a move is an author's decision
+    // and holds until the graph's shape changes again.
+    graph_dirty: bool,
+    // Opt-in: skip nodes that reach no output root (G11). Off by default — the
+    // engine cannot see what the host reads (`node_output`, `fill_usb`, a
+    // prefetch cursor), so deciding on its own that a node is pointless would
+    // silently freeze a node someone is legitimately reading.
+    cull: bool,
+    // Which nodes reach an output root, recomputed with the sort. Meaningless
+    // (and unread) while `cull` is false.
+    reachable: [bool; NODES],
 }
 
 impl<
@@ -120,6 +134,10 @@ impl<
             prev_idle: [0; NODES],
             events: crate::event::EventQueue::new(),
             sample_clock: 0,
+            // A fresh engine has no nodes, so there is nothing to sort.
+            graph_dirty: false,
+            cull: false,
+            reachable: [false; NODES],
         }
     }
 
@@ -186,11 +204,78 @@ impl<
         let ok = self.arena.create(id, kind);
         if ok {
             self.seed_prev_idle(id);
+            self.graph_dirty = true;
         }
         ok
     }
 
+    /// Skip nodes that cannot reach an output when rendering (G11).
+    ///
+    /// Off by default. An "output root" is a node feeding a bus write or a USB
+    /// output channel; reachability is transitive through input edges. With
+    /// culling on, an unreachable node is not evaluated at all: its output row
+    /// holds whatever it last wrote and its DSP state stops advancing, so
+    /// `node_output` on such a node is stale by design. Turn it on when the
+    /// host's only outputs are the buses and the USB map.
+    pub fn set_cull_unreachable(&mut self, on: bool) {
+        self.cull = on;
+        // The reachable set is computed alongside the sort, so a fresh opt-in
+        // must force that pass — otherwise everything reads as unreachable.
+        self.graph_dirty = true;
+    }
+
+    /// Recompute which nodes reach an output root. Roots are the nodes feeding
+    /// bus writes and USB output channels; reachability then walks backwards
+    /// along input edges to a fixpoint (the set only grows, so it terminates).
+    fn compute_reachable(&mut self) {
+        let mut r = [false; NODES];
+        for w in 0..self.writes_len {
+            if let Some((Input::Node { node, .. }, ..)) = self.writes[w] {
+                if (node.0 as usize) < NODES {
+                    r[node.0 as usize] = true;
+                }
+            }
+        }
+        for o in self.usb_out {
+            if let OutputSrc::Node { node, .. } = o {
+                if (node.0 as usize) < NODES {
+                    r[node.0 as usize] = true;
+                }
+            }
+        }
+        loop {
+            let mut changed = false;
+            for k in 0..self.arena.eval_order().len() {
+                let id = self.arena.eval_order()[k];
+                if !r[id as usize] {
+                    continue;
+                }
+                let Some(n) = self.arena.node(NodeId(id)) else {
+                    continue;
+                };
+                for inp in n.inputs_snapshot() {
+                    if let Input::Node { node: src, .. } = inp {
+                        let idx = src.0 as usize;
+                        if idx < NODES && !r[idx] && self.arena.node(src).is_some() {
+                            r[idx] = true;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        self.reachable = r;
+    }
+
+    /// Mutable access to one input edge. Rewiring changes the graph's shape, so
+    /// this marks eval order for re-sorting whether or not the caller writes
+    /// through the reference — a spurious sort costs one pass, a missed one
+    /// costs a block-stale read.
     pub fn node_input_mut(&mut self, id: NodeId, port: u8) -> Option<&mut Input> {
+        self.graph_dirty = true;
         self.arena.node_mut(id)?.input_mut(port)
     }
 
@@ -263,18 +348,21 @@ impl<
                         }
                     }
                     self.seed_prev_idle(node);
+                    self.graph_dirty = true;
                 } else {
                     self.fail(node, CmdError::CreateFailed);
                 }
             }
-            Cmd::SetInput { node, port, src } => match self.arena.node_mut(node) {
-                Some(n) => {
+            Cmd::SetInput { node, port, src } => {
+                if let Some(n) = self.arena.node_mut(node) {
                     if let Some(slot) = n.input_mut(port) {
                         *slot = src;
                     }
+                    self.graph_dirty = true;
+                } else {
+                    self.fail(node, CmdError::DeadNode);
                 }
-                None => self.fail(node, CmdError::DeadNode),
-            },
+            }
             Cmd::SetParam { node, param, value } => match self.arena.node_mut(node) {
                 Some(n) => n.set_param(param, value),
                 None => self.fail(node, CmdError::DeadNode),
@@ -328,6 +416,7 @@ impl<
                 let c = channel as usize;
                 if c < USB_CHANNELS {
                     self.usb_out[c] = src;
+                    self.graph_dirty = true;
                 }
             }
             Cmd::BusGain { bus, gain } => self.set_bus_gain(bus, gain),
@@ -392,6 +481,7 @@ impl<
                     self.prev_idle[idx] = 0;
                 }
                 self.arena.free(node);
+                self.graph_dirty = true;
                 // Invalidate this node's bus writes so a reused id inherits no
                 // stale routing (IO-2a). Const/Bus-sourced writes are untouched.
                 for w in self.writes.iter_mut() {
@@ -405,6 +495,7 @@ impl<
             Cmd::Reset => {
                 self.arena.reset();
                 self.sample_clock = 0;
+                self.graph_dirty = false;
                 self.writes = [None; NODES];
                 self.writes_len = 0;
                 self.root = None;
@@ -427,6 +518,16 @@ impl<
     /// Evaluate every live node in eval order into the output arena.
     pub fn render_block(&mut self) {
         self.sample_clock = self.sample_clock.wrapping_add(BLOCK as u64);
+        // Eval order is topological by construction (G11): every node runs after
+        // the nodes it reads. Sorting here rather than in `apply` means a whole
+        // patch build costs one sort, not one per command.
+        if self.graph_dirty {
+            self.arena.sort();
+            if self.cull {
+                self.compute_reachable();
+            }
+            self.graph_dirty = false;
+        }
         // Snapshot eval order so we don't borrow the arena across the loop.
         let mut order = [0u16; NODES];
         let live = {
@@ -437,6 +538,9 @@ impl<
 
         for k in 0..live {
             let id = NodeId(order[k]);
+            if self.cull && !self.reachable[order[k] as usize] {
+                continue; // reaches no output root — see `set_cull_unreachable`
+            }
             let (base, kind, width, inputs, table_src, rate) = {
                 let n = self.arena.node(id).expect("eval-order node exists");
                 (
@@ -709,6 +813,9 @@ impl<
     /// Record a bus write with per-side gains (`gl` → L, `gr` → R). A stereo
     /// source routes as two of these: `(port0, 1, 0)` and `(port1, 0, 1)`.
     pub fn bus_write_gains(&mut self, src: Input, bus: BusId, gl: f32, gr: f32) {
+        // Routing is what makes a node reachable, so this invalidates the
+        // culling set just as an edge change invalidates eval order.
+        self.graph_dirty = true;
         // Reuse a freed (`None`) slot first so free/patch cycles don't leak
         // slots; otherwise append. No holes exist without a prior `Free`, so a
         // fresh engine appends in the same order as before (byte-identical).
@@ -2112,69 +2219,69 @@ mod tests {
     // ── G4b: reordering ───────────────────────────────────────────────────
 
     #[test]
-    fn move_after_fixes_a_stale_by_one_block_read() {
-        // Build the chain 0 → 1 → 2 in the WRONG creation order (0, 2, 1), so
-        // node 2 reads node 1's slot before node 1 has written it this block —
-        // the one-block-stale hazard that eval-order-is-creation-order implies.
-        // `MoveAfter` repairs it without rebuilding any node.
+    fn a_move_that_contradicts_a_dependency_is_undone_by_the_next_sort() {
+        // `MoveBefore` / `MoveAfter` are an override, not a pin. A move takes
+        // effect immediately — including one that puts a consumer *before* its
+        // source, which is the deliberate one-block-delay case — and it holds
+        // for as long as the graph's shape is unchanged. The next structural
+        // edit re-sorts, and the dependency wins.
+        //
+        // Node 0 is a `Saw`, so its value differs every block: that is what
+        // makes "this block" and "the previous block" distinguishable without
+        // touching the graph (and touching it would itself force a re-sort).
         type ME = Engine<8, 8, 8, 4, 45056, 2048>;
         let mut e = ME::new(48_000.0);
-        let add = |e: &mut ME, id: u16, src: Input, k: f32| {
+        e.apply(Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::Saw,
+            args: [Input::Const(2_000.0), Input::Const(0.0), Input::Const(0.0)],
+        });
+        let follow = |e: &mut ME, id: u16, src: u16| {
             e.apply(Cmd::NewNode {
                 node: NodeId(id),
                 kind: Kind::Add,
-                args: [src, Input::Const(k), Input::Const(0.0)],
+                args: [
+                    Input::Node {
+                        node: NodeId(src),
+                        port: 0,
+                    },
+                    Input::Const(0.0),
+                    Input::Const(0.0),
+                ],
             });
         };
-        add(&mut e, 0, Input::Const(1.0), 0.0); // → 1.0
-        add(
-            &mut e,
-            2,
-            Input::Node {
-                node: NodeId(1),
-                port: 0,
-            },
-            0.0,
-        ); // → node1
-        add(
-            &mut e,
-            1,
-            Input::Node {
-                node: NodeId(0),
-                port: 0,
-            },
-            10.0,
-        ); // → 11.0
+        follow(&mut e, 1, 0);
+        follow(&mut e, 2, 1);
 
+        e.render_block();
+        let one_a = e.node_output(NodeId(1), 0)[0];
+        assert_eq!(
+            e.node_output(NodeId(2), 0)[0],
+            one_a,
+            "sorted: node 2 sees node 1's current block"
+        );
+
+        // Override: put the consumer ahead of its source on purpose.
+        assert!(e.move_before(NodeId(2), NodeId(1)));
         assert_eq!(e.eval_order(), &[0, 2, 1]);
         e.render_block();
-        assert_eq!(e.node_output(NodeId(1), 0)[0], 11.0);
+        let one_b = e.node_output(NodeId(1), 0)[0];
+        assert_ne!(one_b, one_a, "the saw moved on, so the two blocks differ");
         assert_eq!(
             e.node_output(NodeId(2), 0)[0],
-            0.0,
-            "reads node 1's slot before node 1 wrote it: stale"
-        );
-        e.render_block();
-        assert_eq!(
-            e.node_output(NodeId(2), 0)[0],
-            11.0,
-            "still one block behind, just no longer zero"
+            one_a,
+            "reads node 1's PREVIOUS block: the override is honoured"
         );
 
-        // Repair the order; node 2 now sees node 1's current block.
-        e.apply(Cmd::MoveAfter {
-            node: NodeId(2),
-            target: NodeId(1),
-        });
-        assert_eq!(e.eval_order(), &[0, 1, 2]);
-        // Change node 1's value so a stale read would be visibly the old 11.0.
-        *e.node_input_mut(NodeId(1), 1).unwrap() = Input::Const(20.0); // node1 → 21.0
+        // A structural edit — here an unrelated new node — re-sorts, and the
+        // dependency reasserts itself.
+        assert!(e.create(NodeId(3), Kind::Saw));
         e.render_block();
-        assert_eq!(e.node_output(NodeId(1), 0)[0], 21.0);
+        assert_eq!(e.eval_order(), &[0, 1, 2, 3]);
         assert_eq!(
             e.node_output(NodeId(2), 0)[0],
-            21.0,
-            "same block, not the previous one"
+            e.node_output(NodeId(1), 0)[0],
+            "current block again"
         );
     }
 
@@ -3572,6 +3679,255 @@ mod tests {
                 node: NodeId(0),
                 reason: crate::event::CmdError::UnsupportedRate,
             })
+        );
+    }
+
+    // ── G11: automatic topological eval order ────────────────────────────
+
+    #[test]
+    fn a_consumer_created_before_its_source_reads_the_current_block() {
+        // The hazard G4b existed to repair by hand: build 0 → 1 → 2 in the
+        // wrong creation order (0, 2, 1). The engine now sorts before it
+        // renders, so node 2 sees node 1's CURRENT block on the very first
+        // render — no stale zero, no manual `MoveAfter`.
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        let add = |e: &mut ME, id: u16, src: Input, k: f32| {
+            e.apply(Cmd::NewNode {
+                node: NodeId(id),
+                kind: Kind::Add,
+                args: [src, Input::Const(k), Input::Const(0.0)],
+            });
+        };
+        add(&mut e, 0, Input::Const(1.0), 0.0); // → 1.0
+        add(
+            &mut e,
+            2,
+            Input::Node {
+                node: NodeId(1),
+                port: 0,
+            },
+            0.0,
+        );
+        add(
+            &mut e,
+            1,
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            10.0,
+        ); // → 11.0
+
+        assert_eq!(e.eval_order(), &[0, 2, 1], "creation order, before render");
+        e.render_block();
+        assert_eq!(e.eval_order(), &[0, 1, 2], "sorted at render time");
+        assert_eq!(
+            e.node_output(NodeId(2), 0)[0],
+            11.0,
+            "current block, not the previous one"
+        );
+    }
+
+    #[test]
+    fn sorting_runs_once_per_block_not_once_per_command() {
+        // The dirty flag must clear: a second render with no edits in between
+        // must not re-sort (and so must not disturb an order the author set
+        // with `MoveBefore` / `MoveAfter`).
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        e.create(NodeId(0), Kind::Saw);
+        e.create(NodeId(1), Kind::Saw);
+        e.render_block();
+        e.apply(Cmd::MoveBefore {
+            node: NodeId(1),
+            target: NodeId(0),
+        });
+        assert_eq!(e.eval_order(), &[1, 0]);
+        e.render_block();
+        assert_eq!(
+            e.eval_order(),
+            &[1, 0],
+            "no structural change, so no re-sort to undo the move"
+        );
+    }
+
+    #[test]
+    fn an_explicit_move_survives_sorting_when_it_respects_dependencies() {
+        // Independent nodes: a move expresses author intent the sort has no
+        // reason to overrule, so it must survive the next structural change.
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        e.create(NodeId(0), Kind::Saw);
+        e.create(NodeId(1), Kind::Saw);
+        e.create(NodeId(2), Kind::Saw);
+        e.apply(Cmd::MoveBefore {
+            node: NodeId(2),
+            target: NodeId(0),
+        });
+        assert_eq!(e.eval_order(), &[2, 0, 1]);
+        e.create(NodeId(3), Kind::Saw); // dirties the graph → re-sort
+        e.render_block();
+        assert_eq!(e.eval_order(), &[2, 0, 1, 3], "stable: the move is kept");
+    }
+
+    #[test]
+    fn a_feedback_cycle_still_renders_and_keeps_its_authors_order() {
+        // Two nodes reading each other have no topological order. The engine
+        // must render them, not hang, and leave the author's choice of which
+        // one reads a block late alone.
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        e.create(NodeId(0), Kind::Add);
+        e.create(NodeId(1), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Node {
+            node: NodeId(1),
+            port: 0,
+        };
+        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node {
+            node: NodeId(0),
+            port: 0,
+        };
+        e.render_block();
+        assert_eq!(e.eval_order(), &[0, 1]);
+    }
+
+    // ── G11: reachability culling (opt-in) ───────────────────────────────
+
+    /// Two saws: node 0 written to the root bus, node 1 wired to nothing.
+    fn one_live_one_orphan(e: &mut Engine<8, 8, 8, 4, 45056, 2048>) {
+        for id in [0u16, 1] {
+            e.apply(Cmd::NewNode {
+                node: NodeId(id),
+                kind: Kind::Saw,
+                args: [Input::Const(2_000.0), Input::Const(0.0), Input::Const(0.0)],
+            });
+        }
+        e.apply(Cmd::BusWrite {
+            src: Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            bus: BusId(0),
+        });
+        e.apply(Cmd::SetRoot { bus: BusId(0) });
+    }
+
+    #[test]
+    fn culling_is_off_by_default_so_an_orphan_node_still_runs() {
+        // The engine cannot know what the host reads — `node_output`,
+        // `fill_usb`, a prefetch cursor — so it must not decide on its own that
+        // a node is pointless.
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        one_live_one_orphan(&mut e);
+        e.render_block();
+        assert_ne!(
+            e.node_output(NodeId(1), 0)[1],
+            0.0,
+            "the orphan rendered anyway"
+        );
+    }
+
+    #[test]
+    fn culling_skips_a_node_that_reaches_no_output() {
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        e.set_cull_unreachable(true);
+        one_live_one_orphan(&mut e);
+        e.render_block();
+        assert_ne!(e.node_output(NodeId(0), 0)[1], 0.0, "node 0 feeds the root");
+        assert_eq!(
+            e.node_output(NodeId(1), 0),
+            &[0.0; 8],
+            "the orphan was never evaluated"
+        );
+    }
+
+    #[test]
+    fn culling_keeps_every_node_that_feeds_a_written_node() {
+        // Reachability is transitive: node 1 feeds node 0, which is written to
+        // the root bus, so node 1 must still run.
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        e.set_cull_unreachable(true);
+        e.apply(Cmd::NewNode {
+            node: NodeId(1),
+            kind: Kind::Saw,
+            args: [Input::Const(2_000.0), Input::Const(0.0), Input::Const(0.0)],
+        });
+        e.apply(Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::Add,
+            args: [
+                Input::Node {
+                    node: NodeId(1),
+                    port: 0,
+                },
+                Input::Const(0.0),
+                Input::Const(0.0),
+            ],
+        });
+        e.apply(Cmd::BusWrite {
+            src: Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            bus: BusId(0),
+        });
+        e.apply(Cmd::SetRoot { bus: BusId(0) });
+        e.render_block();
+        assert_ne!(e.node_output(NodeId(1), 0)[1], 0.0, "source still runs");
+        assert_eq!(
+            e.node_output(NodeId(0), 0)[1],
+            e.node_output(NodeId(1), 0)[1]
+        );
+    }
+
+    #[test]
+    fn culling_treats_a_usb_routed_node_as_an_output_root() {
+        // A node routed to USB reaches an output without touching any bus.
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        e.set_cull_unreachable(true);
+        e.apply(Cmd::NewNode {
+            node: NodeId(1),
+            kind: Kind::Saw,
+            args: [Input::Const(2_000.0), Input::Const(0.0), Input::Const(0.0)],
+        });
+        e.apply(Cmd::SetUsbOut {
+            channel: 0,
+            src: OutputSrc::Node {
+                node: NodeId(1),
+                port: 0,
+            },
+        });
+        e.render_block();
+        assert_ne!(e.node_output(NodeId(1), 0)[1], 0.0);
+    }
+
+    #[test]
+    fn wiring_a_culled_node_up_brings_it_back() {
+        // Reachability must be recomputed when routing changes, not frozen at
+        // the first render.
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        e.set_cull_unreachable(true);
+        one_live_one_orphan(&mut e);
+        e.render_block();
+        assert_eq!(e.node_output(NodeId(1), 0), &[0.0; 8]);
+        e.apply(Cmd::BusWrite {
+            src: Input::Node {
+                node: NodeId(1),
+                port: 0,
+            },
+            bus: BusId(0),
+        });
+        e.render_block();
+        assert_ne!(
+            e.node_output(NodeId(1), 0)[1],
+            0.0,
+            "now it reaches the bus"
         );
     }
 }

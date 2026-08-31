@@ -9,7 +9,7 @@
 //! eval order. Building a patch in dependency order is the author's obligation.
 
 use crate::node::Kind;
-use crate::{Node, NodeId};
+use crate::{Input, Node, NodeId};
 
 pub struct Arena<const NODES: usize, const OUTS: usize> {
     nodes: [Option<Node>; NODES],
@@ -120,6 +120,110 @@ impl<const NODES: usize, const OUTS: usize> Arena<NODES, OUTS> {
 
     pub fn eval_order(&self) -> &[u16] {
         &self.order[..self.order_len]
+    }
+
+    /// Number of edges from `src` into the node in slot `idx`.
+    ///
+    /// Self-edges do not count: a node reading its own previous block is legal
+    /// feedback, not a dependency it could ever satisfy.
+    fn edges_from(&self, idx: usize, src: u16) -> u16 {
+        if idx == src as usize {
+            return 0;
+        }
+        let Some(n) = self.nodes[idx].as_ref() else {
+            return 0;
+        };
+        let mut count = 0;
+        for inp in n.inputs_snapshot() {
+            if let Input::Node { node, .. } = inp {
+                if node.0 == src {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    /// Reorder eval order so every node evaluates after the nodes it reads
+    /// (G11). Kahn's algorithm, in place, no allocation.
+    ///
+    /// **Stable:** among nodes that are ready at the same time, the current
+    /// order is preserved — parallel chains are never scrambled, and a
+    /// `move_before` / `move_after` that does not contradict a dependency
+    /// survives sorting.
+    ///
+    /// **Cycles:** a feedback loop has no topological order. Its members never
+    /// reach in-degree zero and are appended at the end in their existing
+    /// relative order, because that order is what decides where the loop's
+    /// one-block delay falls — the author's choice, not the sort's. `Input::Bus`
+    /// edges are deliberately not dependencies (a bus read is one block
+    /// delayed by design), so they never constrain the sort.
+    ///
+    /// Cost is O(V²·MAX_INPUTS) with no adjacency list to build or store. It
+    /// runs at most once per block (see `Engine::render_block`), not once per
+    /// command, so a burst of edits during one block pays for one sort.
+    pub fn sort(&mut self) {
+        let len = self.order_len;
+        let mut indeg = [0u16; NODES];
+        for k in 0..len {
+            let idx = self.order[k] as usize;
+            let Some(n) = self.nodes[idx].as_ref() else {
+                continue;
+            };
+            let mut d = 0;
+            for inp in n.inputs_snapshot() {
+                if let Input::Node { node: src, .. } = inp {
+                    let s = src.0 as usize;
+                    // A dangling edge renders silence; it must not also stall
+                    // the sort with an in-degree nothing can discharge.
+                    if s != idx && s < NODES && self.nodes[s].is_some() {
+                        d += 1;
+                    }
+                }
+            }
+            indeg[idx] = d;
+        }
+
+        let mut emitted = [false; NODES];
+        let mut out = [0u16; NODES];
+        let mut w = 0;
+        for _ in 0..len {
+            // Always take the EARLIEST ready node in the current order, then
+            // rescan from the start. Emitting every ready node in one sweep
+            // would be a valid topological order but not a stable one: a node
+            // that became ready mid-sweep would jump ahead of one that was
+            // already waiting.
+            let mut pick = None;
+            for k in 0..len {
+                let idx = self.order[k] as usize;
+                if !emitted[idx] && indeg[idx] == 0 {
+                    pick = Some(self.order[k]);
+                    break;
+                }
+            }
+            let Some(id) = pick else {
+                break; // only cycle members left
+            };
+            emitted[id as usize] = true;
+            out[w] = id;
+            w += 1;
+            for k in 0..len {
+                let c = self.order[k] as usize;
+                if !emitted[c] {
+                    indeg[c] = indeg[c].saturating_sub(self.edges_from(c, id));
+                }
+            }
+        }
+
+        for k in 0..len {
+            let id = self.order[k];
+            if !emitted[id as usize] {
+                out[w] = id;
+                w += 1;
+            }
+        }
+        self.order = out;
+        self.order_len = w;
     }
 
     fn order_pos(&self, id: u16) -> Option<usize> {
@@ -348,5 +452,95 @@ mod tests {
         assert!(!a.create(NodeId(0), Kind::Split2)); // refused: id already live
         assert_eq!(a.eval_order(), &[0]);
         assert_eq!(a.out_base(NodeId(0)), Some(0)); // unchanged: still Saw's slot, width 1
+    }
+
+    // ── Topological ordering (G11) ───────────────────────────────────────
+
+    /// Wire `node`'s port 0 to `src`'s port 0.
+    fn wire(a: &mut A, node: u16, src: u16) {
+        *a.node_mut(NodeId(node)).unwrap().input_mut(0).unwrap() = crate::Input::Node {
+            node: NodeId(src),
+            port: 0,
+        };
+    }
+
+    #[test]
+    fn sort_puts_a_source_before_the_node_that_reads_it() {
+        let mut a = A::new();
+        a.create(NodeId(0), Kind::Add); // consumer created FIRST
+        a.create(NodeId(1), Kind::Saw); // its source, created second
+        wire(&mut a, 0, 1);
+        assert_eq!(a.eval_order(), &[0, 1], "creation order, before sorting");
+        a.sort();
+        assert_eq!(a.eval_order(), &[1, 0], "source now evaluates first");
+    }
+
+    #[test]
+    fn sort_keeps_independent_nodes_in_creation_order() {
+        // Nothing constrains these three, so the author's order must survive:
+        // an unstable sort would scramble parallel chains for no reason.
+        let mut a = A::new();
+        a.create(NodeId(2), Kind::Saw);
+        a.create(NodeId(0), Kind::Saw);
+        a.create(NodeId(1), Kind::Saw);
+        a.sort();
+        assert_eq!(a.eval_order(), &[2, 0, 1]);
+    }
+
+    #[test]
+    fn sort_orders_a_three_node_chain_built_backwards() {
+        let mut a = A::new();
+        a.create(NodeId(0), Kind::Add); // sink
+        a.create(NodeId(1), Kind::Add); // middle
+        a.create(NodeId(2), Kind::Saw); // source
+        wire(&mut a, 0, 1);
+        wire(&mut a, 1, 2);
+        a.sort();
+        assert_eq!(a.eval_order(), &[2, 1, 0]);
+    }
+
+    #[test]
+    fn sort_leaves_a_cycle_in_its_existing_relative_order() {
+        // A feedback loop has no topological order. The sort must terminate,
+        // keep every node, and leave the cycle's members in the order the
+        // author put them — that order is what decides where the one-block
+        // delay falls, and it is the author's to choose.
+        let mut a = A::new();
+        a.create(NodeId(0), Kind::Saw); // outside the cycle
+        a.create(NodeId(1), Kind::Add);
+        a.create(NodeId(2), Kind::Add);
+        wire(&mut a, 1, 2);
+        wire(&mut a, 2, 1);
+        a.sort();
+        assert_eq!(a.eval_order(), &[0, 1, 2]);
+    }
+
+    #[test]
+    fn sort_ignores_edges_from_dead_nodes() {
+        // A dangling `Input::Node` renders silence; it must not also stall the
+        // sort by contributing an in-degree that can never be discharged.
+        let mut a = A::new();
+        a.create(NodeId(0), Kind::Add);
+        a.create(NodeId(1), Kind::Saw);
+        wire(&mut a, 1, 7); // node 7 was never created
+        a.sort();
+        assert_eq!(a.eval_order(), &[0, 1]);
+    }
+
+    #[test]
+    fn sort_handles_a_node_reading_one_source_on_two_ports() {
+        // Two edges from the same source: the in-degree bookkeeping must
+        // discharge both, or the consumer never becomes ready and falls
+        // through to the cycle path.
+        let mut a = A::new();
+        a.create(NodeId(0), Kind::Add);
+        a.create(NodeId(1), Kind::Saw);
+        wire(&mut a, 0, 1);
+        *a.node_mut(NodeId(0)).unwrap().input_mut(1).unwrap() = crate::Input::Node {
+            node: NodeId(1),
+            port: 0,
+        };
+        a.sort();
+        assert_eq!(a.eval_order(), &[1, 0]);
     }
 }
