@@ -296,6 +296,19 @@ pub fn run_and_capture_cmds(src: &str) -> Vec<crate::Cmd> {
 /// `BeginUpdate`/`EndUpdate` bracket, so a caller can assert that what sits
 /// between them is byte-identical to the first run.
 pub fn run_and_capture_update(src: &str) -> (Vec<crate::Cmd>, Vec<crate::Cmd>) {
+    let mut runs = run_and_capture_updates(&[src, src]);
+    let second = runs.pop().expect("two runs");
+    let first = runs.pop().expect("two runs");
+    (first, second)
+}
+
+/// Run a sequence of script versions the way a live editor would: the first
+/// bare, each later one inside a `BeginUpdate`/`EndUpdate` bracket, with a
+/// fresh VM every time and the audio graph left standing in between.
+///
+/// Returns one command list per run; every list after the first includes its
+/// bracket.
+pub fn run_and_capture_updates(sources: &[&str]) -> Vec<Vec<crate::Cmd>> {
     let _guard = CAP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // SAFETY: single-threaded test helper (serialized by `_guard`); every VM is
     // freed before the next one boots.
@@ -327,17 +340,21 @@ pub fn run_and_capture_update(src: &str) -> (Vec<crate::Cmd>, Vec<crate::Cmd>) {
             wren_sys::wrenFreeVM(vm);
         };
 
-        run_once(src);
-        let first = (*core::ptr::addr_of_mut!(CAP_HOST)).cmds.clone();
-
-        (*core::ptr::addr_of_mut!(CAP_HOST)).cmds.clear();
-        crate::begin_update();
-        run_once(src);
-        crate::end_update();
-        let second = (*core::ptr::addr_of_mut!(CAP_HOST)).cmds.clone();
+        let mut out = Vec::new();
+        for (i, src) in sources.iter().enumerate() {
+            (*core::ptr::addr_of_mut!(CAP_HOST)).cmds.clear();
+            if i > 0 {
+                crate::begin_update();
+            }
+            run_once(src);
+            if i > 0 {
+                crate::end_update();
+            }
+            out.push((*core::ptr::addr_of_mut!(CAP_HOST)).cmds.clone());
+        }
 
         crate::reset();
-        (first, second)
+        out
     }
 }
 

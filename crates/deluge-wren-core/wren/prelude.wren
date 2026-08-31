@@ -125,6 +125,8 @@ foreign class Node {
   foreign static tb303_(input, cutoff, res)
   foreign static patch_(node)
   foreign static reset_()
+  foreign static scopeBegin_(name)
+  foreign static scopeEnd_()
   foreign static masterLimit_(ceiling, release)
   foreign static masterDcBlock_(cutoff)
   foreign static masterEq_(freq, gain, q, type)
@@ -993,6 +995,25 @@ class Out {
   static eq(freq, gain, q) { Node.masterEq_(freq, gain, q, 0) }
   static eqLowShelf(freq, gain, q) { Node.masterEq_(freq, gain, q, 1) }
   static eqHighShelf(freq, gain, q) { Node.masterEq_(freq, gain, q, 2) }
+}
+
+// Names a chunk of a patch so its node ids survive an edit elsewhere in the
+// script (GL6). Only matters under an incremental update — the editor re-runs
+// the script and the engine keeps every node whose id and kind are unchanged —
+// but ids are handed out in creation order, so inserting anything *above* an
+// unnamed node shifts its id and restarts it. A name pins the ids allocated
+// inside the block, wherever the block moves to.
+//   var bass = Patch.named("bass", Fn.new { Out.patch(Osc.saw(110)) })
+// Nodes inside are still pinned by position *within* the name, so naming the
+// units you edit around (a voice, an fx chain) is what pays. `named` returns
+// whatever the block returns.
+class Patch {
+  static named(name, fn) {
+    Node.scopeBegin_(name)
+    var result = fn.call()
+    Node.scopeEnd_()
+    return result
+  }
 }
 
 // A bus is a mix/render target: `.write(src)` accumulates a signal into it,

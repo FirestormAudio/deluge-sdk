@@ -2774,6 +2774,28 @@ pub(crate) unsafe extern "C" fn node_reset(raw: *mut WrenVM) {
     node_reset_impl(&vm);
 }
 
+/// `Node.scopeBegin_(name)` — open a named identity scope (GL6). The name is
+/// read through `checked_str`, so a non-String argument reads as `""` (the
+/// global scope) rather than tripping the VM's disabled asserts.
+pub(crate) fn node_scope_begin_impl<S: SlotApi>(vm: &S) {
+    audio::scope_begin(crate::slotapi::checked_str(vm, 1));
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_scope_begin(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_scope_begin_impl(&vm);
+}
+
+/// `Node.scopeEnd_()` — close the innermost identity scope.
+pub(crate) fn node_scope_end_impl<S: SlotApi>(_vm: &S) {
+    audio::scope_end();
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_scope_end(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_scope_end_impl(&vm);
+}
+
 pub(crate) fn node_master_limit_impl<S: SlotApi>(vm: &S) {
     let ceiling = vm.get_f(1) as f32;
     let release = vm.get_f(2) as f32;

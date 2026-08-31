@@ -16,11 +16,44 @@ pub const MASTER_BUS: u16 = 0;
 /// Returned when the pool is exhausted; factories no-op on it (inert node).
 pub const NULL_ID: u16 = u16::MAX;
 
+/// Nesting depth for named identity scopes (GL6). Deeper nesting is not an
+/// error: the extra levels allocate inside the innermost tracked scope.
+const MAX_SCOPE_DEPTH: usize = 4;
+
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+/// FNV-1a over `bytes`, chained onto `seed` so a nested scope's hash includes
+/// its parents'.
+const fn fnv(seed: u64, bytes: &[u8]) -> u64 {
+    let mut h = seed ^ FNV_OFFSET;
+    let mut i = 0;
+    while i < bytes.len() {
+        h ^= bytes[i] as u64;
+        h = h.wrapping_mul(FNV_PRIME);
+        i += 1;
+    }
+    h
+}
+
 struct Alloc {
     next: u16,                   // bump pointer for node ids
     free: [u16; WREN_MAX_NODES], // stack of freed node ids
     free_len: usize,
     next_bus: u16, // bump pointer for bus ids (1.. ; 0 = master)
+    // ── GL6: identity across a re-run ────────────────────────────────────
+    // Each allocation gets a key from (enclosing scope hash, ordinal within
+    // that scope); the map remembers which id that key got, so a re-run of the
+    // script hands the same logical node the same id even if the script grew
+    // above it. Entries are marked as the re-run touches them and the untouched
+    // ones are swept at `end_update`, mirroring the engine's epoch sweep.
+    keys: [u64; WREN_MAX_NODES],
+    key_ids: [u16; WREN_MAX_NODES],
+    key_used: [bool; WREN_MAX_NODES],
+    key_len: usize,
+    scope_hash: [u64; MAX_SCOPE_DEPTH],
+    scope_ord: [u16; MAX_SCOPE_DEPTH],
+    depth: usize, // 0 = the unnamed global scope
 }
 
 impl Alloc {
@@ -30,9 +63,65 @@ impl Alloc {
             free: [0; WREN_MAX_NODES],
             free_len: 0,
             next_bus: 1,
+            keys: [0; WREN_MAX_NODES],
+            key_ids: [0; WREN_MAX_NODES],
+            key_used: [false; WREN_MAX_NODES],
+            key_len: 0,
+            scope_hash: [0; MAX_SCOPE_DEPTH],
+            scope_ord: [0; MAX_SCOPE_DEPTH],
+            depth: 0,
         }
     }
-    fn alloc_node(&mut self) -> u16 {
+
+    /// The key for the next allocation in the current scope, advancing that
+    /// scope's ordinal.
+    fn next_key(&mut self) -> u64 {
+        let d = self.depth;
+        let ord = self.scope_ord[d];
+        self.scope_ord[d] = ord.wrapping_add(1);
+        fnv(self.scope_hash[d], &ord.to_le_bytes())
+    }
+
+    /// First entry for `key` not already claimed by this run. Duplicate keys
+    /// (the same name opened twice) therefore pair up in order rather than all
+    /// resolving to the first id.
+    fn find_key(&self, key: u64) -> Option<usize> {
+        (0..self.key_len).find(|&i| self.keys[i] == key && !self.key_used[i])
+    }
+
+    fn record(&mut self, key: u64, id: u16) {
+        if self.key_len < WREN_MAX_NODES {
+            self.keys[self.key_len] = key;
+            self.key_ids[self.key_len] = id;
+            self.key_used[self.key_len] = true;
+            self.key_len += 1;
+        }
+    }
+
+    /// Drop the map entry (if any) naming `id`, so a freed id is never handed
+    /// out twice — once from the free-list and once from the map.
+    fn forget_id(&mut self, id: u16) {
+        let mut i = 0;
+        while i < self.key_len {
+            if self.key_ids[i] == id {
+                self.key_len -= 1;
+                self.keys[i] = self.keys[self.key_len];
+                self.key_ids[i] = self.key_ids[self.key_len];
+                self.key_used[i] = self.key_used[self.key_len];
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    fn push_free(&mut self, id: u16) {
+        if (id as usize) < WREN_MAX_NODES && self.free_len < WREN_MAX_NODES {
+            self.free[self.free_len] = id;
+            self.free_len += 1;
+        }
+    }
+
+    fn fresh_id(&mut self) -> u16 {
         if self.free_len > 0 {
             self.free_len -= 1;
             return self.free[self.free_len];
@@ -45,13 +134,74 @@ impl Alloc {
             NULL_ID
         }
     }
+
+    fn alloc_node(&mut self) -> u16 {
+        let key = self.next_key();
+        if let Some(i) = self.find_key(key) {
+            self.key_used[i] = true;
+            return self.key_ids[i];
+        }
+        let id = self.fresh_id();
+        if id != NULL_ID {
+            self.record(key, id);
+        }
+        id
+    }
+
+    /// Open a named identity scope. Beyond `MAX_SCOPE_DEPTH` the name is
+    /// ignored and allocation continues in the innermost tracked scope —
+    /// identity degrades to positional, which is the pre-GL6 behaviour.
+    fn scope_begin(&mut self, name: &str) {
+        if self.depth + 1 >= MAX_SCOPE_DEPTH {
+            return;
+        }
+        let parent = self.scope_hash[self.depth];
+        self.depth += 1;
+        self.scope_hash[self.depth] = fnv(parent, name.as_bytes());
+        self.scope_ord[self.depth] = 0;
+    }
+
+    fn scope_end(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
+    }
+
+    /// Start a re-run: rewind every scope's ordinal and un-mark the map, but
+    /// keep the map itself — it is what makes the re-run reuse ids. Note this
+    /// does NOT rewind the bump pointer: mapped ids are live nodes, and handing
+    /// them out again from the bump path would alias them.
+    fn begin_update(&mut self) {
+        self.depth = 0;
+        self.scope_hash = [0; MAX_SCOPE_DEPTH];
+        self.scope_ord = [0; MAX_SCOPE_DEPTH];
+        for u in self.key_used.iter_mut().take(self.key_len) {
+            *u = false;
+        }
+    }
+
+    /// Finish a re-run: every key the re-run did not touch names a node the
+    /// engine is about to sweep, so drop it and reclaim its id.
+    fn end_update(&mut self) {
+        let mut i = 0;
+        while i < self.key_len {
+            if self.key_used[i] {
+                i += 1;
+                continue;
+            }
+            let id = self.key_ids[i];
+            self.push_free(id);
+            self.key_len -= 1;
+            self.keys[i] = self.keys[self.key_len];
+            self.key_ids[i] = self.key_ids[self.key_len];
+            self.key_used[i] = self.key_used[self.key_len];
+        }
+        self.depth = 0;
+    }
+
     // Used by `free_node_id` below, which is called from `free()` (in turn
     // called by the `Node.free()` binding) to return an id to the free-list.
     fn free_node(&mut self, id: u16) {
-        if (id as usize) < WREN_MAX_NODES && self.free_len < WREN_MAX_NODES {
-            self.free[self.free_len] = id;
-            self.free_len += 1;
-        }
+        self.forget_id(id);
+        self.push_free(id);
     }
     fn alloc_bus(&mut self) -> u16 {
         if (self.next_bus as usize) < WREN_MAX_BUSES {
@@ -66,6 +216,10 @@ impl Alloc {
         self.next = 0;
         self.free_len = 0;
         self.next_bus = 1;
+        self.key_len = 0;
+        self.depth = 0;
+        self.scope_hash = [0; MAX_SCOPE_DEPTH];
+        self.scope_ord = [0; MAX_SCOPE_DEPTH];
     }
 }
 
@@ -252,6 +406,17 @@ pub fn mono_end() -> (u16, u16, [u16; MAX_GATES], u8, u16, [u16; MAX_TRIGGERS], 
 
 pub fn alloc_node_id() -> u16 {
     alloc().alloc_node()
+}
+/// Open a named identity scope (GL6) — see `Patch.named` in the prelude. Node
+/// ids allocated inside are keyed by `(name, position within the name)` rather
+/// than by position in the whole script, so an edit elsewhere does not
+/// renumber them.
+pub fn scope_begin(name: &str) {
+    alloc().scope_begin(name);
+}
+/// Close the innermost named identity scope.
+pub fn scope_end() {
+    alloc().scope_end();
 }
 /// Return a node id to the free-list; used by [`free`] (the `Node.free()` binding).
 pub fn free_node_id(id: u16) {
@@ -699,7 +864,7 @@ pub fn reset() {
 /// "this is new". Re-run the script between this and [`end_update`]; anything
 /// the re-run does not re-emit is swept when the update closes.
 pub fn begin_update() {
-    alloc().reset();
+    alloc().begin_update();
     *poly() = PolyCtx::new();
     host().audio_cmd(Cmd::BeginUpdate);
 }
@@ -707,5 +872,6 @@ pub fn begin_update() {
 /// Close an incremental patch update, sweeping every node the re-run did not
 /// re-emit. See [`begin_update`].
 pub fn end_update() {
+    alloc().end_update();
     host().audio_cmd(Cmd::EndUpdate);
 }

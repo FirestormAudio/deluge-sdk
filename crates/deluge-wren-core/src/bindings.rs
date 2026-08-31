@@ -991,6 +991,8 @@ pub static METHODS: &[MethodEntry] = &[
     static_method("Node", "tb303_(_,_,_)", bindings_audio::node_tb303),
     static_method("Node", "patch_(_)", bindings_audio::node_patch),
     static_method("Node", "reset_()", bindings_audio::node_reset),
+    static_method("Node", "scopeBegin_(_)", bindings_audio::node_scope_begin),
+    static_method("Node", "scopeEnd_()", bindings_audio::node_scope_end),
     static_method(
         "Node",
         "masterLimit_(_,_)",

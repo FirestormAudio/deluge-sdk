@@ -228,7 +228,7 @@ way to write a shaper or a modulation curve we didn't anticipate. glicol's
 per-sample interpreter (`.unwrap()` on every sample, `expr.rs:68`) is not the
 version to copy; the idea underneath it is worth revisiting.
 
-### GL6 — Names, and a symbol table
+### GL6 — Names, and a symbol table — ✅ **DONE** (identity half)
 
 `AudioContext.tags: HashMap<&'static str, NodeIndex>` (`context.rs:96`), plus
 `index_info: HashMap<String, Vec<NodeIndex>>` in the main crate mapping chain
@@ -244,6 +244,25 @@ still seeing only `NodeId`s. It is not an engine feature at all, and it is
 cheap. Second, it stops being cosmetic the moment GL2 lands — stable keys are
 what make an insertion in the middle of a script survive an incremental update
 instead of shifting every subsequent id and reattaching state to the wrong node.
+
+**Resolved, for the identity half.** `Patch.named(name, fn)` opens a named
+scope; allocations inside are keyed by `(scope hash, ordinal within the scope)`
+instead of by position in the whole script, and `Alloc` sweeps untouched keys at
+`end_update` exactly as the engine sweeps stale nodes. A named block keeps its
+ids wherever it moves and whatever grows above it.
+
+The obstacle worth recording, since it rules out the obvious API: a fluent
+`Osc.saw(110).id("bass")` cannot work. Constructors allocate the id *and* emit
+`Cmd::NewNode` before the name is known, so by the time `.id` runs the id is
+already spent — reusing the mapped id would mean moving a live node between
+slots and rewriting every edge that references it. A scope supplies the name
+*before* the allocation, which is why the primitive is a block. The block is
+called from Wren, not from Rust, so nothing re-enters the VM from a foreign
+method.
+
+Still not built: the **addressing** half — a host saying "replace the filter in
+the bass voice" by name. Names exist only inside the binding's allocator; the
+engine still sees numeric `NodeId`s, which was always the right split.
 
 ### GL7 — Typed errors from the control surface — ✅ **DONE**
 
@@ -404,7 +423,7 @@ first production `Engine<…>` instantiation freezes the API.
 | ~~P2.5c~~ | ~~G11 — topological sort on mutation~~ | high | low | ✅ **done** — `Arena::sort`; culling opt-in |
 | ~~P2.5d~~ | ~~GL2 — epoch mark-and-sweep patch update~~ | **high** | low-med | ✅ **done** — engine + `deluge-wren-core` plumbing |
 | **P3** | G2 — control rate | high | med | ✅ **done for width-1 nodes** (`c2ef2c6`); poly/stereo still open |
-| **P4** | GL6 — Wren-side name→id map | med | low | **next** — no engine change; without it a mid-script insert reattaches state to the wrong node |
+| ~~P4~~ | ~~GL6 — Wren-side name→id map~~ | med | low | ✅ **done** — `Patch.named`; addressing-by-name still unbuilt |
 | P5 | Switch the editor's Run to `begin_update` | med | low | product-facing; `sim.ts` still calls `sim_reset()` |
 | P6 | G7 — scheduled commands | med | med | now unblocked by the sample clock |
 | — | GL5 — bounded `Kind::Expr` | low | med | filed, not scheduled |
