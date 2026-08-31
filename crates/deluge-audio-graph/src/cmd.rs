@@ -144,13 +144,53 @@ pub enum Cmd {
     /// has no path to an output any more — omission is what severed it — so
     /// there is no audible tail to protect by deferring the free.
     EndUpdate,
+    /// Drop every command filed with [`crate::Engine::apply_at`] that has not
+    /// fired yet (scsynth's `/clearSched`). Commands already applied stay
+    /// applied — this cancels the future, not the past.
+    ClearSchedule,
     Reset,
+}
+
+impl Cmd {
+    /// The node this command addresses, if it addresses one.
+    ///
+    /// Used to attribute a [`crate::event::Event::CmdFailed`] to something the
+    /// host can act on. Bus, master-chain, update-bracket and schedule
+    /// commands name no node and return `None`.
+    pub fn node(&self) -> Option<NodeId> {
+        match *self {
+            Cmd::NewNode { node, .. }
+            | Cmd::SetInput { node, .. }
+            | Cmd::SetParam { node, .. }
+            | Cmd::BindTable { node, .. }
+            | Cmd::Gate { node, .. }
+            | Cmd::Trigger { node }
+            | Cmd::GateVoice { node, .. }
+            | Cmd::TriggerVoice { node, .. }
+            | Cmd::StreamFill { node, .. }
+            | Cmd::SetRate { node, .. }
+            | Cmd::MoveBefore { node, .. }
+            | Cmd::MoveAfter { node, .. }
+            | Cmd::Free { node } => Some(node),
+            _ => None,
+        }
+    }
 }
 
 /// Transport seam: the firmware enqueues onto a critical-section ring; the web
 /// sim applies directly. Same shape as the prototype's `Host`.
 pub trait Host {
+    /// Deliver `cmd` to be applied as soon as the engine sees it.
     fn audio_cmd(&self, cmd: Cmd);
+
+    /// Deliver `cmd` to be applied at sample `at` on the engine's clock
+    /// ([`crate::Engine::sample_time`]).
+    ///
+    /// Scheduling is a property of *delivery*, not of the command, which is why
+    /// this is a second method rather than a `Cmd` variant carrying a
+    /// timestamp — a `Cmd` cannot nest a `Cmd` without boxing, and this crate
+    /// does not allocate on the audio path.
+    fn audio_cmd_at(&self, at: u64, cmd: Cmd);
 }
 
 #[cfg(test)]

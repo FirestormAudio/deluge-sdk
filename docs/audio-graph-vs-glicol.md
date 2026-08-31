@@ -425,7 +425,7 @@ first production `Engine<…>` instantiation freezes the API.
 | **P3** | G2 — control rate | high | med | ✅ **done for width-1 nodes** (`c2ef2c6`); poly/stereo still open |
 | ~~P4~~ | ~~GL6 — Wren-side name→id map~~ | med | low | ✅ **done** — `Patch.named`; addressing-by-name still unbuilt |
 | P5 | Switch the editor's Run to `begin_update` | med | low | product-facing; `sim.ts` still calls `sim_reset()` |
-| P6 | G7 — scheduled commands | med | med | now unblocked by the sample clock |
+| ~~P6~~ | ~~G7 — scheduled commands~~ | med | med | ✅ **done** — `sched.rs`, `Engine::apply_at` + `Host::audio_cmd_at` |
 | — | GL5 — bounded `Kind::Expr` | low | med | filed, not scheduled |
 | — | GL3 — tempo/patterns in-engine | — | high | **declined** — transport stays in firmware |
 | — | GL4/GL8 — wider inputs, broadcast, runtime SR, N-channel | low | — | unchanged, host-side, or YAGNI |

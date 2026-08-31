@@ -41,6 +41,11 @@ pub enum CmdError {
     /// evaluate once per block (poly and stereo kinds — see `Rate`). The node
     /// is live and unchanged; only the rate request was refused.
     UnsupportedRate,
+    /// `Engine::apply_at` could not file a command: the scheduled-command queue
+    /// is full (`sched::SCHED_QUEUE`). The command was **not** queued, and
+    /// nothing already queued was disturbed — refusing the newcomer is
+    /// preferable to evicting a command the host was already promised.
+    ScheduleFull,
 }
 
 /// Something the engine observed and the control plane may care about.

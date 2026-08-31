@@ -158,16 +158,23 @@ kernels' const fast path too — a real speedup, but it changes the code path
 every current patch takes and deserves its own change with the golden
 characterisation test watched closely.
 
-### G3 — No graph template / SynthDef
+### G3 — No graph template / SynthDef — ❌ **RETIRED**
 
-Every node is created individually by explicit `NodeId` via `Cmd::NewNode`.
-There is no way to define a patch once and instantiate it N times. Anything that
-should be a reusable instrument definition has to be re-emitted node-by-node
-from the control plane.
+Every node is created individually by explicit `NodeId` via `Cmd::NewNode`, so
+there is no way to define a patch once and instantiate it N times; scsynth's
+`/d_recv` + `/s_new` split is what makes "load a preset" cheap there.
 
-scsynth's `/d_recv` + `/s_new` split is a better factoring and is what makes
-"load a preset" cheap. A recorded `Cmd` sequence with `NodeId` relocation would
-be a serviceable first version.
+**Retired, not built.** "Instantiate a template N times" was the scsynth
+framing. The glicol note argues a better one for this product — *edit a running
+patch without a click* — and that shipped instead as GL2 (`cf180e9`): an epoch
+mark-and-sweep where re-running the patch script **is** the diff, because node
+ids are author-assigned and deterministic. Paired with GL6's named identity
+scopes (`b7ed24f`), an edit mid-script no longer renumbers everything below it.
+
+That covers the motivating use (presets, patch reload) without a template
+format, a relocation pass, or a free-id allocator. If instantiate-N is ever
+genuinely wanted, it falls out of the same id machinery. See
+`docs/audio-graph-vs-glicol.md` §GL2.
 
 ### G4 — Eval order is creation order — ✅ **DONE**
 
@@ -192,20 +199,16 @@ move with it (pinned by `reordering_does_not_disturb_output_slots` and
 chain is now `NewNode` (lands at the end) then `MoveAfter` onto its upstream —
 no teardown of anything downstream.
 
-Still true, and still the author's obligation: **nothing sorts.** A node that
-reads a source appearing later in eval order sees that source's *previous*
-block. `move_after_fixes_a_stale_by_one_block_read` demonstrates both the
-hazard and the repair.
+**Superseded by G11.** This section originally ended "still the author's
+obligation: nothing sorts." That is no longer true. `Arena::sort` (G11,
+`5bb968e`) runs Kahn's algorithm on mutation, so eval order *is* topological
+and building a patch in dependency order is no longer the author's job —
+G11 was the better answer to G4 and the glicol note explains why.
 
-Consequences:
-
-- You cannot insert a node into the middle of an existing chain.
-- A freed-and-recreated `NodeId` jumps to the **end** of eval order, silently
-  introducing a one-block delay in any path that reads it.
-- There is no `/n_before` / `/n_after` / group-ordering equivalent.
-
-For a live-patchable engine this will eventually hurt. At minimum the doc
-comments should stop saying "topological."
+`MoveBefore` / `MoveAfter` survive as the deliberate override: the sort is
+stable, so a move that does not contradict a dependency is preserved, and the
+members of a feedback cycle keep their author-chosen order because that order
+decides where the loop's one-block delay falls.
 
 ### G5 — Hard three-input / three-arg ceiling
 
@@ -221,11 +224,44 @@ Buses are stereo **audio** pairs; reading one as an input sums L+R
 named modulation signal that many nodes can subscribe to — fanning one modulator
 to twenty destinations costs twenty explicit edges.
 
-### G7 — No scheduled or timestamped commands
+### G7 — No scheduled or timestamped commands — ✅ **DONE**
 
-`Engine::apply` (`engine.rs:131`) lands a `Cmd` on whatever block it is called
-in. scsynth's OSC bundle timestamps give block-accurate scheduling and immunity
-to control-thread jitter. For a sequencer this matters more than it sounds.
+`Engine::apply` lands a `Cmd` on whatever block it is called in, tying every
+edit to whenever the control thread happened to run.
+
+**Resolved.** `Engine::apply_at(at, cmd)` files a command against a sample
+position on the engine's clock; `sched.rs` holds a fixed `SCHED_QUEUE` of
+`(timestamp, Cmd)` which `render_block` drains. `Cmd::ClearSchedule` is
+scsynth's `/clearSched`; `Cmd::Reset` clears it too, since the clock restarts
+at zero and pending timestamps would fire a dead patch's commands into the new
+one.
+
+- **Block accurate**, like scsynth — the command fires at the start of the
+  block *containing* its sample, so resolution is `BLOCK` (1.3 ms at 48 kHz,
+  `BLOCK = 64`). Sample accuracy would mean splitting a block's render around
+  the command; scsynth draws the line in the same place.
+- **Overdue fires, never vanishes.** The drain predicate is `at <
+  sample_clock` *after* the clock's `+= BLOCK`, which reads as "this block
+  contains `at`" and sweeps up anything already past. Late is recoverable.
+- **Drained before the G11 re-sort**, so a scheduled `NewNode` joins eval order
+  in the block it lands in rather than a block late.
+- **FIFO within a timestamp**, so a scheduled `NewNode` and the `SetInput`
+  wiring it up cannot invert. Insertion places an entry after every equal-or-
+  earlier one, which gets that with no sequence counter to overflow.
+- **A full queue refuses and reports** `CmdError::ScheduleFull` rather than
+  evicting something already accepted.
+
+**Why it is not a `Cmd` variant.** `Cmd::ScheduleAt { at, cmd: Cmd }` cannot
+exist — a `Cmd` nesting a `Cmd` is infinitely sized. Boxing would make `Cmd`
+non-`Copy` (it is passed by value at ~14 sites) *and* put a `dealloc` in the
+render path, since `deluge-alloc` runs every alloc and free inside
+`critical_section::with` with interrupts off. So scheduling is expressed as a
+property of delivery: `Host::audio_cmd_at` alongside `audio_cmd`.
+
+**Not built:** an unbounded queue. `SCHED_QUEUE = 64` is a ceiling a dense
+pattern could hit. The clean fix is a `Vec`-backed queue on the *control* side,
+allocating off the audio thread and feeding this one just in time — host-side,
+no engine change.
 
 ### G8 — No groups
 
@@ -284,9 +320,9 @@ not calendar time.
 | ~~P1~~ | ~~G1 — engine→host event channel~~ | **high** | **low** | ✅ **done** — `event.rs` |
 | ~~P2~~ | ~~G4b — node reordering commands~~ | high | low | ✅ **done** — `Move{Before,After}` |
 | ~~P3~~ | ~~G2 — control rate~~ | high | med | ✅ **done** (mono; poly still open) |
-| **P4** | G3 — graph templates / SynthDef | high | med-high | **next** — gateway to the OSC front-end |
-| **P5** | G6 — control buses | med | med | **Blocked by P3 (G2)** |
-| **P6** | G7 — scheduled commands | med | med | Independent; matters for sequencing |
+| ~~P4~~ | ~~G3 — graph templates / SynthDef~~ | — | — | ❌ **retired** — superseded by GL2 (see glicol note) |
+| ~~P6~~ | ~~G7 — scheduled commands~~ | med | med | ✅ **done** — `sched.rs`, `Engine::apply_at` |
+| **P5** | G6 — control buses | med | med | **next** — unblocked now G2 has landed |
 | **P7** | G5 — wider node inputs | low | med | Stack-budget constrained — see below |
 | **P8** | G10 — assorted | low | low each | Opportunistic |
 | — | G8 — groups | low | high | Defer; YAGNI for a fixed instrument |

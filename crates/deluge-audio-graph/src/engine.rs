@@ -104,6 +104,10 @@ pub struct Engine<
     in_update: bool,
     epoch: u8,
     node_epoch: [u8; NODES],
+    // Commands filed against a future sample position (G7). Drained at the top
+    // of `render_block`, before the topological re-sort, so a scheduled
+    // `NewNode` joins eval order in the same block it lands in.
+    sched: crate::sched::SchedQueue,
 }
 
 impl<
@@ -147,6 +151,7 @@ impl<
             in_update: false,
             epoch: 0,
             node_epoch: [0; NODES],
+            sched: crate::sched::SchedQueue::new(),
         }
     }
 
@@ -158,6 +163,42 @@ impl<
     /// positions converts against this on its own side.
     pub fn sample_time(&self) -> u64 {
         self.sample_clock
+    }
+
+    /// File `cmd` to be applied at sample `at` on the engine's clock, instead
+    /// of immediately (G7 — scsynth's OSC bundle timetags).
+    ///
+    /// This is what decouples a sequencer's timing from control-thread jitter:
+    /// the host decides *when* a note lands rather than *when it got round to
+    /// asking*.
+    ///
+    /// **Block accurate.** The command fires at the start of the block
+    /// containing `at`, so resolution is `BLOCK` samples. A command whose block
+    /// has already passed fires at the next block rather than being dropped —
+    /// late is recoverable, vanishing is not.
+    ///
+    /// Returns `false` if the queue is full; the command is not stored and
+    /// [`crate::event::CmdError::ScheduleFull`] is reported against the
+    /// command's node (see [`Cmd::node`]). Cancel everything still pending with
+    /// [`Cmd::ClearSchedule`]; [`Cmd::Reset`] clears it too, since the clock
+    /// restarts at zero and pending timestamps would no longer mean anything.
+    pub fn apply_at(&mut self, at: u64, cmd: crate::cmd::Cmd) -> bool {
+        if self.sched.push(at, cmd) {
+            return true;
+        }
+        let node = cmd.node().unwrap_or(NodeId(0));
+        self.fail(node, CmdError::ScheduleFull);
+        false
+    }
+
+    /// Number of commands filed with [`Self::apply_at`] that have not fired.
+    pub fn scheduled_len(&self) -> usize {
+        self.sched.len()
+    }
+
+    /// Sample position of the earliest command still pending, if any.
+    pub fn next_scheduled_at(&self) -> Option<u64> {
+        self.sched.next_at()
     }
 
     /// Enqueue a build-time command failure for the host (see
@@ -595,9 +636,14 @@ impl<
                 self.epoch = self.epoch.wrapping_add(1);
             }
             Cmd::EndUpdate => self.end_update(),
+            Cmd::ClearSchedule => self.sched.clear(),
             Cmd::Reset => {
                 self.arena.reset();
                 self.sample_clock = 0;
+                // The clock restarts at zero, so pending timestamps no longer
+                // name anything meaningful — keeping them would fire a whole
+                // patch's worth of commands into a freshly emptied graph.
+                self.sched.clear();
                 self.graph_dirty = false;
                 self.in_update = false;
                 self.node_epoch = [0; NODES];
@@ -623,6 +669,14 @@ impl<
     /// Evaluate every live node in eval order into the output arena.
     pub fn render_block(&mut self) {
         self.sample_clock = self.sample_clock.wrapping_add(BLOCK as u64);
+        // Scheduled commands due in this block (G7), applied BEFORE the sort
+        // below so a scheduled `NewNode` joins eval order in the block it lands
+        // in rather than a block late. The clock has already advanced, so it
+        // names the first sample of the next block and `at < sample_clock` is
+        // exactly "this block contains `at`" — overdue entries included.
+        while let Some(cmd) = self.sched.pop_due(self.sample_clock) {
+            self.apply(cmd);
+        }
         // Eval order is topological by construction (G11): every node runs after
         // the nodes it reads. Sorting here rather than in `apply` means a whole
         // patch build costs one sort, not one per command.
@@ -2120,6 +2174,246 @@ mod tests {
             (d_shifted - 0.2).abs() < 0.05,
             "width=0.2 broadcast ⇒ ~0.2 duty, got {d_shifted}"
         );
+    }
+
+    // ── G7: scheduled commands ────────────────────────────────────────────
+
+    type SE7 = Engine<16, 8, 16, 4, 45056, 2048>;
+
+    /// A `Ctrl` node whose value `SetParam` can move, so a scheduled command's
+    /// effect is directly readable from the node's output.
+    fn ctrl(e: &mut SE7, id: u16, v: f32) {
+        e.apply(Cmd::NewNode {
+            node: NodeId(id),
+            kind: Kind::Ctrl,
+            args: [Input::Const(0.0); 3],
+        });
+        e.apply(Cmd::SetParam {
+            node: NodeId(id),
+            param: 0,
+            value: v,
+        });
+    }
+
+    fn set_at(e: &mut SE7, at: u64, id: u16, v: f32) -> bool {
+        e.apply_at(
+            at,
+            Cmd::SetParam {
+                node: NodeId(id),
+                param: 0,
+                value: v,
+            },
+        )
+    }
+
+    #[test]
+    fn a_scheduled_command_fires_in_the_block_containing_its_sample() {
+        // BLOCK = 16. Sample 20 lives in block 1 ([16, 32)), so it must not
+        // have fired after block 0 and must have fired after block 1.
+        let mut e = SE7::new(48_000.0);
+        ctrl(&mut e, 0, 0.25);
+        assert!(set_at(&mut e, 20, 0, 0.75));
+        assert_eq!(e.scheduled_len(), 1);
+        assert_eq!(e.next_scheduled_at(), Some(20));
+
+        e.render_block(); // block 0: samples 0..16
+        assert_eq!(e.node_output(NodeId(0), 0)[0], 0.25, "not yet");
+        assert_eq!(e.scheduled_len(), 1);
+
+        e.render_block(); // block 1: samples 16..32, contains 20
+        assert_eq!(e.node_output(NodeId(0), 0)[0], 0.75, "fired");
+        assert_eq!(e.scheduled_len(), 0);
+    }
+
+    #[test]
+    fn a_command_scheduled_for_sample_zero_fires_on_the_first_block() {
+        let mut e = SE7::new(48_000.0);
+        ctrl(&mut e, 0, 0.25);
+        assert!(set_at(&mut e, 0, 0, 0.75));
+        e.render_block();
+        assert_eq!(e.node_output(NodeId(0), 0)[0], 0.75);
+    }
+
+    #[test]
+    fn an_overdue_command_fires_rather_than_vanishing() {
+        let mut e = SE7::new(48_000.0);
+        ctrl(&mut e, 0, 0.25);
+        for _ in 0..10 {
+            e.render_block(); // clock is now well past sample 5
+        }
+        assert!(set_at(&mut e, 5, 0, 0.75), "filing in the past is allowed");
+        e.render_block();
+        assert_eq!(
+            e.node_output(NodeId(0), 0)[0],
+            0.75,
+            "late is recoverable; dropping it would not be"
+        );
+    }
+
+    #[test]
+    fn a_scheduled_command_fires_exactly_once() {
+        let mut e = SE7::new(48_000.0);
+        ctrl(&mut e, 0, 0.25);
+        set_at(&mut e, 20, 0, 0.75);
+        e.render_block();
+        e.render_block();
+        assert_eq!(e.node_output(NodeId(0), 0)[0], 0.75);
+        // Move the value by hand; a re-fire would stomp it back to 0.75.
+        e.apply(Cmd::SetParam {
+            node: NodeId(0),
+            param: 0,
+            value: 0.1,
+        });
+        for _ in 0..4 {
+            e.render_block();
+        }
+        assert_eq!(e.node_output(NodeId(0), 0)[0], 0.1, "did not fire twice");
+    }
+
+    #[test]
+    fn commands_at_the_same_sample_apply_in_arrival_order() {
+        let mut e = SE7::new(48_000.0);
+        ctrl(&mut e, 0, 0.0);
+        set_at(&mut e, 20, 0, 0.5);
+        set_at(&mut e, 20, 0, 0.9); // later arrival wins
+        e.render_block();
+        e.render_block();
+        assert_eq!(e.node_output(NodeId(0), 0)[0], 0.9);
+    }
+
+    #[test]
+    fn out_of_order_filing_still_applies_in_time_order() {
+        let mut e = SE7::new(48_000.0);
+        ctrl(&mut e, 0, 0.0);
+        set_at(&mut e, 40, 0, 0.9); // filed first, due later
+        set_at(&mut e, 20, 0, 0.5);
+        e.render_block(); // block 0
+        e.render_block(); // block 1 → sample 20
+        assert_eq!(e.node_output(NodeId(0), 0)[0], 0.5);
+        e.render_block(); // block 2 → sample 40 (block 2 is [32,48))
+        assert_eq!(e.node_output(NodeId(0), 0)[0], 0.9);
+    }
+
+    #[test]
+    fn a_scheduled_new_node_joins_eval_order_the_block_it_lands_in() {
+        // The drain runs before the topological re-sort, so a node created by a
+        // scheduled command is sorted in and rendered immediately rather than
+        // sitting silent for one block.
+        let mut e = SE7::new(48_000.0);
+        e.apply_at(
+            4,
+            Cmd::NewNode {
+                node: NodeId(0),
+                kind: Kind::Ctrl,
+                args: [Input::Const(0.0); 3],
+            },
+        );
+        e.apply_at(
+            4,
+            Cmd::SetParam {
+                node: NodeId(0),
+                param: 0,
+                value: 0.6,
+            },
+        );
+        e.render_block();
+        assert_eq!(e.eval_order(), &[0], "created and sorted in this block");
+        assert_eq!(
+            e.node_output(NodeId(0), 0)[0],
+            0.6,
+            "and rendered, not silent for a block"
+        );
+    }
+
+    #[test]
+    fn a_full_queue_refuses_and_reports_schedule_full() {
+        let mut e = SE7::new(48_000.0);
+        ctrl(&mut e, 0, 0.0);
+        e.drain_events(|_| {});
+        for n in 0..crate::sched::SCHED_QUEUE {
+            assert!(set_at(&mut e, 1_000 + n as u64, 0, 0.5), "fits");
+        }
+        assert!(!set_at(&mut e, 2_000, 0, 0.9), "full → refused");
+        assert_eq!(
+            e.pop_event(),
+            Some(crate::event::Event::CmdFailed {
+                node: NodeId(0),
+                reason: CmdError::ScheduleFull
+            }),
+            "the host is told, rather than the command silently vanishing"
+        );
+        assert_eq!(e.scheduled_len(), crate::sched::SCHED_QUEUE);
+    }
+
+    #[test]
+    fn clear_schedule_cancels_the_future_but_not_the_past() {
+        let mut e = SE7::new(48_000.0);
+        ctrl(&mut e, 0, 0.25);
+        set_at(&mut e, 20, 0, 0.5); // block 1
+        set_at(&mut e, 60, 0, 0.9); // block 3
+        e.render_block();
+        e.render_block(); // 0.5 has now been applied
+        assert_eq!(e.node_output(NodeId(0), 0)[0], 0.5);
+
+        e.apply(Cmd::ClearSchedule);
+        assert_eq!(e.scheduled_len(), 0);
+        for _ in 0..6 {
+            e.render_block();
+        }
+        assert_eq!(
+            e.node_output(NodeId(0), 0)[0],
+            0.5,
+            "the applied command stands; the pending one is gone"
+        );
+    }
+
+    #[test]
+    fn reset_clears_pending_commands() {
+        // Reset restarts the clock at zero, so a pending timestamp would name a
+        // block that is about to come round again — firing a dead patch's
+        // commands into the new one.
+        let mut e = SE7::new(48_000.0);
+        ctrl(&mut e, 0, 0.25);
+        set_at(&mut e, 200, 0, 0.9);
+        assert_eq!(e.scheduled_len(), 1);
+        e.apply(Cmd::Reset);
+        assert_eq!(e.scheduled_len(), 0);
+        assert_eq!(e.next_scheduled_at(), None);
+    }
+
+    #[test]
+    fn scheduling_survives_the_clock_and_does_not_disturb_rendering() {
+        // A patch that is actually making sound keeps making it while commands
+        // are pending, and the pending command lands on the running graph.
+        let mut e = SE7::new(48_000.0);
+        e.apply(Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::Saw,
+            args: [Input::Const(220.0), Input::Const(0.0), Input::Const(0.0)],
+        });
+        e.apply(Cmd::BusWrite {
+            src: Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            bus: BusId(0),
+        });
+        e.apply(Cmd::SetRoot { bus: BusId(0) });
+        e.apply_at(
+            20,
+            Cmd::SetInput {
+                node: NodeId(0),
+                port: 0,
+                src: Input::Const(110.0),
+            },
+        );
+        let mut out = [StereoFrame::default(); 16];
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil);
+        assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0));
+        e.render(&mut out, &sil);
+        assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0));
+        assert_eq!(e.scheduled_len(), 0, "fired during the second render");
     }
 
     // ── G2: control rate ──────────────────────────────────────────────────
