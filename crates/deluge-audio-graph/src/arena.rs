@@ -2,11 +2,20 @@
 //! slots are a separate index space (engine-internal) allocated first-fit and
 //! reclaimed on free.
 //!
-//! An explicit eval-order list records **creation order** and keeps it stable
-//! across free/reuse (memory order no longer equals eval order once slots are
-//! recycled — see spec §3.5). Nothing here sorts: `create` appends and `free`
-//! stable-compacts, so a freed-then-recreated `NodeId` moves to the *end* of
-//! eval order. Building a patch in dependency order is the author's obligation.
+//! An explicit eval-order list is kept separately from slot order (memory order
+//! no longer equals eval order once slots are recycled — see spec §3.5).
+//! `create` appends and `free` stable-compacts, so the list starts out in
+//! creation order; [`Arena::sort`] then reorders it topologically, so every node
+//! evaluates after the nodes it reads (G11). The engine runs that sort when the
+//! graph's shape changes, which means **building a patch in dependency order is
+//! no longer the author's obligation**.
+//!
+//! Two things the sort deliberately does not do: it does not reorder the members
+//! of a feedback cycle (there is no order that satisfies them, and their
+//! existing order decides where the one-block delay falls), and it does not
+//! treat `Input::Bus` reads or self-edges as dependencies — both are one block
+//! delayed by design. `move_before` / `move_after` remain as an explicit
+//! override, honoured until the graph's shape changes again.
 
 use crate::node::Kind;
 use crate::{Input, Node, NodeId};

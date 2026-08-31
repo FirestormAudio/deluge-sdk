@@ -73,6 +73,10 @@ pub struct VoiceAllocator {
     // bits are set: a filter envelope finishing before the amp envelope must
     // not free a lane that is still sounding.
     lane_done: [u8; VOICES],
+    // Gates whose node has been freed (`Event::Freed`, GL2). Their `VoiceDone`
+    // can never arrive, so these bits count as permanently reported — for lanes
+    // already waiting and for every note started afterwards.
+    gates_dead: u8,
 }
 
 impl VoiceAllocator {
@@ -101,6 +105,7 @@ impl VoiceAllocator {
             triggers,
             n_triggers,
             lane_done: [0; VOICES],
+            gates_dead: 0,
         }
     }
 
@@ -113,17 +118,43 @@ impl VoiceAllocator {
     /// its key down, and freeing it would let the next note steal a lane the
     /// player is still holding.
     pub fn on_event(&mut self, ev: Event) {
-        let Event::VoiceDone { node, voice } = ev else {
-            return;
-        };
-        let lane = voice as usize;
-        if lane >= VOICES {
-            return;
+        match ev {
+            Event::VoiceDone { node, voice } => {
+                let lane = voice as usize;
+                if lane >= VOICES {
+                    return;
+                }
+                let Some(g) = self.gate_index(node) else {
+                    return; // not one of our gates
+                };
+                self.lane_done[lane] |= 1 << g;
+                self.reclaim_if_complete(lane);
+            }
+            // A gate node the patch update swept can never report again. Treat
+            // it as reported — for the lanes already waiting on it, and (via
+            // `gates_dead`) for every note started from here on.
+            Event::Freed { node } => {
+                let Some(g) = self.gate_index(node) else {
+                    return;
+                };
+                self.gates_dead |= 1 << g;
+                for lane in 0..VOICES {
+                    self.lane_done[lane] |= 1 << g;
+                    self.reclaim_if_complete(lane);
+                }
+            }
+            _ => {}
         }
-        let Some(g) = self.gates[..self.n_gates].iter().position(|n| *n == node) else {
-            return; // not one of our gates
-        };
-        self.lane_done[lane] |= 1 << g;
+    }
+
+    /// Index of `node` in this allocator's gate list, if it owns it.
+    fn gate_index(&self, node: NodeId) -> Option<usize> {
+        self.gates[..self.n_gates].iter().position(|n| *n == node)
+    }
+
+    /// Return `lane` to `Free` once every gate has reported for it. A `Held`
+    /// lane is never reclaimed: its key is still down.
+    fn reclaim_if_complete(&mut self, lane: usize) {
         let all = if self.n_gates >= 8 {
             u8::MAX
         } else {
@@ -131,7 +162,7 @@ impl VoiceAllocator {
         };
         if self.lane_done[lane] & all == all && self.lane_state[lane] == LaneState::Releasing {
             self.lane_state[lane] = LaneState::Free;
-            self.lane_done[lane] = 0;
+            self.lane_done[lane] = self.gates_dead;
         }
     }
 
@@ -237,7 +268,9 @@ impl VoiceAllocator {
             self.lane_ctx[lane] = (u as u8, u_count as u8);
             // Fresh note: discard any completion bits from the previous note on
             // this lane (including a steal, where some gates had reported).
-            self.lane_done[lane] = 0;
+            // Gates whose node is gone stay reported — nothing will ever
+            // report for them again.
+            self.lane_done[lane] = self.gates_dead;
             self.lane_age[lane] = self.clock;
             self.clock = self.clock.wrapping_add(1);
             let value = note as f32 - A440_NOTE + unison_offset(u, u_count, self.detune_cents);
@@ -1990,5 +2023,67 @@ mod tests {
         // Lane 7 is Held, so it must not have been freed; the next note steals
         // the oldest release (6) rather than finding 7 free.
         assert_eq!(lane_of(&on(&mut a, 73, 100)), 6);
+    }
+
+    // ── GL2: a swept gate node must not wedge its lanes ──────────────────
+
+    #[test]
+    fn a_swept_gate_node_stops_wedging_the_lanes_waiting_on_it() {
+        // A patch update freed the filter-envelope node. Its `VoiceDone` can
+        // never arrive, so every released lane would wait forever and new notes
+        // would be forced to steal — G1's bug, back through the update path.
+        let mut a = mk_two_gate();
+        fill_and_release_all(&mut a);
+        for v in 0..VOICES as u8 {
+            done(&mut a, 20, v); // amp envelopes reported; node 21 never will
+        }
+        a.on_event(Event::Freed { node: NodeId(21) });
+        assert_eq!(
+            lane_of(&on(&mut a, 72, 100)),
+            0,
+            "lanes reclaimed once the missing gate is known to be gone"
+        );
+    }
+
+    #[test]
+    fn a_gate_freed_before_a_note_is_never_waited_on() {
+        // The gate is gone for good: notes started *after* the sweep must not
+        // wait on it either.
+        let mut a = mk_two_gate();
+        a.on_event(Event::Freed { node: NodeId(21) });
+        fill_and_release_all(&mut a);
+        for v in 0..VOICES as u8 {
+            done(&mut a, 20, v);
+        }
+        assert_eq!(lane_of(&on(&mut a, 72, 100)), 0);
+    }
+
+    #[test]
+    fn freeing_a_gate_does_not_free_a_held_lane() {
+        // Same rule as `VoiceDone`: the key is still down, so the lane stays.
+        let mut a = mk_two_gate();
+        let held = lane_of(&on(&mut a, 60, 100));
+        a.on_event(Event::Freed { node: NodeId(20) });
+        a.on_event(Event::Freed { node: NodeId(21) });
+        assert_ne!(
+            lane_of(&on(&mut a, 61, 100)),
+            held,
+            "a held note is not stolen just because its envelopes went away"
+        );
+    }
+
+    #[test]
+    fn freeing_a_foreign_node_leaves_the_allocator_alone() {
+        let mut a = mk_two_gate();
+        fill_and_release_all(&mut a);
+        for v in 0..VOICES as u8 {
+            done(&mut a, 20, v);
+        }
+        a.on_event(Event::Freed { node: NodeId(999) });
+        assert_eq!(
+            lane_of(&on(&mut a, 72, 100)),
+            7,
+            "still waiting on gate 21, so the new note steals"
+        );
     }
 }

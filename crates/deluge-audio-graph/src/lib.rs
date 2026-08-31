@@ -1,15 +1,20 @@
 //! Portable `no_std` block-rendering audio graph engine.
 //!
 //! Nodes (a uniform enum wrapping `deluge-dsp-kernels` structs) evaluate in
-//! **creation order** into a pooled output arena; ports are addressed `(node,
-//! port)`; buses carry stereo bundles + fan-in; a `Host` transports control-rate
-//! `Cmd`s to the engine, and the engine reports `Event`s back. Sizes are
-//! const-generic; sample rate is runtime.
+//! **topological order** into a pooled output arena; ports are addressed
+//! `(node, port)`; buses carry stereo bundles + fan-in; a `Host` transports
+//! control-rate `Cmd`s to the engine, and the engine reports `Event`s back.
+//! Sizes are const-generic; sample rate is runtime.
 //!
-//! The engine does **not** sort the graph. Eval order is the order nodes were
-//! created (see [`arena`]); building a patch in dependency order is the
-//! author's obligation. A node that reads a source created after it sees that
-//! source's *previous* block.
+//! Eval order is sorted when the graph's shape changes, so a node always sees
+//! its sources' current block no matter what order they were created in (G11,
+//! see [`arena::Arena::sort`]). Exceptions, both deliberate: a feedback cycle
+//! keeps its authored order, and an `Input::Bus` read is one block delayed by
+//! design.
+//!
+//! A patch can be updated incrementally rather than rebuilt: between
+//! `Cmd::BeginUpdate` and `Cmd::EndUpdate`, re-emitting a node keeps it and its
+//! DSP state, and anything the update did not re-emit is swept (GL2).
 #![no_std]
 
 pub mod arena;

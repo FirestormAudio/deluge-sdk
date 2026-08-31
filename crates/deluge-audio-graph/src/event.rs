@@ -65,6 +65,16 @@ pub enum Event {
     /// note rate, and a host bug there would flood the queue and evict the
     /// envelope-completion events the voice allocator depends on.
     CmdFailed { node: NodeId, reason: CmdError },
+    /// `Cmd::EndUpdate` swept this node: the re-emitted patch no longer
+    /// mentions it, so it was freed.
+    ///
+    /// The audio consequence is nil (an omitted node reaches no output), but
+    /// the *bookkeeping* consequence is not: a host holding node ids must drop
+    /// them. [`crate::VoiceAllocator::on_event`] consumes this to stop waiting
+    /// for completions from a gate node that no longer exists — otherwise a
+    /// lane released just before the update would wait for a `VoiceDone` that
+    /// can never arrive.
+    Freed { node: NodeId },
 }
 
 /// Fixed-capacity, allocation-free FIFO of [`Event`]s.

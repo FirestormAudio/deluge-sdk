@@ -129,6 +129,21 @@ pub enum Cmd {
     Free {
         node: NodeId,
     },
+    /// Open an incremental patch update (GL2). Inside one, `NewNode` on a live
+    /// id with the **same kind** keeps that node and its DSP state instead of
+    /// failing; a different kind replaces it. Pair with [`Cmd::EndUpdate`].
+    ///
+    /// The intended use is re-running the patch script that built the graph:
+    /// because node ids are author-assigned and deterministic, the re-run *is*
+    /// the diff — no AST, no parser, no graph comparison.
+    BeginUpdate,
+    /// Close an incremental patch update: every node the update did not
+    /// re-emit is freed, and each one is announced as `Event::Freed`.
+    ///
+    /// Sweeping is synchronous and unconditional. A node the new patch omits
+    /// has no path to an output any more — omission is what severed it — so
+    /// there is no audible tail to protect by deferring the free.
+    EndUpdate,
     Reset,
 }
 

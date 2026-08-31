@@ -1,6 +1,6 @@
 //! The block-rendering engine. Owns the arena and the per-slot output arena and
-//! evaluates nodes in eval order — i.e. **creation order**, not a topological
-//! sort — a block at a time.
+//! evaluates nodes in eval order — **topologically sorted** whenever the graph's
+//! shape changes (see [`crate::arena::Arena::sort`]) — a block at a time.
 //!
 //! ## Borrow model (spec §3.5)
 //! The output arena is one `UnsafeCell<[[f32; BLOCK]; OUTS]>`. Each `render_block`
@@ -9,9 +9,9 @@
 //! writes the node's own slot-run. Memory-safety comes from this copy-out
 //! discipline: every read is copied into `scratch` before the mutable-write
 //! `unsafe` deref is created, so the write borrow never overlaps a read. This
-//! holds regardless of eval order — creating nodes in dependency order is what
-//! makes the *values* correct (so a node sees its inputs' current-block
-//! outputs), not what makes the borrow sound.
+//! holds regardless of eval order — the topological sort is what makes the
+//! *values* correct (so a node sees its inputs' current-block outputs), not what
+//! makes the borrow sound.
 
 use core::cell::UnsafeCell;
 
@@ -98,6 +98,12 @@ pub struct Engine<
     // Which nodes reach an output root, recomputed with the sort. Meaningless
     // (and unread) while `cull` is false.
     reachable: [bool; NODES],
+    // Incremental patch update (GL2). `epoch` advances on `BeginUpdate`;
+    // `node_epoch[i]` records the epoch in which node `i` was last (re-)emitted.
+    // `EndUpdate` frees every live node still carrying an older epoch.
+    in_update: bool,
+    epoch: u8,
+    node_epoch: [u8; NODES],
 }
 
 impl<
@@ -138,6 +144,9 @@ impl<
             graph_dirty: false,
             cull: false,
             reachable: [false; NODES],
+            in_update: false,
+            epoch: 0,
+            node_epoch: [0; NODES],
         }
     }
 
@@ -270,6 +279,67 @@ impl<
         self.reachable = r;
     }
 
+    /// Free one node and everything keyed to it: its pooled table region, its
+    /// stream cursors, its idle history, its arena slot and its bus writes.
+    ///
+    /// The single free path — `Cmd::Free` and the `EndUpdate` sweep both land
+    /// here, so a swept node can never be cleaned up less thoroughly than an
+    /// explicitly freed one.
+    fn free_node(&mut self, node: NodeId) {
+        // Free a pooled table region (if bound) BEFORE reclaiming the node's
+        // arena slot: `table_src()` reads through the node, which must still
+        // be live.
+        if let Some(n) = self.arena.node_mut(node) {
+            if let Some(crate::node::TableSrc::Pooled(h)) = n.table_src() {
+                self.pool.free(h);
+            }
+        }
+        let idx = node.0 as usize;
+        if idx < NODES {
+            self.stream_state[idx] = None;
+            // A recreated id re-seeds this on create; clearing here keeps a
+            // dead slot from spuriously edging in between.
+            self.prev_idle[idx] = 0;
+        }
+        self.arena.free(node);
+        self.graph_dirty = true;
+        // Invalidate this node's bus writes so a reused id inherits no stale
+        // routing (IO-2a). Const/Bus-sourced writes are untouched.
+        for w in self.writes.iter_mut() {
+            if let Some((Input::Node { node: n, .. }, ..)) = w {
+                if *n == node {
+                    *w = None;
+                }
+            }
+        }
+    }
+
+    /// Close an incremental update: sweep every node the update did not
+    /// re-emit, announcing each one so the host can drop its id.
+    fn end_update(&mut self) {
+        self.in_update = false;
+        for idx in 0..NODES {
+            let id = NodeId(idx as u16);
+            if self.arena.node(id).is_some() && self.node_epoch[idx] != self.epoch {
+                self.free_node(id);
+                self.events.push(crate::event::Event::Freed { node: id });
+            }
+        }
+    }
+
+    /// Record that `node` belongs to the patch as of the current epoch.
+    fn stamp(&mut self, node: NodeId) {
+        let idx = node.0 as usize;
+        if idx < NODES {
+            self.node_epoch[idx] = self.epoch;
+        }
+    }
+
+    /// A node's `Kind`, or `None` if it is not live.
+    pub fn kind_of(&self, node: NodeId) -> Option<crate::node::Kind> {
+        self.arena.kind_of(node)
+    }
+
     /// Mutable access to one input edge. Rewiring changes the graph's shape, so
     /// this marks eval order for re-sorting whether or not the caller writes
     /// through the reference — a spurious sort costs one pass, a missed one
@@ -326,9 +396,13 @@ impl<
         self.arena.move_after(node, target)
     }
 
-    /// Current eval order, as `NodeId` raw values. Eval order is creation
-    /// order as modified by `move_before` / `move_after`; a node reading a
-    /// source that appears later here sees that source's *previous* block.
+    /// Current eval order, as `NodeId` raw values.
+    ///
+    /// A pending sort is applied at the next [`Self::render_block`], so between
+    /// a structural edit and that render this still shows the pre-sort order.
+    /// A node reading a source that appears later here sees that source's
+    /// *previous* block — after a render that can only happen inside a feedback
+    /// cycle or under an explicit `move_before` / `move_after`.
     pub fn eval_order(&self) -> &[u16] {
         self.arena.eval_order()
     }
@@ -339,6 +413,28 @@ impl<
         match cmd {
             Cmd::Nop => {}
             Cmd::NewNode { node, kind, args } => {
+                // Inside an update, re-emitting an unchanged node is not an
+                // error — it is the script saying "this stage is still here".
+                // Same kind keeps the running node and its DSP state; a
+                // different kind cannot (there is no way to carry a saw's phase
+                // into a square's), so it is rebuilt.
+                if self.in_update && self.arena.node(node).is_some() {
+                    if self.arena.kind_of(node) == Some(kind) {
+                        if let Some(n) = self.arena.node_mut(node) {
+                            for p in 0..crate::cmd::MAX_ARGS {
+                                if let Some(slot) = n.input_mut(p as u8) {
+                                    *slot = args[p];
+                                }
+                            }
+                        }
+                        self.stamp(node);
+                        self.graph_dirty = true;
+                        return;
+                    }
+                    // Replaced, not swept: the id stays live, so this emits no
+                    // `Freed` — a host's gate wired to this id still works.
+                    self.free_node(node);
+                }
                 if self.arena.create(node, kind) {
                     if let Some(n) = self.arena.node_mut(node) {
                         for p in 0..crate::cmd::MAX_ARGS {
@@ -348,6 +444,7 @@ impl<
                         }
                     }
                     self.seed_prev_idle(node);
+                    self.stamp(node);
                     self.graph_dirty = true;
                 } else {
                     self.fail(node, CmdError::CreateFailed);
@@ -464,38 +561,18 @@ impl<
                     self.fail(node, CmdError::DeadNode);
                 }
             }
-            Cmd::Free { node } => {
-                // Free a pooled table region (if bound) BEFORE reclaiming the
-                // node's arena slot: `table_src()` reads through the node,
-                // which must still be live.
-                if let Some(n) = self.arena.node_mut(node) {
-                    if let Some(crate::node::TableSrc::Pooled(h)) = n.table_src() {
-                        self.pool.free(h);
-                    }
-                }
-                let idx = node.0 as usize;
-                if idx < NODES {
-                    self.stream_state[idx] = None;
-                    // A recreated id re-seeds this on create; clearing here
-                    // keeps a dead slot from spuriously edging in between.
-                    self.prev_idle[idx] = 0;
-                }
-                self.arena.free(node);
-                self.graph_dirty = true;
-                // Invalidate this node's bus writes so a reused id inherits no
-                // stale routing (IO-2a). Const/Bus-sourced writes are untouched.
-                for w in self.writes.iter_mut() {
-                    if let Some((Input::Node { node: n, .. }, ..)) = w {
-                        if *n == node {
-                            *w = None;
-                        }
-                    }
-                }
+            Cmd::Free { node } => self.free_node(node),
+            Cmd::BeginUpdate => {
+                self.in_update = true;
+                self.epoch = self.epoch.wrapping_add(1);
             }
+            Cmd::EndUpdate => self.end_update(),
             Cmd::Reset => {
                 self.arena.reset();
                 self.sample_clock = 0;
                 self.graph_dirty = false;
+                self.in_update = false;
+                self.node_epoch = [0; NODES];
                 self.writes = [None; NODES];
                 self.writes_len = 0;
                 self.root = None;
@@ -816,6 +893,17 @@ impl<
         // Routing is what makes a node reachable, so this invalidates the
         // culling set just as an edge change invalidates eval order.
         self.graph_dirty = true;
+        // A write is a routing statement, not an accumulator: re-stating the
+        // same source→bus route updates its gains in place. Without this, a
+        // patch re-run (GL2) would append a second entry and add 6 dB per edit.
+        for w in 0..self.writes_len {
+            if let Some((s, b, ..)) = self.writes[w] {
+                if s == src && b.0 == bus.0 {
+                    self.writes[w] = Some((src, bus, gl, gr));
+                    return;
+                }
+            }
+        }
         // Reuse a freed (`None`) slot first so free/patch cycles don't leak
         // slots; otherwise append. No holes exist without a prior `Free`, so a
         // fresh engine appends in the same order as before (byte-identical).
@@ -3929,5 +4017,197 @@ mod tests {
             0.0,
             "now it reaches the bus"
         );
+    }
+
+    // ── GL2: epoch mark-and-sweep patch update ───────────────────────────
+
+    fn saw(e: &mut Engine<8, 8, 8, 4, 45056, 2048>, id: u16, hz: f32) {
+        e.apply(Cmd::NewNode {
+            node: NodeId(id),
+            kind: Kind::Saw,
+            args: [Input::Const(hz), Input::Const(0.0), Input::Const(0.0)],
+        });
+    }
+
+    #[test]
+    fn re_emitting_an_unchanged_node_inside_an_update_preserves_its_state() {
+        // The whole point of GL2: re-running the patch script must not restart
+        // the oscillator that the script did not change.
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut control = ME::new(48_000.0);
+        saw(&mut control, 0, 2_000.0);
+        control.render_block();
+        control.render_block();
+        let expected = control.node_output(NodeId(0), 0)[0];
+
+        let mut e = ME::new(48_000.0);
+        saw(&mut e, 0, 2_000.0);
+        e.render_block();
+        e.apply(Cmd::BeginUpdate);
+        saw(&mut e, 0, 2_000.0); // same id, same kind: keep the running node
+        e.apply(Cmd::EndUpdate);
+        e.render_block();
+        assert_eq!(
+            e.node_output(NodeId(0), 0)[0],
+            expected,
+            "phase continued across the update"
+        );
+        assert_eq!(e.pop_event(), None, "not a failure, and nothing was freed");
+    }
+
+    #[test]
+    fn changing_a_nodes_kind_inside_an_update_replaces_it() {
+        // State cannot survive a kind change — there is no meaningful way to
+        // carry a saw's phase into a square's — so the node is rebuilt.
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        saw(&mut e, 0, 2_000.0);
+        e.render_block();
+        e.apply(Cmd::BeginUpdate);
+        e.apply(Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::Square,
+            args: [Input::Const(2_000.0), Input::Const(0.0), Input::Const(0.0)],
+        });
+        e.apply(Cmd::EndUpdate);
+        assert_eq!(e.kind_of(NodeId(0)), Some(Kind::Square));
+    }
+
+    #[test]
+    fn a_node_the_new_patch_omits_is_swept_and_announced() {
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        saw(&mut e, 0, 2_000.0);
+        saw(&mut e, 1, 3_000.0);
+        e.render_block();
+        e.apply(Cmd::BeginUpdate);
+        saw(&mut e, 0, 2_000.0); // the new patch mentions only node 0
+        e.apply(Cmd::EndUpdate);
+        assert_eq!(e.kind_of(NodeId(0)), Some(Kind::Saw), "kept");
+        assert_eq!(e.kind_of(NodeId(1)), None, "swept");
+        assert_eq!(
+            e.pop_event(),
+            Some(crate::event::Event::Freed { node: NodeId(1) })
+        );
+    }
+
+    #[test]
+    fn an_update_that_re_emits_everything_frees_nothing() {
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        saw(&mut e, 0, 2_000.0);
+        saw(&mut e, 1, 3_000.0);
+        e.apply(Cmd::BeginUpdate);
+        saw(&mut e, 0, 2_000.0);
+        saw(&mut e, 1, 3_000.0);
+        e.apply(Cmd::EndUpdate);
+        assert_eq!(e.kind_of(NodeId(0)), Some(Kind::Saw));
+        assert_eq!(e.kind_of(NodeId(1)), Some(Kind::Saw));
+        assert_eq!(e.pop_event(), None);
+    }
+
+    #[test]
+    fn creating_a_live_id_outside_an_update_still_fails() {
+        // Outside an update, a duplicate `NewNode` is a host bug, not an edit.
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        saw(&mut e, 0, 2_000.0);
+        saw(&mut e, 0, 2_000.0);
+        assert_eq!(
+            e.pop_event(),
+            Some(crate::event::Event::CmdFailed {
+                node: NodeId(0),
+                reason: crate::event::CmdError::CreateFailed,
+            })
+        );
+    }
+
+    #[test]
+    fn an_update_rewires_a_surviving_node_without_rebuilding_it() {
+        // The insert-a-stage case: node 1 keeps running, but now reads node 2,
+        // which the update introduced.
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        saw(&mut e, 0, 2_000.0);
+        e.apply(Cmd::NewNode {
+            node: NodeId(1),
+            kind: Kind::Add,
+            args: [
+                Input::Node {
+                    node: NodeId(0),
+                    port: 0,
+                },
+                Input::Const(0.0),
+                Input::Const(0.0),
+            ],
+        });
+        e.render_block();
+
+        e.apply(Cmd::BeginUpdate);
+        saw(&mut e, 0, 2_000.0);
+        e.apply(Cmd::NewNode {
+            node: NodeId(2),
+            kind: Kind::Add,
+            args: [
+                Input::Node {
+                    node: NodeId(0),
+                    port: 0,
+                },
+                Input::Const(1.0),
+                Input::Const(0.0),
+            ],
+        });
+        e.apply(Cmd::NewNode {
+            node: NodeId(1),
+            kind: Kind::Add,
+            args: [
+                Input::Node {
+                    node: NodeId(2),
+                    port: 0,
+                },
+                Input::Const(0.0),
+                Input::Const(0.0),
+            ],
+        });
+        e.apply(Cmd::EndUpdate);
+        e.render_block();
+        assert_eq!(
+            e.eval_order(),
+            &[0, 2, 1],
+            "the new stage sorted into place"
+        );
+        assert_eq!(
+            e.node_output(NodeId(1), 0)[0],
+            e.node_output(NodeId(0), 0)[0] + 1.0
+        );
+    }
+
+    #[test]
+    fn re_emitting_a_bus_write_does_not_double_it() {
+        // A bus write is a routing statement, not an accumulator. Re-running
+        // the patch script re-emits every write; appending a second entry would
+        // add 6 dB per edit.
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        e.apply(Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::Add,
+            args: [Input::Const(0.25), Input::Const(0.0), Input::Const(0.0)],
+        });
+        let write = Cmd::BusWrite {
+            src: Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            bus: BusId(0),
+        };
+        e.apply(write);
+        e.apply(Cmd::SetRoot { bus: BusId(0) });
+        let mut out = [StereoFrame::default(); 8];
+        e.render(&mut out, &[]);
+        let once = out[0].l;
+        e.apply(write);
+        e.render(&mut out, &[]);
+        assert_eq!(out[0].l, once, "the second write replaced, not stacked");
     }
 }
