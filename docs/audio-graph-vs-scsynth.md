@@ -119,15 +119,44 @@ Two deliberate limits, both covered by tests:
   `VoiceDone` means a lane is not reclaimed that cycle — i.e. it degrades to the
   old stealing behaviour rather than misbehaving.
 
-### G2 — No control rate
+### G2 — No control rate — ✅ **DONE (mono)**
 
-`In` is only `K(f32)` or `A(&[f32])` (`deluge-dsp-kernels/src/lib.rs:36`), and
-`K` only ever originates from a literal `Input::Const`. There is no way for a
-*node* to produce one value per block.
+`In` was only `K(f32)` or `A(&[f32])`, and `K` only ever originated from a
+literal `Input::Const` — no *node* could produce one value per block, so an LFO
+driving a filter cutoff ran at full audio rate.
 
-An LFO driving a filter cutoff therefore runs at full audio rate. In scsynth
-that is `.kr` — one value per block, up to `BLOCK`× cheaper. On a modulation-heavy
-patch this is the most likely place we are leaving CPU on the floor.
+**Resolved for width-1 nodes.** `Rate::{Audio, Control}` on `Node`, set via
+`Engine::set_rate` / `Cmd::SetRate`. A control-rate node is evaluated once per
+block into a 1-sample `OutView`, then its value is broadcast across the row;
+consumers receive it as `In::K` and take their existing `as_const` fast path.
+
+Two semantics that are easy to get wrong and are pinned by tests:
+
+- **`BLOCK * dt`, not `dt`.** A node evaluated once per block covers `BLOCK`
+  samples of wall time. Passing `self.dt` would make every time-based kernel
+  (LFO phase, envelope stages, slew) run `BLOCK`× too slow — a silent, purely
+  musical bug. `control_rate_advances_at_the_same_wall_clock_rate` and
+  `control_rate_without_dt_scaling_would_be_visibly_slower` guard it.
+- **Inputs are sampled at the block's first sample** (scsynth's `A2K`), so
+  feeding an audio-rate signal into a control-rate node is a sample-and-hold,
+  not an average.
+
+The output row is still filled, because readers other than kernels — bus
+writes, `node_output`, `fill_usb`, the poly-lane splat — index it directly.
+Filling `BLOCK` floats is far cheaper than `BLOCK` kernel evaluations.
+
+**Still open:** poly (`VOICES`-wide) and stereo kinds are refused. Poly output
+is a voice-interleaved flattened tile and kernels derive their sample count
+from `out.len() / VOICES`, so control-rate poly needs a per-voice 1-sample tile
+plus its own broadcast — a separate piece of work. Every canonical modulation
+source (LFO, `Ctrl`, `SampleHold`, `Slew`, `Steps`, `Mtof`, the quantisers) is
+width 1, so this covers the motivating cases.
+
+**Adjacent win not taken:** `Input::Const` still resolves to a filled row and
+`In::A`. Handing those down as `In::K` would put every existing patch on the
+kernels' const fast path too — a real speedup, but it changes the code path
+every current patch takes and deserves its own change with the golden
+characterisation test watched closely.
 
 ### G3 — No graph template / SynthDef
 
@@ -254,8 +283,8 @@ not calendar time.
 | ~~P0~~ | ~~G4a — fix misleading doc comments~~ | med | trivial | ✅ **done** |
 | ~~P1~~ | ~~G1 — engine→host event channel~~ | **high** | **low** | ✅ **done** — `event.rs` |
 | ~~P2~~ | ~~G4b — node reordering commands~~ | high | low | ✅ **done** — `Move{Before,After}` |
-| **P3** | G2 — control rate | high | med | **next** — exploits existing `as_const()` paths |
-| **P4** | G3 — graph templates / SynthDef | high | med-high | Gateway to the OSC front-end |
+| ~~P3~~ | ~~G2 — control rate~~ | high | med | ✅ **done** (mono; poly still open) |
+| **P4** | G3 — graph templates / SynthDef | high | med-high | **next** — gateway to the OSC front-end |
 | **P5** | G6 — control buses | med | med | **Blocked by P3 (G2)** |
 | **P6** | G7 — scheduled commands | med | med | Independent; matters for sequencing |
 | **P7** | G5 — wider node inputs | low | med | Stack-budget constrained — see below |
@@ -300,18 +329,15 @@ nothing, in keeping with the crate's no-panic discipline. 12 new tests,
 including the behavioural one that builds a chain in the wrong creation order,
 shows the read is a block stale, and repairs it with a single `MoveAfter`.
 
-**P3 · G2 — control rate. ← next.** The cheap path avoids touching any kernel signature:
+**P3 · G2 — control rate. ✅ done (mono).** The cheap path held: **no kernel
+signature changed**. `Rate` on `Node`, a 1-sample `OutView` plus a broadcast
+fill, `In::K` to consumers, and the kernels' existing `as_const` fast path does
+the rest.
 
-1. Mark a node as control-rate (a flag on `Node`, or a `Kind` property).
-2. The engine renders it with a 1-sample block instead of `BLOCK`.
-3. The input-resolve step (`engine.rs:296-315`) hands downstream consumers
-   `In::K(v)` instead of `In::A(row)`.
-4. Kernels take their **existing** `as_const()` fast path
-   (`deluge-dsp-kernels/src/lib.rs:52`) with no changes.
-
-Do this before G6, and ideally before the first CPU-budget measurement on
-hardware — a modulation-heavy patch is where the current audio-rate-everything
-model costs the most.
+Two things the four-bullet plan above missed, both found while implementing:
+the `dt` must be scaled to `BLOCK * dt` or every time-based kernel runs `BLOCK`×
+too slow, and poly kinds need their own design (voice-interleaved tiles), so
+this pass is width-1 only. Both are written up under G2. 9 new tests.
 
 ### Tier 2 — structural, after the API settles
 

@@ -31,6 +31,6 @@ pub use engine::Engine;
 pub use event::{EVENT_QUEUE, Event, EventQueue};
 pub use frame::StereoFrame;
 pub use ids::{BusId, Input, NodeId, OutputSrc, USB_CHANNELS};
-pub use node::{In, Kind, Node};
+pub use node::{In, Kind, Node, Rate};
 pub use pool::{Pool, PoolHandle};
 pub use voice::{MAX_GATES, MAX_TRIGGERS, MonoAllocator, VoiceAllocator};

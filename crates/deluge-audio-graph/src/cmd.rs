@@ -105,6 +105,13 @@ pub enum Cmd {
         q: f32,
         eq_type: u8,
     },
+    /// Set a node's evaluation rate (scsynth's `.ar` / `.kr`). No-op if the
+    /// node is not live, or if `Control` is asked of a node wider than one
+    /// port — see [`crate::Engine::set_rate`].
+    SetRate {
+        node: NodeId,
+        rate: crate::node::Rate,
+    },
     /// Move `node` so it evaluates immediately before `target` (scsynth
     /// `/n_before`). No-op if either id is not live, or if they are equal.
     MoveBefore {

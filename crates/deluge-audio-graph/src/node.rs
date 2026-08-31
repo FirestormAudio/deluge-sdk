@@ -202,6 +202,32 @@ pub enum TableSrc {
     Pooled(crate::pool::PoolHandle),
 }
 
+/// How often a node is evaluated.
+///
+/// `Audio` (the default) evaluates every sample of the block. `Control`
+/// evaluates **once per block** and broadcasts that value across the node's
+/// output row — the modulation-source rate, scsynth's `.kr`. A control-rate
+/// node costs one kernel evaluation per block instead of `BLOCK`, and its
+/// consumers receive it as [`In::K`], so kernels take their `as_const` fast
+/// path instead of indexing a row.
+///
+/// Two consequences worth knowing:
+///
+/// - A control-rate node is handed `BLOCK * dt`, not `dt`, so time-based
+///   kernels (LFOs, envelopes, slews) advance at the same wall-clock rate they
+///   would at audio rate. Its resolution is one block, not one sample.
+/// - Every input of a control-rate node is sampled at the block's **first**
+///   sample (scsynth's `A2K`), so feeding an audio-rate signal into one is a
+///   sample-and-hold, not an average.
+///
+/// Only width-1 nodes may be `Control`; see [`crate::Engine::set_rate`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Rate {
+    #[default]
+    Audio,
+    Control,
+}
+
 #[derive(Clone, Copy)]
 pub struct Node {
     pub(crate) kind: Kind,
@@ -211,6 +237,7 @@ pub struct Node {
     inputs: [Input; MAX_INPUTS],
     state: State,
     table: Option<TableSrc>,
+    rate: Rate,
 }
 
 impl Node {
@@ -295,7 +322,16 @@ impl Node {
             inputs: [Input::Const(0.0); MAX_INPUTS],
             state,
             table: None,
+            rate: Rate::Audio,
         }
+    }
+
+    pub fn rate(&self) -> Rate {
+        self.rate
+    }
+
+    pub fn set_rate(&mut self, rate: Rate) {
+        self.rate = rate;
     }
 
     pub fn out_width(kind: Kind) -> usize {

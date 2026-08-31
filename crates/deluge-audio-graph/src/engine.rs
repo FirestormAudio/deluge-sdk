@@ -170,6 +170,41 @@ impl<
         self.arena.node_mut(id)?.input_mut(port)
     }
 
+    /// Set a node's evaluation rate. `false` (and no change) if the node is
+    /// not live, or if [`Rate::Control`] is asked of a node wider than one
+    /// output port.
+    ///
+    /// Poly (`VOICES`-wide) and stereo (2-wide) kinds are refused: their output
+    /// is a multi-row tile, and broadcasting one control value across it is a
+    /// separate design. Control rate is for modulation sources — LFOs,
+    /// envelopes used as modulators, `Ctrl`, `SampleHold`, `Slew`, `Steps`,
+    /// `Mtof`, the quantisers — and those are all width 1.
+    ///
+    /// Nothing stops you putting an oscillator or a filter at control rate;
+    /// scsynth allows the same, and the result is the same kind of nonsense.
+    /// See [`Rate`] for the `BLOCK * dt` and input sample-and-hold semantics.
+    pub fn set_rate(&mut self, node: NodeId, rate: crate::node::Rate) -> bool {
+        use crate::node::Rate;
+        if rate == Rate::Control {
+            match self.arena.kind_of(node) {
+                Some(k) if Node::out_width(k) == 1 => {}
+                _ => return false,
+            }
+        }
+        match self.arena.node_mut(node) {
+            Some(n) => {
+                n.set_rate(rate);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// A node's current evaluation rate, or `None` if it is not live.
+    pub fn rate_of(&self, node: NodeId) -> Option<crate::node::Rate> {
+        self.arena.node(node).map(|n| n.rate())
+    }
+
     /// Move `node` so it evaluates immediately before `target`. `false` if
     /// either id is not live, or if they are equal. Takes effect next render.
     pub fn move_before(&mut self, node: NodeId, target: NodeId) -> bool {
@@ -289,6 +324,9 @@ impl<
                 Some(eq) => eq.set_params(freq, gain_db, q, eq_type),
                 None => self.master_eq = Some(MasterEq::new(freq, gain_db, q, eq_type)),
             },
+            Cmd::SetRate { node, rate } => {
+                self.set_rate(node, rate);
+            }
             Cmd::MoveBefore { node, target } => {
                 self.arena.move_before(node, target);
             }
@@ -355,7 +393,7 @@ impl<
 
         for k in 0..live {
             let id = NodeId(order[k]);
-            let (base, kind, width, inputs, table_src) = {
+            let (base, kind, width, inputs, table_src, rate) = {
                 let n = self.arena.node(id).expect("eval-order node exists");
                 (
                     n.out_base as usize,
@@ -363,8 +401,20 @@ impl<
                     Node::out_width(n.kind),
                     n.inputs_snapshot(),
                     n.table_src(),
+                    n.rate(),
                 )
             };
+            // Which input ports are fed by a control-rate node. Such a source's
+            // row is constant across the block, so it is handed down as
+            // `In::K` and the consuming kernel takes its `as_const` fast path
+            // rather than indexing a row of identical values.
+            let mut src_kr = [false; MAX_INPUTS];
+            for (p, flag) in src_kr.iter_mut().enumerate() {
+                if let Input::Node { node, .. } = inputs[p] {
+                    *flag =
+                        self.arena.node(node).map(|n| n.rate()) == Some(crate::node::Rate::Control);
+                }
+            }
 
             // ── Resolve inputs into scratch (all reads copied out first) ──
             let mut scratch = [[0.0f32; BLOCK]; MAX_INPUTS];
@@ -430,11 +480,20 @@ impl<
                     }
                 }
             }
-            let ins = [
-                In::A(&scratch[0][..]),
-                In::A(&scratch[1][..]),
-                In::A(&scratch[2][..]),
-            ];
+            // A control-rate node is evaluated once per block, so every one of
+            // its inputs collapses to the block's first sample (scsynth's
+            // `A2K` sample-and-hold). An audio-rate node keeps full rows,
+            // except on ports fed by a control-rate source, which are already
+            // constant and so cost nothing to pass as `In::K`.
+            let kr = rate == crate::node::Rate::Control;
+            let resolve = |p: usize| -> In<'_> {
+                if kr || src_kr[p] {
+                    In::K(scratch[p][0])
+                } else {
+                    In::A(&scratch[p][..])
+                }
+            };
+            let ins = [resolve(0), resolve(1), resolve(2)];
 
             // ── Write this node's ports ──
             // SAFETY (deref soundness): every read for this iteration was already
@@ -496,6 +555,30 @@ impl<
                     arr[base][i] = self.in_l[i];
                     arr[base + 1][i] = self.in_r[i];
                 }
+            } else if kr && width == 1 {
+                // ── Control rate: evaluate ONE sample, then broadcast it ──
+                // The kernel is handed `BLOCK * dt` so time-based state (LFO
+                // phase, envelope stages, slew) advances the same wall-clock
+                // amount per block as it would at audio rate; passing `self.dt`
+                // here would run every such node BLOCK times too slow.
+                //
+                // The row is still filled, because readers other than kernels
+                // — bus writes, `node_output`, `fill_usb`, the poly-lane splat
+                // — index it directly. Filling BLOCK floats is far cheaper
+                // than BLOCK kernel evaluations, which is the whole point.
+                let pool_region: Option<&mut [f32]> = match table_src {
+                    Some(crate::node::TableSrc::Pooled(h)) => Some(self.pool.slice_mut(h)),
+                    _ => None,
+                };
+                {
+                    let row = &mut arr[base];
+                    let mut view = OutView::single(&mut row[..1]);
+                    if let Some(n) = self.arena.node_mut(id) {
+                        n.process_resolved(&ins, BLOCK as f32 * self.dt, &mut view, pool_region);
+                    }
+                }
+                let v = arr[base][0];
+                arr[base][1..].fill(v);
             } else {
                 let mut view = OutView::from_arena::<OUTS, BLOCK>(arr, base, width);
                 // Resolve a pooled node's region MUTABLY (delay lines write it;
@@ -1769,6 +1852,216 @@ mod tests {
         assert!(
             (d_shifted - 0.2).abs() < 0.05,
             "width=0.2 broadcast ⇒ ~0.2 duty, got {d_shifted}"
+        );
+    }
+
+    // ── G2: control rate ──────────────────────────────────────────────────
+
+    type KE = Engine<64, 8, 16, 4, 45056, 2048>;
+
+    /// An LFO at `hz`, optionally at control rate.
+    fn lfo(e: &mut KE, id: u16, hz: f32, kr: bool) {
+        e.apply(Cmd::NewNode {
+            node: NodeId(id),
+            kind: Kind::Lfo,
+            args: [Input::Const(hz), Input::Const(0.0), Input::Const(0.0)],
+        });
+        if kr {
+            assert!(e.set_rate(NodeId(id), crate::node::Rate::Control));
+        }
+    }
+
+    #[test]
+    fn control_rate_output_is_constant_across_the_block() {
+        let mut e = KE::new(48_000.0);
+        lfo(&mut e, 0, 500.0, true); // fast enough to move within one block
+        lfo(&mut e, 1, 500.0, false);
+        e.render_block();
+
+        let kr_row = e.node_output(NodeId(0), 0);
+        assert!(
+            kr_row.iter().all(|s| *s == kr_row[0]),
+            "control rate broadcasts one value across the row"
+        );
+        let ar_row = e.node_output(NodeId(1), 0);
+        assert!(
+            ar_row.iter().any(|s| *s != ar_row[0]),
+            "audio rate still varies within the block"
+        );
+    }
+
+    #[test]
+    fn control_rate_advances_at_the_same_wall_clock_rate() {
+        // The `BLOCK * dt` scaling is the whole correctness question here: with
+        // plain `dt` a control-rate node would advance BLOCK times too slowly.
+        // A slow LFO keeps the inherent one-block quantisation well below the
+        // tolerance, so this measures the scaling rather than the lag.
+        let mut e = KE::new(48_000.0);
+        lfo(&mut e, 0, 2.0, true);
+        lfo(&mut e, 1, 2.0, false);
+        for _ in 0..200 {
+            e.render_block();
+        }
+        let kr = e.node_output(NodeId(0), 0)[0];
+        let ar = e.node_output(NodeId(1), 0)[0];
+        assert!(
+            (kr - ar).abs() < 0.05,
+            "kr {kr} should track ar {ar} (one block of lag, not BLOCK× slower)"
+        );
+        // ...and it has actually gone somewhere: a BLOCK-times-too-slow LFO
+        // would still be within a rounding error of its starting value.
+        assert!(kr.abs() > 0.1, "kr {kr} barely moved — dt scaling missing?");
+    }
+
+    #[test]
+    fn control_rate_without_dt_scaling_would_be_visibly_slower() {
+        // Guards the scaling from being "simplified" away: over enough blocks a
+        // BLOCK-times-too-slow LFO cannot have completed a full cycle, so its
+        // output would still be pinned near the start of the ramp.
+        let mut e = KE::new(48_000.0);
+        lfo(&mut e, 0, 50.0, true); // 50 Hz → a cycle every 960 samples = 15 blocks
+        let mut seen_low = false;
+        let mut seen_high = false;
+        for _ in 0..60 {
+            e.render_block();
+            let v = e.node_output(NodeId(0), 0)[0];
+            seen_low |= v < -0.5;
+            seen_high |= v > 0.5;
+        }
+        assert!(
+            seen_low && seen_high,
+            "a correctly-clocked kr LFO sweeps its full range"
+        );
+    }
+
+    #[test]
+    fn a_control_rate_source_reaches_its_consumer() {
+        // The consumer is handed `In::K`, not a row; the value must still be
+        // the one the source produced.
+        let mut e = KE::new(48_000.0);
+        // `Ctrl` takes its value from `SetParam`, not from an input arg.
+        e.apply(Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::Ctrl,
+            args: [Input::Const(0.0); 3],
+        });
+        e.apply(Cmd::SetParam {
+            node: NodeId(0),
+            param: 0,
+            value: 0.25,
+        });
+        assert!(e.set_rate(NodeId(0), crate::node::Rate::Control));
+        e.apply(Cmd::NewNode {
+            node: NodeId(1),
+            kind: Kind::Add,
+            args: [
+                Input::Node {
+                    node: NodeId(0),
+                    port: 0,
+                },
+                Input::Const(0.5),
+                Input::Const(0.0),
+            ],
+        });
+        e.render_block();
+        let out = e.node_output(NodeId(1), 0);
+        assert!(
+            out.iter().all(|s| (*s - 0.75).abs() < 1e-6),
+            "consumer saw {:?}",
+            &out[..4]
+        );
+    }
+
+    #[test]
+    fn set_rate_refuses_multi_port_kinds() {
+        let mut e = KE::new(48_000.0);
+        use crate::node::Rate;
+        e.create(NodeId(0), Kind::PolyOsc); // VOICES wide
+        e.create(NodeId(1), Kind::Pan); // 2 wide
+        e.create(NodeId(2), Kind::Lfo); // 1 wide
+        assert!(!e.set_rate(NodeId(0), Rate::Control), "poly refused");
+        assert!(!e.set_rate(NodeId(1), Rate::Control), "stereo refused");
+        assert!(e.set_rate(NodeId(2), Rate::Control), "mono accepted");
+        assert_eq!(e.rate_of(NodeId(0)), Some(Rate::Audio));
+        assert_eq!(e.rate_of(NodeId(1)), Some(Rate::Audio));
+        assert_eq!(e.rate_of(NodeId(2)), Some(Rate::Control));
+    }
+
+    #[test]
+    fn set_rate_on_a_dead_node_is_refused() {
+        let mut e = KE::new(48_000.0);
+        use crate::node::Rate;
+        assert!(!e.set_rate(NodeId(5), Rate::Control));
+        assert!(!e.set_rate(NodeId(5), Rate::Audio));
+        assert_eq!(e.rate_of(NodeId(5)), None);
+    }
+
+    #[test]
+    fn rate_resets_to_audio_on_recreate() {
+        let mut e = KE::new(48_000.0);
+        use crate::node::Rate;
+        lfo(&mut e, 0, 20.0, true);
+        assert_eq!(e.rate_of(NodeId(0)), Some(Rate::Control));
+        e.apply(Cmd::Free { node: NodeId(0) });
+        lfo(&mut e, 0, 20.0, false); // same id, fresh node
+        assert_eq!(
+            e.rate_of(NodeId(0)),
+            Some(Rate::Audio),
+            "a recreated id must not inherit the old node's rate"
+        );
+    }
+
+    #[test]
+    fn switching_back_to_audio_rate_restores_per_sample_detail() {
+        let mut e = KE::new(48_000.0);
+        use crate::node::Rate;
+        lfo(&mut e, 0, 500.0, true);
+        e.render_block();
+        let row = e.node_output(NodeId(0), 0);
+        assert!(row.iter().all(|s| *s == row[0]));
+
+        e.apply(Cmd::SetRate {
+            node: NodeId(0),
+            rate: Rate::Audio,
+        });
+        e.render_block();
+        let row = e.node_output(NodeId(0), 0);
+        assert!(
+            row.iter().any(|s| *s != row[0]),
+            "back at audio rate the row varies again"
+        );
+    }
+
+    #[test]
+    fn control_rate_node_still_routes_to_a_bus() {
+        // Bus writes read the output row directly rather than going through
+        // `In::K`, so the broadcast fill is what keeps them correct.
+        let mut e = KE::new(48_000.0);
+        e.apply(Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::Ctrl,
+            args: [Input::Const(0.0); 3],
+        });
+        e.apply(Cmd::SetParam {
+            node: NodeId(0),
+            param: 0,
+            value: 0.5,
+        });
+        assert!(e.set_rate(NodeId(0), crate::node::Rate::Control));
+        e.apply(Cmd::BusWrite {
+            src: Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            bus: BusId(0),
+        });
+        e.apply(Cmd::SetRoot { bus: BusId(0) });
+        let mut out = [StereoFrame::default(); 64];
+        let sil = [StereoFrame::default(); 64];
+        e.render(&mut out, &sil);
+        assert!(
+            out.iter().all(|f| (f.l - 0.5).abs() < 1e-6),
+            "every frame carries the broadcast value"
         );
     }
 
