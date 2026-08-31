@@ -29,6 +29,20 @@ use crate::NodeId;
 /// beyond that, see the overflow note above.
 pub const EVENT_QUEUE: usize = 64;
 
+/// Why a `Cmd` did not do what it asked for. See [`Event::CmdFailed`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CmdError {
+    /// `Cmd::NewNode` did not create the node: the id is out of range, it is
+    /// already live, or no output run of the right width was free.
+    CreateFailed,
+    /// A build-time command addressed a node id that is not live.
+    DeadNode,
+    /// `Cmd::SetRate` asked for control rate on a node the engine cannot
+    /// evaluate once per block (poly and stereo kinds — see `Rate`). The node
+    /// is live and unchanged; only the rate request was refused.
+    UnsupportedRate,
+}
+
 /// Something the engine observed and the control plane may care about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
@@ -38,6 +52,19 @@ pub enum Event {
     /// release. Consumed by [`crate::VoiceAllocator::on_event`] to return the
     /// lane to `Free`.
     VoiceDone { node: NodeId, voice: u8 },
+    /// A **build-time** command did not take effect. The engine's failure modes
+    /// are silent by design (capacity exhaustion returns `false`, a dangling
+    /// input renders silence) so the audio path never panics — this is how the
+    /// host finds out that the patch it just built is not the patch it asked
+    /// for.
+    ///
+    /// Only commands that shape the graph report: `NewNode`, `SetInput`,
+    /// `SetParam`, `BindTable`, `SetRate`, `MoveBefore`, `MoveAfter`.
+    /// Performance-rate commands (`Gate`, `Trigger`, `GateVoice`,
+    /// `TriggerVoice`, `StreamFill`) stay silent deliberately: they arrive at
+    /// note rate, and a host bug there would flood the queue and evict the
+    /// envelope-completion events the voice allocator depends on.
+    CmdFailed { node: NodeId, reason: CmdError },
 }
 
 /// Fixed-capacity, allocation-free FIFO of [`Event`]s.

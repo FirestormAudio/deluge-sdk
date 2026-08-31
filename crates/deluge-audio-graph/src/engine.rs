@@ -22,6 +22,7 @@ use deluge_dsp_kernels::limiter::MasterLimiter;
 use deluge_dsp_kernels::poly::VOICES;
 
 use crate::arena::Arena;
+use crate::event::CmdError;
 use crate::node::{Kind, MAX_BLOCK, MAX_INPUTS, OutView};
 use crate::{BusId, Input, Node, NodeId, OutputSrc, StereoFrame, USB_CHANNELS};
 
@@ -78,6 +79,11 @@ pub struct Engine<
     prev_idle: [u32; NODES],
     // Engine → host events drained by the host after render. See `event.rs`.
     events: crate::event::EventQueue,
+    // Samples elapsed since construction (or the last `Cmd::Reset`), advanced
+    // by `BLOCK` per `render_block`. The engine's only time source: scheduled
+    // commands timestamp against it, and a host converts musical time (bars,
+    // ms) to sample positions on its side of the `Cmd` seam.
+    sample_clock: u64,
 }
 
 impl<
@@ -113,7 +119,25 @@ impl<
             master_eq: None,
             prev_idle: [0; NODES],
             events: crate::event::EventQueue::new(),
+            sample_clock: 0,
         }
+    }
+
+    /// Samples elapsed since construction or the last [`Cmd::Reset`].
+    ///
+    /// Advances by `BLOCK` per [`Self::render_block`], so it names the first
+    /// sample of the *next* block. Free-running: it is not wall-clock and does
+    /// not follow a host transport — a host that needs bar or millisecond
+    /// positions converts against this on its own side.
+    pub fn sample_time(&self) -> u64 {
+        self.sample_clock
+    }
+
+    /// Enqueue a build-time command failure for the host (see
+    /// [`crate::event::Event::CmdFailed`]).
+    fn fail(&mut self, node: NodeId, reason: CmdError) {
+        self.events
+            .push(crate::event::Event::CmdFailed { node, reason });
     }
 
     /// Seed a node's previous-idle mask from its current state, so a freshly
@@ -239,23 +263,27 @@ impl<
                         }
                     }
                     self.seed_prev_idle(node);
+                } else {
+                    self.fail(node, CmdError::CreateFailed);
                 }
             }
-            Cmd::SetInput { node, port, src } => {
-                if let Some(n) = self.arena.node_mut(node) {
+            Cmd::SetInput { node, port, src } => match self.arena.node_mut(node) {
+                Some(n) => {
                     if let Some(slot) = n.input_mut(port) {
                         *slot = src;
                     }
                 }
-            }
-            Cmd::SetParam { node, param, value } => {
-                if let Some(n) = self.arena.node_mut(node) {
-                    n.set_param(param, value);
-                }
-            }
+                None => self.fail(node, CmdError::DeadNode),
+            },
+            Cmd::SetParam { node, param, value } => match self.arena.node_mut(node) {
+                Some(n) => n.set_param(param, value),
+                None => self.fail(node, CmdError::DeadNode),
+            },
             Cmd::BindTable { node, src } => {
                 if let Some(n) = self.arena.node_mut(node) {
                     n.bind_table(src);
+                } else {
+                    self.fail(node, CmdError::DeadNode);
                 }
             }
             Cmd::Gate { node, on } => {
@@ -325,13 +353,27 @@ impl<
                 None => self.master_eq = Some(MasterEq::new(freq, gain_db, q, eq_type)),
             },
             Cmd::SetRate { node, rate } => {
-                self.set_rate(node, rate);
+                if !self.set_rate(node, rate) {
+                    // Distinguish "no such node" from "this node cannot run at
+                    // control rate" — they send the host looking in different
+                    // places.
+                    let reason = if self.arena.node(node).is_some() {
+                        CmdError::UnsupportedRate
+                    } else {
+                        CmdError::DeadNode
+                    };
+                    self.fail(node, reason);
+                }
             }
             Cmd::MoveBefore { node, target } => {
-                self.arena.move_before(node, target);
+                if !self.arena.move_before(node, target) {
+                    self.fail(node, CmdError::DeadNode);
+                }
             }
             Cmd::MoveAfter { node, target } => {
-                self.arena.move_after(node, target);
+                if !self.arena.move_after(node, target) {
+                    self.fail(node, CmdError::DeadNode);
+                }
             }
             Cmd::Free { node } => {
                 // Free a pooled table region (if bound) BEFORE reclaiming the
@@ -362,6 +404,7 @@ impl<
             }
             Cmd::Reset => {
                 self.arena.reset();
+                self.sample_clock = 0;
                 self.writes = [None; NODES];
                 self.writes_len = 0;
                 self.root = None;
@@ -383,6 +426,7 @@ impl<
 
     /// Evaluate every live node in eval order into the output arena.
     pub fn render_block(&mut self) {
+        self.sample_clock = self.sample_clock.wrapping_add(BLOCK as u64);
         // Snapshot eval order so we don't borrow the arena across the loop.
         let mut order = [0u16; NODES];
         let live = {
@@ -3387,6 +3431,147 @@ mod tests {
             usb[0][0].abs() < 1e-6,
             "Reset should clear the usb map, got {}",
             usb[0][0]
+        );
+    }
+
+    // ── Sample clock (transport seam for scheduled commands) ──────────────
+
+    #[test]
+    fn sample_time_advances_by_one_block_per_render() {
+        let mut e = E::new(48_000.0);
+        assert_eq!(e.sample_time(), 0, "a fresh engine starts at sample 0");
+        e.render_block();
+        assert_eq!(e.sample_time(), 16, "one block of BLOCK=16 samples elapsed");
+        e.render_block();
+        assert_eq!(e.sample_time(), 32);
+    }
+
+    #[test]
+    fn sample_time_advances_through_the_full_render_path() {
+        // `render` calls `render_block` exactly once, so the clock must not
+        // double-count when the host uses the outer entry point.
+        let mut e = E::new(48_000.0);
+        let mut out = [StereoFrame { l: 0.0, r: 0.0 }; 16];
+        e.render(&mut out, &[]);
+        assert_eq!(e.sample_time(), 16);
+    }
+
+    #[test]
+    fn reset_rewinds_the_sample_clock() {
+        let mut e = E::new(48_000.0);
+        e.render_block();
+        e.apply(Cmd::Reset);
+        assert_eq!(e.sample_time(), 0, "Reset returns the engine to time zero");
+    }
+
+    // ── Command failure reporting (GL7) ──────────────────────────────────
+
+    #[test]
+    fn a_new_node_that_cannot_be_created_reports_cmd_failed() {
+        // NODES = 8, so id 8 is out of range: the node is never created and the
+        // host would otherwise wire a whole patch onto silence without knowing.
+        let mut e = E::new(48_000.0);
+        e.apply(Cmd::NewNode {
+            node: NodeId(8),
+            kind: Kind::Saw,
+            args: [Input::Const(0.0); 3],
+        });
+        assert_eq!(
+            e.pop_event(),
+            Some(crate::event::Event::CmdFailed {
+                node: NodeId(8),
+                reason: crate::event::CmdError::CreateFailed,
+            })
+        );
+    }
+
+    #[test]
+    fn creating_a_node_twice_reports_cmd_failed() {
+        let mut e = E::new(48_000.0);
+        e.create(NodeId(0), Kind::Saw);
+        e.apply(Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::Saw,
+            args: [Input::Const(0.0); 3],
+        });
+        assert_eq!(
+            e.pop_event(),
+            Some(crate::event::Event::CmdFailed {
+                node: NodeId(0),
+                reason: crate::event::CmdError::CreateFailed,
+            })
+        );
+    }
+
+    #[test]
+    fn wiring_an_input_on_a_dead_node_reports_cmd_failed() {
+        let mut e = E::new(48_000.0);
+        e.apply(Cmd::SetInput {
+            node: NodeId(3),
+            port: 0,
+            src: Input::Const(1.0),
+        });
+        assert_eq!(
+            e.pop_event(),
+            Some(crate::event::Event::CmdFailed {
+                node: NodeId(3),
+                reason: crate::event::CmdError::DeadNode,
+            })
+        );
+    }
+
+    #[test]
+    fn a_patch_that_builds_cleanly_reports_no_failure() {
+        let mut e = E::new(48_000.0);
+        e.apply(Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::Saw,
+            args: [Input::Const(220.0); 3],
+        });
+        e.apply(Cmd::SetInput {
+            node: NodeId(0),
+            port: 0,
+            src: Input::Const(110.0),
+        });
+        e.apply(Cmd::SetParam {
+            node: NodeId(0),
+            param: 0,
+            value: 0.5,
+        });
+        assert_eq!(e.pop_event(), None, "a clean build emits no events");
+    }
+
+    #[test]
+    fn performance_commands_on_a_dead_node_stay_silent() {
+        // Gate/Trigger run at note rate; a stuck note must not flood the queue
+        // and evict envelope-completion events. Only build-time commands report.
+        let mut e = E::new(48_000.0);
+        e.apply(Cmd::Gate {
+            node: NodeId(4),
+            on: true,
+        });
+        e.apply(Cmd::Trigger { node: NodeId(4) });
+        assert_eq!(e.pop_event(), None);
+    }
+
+    #[test]
+    fn control_rate_on_a_poly_node_reports_unsupported_rate_not_a_dead_node() {
+        // `set_rate` refuses width > 1, but the node is alive and well — telling
+        // the host "dead node" would send it hunting for a lifecycle bug that
+        // isn't there.
+        use crate::node::Rate;
+        let mut e = E::new(48_000.0);
+        e.create(NodeId(0), Kind::PolyOsc);
+        e.apply(Cmd::SetRate {
+            node: NodeId(0),
+            rate: Rate::Control,
+        });
+        assert_eq!(
+            e.pop_event(),
+            Some(crate::event::Event::CmdFailed {
+                node: NodeId(0),
+                reason: crate::event::CmdError::UnsupportedRate,
+            })
         );
     }
 }
