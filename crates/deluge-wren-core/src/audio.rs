@@ -689,3 +689,23 @@ pub fn reset() {
     *poly() = PolyCtx::new();
     host().audio_cmd(Cmd::Reset);
 }
+
+/// Begin an incremental patch update (GL2): rewind the id allocator exactly as
+/// [`reset`] does, but leave the running graph standing.
+///
+/// Rewinding is the point. The allocator is deterministic, so a re-run of the
+/// same script hands the same logical node the same id — which is how the
+/// engine can tell "this stage is unchanged, keep it and its DSP state" from
+/// "this is new". Re-run the script between this and [`end_update`]; anything
+/// the re-run does not re-emit is swept when the update closes.
+pub fn begin_update() {
+    alloc().reset();
+    *poly() = PolyCtx::new();
+    host().audio_cmd(Cmd::BeginUpdate);
+}
+
+/// Close an incremental patch update, sweeping every node the re-run did not
+/// re-emit. See [`begin_update`].
+pub fn end_update() {
+    host().audio_cmd(Cmd::EndUpdate);
+}

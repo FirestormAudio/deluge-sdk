@@ -1249,6 +1249,31 @@ pub fn prelude_ptr() -> *const c_char {
 /// yet via [`crate::set_host`] — every current caller registers a host before
 /// calling `reset()`.
 pub fn reset() {
+    clear_vm_state();
+    crate::audio::reset();
+}
+
+/// Like [`reset`], but keeps the running audio graph: the host frees the VM and
+/// re-runs the script as usual, and the engine treats the re-emitted graph as
+/// an incremental update instead of a rebuild (GL2). Pair with [`end_update`].
+///
+/// Use this where a full `reset()` would restart every oscillator and drop
+/// every envelope — the web editor's Run button being the motivating case.
+pub fn begin_update() {
+    clear_vm_state();
+    crate::audio::begin_update();
+}
+
+/// Close an incremental update opened by [`begin_update`], sweeping every node
+/// the re-run did not re-emit.
+pub fn end_update() {
+    crate::audio::end_update();
+}
+
+/// Null every VM-owned handle and reset CV/gate/metro state. Shared by
+/// [`reset`] and [`begin_update`]: both are called when the host is about to
+/// free the VM, and handles into a freed VM must never be called.
+fn clear_vm_state() {
     *state() = State::EMPTY;
 
     let m = midi();
@@ -1268,6 +1293,4 @@ pub fn reset() {
 
     // SAFETY: VM thread is the sole accessor.
     unsafe { CALL_HANDLE = Handle(core::ptr::null_mut()) };
-
-    crate::audio::reset();
 }

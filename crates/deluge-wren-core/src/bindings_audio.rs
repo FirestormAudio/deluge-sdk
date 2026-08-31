@@ -672,7 +672,10 @@ pub(crate) unsafe extern "C" fn node_wavetable(raw: *mut WrenVM) {
 /// node gets bound to this `Wavetable` (e.g. via `Node.wavetable_pooled_`),
 /// *not* by the `Wavetable` Wren object's GC. Bind the returned `Wavetable`
 /// to a node and free that node to release the table's memory; don't rely
-/// on GC to free it. Don't free a node while another node still shares the
+/// on GC to free it. Rebinding a node to a different table releases the region
+/// it held, unless another live node still holds it — that is what keeps a
+/// patch update (which re-uploads and re-binds on every run) from leaking one
+/// pyramid per edit. Don't free a node while another node still shares the
 /// same `Wavetable` — that reclaims the region out from under the survivor.
 /// Consequences of misuse are always graceful (silence or a finite leak
 /// until the pool exhausts), never UB or a panic, but this is an accepted

@@ -42,8 +42,8 @@ pub const BASE_LEN: usize = mipgen::N;
 #[cfg(feature = "wren-sys-backend")]
 pub use bindings::{CLASSES, METHODS, enc_turn, input_dispatch, midi_rx, prelude_ptr, tick};
 pub use bindings::{
-    enc_turn_impl, input_dispatch_impl, midi_rx_impl, prelude_str, register_foreign, reset,
-    tick_impl,
+    begin_update, enc_turn_impl, end_update, input_dispatch_impl, midi_rx_impl, prelude_str,
+    register_foreign, reset, tick_impl,
 };
 pub use deluge_audio_graph::{BusId, Cmd, Input, Kind, NodeId};
 pub use host::{CV_CHANNELS, GATE_CHANNELS, Host, build_pyramid_into, set_host};

@@ -288,6 +288,59 @@ pub fn run_and_capture_cmds(src: &str) -> Vec<crate::Cmd> {
     }
 }
 
+/// Boot a VM and run `src`; then free the VM, open an incremental update, boot
+/// a fresh VM and run the same `src` again, and close the update — the shape of
+/// the web editor's Run button once it stops resetting the graph (GL2).
+///
+/// Returns `(first_run, second_run)`. The second includes its
+/// `BeginUpdate`/`EndUpdate` bracket, so a caller can assert that what sits
+/// between them is byte-identical to the first run.
+pub fn run_and_capture_update(src: &str) -> (Vec<crate::Cmd>, Vec<crate::Cmd>) {
+    let _guard = CAP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // SAFETY: single-threaded test helper (serialized by `_guard`); every VM is
+    // freed before the next one boots.
+    unsafe {
+        let h = &mut *core::ptr::addr_of_mut!(CAP_HOST);
+        h.cmds.clear();
+        crate::set_host(&mut *core::ptr::addr_of_mut!(CAP_HOST));
+
+        let run_once = |src: &str| {
+            let vm = wren_sys::boot_with_foreign(crate::METHODS, crate::CLASSES);
+            assert!(!vm.is_null(), "VM boot failed");
+            let r = wren_sys::interpret(vm, c"main".as_ptr(), crate::prelude_ptr());
+            assert_eq!(r, wren_sys::WREN_RESULT_SUCCESS, "prelude failed");
+            let mut buf = [0u8; 8192];
+            let n = src.len().min(buf.len() - 1);
+            buf[..n].copy_from_slice(&src.as_bytes()[..n]);
+            buf[n] = 0;
+            let r = wren_sys::interpret(
+                vm,
+                c"main".as_ptr(),
+                buf.as_ptr() as *const core::ffi::c_char,
+            );
+            assert_eq!(
+                r,
+                wren_sys::WREN_RESULT_SUCCESS,
+                "script failed (line {})",
+                LAST_ERR_LINE.load(Ordering::Relaxed)
+            );
+            wren_sys::wrenFreeVM(vm);
+        };
+
+        run_once(src);
+        let first = (*core::ptr::addr_of_mut!(CAP_HOST)).cmds.clone();
+
+        (*core::ptr::addr_of_mut!(CAP_HOST)).cmds.clear();
+        crate::begin_update();
+        run_once(src);
+        crate::end_update();
+        let second = (*core::ptr::addr_of_mut!(CAP_HOST)).cmds.clone();
+
+        crate::reset();
+        (first, second)
+    }
+}
+
 /// A [`CmdCaptureHost`]-alike (records every `Cmd`, same as `CmdCaptureHost`)
 /// but with a working, pool-backed `alloc_buffer` — `CmdCaptureHost` is
 /// deliberately poolless (see

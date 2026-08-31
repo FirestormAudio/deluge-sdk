@@ -3,8 +3,8 @@ use deluge_audio_graph::StereoFrame;
 use deluge_audio_graph::node::TableSrc;
 use deluge_wren_core::Host as _;
 use deluge_wren_core::test_support::{
-    EngineHost, run_and_capture_cmds, run_and_render, run_and_render_with_input,
-    run_midi_capture_cmds, run_script_ok,
+    EngineHost, run_and_capture_cmds, run_and_capture_update, run_and_render,
+    run_and_render_with_input, run_midi_capture_cmds, run_script_ok,
 };
 use deluge_wren_core::{BusId, Cmd, Input, Kind, NodeId};
 
@@ -4323,5 +4323,35 @@ fn out_without_dcblock_passes_dc() {
         (out[63].l - 0.5).abs() < 1e-6,
         "DC should pass unblocked: {}",
         out[63].l
+    );
+}
+
+// ── GL2: incremental patch update ────────────────────────────────────────
+
+#[test]
+fn re_running_a_script_under_an_update_emits_the_identical_command_stream() {
+    // This is what makes GL2 work here without a parser or an AST diff: node
+    // ids come from a deterministic allocator, so re-running the same script
+    // re-emits exactly the same `NewNode`s for exactly the same ids. The
+    // engine then keeps every node whose kind is unchanged and sweeps the rest,
+    // which means the *script re-run is the diff*.
+    let (first, second) = run_and_capture_update("Out.patch(Svf.lp(Osc.saw(110), 800, 0.3))");
+    assert_eq!(second.first(), Some(&Cmd::BeginUpdate));
+    assert_eq!(second.last(), Some(&Cmd::EndUpdate));
+    assert_eq!(
+        &second[1..second.len() - 1],
+        &first[..],
+        "same ids, same kinds, same order"
+    );
+}
+
+#[test]
+fn an_update_does_not_reset_the_engine() {
+    // The distinction from `reset()`: no `Cmd::Reset` anywhere, so the running
+    // graph — and every node's DSP state — survives the re-run.
+    let (_, second) = run_and_capture_update("Out.patch(Osc.saw(110))");
+    assert!(
+        !second.contains(&Cmd::Reset),
+        "an update must not tear the graph down: {second:?}"
     );
 }
