@@ -591,8 +591,20 @@ impl<
     pub fn set_rate(&mut self, node: NodeId, rate: crate::node::Rate) -> bool {
         use crate::node::Rate;
         if rate == Rate::Control {
+            // Width 1 (a mono modulator) and the `VOICES`-wide poly tile are
+            // both supported. A stereo (width-2) kind is not: its two ports are
+            // independent rows rather than one tile, so it needs its own
+            // broadcast, and no stereo kind is a modulation source.
             match self.arena.kind_of(node) {
+                // A mono modulator, or a poly node whose output is the
+                // `VOICES`-wide sample-major tile.
                 Some(k) if Node::out_width(k) == 1 => {}
+                Some(k) if Node::is_poly(k) && Node::out_width(k) == VOICES => {}
+                // Everything else is a width-2 stereo pair, stored as two
+                // independent row-major rows rather than one interleaved tile
+                // (`StereoVoiceSum`, `Pan`, the reverbs). Broadcasting across
+                // that needs a different loop, and none of them is a modulation
+                // source, so it is refused rather than guessed at.
                 _ => return false,
             }
         }
@@ -1030,25 +1042,41 @@ impl<
             let arr = unsafe { &mut *self.outs.get() };
             if Node::is_poly(kind) {
                 // Poly path: voice-interleaved tile in/out, isolated dispatch.
+                //
+                // The tile is **sample-major**: lane `v` of sample `i` lives at
+                // `tile[i * VOICES + v]` (see `poly::voice_sum` and every
+                // `Poly*::process`). The arena rows backing it are storage, not
+                // lanes — a poly node's `out_width` of `VOICES` reserves
+                // `VOICES * BLOCK` floats and nothing more. Copies are made row
+                // by row, which is contiguous and so preserves that order.
+                //
+                // At control rate the kernel is asked for ONE sample, which is
+                // the tile's first `VOICES` floats (`i = 0`, every lane), and
+                // that prefix is then broadcast across the block below.
                 let count = Node::poly_in_count(kind);
+                // Input tiles are always `VOICES` lanes wide. The output is
+                // `width` wide — which for a collapse node like `VoiceSum` is
+                // 1, not `VOICES` — so the two lengths are computed apart.
+                let in_len = if kr { VOICES } else { VOICES * BLOCK };
+                let out_len = if kr { width } else { width * BLOCK };
                 let poly_in: [Option<&[f32]>; 3] = [
                     if count > 0 {
-                        Some(poly_scratch[0].as_flattened())
+                        Some(&poly_scratch[0].as_flattened()[..in_len])
                     } else {
                         None
                     },
                     if count > 1 {
-                        Some(poly_scratch[1].as_flattened())
+                        Some(&poly_scratch[1].as_flattened()[..in_len])
                     } else {
                         None
                     },
                     if count > 2 {
-                        Some(poly_scratch[2].as_flattened())
+                        Some(&poly_scratch[2].as_flattened()[..in_len])
                     } else {
                         None
                     },
                 ];
-                let out = arr[base..base + width].as_flattened_mut(); // width*BLOCK
+                let out = &mut arr[base..base + width].as_flattened_mut()[..out_len];
                 // Resolve a pooled node's region MUTABLY before the node's
                 // `&mut` borrow below, exactly as the mono path does at its
                 // call site below — only `PolyWt`/`PolyWtMorph` read this;
@@ -1066,8 +1094,28 @@ impl<
                         None
                     }
                 };
+                // `BLOCK * dt` at control rate for the same reason the mono
+                // path scales it: one evaluation covers a whole block of wall
+                // time, so the per-sample dt would run every time-based lane
+                // (envelope stages, slew, LFO phase) BLOCK times too slow.
+                let dt = if kr { BLOCK as f32 * self.dt } else { self.dt };
                 if let Some(n) = self.arena.node_mut(id) {
-                    n.poly_process(&ins, poly_in, self.dt, out, pool_region, stream);
+                    n.poly_process(&ins, poly_in, dt, out, pool_region, stream);
+                }
+                if kr {
+                    // Broadcast sample 0's lanes across the rest of the tile, so
+                    // downstream readers — `VoiceSum`, a poly filter, the
+                    // per-lane splat — see a full block as they always do.
+                    // One evaluation produced `width` floats — the tile's
+                    // sample 0 for a producer, the single output sample for a
+                    // collapse node. Repeat them across the block. `set_rate`
+                    // admits only widths 1 and `VOICES`, both of which are
+                    // sample-major, so a flat `width`-sized repeat is correct.
+                    let full = arr[base..base + width].as_flattened_mut();
+                    let (head, rest) = full.split_at_mut(width);
+                    for chunk in rest.chunks_mut(width) {
+                        chunk.copy_from_slice(&head[..chunk.len()]);
+                    }
                 }
             } else if kind == Kind::Input {
                 // Stereo line-in: copy engine input rows into port0 (L) / port1 (R).
@@ -1174,6 +1222,20 @@ impl<
     /// prefetch task polls this to trail playback.
     pub fn stream_read_cursor(&self, node: NodeId, voice: usize) -> Option<u64> {
         self.arena.node(node)?.stream_read_cursor(voice)
+    }
+
+    /// Test/inspection accessor: sample `i`, lane `v` of a poly node's output.
+    ///
+    /// The poly tile is **sample-major** — `tile[i * VOICES + v]` — and is
+    /// spread across the node's `VOICES` arena rows, so those rows are storage
+    /// and NOT lanes. Indexing `node_output(id, v)` would read a scrambled mix
+    /// of lanes, which is why this exists.
+    pub fn poly_tile_sample(&self, id: NodeId, i: usize, v: usize) -> f32 {
+        let base = self.arena.out_base(id).expect("node exists");
+        let k = i * VOICES + v;
+        // SAFETY: shared read; no writer is live outside `render_block`.
+        let arr = unsafe { &*self.outs.get() };
+        arr[base + k / BLOCK][k % BLOCK]
     }
 
     /// Test/inspection accessor: a node's rendered output port.
@@ -3246,18 +3308,184 @@ mod tests {
     }
 
     #[test]
-    fn set_rate_refuses_multi_port_kinds() {
+    fn set_rate_accepts_poly_tiles_but_refuses_stereo_pairs() {
         let mut e = KE::new(48_000.0);
         use crate::node::Rate;
-        e.create(NodeId(0), Kind::PolyOsc); // VOICES wide
-        e.create(NodeId(1), Kind::Pan); // 2 wide
+        e.create(NodeId(0), Kind::PolyOsc); // VOICES wide — a sample-major tile
+        e.create(NodeId(1), Kind::Pan); // 2 wide — two independent rows
         e.create(NodeId(2), Kind::Lfo); // 1 wide
-        assert!(!e.set_rate(NodeId(0), Rate::Control), "poly refused");
+        assert!(e.set_rate(NodeId(0), Rate::Control), "poly accepted");
         assert!(!e.set_rate(NodeId(1), Rate::Control), "stereo refused");
         assert!(e.set_rate(NodeId(2), Rate::Control), "mono accepted");
-        assert_eq!(e.rate_of(NodeId(0)), Some(Rate::Audio));
-        assert_eq!(e.rate_of(NodeId(1)), Some(Rate::Audio));
+        assert_eq!(e.rate_of(NodeId(0)), Some(Rate::Control));
+        assert_eq!(e.rate_of(NodeId(1)), Some(Rate::Audio), "stereo unchanged");
         assert_eq!(e.rate_of(NodeId(2)), Some(Rate::Control));
+    }
+
+    // ── G2, poly half ──
+
+    type PKE = Engine<64, 8, 40, 4, 45056, 2048>;
+
+    /// A `PolyAr` with a fast attack, gated on the given lanes.
+    fn poly_env_on(e: &mut PKE, id: u16, lanes: &[u8], kr: bool) {
+        e.apply(Cmd::NewNode {
+            node: NodeId(id),
+            kind: Kind::PolyAr,
+            args: [Input::Const(0.0005), Input::Const(0.05), Input::Const(0.0)],
+        });
+        if kr {
+            assert!(
+                e.set_rate(NodeId(id), crate::node::Rate::Control),
+                "poly kinds accept control rate"
+            );
+        }
+        for &v in lanes {
+            e.apply(Cmd::GateVoice {
+                node: NodeId(id),
+                voice: v,
+                on: true,
+            });
+        }
+    }
+
+    #[test]
+    fn a_control_rate_poly_tile_is_constant_across_the_block() {
+        let mut e = PKE::new(48_000.0);
+        poly_env_on(&mut e, 0, &[0, 3], true);
+        e.render_block();
+
+        // The tile is sample-major: lane v of sample i is at `i * VOICES + v`.
+        // Every sample must carry sample 0's lane values.
+        let flat: [f32; 64 * VOICES] =
+            core::array::from_fn(|k| e.poly_tile_sample(NodeId(0), k / VOICES, k % VOICES));
+        for i in 1..64 {
+            for v in 0..VOICES {
+                assert_eq!(
+                    flat[i * VOICES + v],
+                    flat[v],
+                    "lane {v} varies within the block at sample {i}"
+                );
+            }
+        }
+        // ...and it is not simply all zeros: the gated lanes are sounding.
+        assert!(flat[0] > 0.0, "lane 0 gated on");
+        assert!(flat[3] > 0.0, "lane 3 gated on");
+        assert_eq!(flat[1], 0.0, "lane 1 was never gated");
+    }
+
+    #[test]
+    fn a_control_rate_poly_envelope_tracks_its_audio_rate_twin() {
+        // The `BLOCK * dt` scaling again: without it the kr envelope would
+        // advance BLOCK times too slowly and never reach the ar one.
+        let mut e = PKE::new(48_000.0);
+        poly_env_on(&mut e, 0, &[0], true); // kr
+        poly_env_on(&mut e, 1, &[0], false); // ar
+        for _ in 0..40 {
+            e.render_block();
+        }
+        let kr = e.poly_tile_sample(NodeId(0), 0, 0);
+        let ar = e.poly_tile_sample(NodeId(1), 0, 0);
+        assert!(
+            (kr - ar).abs() < 0.05,
+            "kr {kr} should track ar {ar}, not lag by a factor of BLOCK"
+        );
+        assert!(kr > 0.5, "kr {kr} actually advanced");
+    }
+
+    #[test]
+    fn a_control_rate_poly_source_still_drives_a_voice_sum() {
+        // The broadcast exists so downstream readers see a full block. VoiceSum
+        // collapses the tile per sample, so a half-filled tile would show up as
+        // a block that starts loud and falls silent.
+        let mut e = PKE::new(48_000.0);
+        poly_env_on(&mut e, 0, &[0, 1, 2], true);
+        e.apply(Cmd::NewNode {
+            node: NodeId(1),
+            kind: Kind::VoiceSum,
+            args: [
+                Input::Node {
+                    node: NodeId(0),
+                    port: 0,
+                },
+                Input::Const(0.0),
+                Input::Const(0.0),
+            ],
+        });
+        for _ in 0..8 {
+            e.render_block();
+        }
+        let out = e.node_output(NodeId(1), 0);
+        assert!(out[0] > 0.0, "sounding");
+        assert!(
+            out.iter().all(|s| (*s - out[0]).abs() < 1e-6),
+            "the whole block carries the broadcast value: {:?}",
+            &out[..4]
+        );
+    }
+
+    #[test]
+    fn a_poly_collapse_node_may_also_run_at_control_rate() {
+        // `VoiceSum` is `is_poly` but only one port wide, so it exercises the
+        // `width != VOICES` side of the broadcast.
+        let mut e = PKE::new(48_000.0);
+        poly_env_on(&mut e, 0, &[0, 1], false);
+        e.apply(Cmd::NewNode {
+            node: NodeId(1),
+            kind: Kind::VoiceSum,
+            args: [
+                Input::Node {
+                    node: NodeId(0),
+                    port: 0,
+                },
+                Input::Const(0.0),
+                Input::Const(0.0),
+            ],
+        });
+        assert!(e.set_rate(NodeId(1), crate::node::Rate::Control));
+        for _ in 0..8 {
+            e.render_block();
+        }
+        let out = e.node_output(NodeId(1), 0);
+        assert!(out[0] > 0.0, "sounding");
+        assert!(
+            out.iter().all(|s| *s == out[0]),
+            "constant across the block"
+        );
+    }
+
+    #[test]
+    fn switching_a_poly_node_back_to_audio_rate_restores_detail() {
+        // A slow attack, so the envelope is still ramping after the first
+        // block: `poly_env_on`'s fast attack reaches sustain within one kr tick
+        // and would then be legitimately constant at audio rate too.
+        let mut e = PKE::new(48_000.0);
+        e.apply(Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::PolyAr,
+            args: [Input::Const(0.5), Input::Const(0.5), Input::Const(0.0)],
+        });
+        assert!(e.set_rate(NodeId(0), crate::node::Rate::Control));
+        e.apply(Cmd::GateVoice {
+            node: NodeId(0),
+            voice: 0,
+            on: true,
+        });
+        e.render_block();
+        assert_eq!(
+            e.poly_tile_sample(NodeId(0), 1, 0),
+            e.poly_tile_sample(NodeId(0), 0, 0),
+            "kr: flat across the block"
+        );
+        e.apply(Cmd::SetRate {
+            node: NodeId(0),
+            rate: crate::node::Rate::Audio,
+        });
+        e.render_block();
+        assert_ne!(
+            e.poly_tile_sample(NodeId(0), 1, 0),
+            e.poly_tile_sample(NodeId(0), 0, 0),
+            "ar: the envelope moves within the block again"
+        );
     }
 
     #[test]
@@ -4785,12 +5013,16 @@ mod tests {
 
     #[test]
     fn control_rate_on_a_poly_node_reports_unsupported_rate_not_a_dead_node() {
-        // `set_rate` refuses width > 1, but the node is alive and well — telling
-        // the host "dead node" would send it hunting for a lifecycle bug that
-        // isn't there.
+        // `set_rate` refuses a stereo kind, but the node is alive and well —
+        // telling the host "dead node" would send it hunting for a lifecycle
+        // bug that isn't there.
+        //
+        // (Poly kinds used to be refused here too. They are now supported; the
+        // stereo pair is what remains unsupported, because its two ports are
+        // independent row-major rows rather than one interleaved tile.)
         use crate::node::Rate;
         let mut e = E::new(48_000.0);
-        e.create(NodeId(0), Kind::PolyOsc);
+        e.create(NodeId(0), Kind::Pan);
         e.apply(Cmd::SetRate {
             node: NodeId(0),
             rate: Rate::Control,

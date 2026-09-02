@@ -119,7 +119,7 @@ Two deliberate limits, both covered by tests:
   `VoiceDone` means a lane is not reclaimed that cycle — i.e. it degrades to the
   old stealing behaviour rather than misbehaving.
 
-### G2 — No control rate — ✅ **DONE (mono)**
+### G2 — No control rate — ✅ **DONE** (mono + poly; stereo refused)
 
 `In` was only `K(f32)` or `A(&[f32])`, and `K` only ever originated from a
 literal `Input::Const` — no *node* could produce one value per block, so an LFO
@@ -145,12 +145,22 @@ The output row is still filled, because readers other than kernels — bus
 writes, `node_output`, `fill_usb`, the poly-lane splat — index it directly.
 Filling `BLOCK` floats is far cheaper than `BLOCK` kernel evaluations.
 
-**Still open:** poly (`VOICES`-wide) and stereo kinds are refused. Poly output
-is a voice-interleaved flattened tile and kernels derive their sample count
-from `out.len() / VOICES`, so control-rate poly needs a per-voice 1-sample tile
-plus its own broadcast — a separate piece of work. Every canonical modulation
-source (LFO, `Ctrl`, `SampleHold`, `Slew`, `Steps`, `Mtof`, the quantisers) is
-width 1, so this covers the motivating cases.
+**Poly, since resolved.** A poly node's output is a **sample-major** tile —
+lane `v` of sample `i` at `tile[i * VOICES + v]`, per `poly::voice_sum` and
+every `Poly*::process`. Its `VOICES` arena rows are storage, *not* lanes, which
+is worth stating because the `[[f32; BLOCK]; VOICES]` shape in the engine
+actively suggests otherwise; `Engine::poly_tile_sample` exists so tests address
+it correctly. Control rate asks the kernel for one sample — the tile's first
+`VOICES` floats — and repeats them across the block.
+
+Widths are handled apart: the input tile is always `VOICES` wide, while the
+*output* is `width` wide, which for a collapse node like `VoiceSum` is 1. Both
+are sample-major, so one flat `width`-sized repeat serves both.
+
+**Still open: stereo.** A width-2 kind (`Pan`, `StereoVoiceSum`, the reverbs)
+stores its two ports as independent row-major rows rather than one interleaved
+tile, so the same repeat does not apply. `set_rate` refuses it rather than
+guessing, and no stereo kind is a modulation source.
 
 **Adjacent win not taken:** `Input::Const` still resolves to a filled row and
 `In::A`. Handing those down as `In::K` would put every existing patch on the

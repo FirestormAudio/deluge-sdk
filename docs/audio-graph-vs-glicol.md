@@ -422,7 +422,7 @@ first production `Engine<…>` instantiation freezes the API.
 | ~~P2.5b~~ | ~~GL7 — `Event::CmdFailed`~~ | low-med | trivial | ✅ **done** — three `CmdError` reasons |
 | ~~P2.5c~~ | ~~G11 — topological sort on mutation~~ | high | low | ✅ **done** — `Arena::sort`; culling opt-in |
 | ~~P2.5d~~ | ~~GL2 — epoch mark-and-sweep patch update~~ | **high** | low-med | ✅ **done** — engine + `deluge-wren-core` plumbing |
-| **P3** | G2 — control rate | high | med | ✅ **done for width-1 nodes** (`c2ef2c6`); poly/stereo still open |
+| ~~P3~~ | ~~G2 — control rate~~ | high | med | ✅ **done** — width-1 (`c2ef2c6`) then poly tiles; stereo refused by design |
 | ~~P4~~ | ~~GL6 — Wren-side name→id map~~ | med | low | ✅ **done** — `Patch.named`; addressing-by-name still unbuilt |
 | ~~P5~~ | ~~Switch the editor's Run to `begin_update`~~ | med | low | ✅ **done** — Run is incremental; Shift-Run resets. Required repairing `wren-web`, which had not compiled for many API generations |
 | ~~P6~~ | ~~G7 — scheduled commands~~ | med | med | ✅ **done** — `sched.rs`, `Engine::apply_at` + `Host::audio_cmd_at` |
