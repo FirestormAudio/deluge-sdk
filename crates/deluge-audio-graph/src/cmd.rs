@@ -105,6 +105,57 @@ pub enum Cmd {
         q: f32,
         eq_type: u8,
     },
+    /// Write a control bus directly (G6 — scsynth's `/c_set`).
+    ///
+    /// The host-writes-a-modulator path: a MIDI CC, a macro knob, an envelope
+    /// follower computed upstream. The value persists until something writes
+    /// the bus again. Out-of-range bus ids are dropped.
+    SetCtrl {
+        bus: crate::ids::CtrlBusId,
+        value: f32,
+    },
+    /// Route a node's output onto a control bus (G6 — scsynth's `Out.kr`).
+    ///
+    /// A *standing* route: recorded once, re-applied after every block, until
+    /// [`Cmd::ClearCtrlWrite`] removes it or the source node is freed. The
+    /// block's first sample is taken, which for the `Rate::Control` node this
+    /// is meant for is its whole output.
+    ///
+    /// One writer per bus wins (the last standing route applied), rather than
+    /// summing — two sources on one control bus is a patching mistake, not a
+    /// mix. Combine modulators through `Add` where the intent is explicit.
+    CtrlWrite {
+        node: NodeId,
+        port: u8,
+        bus: crate::ids::CtrlBusId,
+    },
+    /// Remove the standing route feeding `bus`, if any. The bus keeps its last
+    /// value; nothing further writes it.
+    ClearCtrlWrite {
+        bus: crate::ids::CtrlBusId,
+    },
+    /// Map a node parameter to a control bus (G6 — scsynth's `/n_map`).
+    ///
+    /// The mapped parameter is re-applied from the bus at the top of every
+    /// block, as though the host had sent `SetParam` itself. This is what makes
+    /// the whole `u8` parameter space modulatable without spending one of the
+    /// three scarce input ports (see §G5) — filter drive, oscillator feedback,
+    /// reverb size, ADSR sustain and the rest are parameters, not inputs.
+    ///
+    /// A parameter can follow one bus at a time; mapping it again replaces the
+    /// mapping. While mapped, a direct `SetParam` is overwritten on the next
+    /// block — the bus is the authority.
+    MapParam {
+        node: NodeId,
+        param: u8,
+        bus: crate::ids::CtrlBusId,
+    },
+    /// Remove a parameter mapping. The parameter keeps the value it last
+    /// received and becomes writable by `SetParam` again.
+    UnmapParam {
+        node: NodeId,
+        param: u8,
+    },
     /// Set a node's evaluation rate (scsynth's `.ar` / `.kr`). No-op if the
     /// node is not live, or if `Control` is asked of a node wider than one
     /// port — see [`crate::Engine::set_rate`].
@@ -168,6 +219,9 @@ impl Cmd {
             | Cmd::GateVoice { node, .. }
             | Cmd::TriggerVoice { node, .. }
             | Cmd::StreamFill { node, .. }
+            | Cmd::CtrlWrite { node, .. }
+            | Cmd::MapParam { node, .. }
+            | Cmd::UnmapParam { node, .. }
             | Cmd::SetRate { node, .. }
             | Cmd::MoveBefore { node, .. }
             | Cmd::MoveAfter { node, .. }

@@ -46,6 +46,12 @@ pub enum CmdError {
     /// nothing already queued was disturbed — refusing the newcomer is
     /// preferable to evicting a command the host was already promised.
     ScheduleFull,
+    /// `Cmd::MapParam` could not record the mapping: the table is full
+    /// (`engine::MAX_PARAM_MAPS`). The parameter keeps whatever value it had
+    /// and stays writable by `SetParam`.
+    MapTableFull,
+    /// A control-bus command named a bus id outside `ids::CTRL_BUSES`.
+    BadCtrlBus,
 }
 
 /// Something the engine observed and the control plane may care about.

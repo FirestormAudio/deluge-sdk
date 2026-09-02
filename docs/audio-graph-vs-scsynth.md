@@ -217,12 +217,53 @@ as single nodes: multi-input mixers, `Select` / `SelectX`, multi-tap structures,
 and breakpoint envelopes. The workaround is chains of `Add`, which consumes
 eval-order entries and arena output rows.
 
-### G6 — No control buses, no `/n_map`
+### G6 — No control buses, no `/n_map` — ✅ **DONE**
 
-Buses are stereo **audio** pairs; reading one as an input sums L+R
-(`engine.rs:313`), which is meaningless for a control signal. There is no shared,
-named modulation signal that many nodes can subscribe to — fanning one modulator
-to twenty destinations costs twenty explicit edges.
+Buses were stereo **audio** pairs; reading one as an input sums L+R, which is
+meaningless for a control signal. There was no shared modulation signal many
+nodes could subscribe to — fanning one modulator to twenty destinations cost
+twenty explicit edges.
+
+**Resolved.** `ctrl.rs` adds `CTRL_BUSES` mono control buses, deliberately the
+opposite of an audio bus in every respect:
+
+|          | audio bus                    | control bus                |
+|----------|------------------------------|----------------------------|
+| shape    | `[[f32; BLOCK]; BUSES]`      | one `f32`                  |
+| lifetime | zeroed and re-summed / block | **persists until written** |
+| read as  | `In::A`, L+R summed          | `In::K` (const fast path)   |
+
+**Persistence is the point.** A host writes a MIDI CC once (`Cmd::SetCtrl`,
+scsynth `/c_set`) and it stays until something writes it again; summing-and-
+zeroing like an audio bus would wipe that on the next block. It also means a
+control bus reads `0.0` before anything writes it rather than being undefined.
+
+**One writer wins, rather than summing.** Two nodes routed to one control bus
+is a patching mistake, not a mix; modulators combine through `Add`, where the
+intent is explicit. `Cmd::CtrlWrite` records a standing route (scsynth
+`Out.kr`), `Cmd::ClearCtrlWrite` removes it, and the bus then holds its last
+value rather than snapping to zero.
+
+**`/n_map` is the half that matters most here.** `Cmd::MapParam` re-applies a
+parameter from its bus at the top of every block, so the whole `u8` parameter
+space becomes modulatable *without spending one of the three scarce input
+ports* — see §G5. Filter drive, oscillator feedback, reverb size and ADSR
+sustain are parameters, not inputs, and until now nothing could modulate them
+at all. While mapped, the bus is the authority and a direct `SetParam` is
+overwritten on the next block, as in scsynth. `MAX_PARAM_MAPS = 32`, and a full
+table reports `CmdError::MapTableFull`.
+
+**Ordering within a block:** maps are applied at the *top* of `render_block`
+(so a node renders with this block's mapped values), and standing routes are
+collected at the *end* (so a bus carries the value its source just produced,
+read by consumers next block). A control-bus read is therefore one block old —
+the same rule `Input::Bus` already follows, which is why control-bus edges are
+**not** dependencies for the G11 topological sort. One block is 1.3 ms at
+48 kHz; inaudible for modulation, which is all this carries.
+
+`CTRL_BUSES` is a plain const rather than a seventh `Engine` const-generic
+parameter: at 4 bytes a bus the whole space is 128 bytes, which is not worth
+another type parameter on an already six-wide signature.
 
 ### G7 — No scheduled or timestamped commands — ✅ **DONE**
 
@@ -322,7 +363,7 @@ not calendar time.
 | ~~P3~~ | ~~G2 — control rate~~ | high | med | ✅ **done** (mono; poly still open) |
 | ~~P4~~ | ~~G3 — graph templates / SynthDef~~ | — | — | ❌ **retired** — superseded by GL2 (see glicol note) |
 | ~~P6~~ | ~~G7 — scheduled commands~~ | med | med | ✅ **done** — `sched.rs`, `Engine::apply_at` |
-| **P5** | G6 — control buses | med | med | **next** — unblocked now G2 has landed |
+| ~~P5~~ | ~~G6 — control buses + `/n_map`~~ | med | med | ✅ **done** — `ctrl.rs`; `/n_map` relieves §G5 |
 | **P7** | G5 — wider node inputs | low | med | Stack-budget constrained — see below |
 | **P8** | G10 — assorted | low | low each | Opportunistic |
 | — | G8 — groups | low | high | Defer; YAGNI for a fixed instrument |
@@ -408,8 +449,10 @@ is hardcoded, *not* `MAX_INPUTS` — generalizing it to `MAX_INPUTS = 6` at
 `BLOCK = 128` would need ~24.6 KB and blow the stack.
 
 Any widening must be paired with a decision on `BLOCK` and on whether scratch
-moves off-stack into the arena. Since `Add` chains are an adequate workaround
-today, this stays deferred — but revisit it at the same time as pinning `BLOCK`
+moves off-stack into the arena. **G6's `/n_map` relieves much of the pressure**:
+the parameter space is a whole `u8` and is now modulatable, so a destination
+that is a *parameter* no longer competes for one of the three input ports.
+Since `Add` chains cover the rest, this stays deferred — but revisit it at the same time as pinning `BLOCK`
 for the first production instantiation.
 
 **P8 · G10 — assorted.** NRT render, recording, `/b_gen`-style buffer

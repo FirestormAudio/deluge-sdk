@@ -20,6 +20,7 @@
 pub mod arena;
 pub mod bus;
 pub mod cmd;
+pub mod ctrl;
 pub mod engine;
 pub mod event;
 pub mod frame;

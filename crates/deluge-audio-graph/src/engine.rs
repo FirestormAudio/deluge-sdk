@@ -23,8 +23,25 @@ use deluge_dsp_kernels::poly::VOICES;
 
 use crate::arena::Arena;
 use crate::event::CmdError;
+use crate::ids::CtrlBusId;
 use crate::node::{Kind, MAX_BLOCK, MAX_INPUTS, OutView};
 use crate::{BusId, Input, Node, NodeId, OutputSrc, StereoFrame, USB_CHANNELS};
+
+/// Maximum simultaneous parameter→control-bus mappings (G6, scsynth `/n_map`).
+///
+/// One per modulated parameter across the whole patch. 32 covers a rich
+/// instrument (a dozen macro destinations per voice group); a full table
+/// refuses the mapping and reports [`CmdError::MapTableFull`] rather than
+/// silently dropping it.
+pub const MAX_PARAM_MAPS: usize = 32;
+
+/// One `param ← control bus` mapping, re-applied every block.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct ParamMap {
+    node: NodeId,
+    param: u8,
+    bus: u16,
+}
 
 pub struct Engine<
     const BLOCK: usize,
@@ -108,6 +125,18 @@ pub struct Engine<
     // of `render_block`, before the topological re-sort, so a scheduled
     // `NewNode` joins eval order in the same block it lands in.
     sched: crate::sched::SchedQueue,
+    // ── Control buses (G6) ──
+    // Persistent mono modulation values. Unlike `bus_l`/`bus_r` these are NOT
+    // zeroed per block: a host-written CC must survive until something writes
+    // it again. See `ctrl.rs`.
+    ctrl: crate::ctrl::CtrlBuses,
+    // Standing node→control-bus routes, indexed BY BUS so one writer wins
+    // rather than summing. `Some((node, port))` = that bus is driven.
+    ctrl_writes: [Option<(NodeId, u8)>; crate::ids::CTRL_BUSES],
+    // Parameter mappings (scsynth `/n_map`), re-applied at the top of every
+    // block. Fixed capacity; a full table refuses and reports.
+    param_maps: [Option<ParamMap>; MAX_PARAM_MAPS],
+    param_maps_len: usize,
 }
 
 impl<
@@ -152,6 +181,10 @@ impl<
             epoch: 0,
             node_epoch: [0; NODES],
             sched: crate::sched::SchedQueue::new(),
+            ctrl: crate::ctrl::CtrlBuses::new(),
+            ctrl_writes: [None; crate::ids::CTRL_BUSES],
+            param_maps: [None; MAX_PARAM_MAPS],
+            param_maps_len: 0,
         }
     }
 
@@ -189,6 +222,144 @@ impl<
         let node = cmd.node().unwrap_or(NodeId(0));
         self.fail(node, CmdError::ScheduleFull);
         false
+    }
+
+    /// Value standing on control bus `b` (G6). Out-of-range reads `0.0`.
+    pub fn ctrl_bus(&self, b: CtrlBusId) -> f32 {
+        self.ctrl.get(b.0)
+    }
+
+    /// Write control bus `b` directly (scsynth `/c_set`). `false` if the id is
+    /// out of range, in which case the write is dropped.
+    pub fn set_ctrl(&mut self, b: CtrlBusId, value: f32) -> bool {
+        if (b.0 as usize) >= crate::ids::CTRL_BUSES {
+            return false;
+        }
+        self.ctrl.set(b.0, value);
+        true
+    }
+
+    /// Route `node`'s output `port` onto control bus `b` every block (scsynth
+    /// `Out.kr`). Replaces any existing route on that bus — one writer wins.
+    /// `false` if the bus id is out of range.
+    pub fn ctrl_write(&mut self, node: NodeId, port: u8, b: CtrlBusId) -> bool {
+        let i = b.0 as usize;
+        if i >= crate::ids::CTRL_BUSES {
+            return false;
+        }
+        self.ctrl_writes[i] = Some((node, port));
+        true
+    }
+
+    /// Remove the standing route feeding control bus `b`. The bus keeps its
+    /// last value.
+    pub fn clear_ctrl_write(&mut self, b: CtrlBusId) {
+        let i = b.0 as usize;
+        if i < crate::ids::CTRL_BUSES {
+            self.ctrl_writes[i] = None;
+        }
+    }
+
+    /// Map `node`'s `param` to control bus `b`, re-applied every block
+    /// (scsynth `/n_map`). Mapping a parameter that is already mapped replaces
+    /// the mapping rather than adding a second.
+    ///
+    /// `false` if the bus id is out of range or the table is full; the caller
+    /// gets [`CmdError::BadCtrlBus`] / [`CmdError::MapTableFull`] through the
+    /// event queue when this goes via `Cmd`.
+    pub fn map_param(&mut self, node: NodeId, param: u8, b: CtrlBusId) -> bool {
+        if (b.0 as usize) >= crate::ids::CTRL_BUSES {
+            return false;
+        }
+        // Replace an existing mapping for this (node, param).
+        for slot in self.param_maps[..self.param_maps_len].iter_mut() {
+            if let Some(m) = slot {
+                if m.node == node && m.param == param {
+                    m.bus = b.0;
+                    return true;
+                }
+            }
+        }
+        // Reuse a hole left by `unmap_param` before growing the table.
+        let entry = ParamMap {
+            node,
+            param,
+            bus: b.0,
+        };
+        for slot in self.param_maps[..self.param_maps_len].iter_mut() {
+            if slot.is_none() {
+                *slot = Some(entry);
+                return true;
+            }
+        }
+        if self.param_maps_len == MAX_PARAM_MAPS {
+            return false;
+        }
+        self.param_maps[self.param_maps_len] = Some(entry);
+        self.param_maps_len += 1;
+        true
+    }
+
+    /// Remove a parameter mapping. The parameter keeps its last value and
+    /// becomes writable by `SetParam` again.
+    pub fn unmap_param(&mut self, node: NodeId, param: u8) {
+        for slot in self.param_maps[..self.param_maps_len].iter_mut() {
+            if let Some(m) = slot {
+                if m.node == node && m.param == param {
+                    *slot = None;
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Number of live parameter→control-bus mappings.
+    pub fn param_map_count(&self) -> usize {
+        self.param_maps[..self.param_maps_len]
+            .iter()
+            .filter(|s| s.is_some())
+            .count()
+    }
+
+    /// Push every mapped parameter from its control bus into its node, and
+    /// apply the standing node→bus routes.
+    ///
+    /// Ordering within the block: maps are applied at the *top* of
+    /// `render_block` (so a node renders with this block's mapped values), and
+    /// `ctrl_writes` are collected at the *end* (so a bus carries the value its
+    /// source just produced, read by consumers on the next block — the same
+    /// one-block rule `Input::Bus` follows).
+    fn apply_param_maps(&mut self) {
+        for i in 0..self.param_maps_len {
+            let Some(m) = self.param_maps[i] else {
+                continue;
+            };
+            let v = self.ctrl.get(m.bus);
+            if let Some(n) = self.arena.node_mut(m.node) {
+                n.set_param(m.param, v);
+            }
+        }
+    }
+
+    /// Collect the standing node→control-bus routes into the bus values.
+    /// A route whose source node is gone leaves the bus at its last value.
+    fn collect_ctrl_writes(&mut self) {
+        for b in 0..crate::ids::CTRL_BUSES {
+            let Some((node, port)) = self.ctrl_writes[b] else {
+                continue;
+            };
+            let Some((base, kind)) = self.arena.out_base_and_kind(node) else {
+                continue;
+            };
+            let row = base + port as usize;
+            if (port as usize) >= Node::out_width(kind) || row >= OUTS {
+                continue;
+            }
+            // SAFETY: shared read of the output arena; no writer is live here
+            // (the render loop has finished for this block).
+            let arr = unsafe { &*self.outs.get() };
+            self.ctrl.set(b as u16, arr[row][0]);
+        }
     }
 
     /// Number of commands filed with [`Self::apply_at`] that have not fired.
@@ -636,6 +807,27 @@ impl<
                 self.epoch = self.epoch.wrapping_add(1);
             }
             Cmd::EndUpdate => self.end_update(),
+            Cmd::SetCtrl { bus, value } => {
+                if !self.set_ctrl(bus, value) {
+                    self.fail(NodeId(0), CmdError::BadCtrlBus);
+                }
+            }
+            Cmd::CtrlWrite { node, port, bus } => {
+                if !self.ctrl_write(node, port, bus) {
+                    self.fail(node, CmdError::BadCtrlBus);
+                }
+            }
+            Cmd::ClearCtrlWrite { bus } => self.clear_ctrl_write(bus),
+            Cmd::MapParam { node, param, bus } => {
+                if (bus.0 as usize) >= crate::ids::CTRL_BUSES {
+                    self.fail(node, CmdError::BadCtrlBus);
+                } else if self.arena.node(node).is_none() {
+                    self.fail(node, CmdError::DeadNode);
+                } else if !self.map_param(node, param, bus) {
+                    self.fail(node, CmdError::MapTableFull);
+                }
+            }
+            Cmd::UnmapParam { node, param } => self.unmap_param(node, param),
             Cmd::ClearSchedule => self.sched.clear(),
             Cmd::Reset => {
                 self.arena.reset();
@@ -644,6 +836,10 @@ impl<
                 // name anything meaningful — keeping them would fire a whole
                 // patch's worth of commands into a freshly emptied graph.
                 self.sched.clear();
+                self.ctrl.clear();
+                self.ctrl_writes = [None; crate::ids::CTRL_BUSES];
+                self.param_maps = [None; MAX_PARAM_MAPS];
+                self.param_maps_len = 0;
                 self.graph_dirty = false;
                 self.in_update = false;
                 self.node_epoch = [0; NODES];
@@ -677,6 +873,10 @@ impl<
         while let Some(cmd) = self.sched.pop_due(self.sample_clock) {
             self.apply(cmd);
         }
+        // Push mapped parameters from their control buses BEFORE evaluating, so
+        // a node renders with this block's mapped values rather than last
+        // block's (G6). The matching `collect_ctrl_writes` runs at the end.
+        self.apply_param_maps();
         // Eval order is topological by construction (G11): every node runs after
         // the nodes it reads. Sorting here rather than in `apply` means a whole
         // patch build costs one sort, not one per command.
@@ -717,10 +917,14 @@ impl<
             // rather than indexing a row of identical values.
             let mut src_kr = [false; MAX_INPUTS];
             for (p, flag) in src_kr.iter_mut().enumerate() {
-                if let Input::Node { node, .. } = inputs[p] {
-                    *flag =
-                        self.arena.node(node).map(|n| n.rate()) == Some(crate::node::Rate::Control);
-                }
+                *flag = match inputs[p] {
+                    Input::Node { node, .. } => {
+                        self.arena.node(node).map(|n| n.rate()) == Some(crate::node::Rate::Control)
+                    }
+                    // A control bus is one value for the block by definition.
+                    Input::CtrlBus(_) => true,
+                    _ => false,
+                };
             }
 
             // ── Resolve inputs into scratch (all reads copied out first) ──
@@ -738,6 +942,9 @@ impl<
                             }
                             _ => *row = [0.0; BLOCK], // dangling ref or out-of-range port → silence (never panic, never slot-0 crosstalk)
                         },
+                        // One persistent value for the whole block; `src_kr`
+                        // marks the port so it is handed down as `In::K`.
+                        Input::CtrlBus(cb) => row.fill(self.ctrl.get(cb.0)),
                         Input::Bus(bus) => {
                             let b = bus.0 as usize;
                             for i in 0..BLOCK {
@@ -905,6 +1112,11 @@ impl<
         }
 
         self.collect_events(&order[..live]);
+        // Standing node→control-bus routes, collected AFTER the render so a bus
+        // carries the value its source just produced. Consumers read it on the
+        // next block — the same one-block rule `Input::Bus` follows, and why
+        // control-bus edges are not sort dependencies (`arena.rs`).
+        self.collect_ctrl_writes();
     }
 
     /// Diff every live node's envelope-completion mask against last block's and
@@ -1104,6 +1316,10 @@ impl<
                             _ => 0.0, // dangling ref or out-of-range port → contributes silence
                         },
                         Input::Bus(_) => 0.0, // bus→bus not in P0
+                        // A control value is constant across the block, so
+                        // this writes a DC level onto the audio bus. Coherent
+                        // and cheap; the `Const` case with an indirection.
+                        Input::CtrlBus(cb) => self.ctrl.get(cb.0),
                     };
                     self.bus_l[b][i] += v * gl;
                     self.bus_r[b][i] += v * gr;
@@ -2174,6 +2390,494 @@ mod tests {
             (d_shifted - 0.2).abs() < 0.05,
             "width=0.2 broadcast ⇒ ~0.2 duty, got {d_shifted}"
         );
+    }
+
+    // ── G6: control buses ─────────────────────────────────────────────────
+
+    use crate::ids::CtrlBusId as CB;
+
+    type CE = Engine<16, 8, 16, 4, 45056, 2048>;
+
+    /// A `Ctrl` node holding `v` — a readable, settable mono value.
+    fn cnode(e: &mut CE, id: u16, v: f32) {
+        e.apply(Cmd::NewNode {
+            node: NodeId(id),
+            kind: Kind::Ctrl,
+            args: [Input::Const(0.0); 3],
+        });
+        e.apply(Cmd::SetParam {
+            node: NodeId(id),
+            param: 0,
+            value: v,
+        });
+    }
+
+    #[test]
+    fn a_control_bus_persists_rather_than_being_zeroed_each_block() {
+        // The defining difference from an audio bus: written once, it holds.
+        // Zeroing per block would wipe a host's CC write on the next render.
+        let mut e = CE::new(48_000.0);
+        e.apply(Cmd::SetCtrl {
+            bus: CB(3),
+            value: 0.7,
+        });
+        for _ in 0..8 {
+            e.render_block();
+        }
+        assert_eq!(e.ctrl_bus(CB(3)), 0.7, "still standing 8 blocks later");
+    }
+
+    #[test]
+    fn a_node_reads_a_control_bus_as_a_constant() {
+        let mut e = CE::new(48_000.0);
+        e.apply(Cmd::SetCtrl {
+            bus: CB(1),
+            value: 0.25,
+        });
+        e.apply(Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::Add,
+            args: [Input::CtrlBus(CB(1)), Input::Const(0.5), Input::Const(0.0)],
+        });
+        e.render_block();
+        let out = e.node_output(NodeId(0), 0);
+        assert!(
+            out.iter().all(|s| (*s - 0.75).abs() < 1e-6),
+            "constant across the block: {:?}",
+            &out[..4]
+        );
+    }
+
+    #[test]
+    fn one_control_bus_fans_out_to_many_readers() {
+        // The point of G6: one modulator, N destinations, without N edges.
+        let mut e = CE::new(48_000.0);
+        e.apply(Cmd::SetCtrl {
+            bus: CB(0),
+            value: 0.4,
+        });
+        for id in 0..4u16 {
+            e.apply(Cmd::NewNode {
+                node: NodeId(id),
+                kind: Kind::Add,
+                args: [Input::CtrlBus(CB(0)), Input::Const(0.0), Input::Const(0.0)],
+            });
+        }
+        e.render_block();
+        for id in 0..4u16 {
+            assert!((e.node_output(NodeId(id), 0)[0] - 0.4).abs() < 1e-6);
+        }
+        // Move the bus once; every reader follows.
+        e.apply(Cmd::SetCtrl {
+            bus: CB(0),
+            value: 0.9,
+        });
+        e.render_block();
+        for id in 0..4u16 {
+            assert!((e.node_output(NodeId(id), 0)[0] - 0.9).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn a_standing_route_drives_a_control_bus_from_a_node() {
+        let mut e = CE::new(48_000.0);
+        cnode(&mut e, 0, 0.6);
+        e.apply(Cmd::CtrlWrite {
+            node: NodeId(0),
+            port: 0,
+            bus: CB(2),
+        });
+        assert_eq!(e.ctrl_bus(CB(2)), 0.0, "nothing collected yet");
+        e.render_block();
+        assert_eq!(e.ctrl_bus(CB(2)), 0.6, "collected after the render");
+        // The route is standing: a new source value propagates next block.
+        e.apply(Cmd::SetParam {
+            node: NodeId(0),
+            param: 0,
+            value: 0.2,
+        });
+        e.render_block();
+        assert_eq!(e.ctrl_bus(CB(2)), 0.2);
+    }
+
+    #[test]
+    fn a_routed_bus_reaches_a_reader_one_block_later() {
+        // Documented semantics: writes are collected after the render, so a
+        // reader sees the previous block's value — the same rule Input::Bus
+        // follows, and why control edges are not sort dependencies.
+        let mut e = CE::new(48_000.0);
+        cnode(&mut e, 0, 0.8);
+        e.apply(Cmd::CtrlWrite {
+            node: NodeId(0),
+            port: 0,
+            bus: CB(1),
+        });
+        e.apply(Cmd::NewNode {
+            node: NodeId(1),
+            kind: Kind::Add,
+            args: [Input::CtrlBus(CB(1)), Input::Const(0.0), Input::Const(0.0)],
+        });
+        e.render_block();
+        assert_eq!(e.node_output(NodeId(1), 0)[0], 0.0, "one block behind");
+        e.render_block();
+        assert_eq!(e.node_output(NodeId(1), 0)[0], 0.8);
+    }
+
+    #[test]
+    fn clearing_a_route_leaves_the_bus_at_its_last_value() {
+        let mut e = CE::new(48_000.0);
+        cnode(&mut e, 0, 0.5);
+        e.apply(Cmd::CtrlWrite {
+            node: NodeId(0),
+            port: 0,
+            bus: CB(0),
+        });
+        e.render_block();
+        assert_eq!(e.ctrl_bus(CB(0)), 0.5);
+        e.apply(Cmd::ClearCtrlWrite { bus: CB(0) });
+        e.apply(Cmd::SetParam {
+            node: NodeId(0),
+            param: 0,
+            value: 0.1,
+        });
+        e.render_block();
+        assert_eq!(
+            e.ctrl_bus(CB(0)),
+            0.5,
+            "frozen, not zeroed and not tracking"
+        );
+    }
+
+    #[test]
+    fn one_writer_wins_rather_than_summing() {
+        // Two sources on one control bus is a patching mistake, not a mix.
+        let mut e = CE::new(48_000.0);
+        cnode(&mut e, 0, 0.3);
+        cnode(&mut e, 1, 0.4);
+        e.apply(Cmd::CtrlWrite {
+            node: NodeId(0),
+            port: 0,
+            bus: CB(0),
+        });
+        e.apply(Cmd::CtrlWrite {
+            node: NodeId(1),
+            port: 0,
+            bus: CB(0),
+        }); // replaces
+        e.render_block();
+        assert_eq!(e.ctrl_bus(CB(0)), 0.4, "last route wins; not 0.7");
+    }
+
+    #[test]
+    fn a_route_from_a_freed_node_leaves_the_bus_alone() {
+        let mut e = CE::new(48_000.0);
+        cnode(&mut e, 0, 0.5);
+        e.apply(Cmd::CtrlWrite {
+            node: NodeId(0),
+            port: 0,
+            bus: CB(0),
+        });
+        e.render_block();
+        e.apply(Cmd::Free { node: NodeId(0) });
+        e.render_block(); // must not panic, must not zero
+        assert_eq!(e.ctrl_bus(CB(0)), 0.5);
+    }
+
+    // ── /n_map ──
+
+    #[test]
+    fn a_mapped_param_follows_its_bus() {
+        // The G5-relieving half: `Ctrl`'s value is param 0, not an input port,
+        // so without /n_map it could not be modulated at all.
+        let mut e = CE::new(48_000.0);
+        cnode(&mut e, 0, 0.1);
+        e.apply(Cmd::SetCtrl {
+            bus: CB(4),
+            value: 0.65,
+        });
+        e.apply(Cmd::MapParam {
+            node: NodeId(0),
+            param: 0,
+            bus: CB(4),
+        });
+        assert_eq!(e.param_map_count(), 1);
+        e.render_block();
+        assert!((e.node_output(NodeId(0), 0)[0] - 0.65).abs() < 1e-6);
+        e.apply(Cmd::SetCtrl {
+            bus: CB(4),
+            value: 0.2,
+        });
+        e.render_block();
+        assert!((e.node_output(NodeId(0), 0)[0] - 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_mapped_param_overrides_a_direct_set_param() {
+        // While mapped, the bus is the authority — as in scsynth.
+        let mut e = CE::new(48_000.0);
+        cnode(&mut e, 0, 0.1);
+        e.apply(Cmd::SetCtrl {
+            bus: CB(0),
+            value: 0.65,
+        });
+        e.apply(Cmd::MapParam {
+            node: NodeId(0),
+            param: 0,
+            bus: CB(0),
+        });
+        e.apply(Cmd::SetParam {
+            node: NodeId(0),
+            param: 0,
+            value: 0.9,
+        });
+        e.render_block();
+        assert!(
+            (e.node_output(NodeId(0), 0)[0] - 0.65).abs() < 1e-6,
+            "the map re-applies at the top of the block"
+        );
+    }
+
+    #[test]
+    fn unmapping_frees_the_param_and_keeps_its_last_value() {
+        let mut e = CE::new(48_000.0);
+        cnode(&mut e, 0, 0.1);
+        e.apply(Cmd::SetCtrl {
+            bus: CB(0),
+            value: 0.65,
+        });
+        e.apply(Cmd::MapParam {
+            node: NodeId(0),
+            param: 0,
+            bus: CB(0),
+        });
+        e.render_block();
+        e.apply(Cmd::UnmapParam {
+            node: NodeId(0),
+            param: 0,
+        });
+        assert_eq!(e.param_map_count(), 0);
+        e.render_block();
+        assert!(
+            (e.node_output(NodeId(0), 0)[0] - 0.65).abs() < 1e-6,
+            "keeps the value it last received"
+        );
+        // ...and SetParam works again.
+        e.apply(Cmd::SetParam {
+            node: NodeId(0),
+            param: 0,
+            value: 0.3,
+        });
+        e.render_block();
+        assert!((e.node_output(NodeId(0), 0)[0] - 0.3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn remapping_a_param_replaces_rather_than_duplicating() {
+        let mut e = CE::new(48_000.0);
+        cnode(&mut e, 0, 0.0);
+        e.apply(Cmd::SetCtrl {
+            bus: CB(0),
+            value: 0.2,
+        });
+        e.apply(Cmd::SetCtrl {
+            bus: CB(1),
+            value: 0.8,
+        });
+        e.apply(Cmd::MapParam {
+            node: NodeId(0),
+            param: 0,
+            bus: CB(0),
+        });
+        e.apply(Cmd::MapParam {
+            node: NodeId(0),
+            param: 0,
+            bus: CB(1),
+        });
+        assert_eq!(e.param_map_count(), 1, "replaced, not a second entry");
+        e.render_block();
+        assert!((e.node_output(NodeId(0), 0)[0] - 0.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn unmap_reuses_its_slot_so_the_table_does_not_leak() {
+        let mut e = CE::new(48_000.0);
+        cnode(&mut e, 0, 0.0);
+        for _ in 0..(MAX_PARAM_MAPS * 3) {
+            e.apply(Cmd::MapParam {
+                node: NodeId(0),
+                param: 0,
+                bus: CB(0),
+            });
+            e.apply(Cmd::UnmapParam {
+                node: NodeId(0),
+                param: 0,
+            });
+        }
+        assert_eq!(e.param_map_count(), 0);
+        // A fresh mapping still fits: the freed slot was reused each time.
+        assert!(e.map_param(NodeId(0), 0, CB(0)));
+    }
+
+    #[test]
+    fn a_full_map_table_refuses_and_reports() {
+        let mut e = CE::new(48_000.0);
+        cnode(&mut e, 0, 0.0);
+        e.drain_events(|_| {});
+        for p in 0..MAX_PARAM_MAPS {
+            assert!(e.map_param(NodeId(0), p as u8, CB(0)), "fits");
+        }
+        e.apply(Cmd::MapParam {
+            node: NodeId(0),
+            param: 250,
+            bus: CB(0),
+        });
+        assert_eq!(
+            e.pop_event(),
+            Some(crate::event::Event::CmdFailed {
+                node: NodeId(0),
+                reason: CmdError::MapTableFull
+            })
+        );
+    }
+
+    #[test]
+    fn out_of_range_bus_ids_are_refused_and_reported() {
+        let mut e = CE::new(48_000.0);
+        cnode(&mut e, 0, 0.0);
+        e.drain_events(|_| {});
+        let bad = CB(crate::ids::CTRL_BUSES as u16);
+
+        e.apply(Cmd::SetCtrl {
+            bus: bad,
+            value: 1.0,
+        });
+        assert!(matches!(
+            e.pop_event(),
+            Some(crate::event::Event::CmdFailed {
+                reason: CmdError::BadCtrlBus,
+                ..
+            })
+        ));
+        e.apply(Cmd::MapParam {
+            node: NodeId(0),
+            param: 0,
+            bus: bad,
+        });
+        assert!(matches!(
+            e.pop_event(),
+            Some(crate::event::Event::CmdFailed {
+                reason: CmdError::BadCtrlBus,
+                ..
+            })
+        ));
+        assert_eq!(e.param_map_count(), 0);
+        // Reading one is silence, not a panic.
+        assert_eq!(e.ctrl_bus(bad), 0.0);
+        e.render_block();
+    }
+
+    #[test]
+    fn mapping_a_dead_node_is_refused() {
+        let mut e = CE::new(48_000.0);
+        e.drain_events(|_| {});
+        e.apply(Cmd::MapParam {
+            node: NodeId(7),
+            param: 0,
+            bus: CB(0),
+        });
+        assert_eq!(
+            e.pop_event(),
+            Some(crate::event::Event::CmdFailed {
+                node: NodeId(7),
+                reason: CmdError::DeadNode
+            })
+        );
+        assert_eq!(e.param_map_count(), 0);
+    }
+
+    #[test]
+    fn a_map_onto_a_freed_node_is_inert() {
+        let mut e = CE::new(48_000.0);
+        cnode(&mut e, 0, 0.0);
+        e.map_param(NodeId(0), 0, CB(0));
+        e.apply(Cmd::Free { node: NodeId(0) });
+        e.render_block(); // must not panic on the stale mapping
+        assert_eq!(e.ctrl_bus(CB(0)), 0.0);
+    }
+
+    #[test]
+    fn a_control_bus_source_can_feed_an_audio_bus() {
+        let mut e = CE::new(48_000.0);
+        e.apply(Cmd::SetCtrl {
+            bus: CB(0),
+            value: 0.5,
+        });
+        e.apply(Cmd::BusWrite {
+            src: Input::CtrlBus(CB(0)),
+            bus: BusId(0),
+        });
+        e.apply(Cmd::SetRoot { bus: BusId(0) });
+        let mut out = [StereoFrame::default(); 16];
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil);
+        assert!(out.iter().all(|f| (f.l - 0.5).abs() < 1e-6));
+    }
+
+    #[test]
+    fn reset_clears_buses_routes_and_maps() {
+        let mut e = CE::new(48_000.0);
+        cnode(&mut e, 0, 0.5);
+        e.apply(Cmd::SetCtrl {
+            bus: CB(0),
+            value: 0.9,
+        });
+        e.apply(Cmd::CtrlWrite {
+            node: NodeId(0),
+            port: 0,
+            bus: CB(1),
+        });
+        e.map_param(NodeId(0), 0, CB(0));
+        e.apply(Cmd::Reset);
+        assert_eq!(e.ctrl_bus(CB(0)), 0.0);
+        assert_eq!(e.param_map_count(), 0);
+        cnode(&mut e, 0, 0.5);
+        e.render_block();
+        assert_eq!(e.ctrl_bus(CB(1)), 0.0, "the standing route is gone too");
+    }
+
+    #[test]
+    fn an_lfo_at_control_rate_modulates_through_a_bus() {
+        // The end-to-end shape G2 and G6 were both for: a kr LFO drives a bus,
+        // the bus drives a mapped parameter, and one modulator could feed many.
+        let mut e = CE::new(48_000.0);
+        e.apply(Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::Lfo,
+            args: [Input::Const(30.0), Input::Const(0.0), Input::Const(0.0)],
+        });
+        assert!(e.set_rate(NodeId(0), crate::node::Rate::Control));
+        e.apply(Cmd::CtrlWrite {
+            node: NodeId(0),
+            port: 0,
+            bus: CB(0),
+        });
+        cnode(&mut e, 1, 0.0);
+        e.apply(Cmd::MapParam {
+            node: NodeId(1),
+            param: 0,
+            bus: CB(0),
+        });
+
+        let mut seen_low = false;
+        let mut seen_high = false;
+        for _ in 0..80 {
+            e.render_block();
+            let v = e.node_output(NodeId(1), 0)[0];
+            assert!(v.is_finite());
+            seen_low |= v < -0.4;
+            seen_high |= v > 0.4;
+        }
+        assert!(seen_low && seen_high, "the mapped param swept with the LFO");
     }
 
     // ── G7: scheduled commands ────────────────────────────────────────────

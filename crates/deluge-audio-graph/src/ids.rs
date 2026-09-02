@@ -9,12 +9,31 @@ pub struct NodeId(pub u16);
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct BusId(pub u16);
 
-/// A node input: a constant, a source node's output port, or a bus.
+/// A mono control bus: one persistent value, not a block of samples (G6).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CtrlBusId(pub u16);
+
+/// The number of mono control buses (G6). A plain const rather than a seventh
+/// `Engine` const-generic parameter; at 4 bytes each the whole space costs 128
+/// bytes, which is not worth another type parameter on an already-wide
+/// signature. Out-of-range ids are inert (reads give 0.0, writes are dropped).
+pub const CTRL_BUSES: usize = 32;
+
+/// A node input: a constant, a source node's output port, an audio bus, or a
+/// control bus.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Input {
     Const(f32),
-    Node { node: NodeId, port: u8 },
+    Node {
+        node: NodeId,
+        port: u8,
+    },
     Bus(BusId),
+    /// A control bus, read as a single value for the whole block
+    /// ([`crate::In::K`]), so the consuming kernel takes its `as_const` fast
+    /// path. Like [`Input::Bus`], the value read is the one standing at the
+    /// *start* of the block — see `docs/audio-graph-vs-scsynth.md` §G6.
+    CtrlBus(CtrlBusId),
 }
 
 /// The number of routable USB output channels (mono).
