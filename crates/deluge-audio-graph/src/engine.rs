@@ -911,19 +911,23 @@ impl<
                     n.rate(),
                 )
             };
-            // Which input ports are fed by a control-rate node. Such a source's
-            // row is constant across the block, so it is handed down as
-            // `In::K` and the consuming kernel takes its `as_const` fast path
-            // rather than indexing a row of identical values.
-            let mut src_kr = [false; MAX_INPUTS];
-            for (p, flag) in src_kr.iter_mut().enumerate() {
+            // Which input ports carry one value for the whole block. Those are
+            // handed down as `In::K`, so the consuming kernel takes its
+            // `as_const` fast path instead of indexing a row of identical
+            // values — and the row need not be materialised at all.
+            let mut src_const = [false; MAX_INPUTS];
+            for (p, flag) in src_const.iter_mut().enumerate() {
                 *flag = match inputs[p] {
+                    // A literal: by far the commonest input in any patch, which
+                    // is why this is worth more than the kr cases below.
+                    Input::Const(_) => true,
                     Input::Node { node, .. } => {
                         self.arena.node(node).map(|n| n.rate()) == Some(crate::node::Rate::Control)
                     }
                     // A control bus is one value for the block by definition.
                     Input::CtrlBus(_) => true,
-                    _ => false,
+                    // An audio bus genuinely varies across the block.
+                    Input::Bus(_) => false,
                 };
             }
 
@@ -935,7 +939,11 @@ impl<
                 let arr = unsafe { &*self.outs.get() };
                 for (p, row) in scratch.iter_mut().enumerate() {
                     match inputs[p] {
-                        Input::Const(v) => row.fill(v),
+                        // Only slot 0 is written: a constant port resolves to
+                        // `In::K(scratch[p][0])` below, so the rest of the row
+                        // is never read. `scratch` is a fresh local each
+                        // iteration, so the untouched tail is zeros, not stale.
+                        Input::Const(v) => row[0] = v,
                         Input::Node { node, port } => match self.arena.out_base(node) {
                             Some(sbase) if sbase + (port as usize) < OUTS => {
                                 *row = arr[sbase + port as usize]
@@ -1001,7 +1009,7 @@ impl<
             // constant and so cost nothing to pass as `In::K`.
             let kr = rate == crate::node::Rate::Control;
             let resolve = |p: usize| -> In<'_> {
-                if kr || src_kr[p] {
+                if kr || src_const[p] {
                     In::K(scratch[p][0])
                 } else {
                     In::A(&scratch[p][..])
