@@ -3417,6 +3417,24 @@ pub(crate) fn register_audio<S: SlotApi>(
         node_mono_begin_impl::<S>,
     );
     method("main", "Node", true, "monoEnd_(_)", node_mono_end_impl::<S>);
+    // Named identity scopes (GL6). These exist in the `METHODS` table used by
+    // the wren-sys backend; they must be here too, or every wren-core-backed
+    // host (the debug harness) fails to boot the prelude, which declares them
+    // `foreign static`.
+    method(
+        "main",
+        "Node",
+        true,
+        "scopeBegin_(_)",
+        node_scope_begin_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        true,
+        "scopeEnd_()",
+        node_scope_end_impl::<S>,
+    );
     method(
         "main",
         "Synth",

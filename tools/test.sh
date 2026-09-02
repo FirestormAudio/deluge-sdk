@@ -42,6 +42,14 @@ cargo test --target "$QEMU" -p deluge-fft --features test-utils
 cargo test --target "$QEMU" -p rza1l-hal --lib
 cargo test --target "$QEMU" -p deluge-bsp --features usb-host --lib
 cargo test --target "$QEMU" -p deluge-fonts --lib
+# The audio engine. On 32-bit ARM specifically because the deploy target is
+# 32-bit (`usize == u32`) and these crates are full of offset arithmetic —
+# output-arena rows, pool chunks, the scheduled-command queue, wire-record
+# offsets. An overflow there panics on device and CANNOT be reproduced on the
+# 64-bit host bucket below, so both buckets are load-bearing, not redundant.
+cargo test --target "$QEMU" -p deluge-dsp-kernels
+cargo test --target "$QEMU" -p deluge-audio-graph
+cargo test --target "$QEMU" -p deluge-wren-core
 
 echo "==> Host bucket ($HOST)"
 # Portable-fallback / non-NEON paths of the DSP crates (the QEMU bucket above
@@ -53,6 +61,11 @@ cargo test --target "$HOST" -p deluge-fft --features test-utils
 cargo test --target "$HOST" -p deluge-image
 cargo test --target "$HOST" -p deluge-ui-toolkit
 cargo test --target "$HOST" -p deluge-sdk-macros
+# The audio engine again, on the host: the kernels' portable (non-NEON) paths,
+# and the scalar-oracle comparisons that only run off ARM.
+cargo test --target "$HOST" -p deluge-dsp-kernels
+cargo test --target "$HOST" -p deluge-audio-graph
+cargo test --target "$HOST" -p deluge-wren-core
 # The SDK facade: `adapt_block` (the linux backend's frame adaptation) is pure
 # logic and testable here. Needs an explicit backend feature — `sim` is the only
 # one that builds on the host (`linux` requires the musl libdeluge sysroot).
@@ -61,5 +74,16 @@ cargo test --target "$HOST" -p deluge-sdk-macros
 cargo test --target "$HOST" -p deluge-sdk --features sim
 cargo test --target "$HOST" --manifest-path tools/cargo-deluge/Cargo.toml
 cargo test --target "$HOST" --manifest-path tools/wren-web-debug/Cargo.toml
+
+# `tools/wren-web` is the web simulator's wasm core. It is excluded from the
+# workspace and only builds for wasm, so nothing else here compiles it — which
+# is exactly how it silently rotted through several `Cmd`-surface changes before
+# anyone noticed. Its logic (the `Cmd` wire codec) lives in deluge-wren-core so
+# it is unit-tested above; this is the build guard that catches API drift.
+if rustup target list --installed | grep -q '^wasm32-wasip1$'; then
+  cargo check --manifest-path tools/wren-web/Cargo.toml --target wasm32-wasip1
+else
+  echo "  (skipped: wasm32-wasip1 target not installed)"
+fi
 
 echo "==> All tests passed."
