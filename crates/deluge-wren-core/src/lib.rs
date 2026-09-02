@@ -41,10 +41,16 @@ pub const PYRAMID_LEN: usize = deluge_dsp_kernels::wavetable::COMPACT_LEN;
 pub const BASE_LEN: usize = mipgen::N;
 #[cfg(feature = "wren-sys-backend")]
 pub use bindings::{CLASSES, METHODS, enc_turn, input_dispatch, midi_rx, prelude_ptr, tick};
+pub mod codec;
 pub use bindings::{
     begin_update, enc_turn_impl, end_update, input_dispatch_impl, midi_rx_impl, prelude_str,
     register_foreign, reset, tick_impl,
 };
-pub use deluge_audio_graph::{BusId, Cmd, Input, Kind, NodeId};
+pub use deluge_audio_graph::ids::{CTRL_BUSES, CtrlBusId};
+pub use deluge_audio_graph::node::{ALL_KINDS, Rate, TableSrc};
+pub use deluge_audio_graph::pool::PoolHandle;
+pub use deluge_audio_graph::{
+    BusId, Cmd, Engine, Input, Kind, NodeId, OutputSrc, StereoFrame, TableId,
+};
 pub use host::{CV_CHANNELS, GATE_CHANNELS, Host, build_pyramid_into, set_host};
 pub use slotapi::{Handle, SlotApi, WrenForeign, WrenType};

@@ -14,6 +14,8 @@ interface SimExports {
   memory: WebAssembly.Memory;
   sim_boot(): number;
   sim_reset(): number;
+  sim_update_begin(): number;
+  sim_update_end(): void;
   sim_src_ptr(): number;
   sim_src_cap(): number;
   sim_load(len: number): number;
@@ -114,6 +116,32 @@ export class Sim {
   /// (this shifts that module's runtime error lines by 1).
   runProject(files: Record<string, string>, entry: string): LoadResult {
     this.x.sim_reset();
+    return this.loadProject(files, entry);
+  }
+
+  /// Re-run a project **without tearing down the running audio graph** (GL2).
+  ///
+  /// The VM is still rebuilt, so module variables start fresh; what survives is
+  /// the patch. Node ids come from the deterministic Wren-side allocator, so a
+  /// stage the edit didn't touch keeps its id and therefore its DSP state — a
+  /// filter keeps its poles, an oscillator its phase, an envelope its stage.
+  /// Anything the re-run stops emitting is swept when the update closes.
+  ///
+  /// This is what makes editing a live patch click-free; `runProject` restarts
+  /// every voice from silence.
+  updateProject(files: Record<string, string>, entry: string): LoadResult {
+    this.x.sim_update_begin();
+    const res = this.loadProject(files, entry);
+    // Close the update even when the script failed: the partial re-run has
+    // already re-emitted some nodes, and leaving the bracket open would keep
+    // the engine marking against a stale epoch. The sweep then frees whatever
+    // the failed run didn't reach, which is the same state a reset would give
+    // for those nodes.
+    this.x.sim_update_end();
+    return res;
+  }
+
+  private loadProject(files: Record<string, string>, entry: string): LoadResult {
     this.x.sim_clear_modules();
     for (const [path, content] of Object.entries(files)) {
       if (path === entry) continue; // the entry runs raw in `main`, with the prelude

@@ -48,6 +48,7 @@ fn compact_levels(region: &[f32]) -> [&[f32]; LEVELS] {
 pub const MAX_INPUTS: usize = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum Kind {
     Sine,
     Saw,
@@ -131,6 +132,110 @@ pub enum Kind {
     PolySamplePlayer,
     StreamPlayer,
     PolyGranular,
+}
+
+/// Every [`Kind`], in declaration order, so `ALL_KINDS[i] as u8 == i`.
+///
+/// Exists so a `Kind` can cross a wire (the web sim serializes `Cmd`s between
+/// the VM thread and the AudioWorklet's engine). `#[repr(u8)]` makes
+/// `kind as u8` well-defined; this table is the safe inverse, which a
+/// `transmute` would not be. `all_kinds_match_their_discriminants` fails if
+/// this list ever drifts from the enum.
+pub const ALL_KINDS: [Kind; 80] = [
+    Kind::Sine,
+    Kind::Saw,
+    Kind::Square,
+    Kind::Tri,
+    Kind::SyncSine,
+    Kind::SyncSaw,
+    Kind::SyncSquare,
+    Kind::SyncTri,
+    Kind::Noise,
+    Kind::PinkNoise,
+    Kind::BrownNoise,
+    Kind::Env,
+    Kind::Adsr,
+    Kind::Lpf,
+    Kind::SvfLp,
+    Kind::SvfHp,
+    Kind::SvfBp,
+    Kind::SvfNotch,
+    Kind::Tb303,
+    Kind::MoogLp4,
+    Kind::MoogLp2,
+    Kind::Ms20Lp,
+    Kind::Ms20Hp,
+    Kind::Modal,
+    Kind::Mul,
+    Kind::Add,
+    Kind::Sub,
+    Kind::Split2,
+    Kind::Pan,
+    Kind::Input,
+    Kind::Wavetable,
+    Kind::Delay,
+    Kind::Chorus,
+    Kind::Flanger,
+    Kind::Room,
+    Kind::Hall,
+    Kind::Plate,
+    Kind::Drive,
+    Kind::Comp,
+    Kind::Gate,
+    Kind::Bitcrush,
+    Kind::Decimate,
+    Kind::Eq,
+    Kind::Lfo,
+    Kind::SampleHold,
+    Kind::Slew,
+    Kind::Steps,
+    Kind::Curve,
+    Kind::QuantStep,
+    Kind::QuantPitch,
+    Kind::Mtof,
+    Kind::Ctrl,
+    Kind::PolyCtrl,
+    Kind::PolyOsc,
+    Kind::VoiceSum,
+    Kind::StereoVoiceSum,
+    Kind::PolyAr,
+    Kind::PolyAdsr,
+    Kind::PolySvf,
+    Kind::PolySlew,
+    Kind::PolyMul,
+    Kind::PolyMtof,
+    Kind::PolyAdd,
+    Kind::PolyNoise,
+    Kind::PolyPink,
+    Kind::PolyBrown,
+    Kind::PolyMoogLp4,
+    Kind::PolyMoogLp2,
+    Kind::PolyMs20Lp,
+    Kind::PolyMs20Hp,
+    Kind::PolySyncSine,
+    Kind::PolySyncSaw,
+    Kind::PolySyncSquare,
+    Kind::PolySyncTri,
+    Kind::PolyWt,
+    Kind::PolyWtMorph,
+    Kind::SamplePlayer,
+    Kind::PolySamplePlayer,
+    Kind::StreamPlayer,
+    Kind::PolyGranular,
+];
+
+impl Kind {
+    /// This kind's stable wire byte.
+    #[inline]
+    pub fn to_u8(self) -> u8 {
+        self as u8
+    }
+
+    /// The kind for a wire byte, or `None` if it names no kind.
+    #[inline]
+    pub fn from_u8(b: u8) -> Option<Kind> {
+        ALL_KINDS.get(b as usize).copied()
+    }
 }
 
 /// Per-kind DSP state. Only the active variant's kernel is used.
@@ -1941,6 +2046,19 @@ mod tests {
             "compressed well below input, got {}",
             buf[buf.len() - 1]
         );
+    }
+
+    #[test]
+    fn all_kinds_match_their_discriminants() {
+        // `ALL_KINDS` is hand-listed, so it can drift from the enum. It is the
+        // safe inverse of `kind as u8` used for the wire, and a wrong entry
+        // would silently decode one node kind as another.
+        for (i, k) in ALL_KINDS.iter().enumerate() {
+            assert_eq!(k.to_u8() as usize, i, "ALL_KINDS[{i}] = {k:?} is misplaced");
+            assert_eq!(Kind::from_u8(i as u8), Some(*k));
+        }
+        assert_eq!(Kind::from_u8(ALL_KINDS.len() as u8), None, "past the end");
+        assert_eq!(Kind::from_u8(u8::MAX), None);
     }
 
     #[test]

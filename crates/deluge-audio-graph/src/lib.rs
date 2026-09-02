@@ -34,6 +34,7 @@ pub mod voice;
 pub use arena::Arena;
 pub use cmd::{Cmd, Host};
 pub use deluge_dsp_kernels::poly::VOICES;
+pub use deluge_dsp_kernels::wavetable::TableId;
 pub use engine::Engine;
 pub use event::{EVENT_QUEUE, Event, EventQueue};
 pub use frame::StereoFrame;

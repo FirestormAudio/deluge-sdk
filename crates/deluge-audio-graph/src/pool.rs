@@ -10,6 +10,36 @@ pub struct PoolHandle {
     len: u32, // requested length in f32 units
 }
 
+impl PoolHandle {
+    /// Start index of the region, in f32 units.
+    #[inline]
+    pub fn off(self) -> u32 {
+        self.off
+    }
+
+    /// Requested length of the region, in f32 units.
+    #[inline]
+    pub fn len(self) -> u32 {
+        self.len
+    }
+
+    #[inline]
+    pub fn is_empty(self) -> bool {
+        self.len == 0
+    }
+
+    /// Rebuild a handle from its parts.
+    ///
+    /// For deserializing a handle that crossed a wire (the web sim ships
+    /// `Cmd`s to the AudioWorklet's engine). It does **not** allocate: the
+    /// region is only valid in a pool that already carries the same layout, so
+    /// this is for reconstructing a handle, never for minting one.
+    #[inline]
+    pub fn from_raw(off: u32, len: u32) -> PoolHandle {
+        PoolHandle { off, len }
+    }
+}
+
 pub struct Pool<const CAP: usize, const CHUNK: usize> {
     buf: [f32; CAP],
     // `used[c]` marks chunk c as allocated. CAP/CHUNK chunks.
