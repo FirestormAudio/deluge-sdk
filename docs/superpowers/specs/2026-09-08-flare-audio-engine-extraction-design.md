@@ -466,6 +466,72 @@ permitted to move the default's output. At `voices-16` and `voices-24` the
 existing scalar-oracle equivalence tests must hold lane-for-lane to ≤ 1e-4, per
 the standing SIMD convention.
 
+
+
+**Phase 3 complete (2026-09-08).** All five sub-parts done; the default's ten
+golden digests are byte-identical throughout.
+
+*Configurations now available:* `voices-8` (default) / `voices-16` /
+`voices-24`, and `block-64` / `block-128` (default) / `block-256` /
+`block-512`, forwarded through `flare-graph` and the `flare` facade. Both
+cascades are written largest-first with explicit `not(...)` guards, because
+Cargo features are additive: bare `#[cfg(feature = ...)]` arms would compile two
+definitions of the same constant if two crates in one graph enabled different
+ones. Verified by building `--features block-64,block-512`.
+
+*The chunking:* `VOICE_CHUNKS = VOICES / 8`, and all five SIMD poly kernels
+(`PolyOsc`, `PolySvf`, `PolyMoog`, `PolyMs20`, `PolySync`) iterate it. The chunk
+loop goes outside the sample loop for `PolyOsc` and `PolySync`, which have no
+shared per-sample scalar work and so keep their state register-resident, and
+inside it for the three filters, whose mono coefficients would otherwise be
+recomputed per chunk. NEON is untouched: a wider voice count runs the same
+`f32x8` path more times per sample.
+
+*What verified it,* since the goldens could not: all 14 scalar-oracle
+equivalence tests pass at `voices-16` and `voices-24` — including
+`polymoog_matches_scalar_oracle_both_slopes` and
+`polysync_matches_scalar_oracle_all_waves` — and a new property test,
+`golden_voices_are_independent_across_chunk_boundary`, asserts that driving one
+voice renders identically whichever voice it is. That test was verified able to
+fail: forcing `base = 0` in `PolyOsc`'s chunk loop fails it at `voices-16` and
+**passes at `voices-8`**, which is the clearest possible statement that this bug
+class is undetectable at the default width.
+
+*Latent `VOICES == 8` and `MAX_BLOCK == 128` assumptions found, all in tests
+rather than production code, and all fixed rather than gated:*
+
+- 27 test `Engine` aliases had `OUTS` hand-tuned for eight voices. A poly node
+  consumes `VOICES` output slots, so they now read `{ k * VOICES }` — identical
+  at 8. Production behaviour was already correct: exhausting `OUTS` makes
+  `create` return false and `node_input_mut` return `None`, not panic.
+- Voice-allocator tests asserting lane index `7`, which means "the last lane"
+  and is now `LAST` (`VOICES - 1`).
+- Amplitude bounds written `8.001`, `8.1`, `9.7`, `peak > 7.0`. N in-phase
+  voices sum to N× one voice; at 16 the observed peak was 15.998, which is
+  right.
+- `polymtof_maps_semitones_to_hz` indexed an 8-element table by voice.
+- `polywtmorph_renders_finite_bounded_and_position_varies` hard-coded `n = 128`
+  and drives `Node::render` directly, bypassing `Engine::new`'s
+  `BLOCK <= MAX_BLOCK` assert; under `block-64` it indexed past a `[f32; 64]`.
+
+The result: **315 of 321 graph tests run at every voice width.** Only the five
+poly digest goldens are gated to the default, because pinning a digest at
+another voice count asserts nothing useful.
+
+*Scoped updates (§3a):* `Cmd::BeginUpdateScoped { scope }` narrows
+`end_update`'s sweep; `node_scope` is a parallel `[u8; NODES]`, and scope 0 plus
+an untouched `Cmd::BeginUpdate` keep the old behaviour exactly. The codec's
+exhaustive match over `Cmd` caught the deluge-sdk fallout at compile time;
+`BEGIN_UPDATE_SCOPED` is appended as opcode 32 so existing opcodes keep their
+numbers and recorded streams still decode.
+
+*Multi-engine (§3b):* proven rather than assumed — two engines with different
+const-generic capacities render independently and sum, and one engine's full
+`Reset` and rebuild leaves another's output bit-identical.
+
+*Regression net re-verified:* `fast_sin` `0.225`→`0.226` still fails 5 of 10
+goldens scalar and 1 of 10 simd, the same ratio as Phases 1 and 2.
+
 ### Phase 4 — Prove the portability claim
 
 A CI matrix, because otherwise "portable" is an assertion:
