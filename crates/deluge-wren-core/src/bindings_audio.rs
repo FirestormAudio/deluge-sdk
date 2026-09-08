@@ -1,9 +1,9 @@
 //! The Wren audio foreign classes (`Node`/`Out`), retargeted onto
-//! `deluge-audio-graph`. Factory statics allocate an id and emit `NewNode`;
+//! `flare-graph`. Factory statics allocate an id and emit `NewNode`;
 //! instance methods mutate via the `crate::audio` emitters. `Port` and `Bus`
 //! are added in later P1 tasks.
 
-use deluge_audio_graph::{Input, Kind, NodeId};
+use flare_graph::{Input, Kind, NodeId};
 
 #[cfg(feature = "wren-sys-backend")]
 use wren_sys::{Vm, WrenVM};
@@ -32,15 +32,15 @@ pub(crate) const DELAY_MAX_SAMPLES: usize = 48_000;
 pub(crate) const CHORUS_BUF_SAMPLES: usize = 2400;
 
 /// Ring length for a Room reverb node. Keep in sync with
-/// `deluge_dsp_kernels::reverb::REVERB_BUF_SAMPLES` (Σ of the 24 line lengths).
+/// `flare_kernels::reverb::REVERB_BUF_SAMPLES` (Σ of the 24 line lengths).
 pub(crate) const REVERB_BUF_SAMPLES: usize = 25_450;
 
 /// Ring length for a Hall (FDN) reverb node. Keep in sync with
-/// `deluge_dsp_kernels::reverb::HALL_BUF_SAMPLES`.
+/// `flare_kernels::reverb::HALL_BUF_SAMPLES`.
 pub(crate) const HALL_BUF_SAMPLES: usize = 23_748;
 
 /// Ring length for a Plate (Dattorro) reverb node. Keep in sync with
-/// `deluge_dsp_kernels::reverb::PLATE_BUF_SAMPLES`.
+/// `flare_kernels::reverb::PLATE_BUF_SAMPLES`.
 pub(crate) const PLATE_BUF_SAMPLES: usize = 22_494;
 
 #[repr(C)]
@@ -77,31 +77,31 @@ impl WrenForeign for NodeObj {
 /// `synth_note_on_impl`/`synth_note_off_impl` (and `all_notes_off`, once a
 /// call site exists) dispatch without caring which build path made the synth.
 pub(crate) enum SynthAlloc {
-    Poly(deluge_audio_graph::VoiceAllocator),
-    Mono(deluge_audio_graph::MonoAllocator),
+    Poly(flare_graph::VoiceAllocator),
+    Mono(flare_graph::MonoAllocator),
 }
 impl SynthAlloc {
-    fn note_on(&mut self, note: u8, vel: u8, emit: &mut impl FnMut(deluge_audio_graph::Cmd)) {
+    fn note_on(&mut self, note: u8, vel: u8, emit: &mut impl FnMut(flare_graph::Cmd)) {
         match self {
             SynthAlloc::Poly(a) => a.note_on(note, vel, emit),
             SynthAlloc::Mono(m) => m.note_on(note, vel, emit),
         }
     }
-    fn note_off(&mut self, note: u8, emit: &mut impl FnMut(deluge_audio_graph::Cmd)) {
+    fn note_off(&mut self, note: u8, emit: &mut impl FnMut(flare_graph::Cmd)) {
         match self {
             SynthAlloc::Poly(a) => a.note_off(note, emit),
             SynthAlloc::Mono(m) => m.note_off(note, emit),
         }
     }
     #[allow(dead_code)] // no Wren call site yet (no `allNotesOff` binding); kept for parity with note_on/note_off
-    fn all_notes_off(&mut self, emit: &mut impl FnMut(deluge_audio_graph::Cmd)) {
+    fn all_notes_off(&mut self, emit: &mut impl FnMut(flare_graph::Cmd)) {
         match self {
             SynthAlloc::Poly(a) => a.all_notes_off(emit),
             SynthAlloc::Mono(m) => m.all_notes_off(emit),
         }
     }
     /// The mono build's PolySlew node, for `Synth.glide=`. `None` on a poly synth.
-    fn mono_slew(&self) -> Option<deluge_audio_graph::NodeId> {
+    fn mono_slew(&self) -> Option<flare_graph::NodeId> {
         match self {
             SynthAlloc::Mono(m) => Some(m.slew_node()),
             SynthAlloc::Poly(_) => None,
@@ -117,7 +117,7 @@ impl SynthAlloc {
     }
     /// `synth.detune = cents` — set the unison detune spread on whichever
     /// allocator this `Synth` holds.
-    fn set_detune(&mut self, cents: f32, emit: &mut impl FnMut(deluge_audio_graph::Cmd)) {
+    fn set_detune(&mut self, cents: f32, emit: &mut impl FnMut(flare_graph::Cmd)) {
         match self {
             SynthAlloc::Poly(a) => a.set_detune(cents, emit),
             SynthAlloc::Mono(m) => m.set_detune(cents, emit),
@@ -125,7 +125,7 @@ impl SynthAlloc {
     }
     /// `synth.width = amount` — set the unison stereo spread on whichever
     /// allocator this `Synth` holds.
-    fn set_width(&mut self, amount: f32, emit: &mut impl FnMut(deluge_audio_graph::Cmd)) {
+    fn set_width(&mut self, amount: f32, emit: &mut impl FnMut(flare_graph::Cmd)) {
         match self {
             SynthAlloc::Poly(a) => a.set_width(amount, emit),
             SynthAlloc::Mono(m) => m.set_width(amount, emit),
@@ -192,7 +192,7 @@ impl WrenForeign for BusObj {
 #[repr(C)]
 pub(crate) struct WtObj {
     pub tag: u8,
-    pub handle: Option<deluge_audio_graph::PoolHandle>,
+    pub handle: Option<flare_graph::PoolHandle>,
     // 1 for a single-cycle table (`from`), the frame count for a 2D morph
     // table (`from2d`). Set at upload time (Rust already knows this without
     // querying the pool — `PoolHandle`'s fields are private to `pool.rs`).
@@ -223,7 +223,7 @@ impl WrenForeign for WtObj {
 #[repr(C)]
 pub(crate) struct SampleObj {
     pub tag: u8,
-    pub handle: Option<deluge_audio_graph::PoolHandle>,
+    pub handle: Option<flare_graph::PoolHandle>,
     pub len: u32,
 }
 impl WrenForeign for SampleObj {
@@ -240,7 +240,7 @@ impl WrenForeign for SampleObj {
 /// zone's PCM is concatenated *verbatim* (no mip pyramid, no band-limiting —
 /// same raw-PCM contract as [`SampleObj`]) into ONE pool region, and a zone
 /// table `(offset, len, low, high, root)` is recorded per zone — field order
-/// matches `deluge_dsp_kernels::sampler::PolySamplePlayer::set_zone_field`'s
+/// matches `flare_kernels::sampler::PolySamplePlayer::set_zone_field`'s
 /// numbering (0=offset,1=len,2=low,3=high,4=root), which is how Task 6's
 /// node `set_param` scheme addresses each field. `handle` is `None` when the
 /// upload was rejected (bad host / pool exhaustion) — same graceful-degrade
@@ -248,7 +248,7 @@ impl WrenForeign for SampleObj {
 /// still recorded so downstream can size its `SetParam`s, but a node built
 /// from an unbound `Keymap` skips its pool bind and plays silence rather
 /// than panicking. `n_zones` is capped at
-/// `deluge_dsp_kernels::sampler::MAX_ZONES` — extra zones in the Wren list
+/// `flare_kernels::sampler::MAX_ZONES` — extra zones in the Wren list
 /// beyond the cap are neither uploaded nor recorded, so the offset math
 /// stays consistent with what's in `zones`.
 ///
@@ -258,8 +258,8 @@ impl WrenForeign for SampleObj {
 #[repr(C)]
 pub(crate) struct KeymapObj {
     pub tag: u8,
-    pub handle: Option<deluge_audio_graph::PoolHandle>,
-    pub zones: [(u32, u32, u8, u8, u8); deluge_dsp_kernels::sampler::MAX_ZONES],
+    pub handle: Option<flare_graph::PoolHandle>,
+    pub zones: [(u32, u32, u8, u8, u8); flare_kernels::sampler::MAX_ZONES],
     pub n_zones: usize,
 }
 impl WrenForeign for KeymapObj {
@@ -330,7 +330,7 @@ pub(crate) fn arg_input<S: SlotApi>(vm: &S, slot: i32) -> Input {
                 }
                 TAG_BUS => {
                     let b = unsafe { vm.foreign_mut::<BusObj>(slot) };
-                    Input::Bus(deluge_audio_graph::BusId(b.id))
+                    Input::Bus(flare_graph::BusId(b.id))
                 }
                 _ => Input::Const(0.0),
             }
@@ -662,7 +662,7 @@ pub(crate) unsafe extern "C" fn node_wavetable(raw: *mut WrenVM) {
 }
 
 /// `Wavetable.from([samples])` — read the Wren list arg (slot 1), copy up to
-/// `mipgen::N` elements into a fixed base-cycle buffer, upload it to the
+/// `flare_mipgen::N` elements into a fixed base-cycle buffer, upload it to the
 /// host's table pool, and return a `Wavetable` handle wrapping the resulting
 /// `Option<PoolHandle>` (`None` on a host with no pool, e.g. the Cmd-capture
 /// test host — the handle stays unbound rather than panicking).
@@ -683,7 +683,7 @@ pub(crate) unsafe extern "C" fn node_wavetable(raw: *mut WrenVM) {
 /// (finalizer/refcount) as a follow-on.
 pub(crate) fn wavetable_from_impl<S: SlotApi>(vm: &S) {
     let count = checked_list_count(vm, 1);
-    let mut base = [0.0f32; mipgen::N];
+    let mut base = [0.0f32; flare_mipgen::N];
     let n = count.min(base.len());
     vm.ensure_slots(3); // guarantee slot 2 (scratch, for list-element reads) is valid
     for i in 0..n {
@@ -732,7 +732,7 @@ pub(crate) fn wavetable_from2d_impl<S: SlotApi>(vm: &S) {
     vm.ensure_slots(4); // 1=outer(frames) list, 2=inner(frame) list, 3=sample scratch
     let handle = audio::upload_table_2d(nframes, &mut |f, base| {
         // Zero first: `get_list_count(2)` may be shorter than `base.len()`
-        // (mipgen::N) for this frame, and `base` is a fresh stack buffer per
+        // (flare_mipgen::N) for this frame, and `base` is a fresh stack buffer per
         // frame with no other defined initial content to fall back on.
         for s in base.iter_mut() {
             *s = 0.0;
@@ -808,7 +808,7 @@ pub(crate) unsafe extern "C" fn sample_from(raw: *mut WrenVM) {
 /// Wren list of zones (arg, slot 1); each zone is itself a 4-element list
 /// whose item 0 is a *nested* list of raw PCM samples. Concatenate every
 /// zone's samples (in list order, capped at
-/// `deluge_dsp_kernels::sampler::MAX_ZONES` zones) into ONE freshly-allocated
+/// `flare_kernels::sampler::MAX_ZONES` zones) into ONE freshly-allocated
 /// pool region, recording a zone table `(offset, len, low, high, root)`
 /// alongside it.
 ///
@@ -846,13 +846,13 @@ pub(crate) unsafe extern "C" fn sample_from(raw: *mut WrenVM) {
 /// fetched once and used to bound every sub-read (samples list at index 0,
 /// `low`/`high`/`root` at indices 1/2/3): a non-list `Keymap.from` argument
 /// yields zero zones; a zone that isn't a list, or is a short list, degrades
-/// field-by-field to `deluge_dsp_kernels::sampler::Zone::empty()`'s defaults
+/// field-by-field to `flare_kernels::sampler::Zone::empty()`'s defaults
 /// (`low = 0, high = 0, root = 60`; 0 samples) for whichever fields it's
 /// missing, and pass 1 (sizing `total`) applies the identical guards so the
 /// allocated pool size and pass 2's recorded `len`s never disagree.
 pub(crate) fn keymap_from_impl<S: SlotApi>(vm: &S) {
-    const MAX_ZONES: usize = deluge_dsp_kernels::sampler::MAX_ZONES;
-    // `deluge_dsp_kernels::sampler::Zone::empty()`'s defaults (sampler.rs
+    const MAX_ZONES: usize = flare_kernels::sampler::MAX_ZONES;
+    // `flare_kernels::sampler::Zone::empty()`'s defaults (sampler.rs
     // ~L114): offset=0, len=0, low=0, high=0, root=60. A malformed or short
     // zone fills in whichever of these fields it's missing.
     const EMPTY_LOW: u8 = 0;
@@ -1717,7 +1717,7 @@ pub(crate) unsafe extern "C" fn node_slew(raw: *mut WrenVM) {
 /// MAX_STEPS; longer lists are truncated). Clock on port 0.
 pub(crate) fn node_steps_impl<S: SlotApi>(vm: &S) {
     let count = checked_list_count(vm, 1);
-    let len = count.min(deluge_dsp_kernels::modutil::MAX_STEPS);
+    let len = count.min(flare_kernels::modutil::MAX_STEPS);
     let clock = arg_input(vm, 2);
     let id = audio::alloc_node_id();
     audio::new_node(
@@ -2126,10 +2126,10 @@ pub(crate) unsafe extern "C" fn node_polysync(raw: *mut WrenVM) {
 /// a poly node's Kind is fixed at creation (`poly_process` dispatches on
 /// `self.kind`, not a runtime check) — see node.rs's `PolyWt` arm.
 fn static_table_frames(table_id: u16) -> usize {
-    deluge_dsp_kernels::wavetable::static_table_flat(deluge_dsp_kernels::wavetable::TableId(
+    flare_kernels::wavetable::static_table_flat(flare_kernels::wavetable::TableId(
         table_id,
     ))
-    .map(|r| r.len() / deluge_dsp_kernels::wavetable::COMPACT_LEN)
+    .map(|r| r.len() / flare_kernels::wavetable::COMPACT_LEN)
     .unwrap_or(1)
 }
 /// Select `PolyWt` (single-cycle) vs `PolyWtMorph` (2D) by frame count.
@@ -2211,12 +2211,12 @@ pub(crate) unsafe extern "C" fn node_polywt_pooled(raw: *mut WrenVM) {
 /// wiring); without it the sample source builds but never triggers. Returns
 /// through the same poly-node path `node_polywt_pooled_impl` uses.
 pub(crate) fn node_polysampleplayer_impl<S: SlotApi>(vm: &S) {
-    const MAX_ZONES: usize = deluge_dsp_kernels::sampler::MAX_ZONES;
+    const MAX_ZONES: usize = flare_kernels::sampler::MAX_ZONES;
     const EMPTY_ZONES: [(u32, u32, u8, u8, u8); MAX_ZONES] = [(0, 0, 0, 0, 0); MAX_ZONES];
 
     let pitch = arg_input(vm, 1);
     let (handle, zones, n_zones): (
-        Option<deluge_audio_graph::PoolHandle>,
+        Option<flare_graph::PoolHandle>,
         [(u32, u32, u8, u8, u8); MAX_ZONES],
         usize,
     ) = if vm.slot_type(2) == WrenType::Foreign {
@@ -2298,7 +2298,7 @@ pub(crate) fn node_stream_impl<S: SlotApi>(vm: &S) {
     const STREAM_RING_CAP: usize = 8192; // samples per voice (~0.19 s @ 44.1 kHz lookahead)
     let pitch = arg_input(vm, 1);
     let path = checked_str(vm, 2);
-    let handle = audio::alloc_buffer(deluge_audio_graph::VOICES * STREAM_RING_CAP);
+    let handle = audio::alloc_buffer(flare_graph::VOICES * STREAM_RING_CAP);
     let id = audio::alloc_node_id();
     audio::new_stream_player(id, handle, pitch, 60.0); // root C4 (setter deferred)
     audio::stream_register(id, handle, path);
@@ -2329,7 +2329,7 @@ pub(crate) unsafe extern "C" fn node_set_root(raw: *mut WrenVM) {
 
 /// `Node.grainPosition=(v)` — `PolyGranular` scrub position, 0..1 fraction of
 /// the bound buffer (param 1, per `Node::set_param`'s `State::PolyGranular`
-/// arm in `deluge-audio-graph`). NOT named `position=`: that name is already
+/// arm in `flare-graph`). NOT named `position=`: that name is already
 /// taken by `node_set_position_impl` (the Wavetable/PolyWt morph-position
 /// setter, which does a poly-aware `set_input` port write, not a
 /// `set_param`) — reusing it here would silently misroute a scalar float
@@ -2386,19 +2386,19 @@ pub(crate) fn node_poly_end_impl<S: SlotApi>(vm: &S) {
     } else {
         Some(NodeId(vel_raw))
     };
-    let gates: [NodeId; deluge_audio_graph::MAX_GATES] =
+    let gates: [NodeId; flare_graph::MAX_GATES] =
         core::array::from_fn(|i| NodeId(gates_raw[i]));
-    let n_gates = (gate_count as usize).min(deluge_audio_graph::MAX_GATES);
-    let triggers: [NodeId; deluge_audio_graph::MAX_TRIGGERS] =
+    let n_gates = (gate_count as usize).min(flare_graph::MAX_GATES);
+    let triggers: [NodeId; flare_graph::MAX_TRIGGERS] =
         core::array::from_fn(|i| NodeId(trig_raw[i]));
-    let n_triggers = (trig_count as usize).min(deluge_audio_graph::MAX_TRIGGERS);
+    let n_triggers = (trig_count as usize).min(flare_graph::MAX_TRIGGERS);
     let sum = audio::alloc_node_id();
     audio::new_node(
         sum,
         Kind::StereoVoiceSum,
         [out, Input::Const(0.0), Input::Const(0.0)],
     );
-    let alloc = SynthAlloc::Poly(deluge_audio_graph::VoiceAllocator::new(
+    let alloc = SynthAlloc::Poly(flare_graph::VoiceAllocator::new(
         NodeId(pitch_ctrl),
         gates,
         n_gates,
@@ -2445,19 +2445,19 @@ pub(crate) fn node_mono_end_impl<S: SlotApi>(vm: &S) {
     } else {
         Some(NodeId(vel_raw))
     };
-    let gates: [NodeId; deluge_audio_graph::MAX_GATES] =
+    let gates: [NodeId; flare_graph::MAX_GATES] =
         core::array::from_fn(|i| NodeId(gates_raw[i]));
-    let n_gates = (gate_count as usize).min(deluge_audio_graph::MAX_GATES);
-    let triggers: [NodeId; deluge_audio_graph::MAX_TRIGGERS] =
+    let n_gates = (gate_count as usize).min(flare_graph::MAX_GATES);
+    let triggers: [NodeId; flare_graph::MAX_TRIGGERS] =
         core::array::from_fn(|i| NodeId(trig_raw[i]));
-    let n_triggers = (trig_count as usize).min(deluge_audio_graph::MAX_TRIGGERS);
+    let n_triggers = (trig_count as usize).min(flare_graph::MAX_TRIGGERS);
     let sum = audio::alloc_node_id();
     audio::new_node(
         sum,
         Kind::StereoVoiceSum,
         [out, Input::Const(0.0), Input::Const(0.0)],
     );
-    let alloc = SynthAlloc::Mono(deluge_audio_graph::MonoAllocator::new(
+    let alloc = SynthAlloc::Mono(flare_graph::MonoAllocator::new(
         NodeId(pitch),
         NodeId(slew),
         gates,
@@ -2568,7 +2568,7 @@ pub(crate) unsafe extern "C" fn synth_set_glide(raw: *mut WrenVM) {
 /// allocator's own `set_unison`) on the active allocator, and re-normalize the
 /// StereoVoiceSum output gain to `1/√N` (equal-power unison summing).
 pub(crate) fn synth_set_unison_impl<S: SlotApi>(vm: &S) {
-    let n = (vm.get_f(1) as i64).clamp(1, deluge_audio_graph::VOICES as i64) as usize;
+    let n = (vm.get_f(1) as i64).clamp(1, flare_graph::VOICES as i64) as usize;
     let out_node = self_synth(vm).out_node;
     self_synth(vm).alloc.set_unison(n);
     audio::set_param(out_node, 0, 1.0 / libm::sqrtf(n as f32)); // StereoVoiceSum gain (param 0)

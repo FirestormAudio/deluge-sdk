@@ -14,7 +14,7 @@
 
 use core::ptr::addr_of_mut;
 
-use deluge_audio_graph::Cmd;
+use flare_graph::Cmd;
 
 /// Number of CV output jacks (`output[1]`, `output[2]`).
 pub const CV_CHANNELS: usize = 2;
@@ -48,17 +48,17 @@ pub trait Host {
     fn oled_show(&mut self);
 
     /// Submit a control-rate audio-graph command. The host transports it to its
-    /// `deluge_audio_graph::Engine` (firmware: a ring drained by the audio task;
+    /// `flare_graph::Engine` (firmware: a ring drained by the audio task;
     /// web: applied directly on the audio thread).
     fn audio_cmd(&mut self, cmd: Cmd);
 
     /// Build a band-limited mip pyramid from `base` (one single cycle) into a
-    /// pool region owned by the host's `deluge_audio_graph::Engine`, and return
+    /// pool region owned by the host's `flare_graph::Engine`, and return
     /// its handle. `None` on exhaustion/bad input.
     ///
     /// Default: unsupported (no pool) → `None`, so hosts with no audio engine
     /// (e.g. [`crate::test_support::CmdCaptureHost`]) need not override this.
-    fn upload_table(&mut self, base: &[f32]) -> Option<deluge_audio_graph::PoolHandle> {
+    fn upload_table(&mut self, base: &[f32]) -> Option<flare_graph::PoolHandle> {
         let _ = base;
         None
     }
@@ -81,32 +81,32 @@ pub trait Host {
         &mut self,
         nframes: usize,
         fill_frame: &mut dyn FnMut(usize, &mut [f32]),
-    ) -> Option<deluge_audio_graph::PoolHandle> {
+    ) -> Option<flare_graph::PoolHandle> {
         let _ = (nframes, fill_frame);
         None
     }
 
     /// Allocate a **zeroed** pool region of `len` f32s (a delay/effect ring
-    /// buffer) in the host's `deluge_audio_graph::Engine` and return its
+    /// buffer) in the host's `flare_graph::Engine` and return its
     /// handle. Unlike [`Host::upload_table`], no pyramid is built — the region
     /// is raw scratch the effect writes each block.
     ///
     /// Default: unsupported (no pool) → `None`, so hosts with no audio engine
     /// (e.g. [`crate::test_support::CmdCaptureHost`]) degrade to an unbound
     /// (dry-passthrough) effect rather than requiring an override.
-    fn alloc_buffer(&mut self, len: usize) -> Option<deluge_audio_graph::PoolHandle> {
+    fn alloc_buffer(&mut self, len: usize) -> Option<flare_graph::PoolHandle> {
         let _ = len;
         None
     }
 
     /// Write a single f32 at `index` into the pool region backing `h` (a
     /// handle previously returned by [`Host::alloc_buffer`] et al.), in the
-    /// host's `deluge_audio_graph::Engine`. Out-of-range `index` is silently
+    /// host's `flare_graph::Engine`. Out-of-range `index` is silently
     /// ignored. Used by `SampleBuffer.from` to upload raw PCM verbatim.
     ///
     /// Default: unsupported (no pool) → no-op, so hosts with no audio engine
     /// (e.g. [`crate::test_support::CmdCaptureHost`]) need not override this.
-    fn pool_set(&mut self, h: deluge_audio_graph::PoolHandle, index: usize, value: f32) {
+    fn pool_set(&mut self, h: flare_graph::PoolHandle, index: usize, value: f32) {
         let _ = (h, index, value);
     }
 
@@ -116,8 +116,8 @@ pub trait Host {
     /// task; see the Sa-3b slice-4 design.
     fn stream_register(
         &mut self,
-        node: deluge_audio_graph::NodeId,
-        handle: deluge_audio_graph::PoolHandle,
+        node: flare_graph::NodeId,
+        handle: flare_graph::PoolHandle,
         path: &str,
     ) {
         let _ = (node, handle, path);
@@ -125,9 +125,9 @@ pub trait Host {
 }
 
 /// Build a band-limited mip pyramid from `base` (one single cycle, padded or
-/// truncated to `mipgen::N`) into `region`, using the flat, compact
+/// truncated to `flare_mipgen::N`) into `region`, using the flat, compact
 /// (per-level-length) layout. `region` must be at least
-/// `deluge_dsp_kernels::wavetable::COMPACT_LEN` (= [`crate::PYRAMID_LEN`])
+/// `flare_kernels::wavetable::COMPACT_LEN` (= [`crate::PYRAMID_LEN`])
 /// long — shorter regions are left untouched (no panic). Shared by every
 /// pool-backed [`Host::upload_table`] implementation so the embedder only has
 /// to allocate the region and hand it here.
@@ -138,7 +138,7 @@ pub trait Host {
 /// rounding.
 pub fn build_pyramid_into(base: &[f32], region: &mut [f32]) {
     // IFFT + compact-decimate path (Osc 3c / wavetable-mip-compaction).
-    mipgen::build_pyramid_flat_compact(base, region);
+    flare_mipgen::build_pyramid_flat_compact(base, region);
 }
 
 static mut HOST: Option<*mut (dyn Host + 'static)> = None;

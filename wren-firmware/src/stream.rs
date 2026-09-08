@@ -3,7 +3,7 @@
 //! DEVICE prefetch (async `sd::read_sectors`, no-heap) is slice 5.
 #![cfg(not(target_os = "none"))]
 
-use deluge_audio_graph::{Cmd, NodeId, PoolHandle, VOICES};
+use flare_graph::{Cmd, NodeId, PoolHandle, VOICES};
 
 extern crate std;
 use std::{string::String, vec::Vec};
@@ -110,12 +110,12 @@ pub async fn stream_task() {
             for reg in r.borrow_mut().iter_mut() {
                 if !reg.loaded {
                     if let Ok(bytes) = std::fs::read(sim_sd_join(&reg.path)) {
-                        if let Ok(info) = deluge_dsp_kernels::wav::parse(&bytes) {
+                        if let Ok(info) = flare_kernels::wav::parse(&bytes) {
                             let n_samples = info.data_len / 2;
                             reg.pcm.resize(n_samples, 0.0);
                             let end = (info.data_offset + info.data_len).min(bytes.len());
                             if info.data_offset <= end {
-                                deluge_dsp_kernels::wav::decode_i16_le(
+                                flare_kernels::wav::decode_i16_le(
                                     &bytes[info.data_offset..end],
                                     &mut reg.pcm,
                                 );
@@ -136,7 +136,7 @@ pub async fn stream_task() {
                     // Write pcm[lo..hi) into voice v's sub-ring
                     // `region[v*cap..(v+1)*cap]` at offset `a % cap` — mirrors
                     // `Kind::StreamPlayer`'s render-side indexing exactly (see
-                    // `deluge_audio_graph::node`'s `Kind::StreamPlayer` arm).
+                    // `flare_graph::node`'s `Kind::StreamPlayer` arm).
                     for a in lo..hi {
                         let val = reg.pcm.get(a as usize).copied().unwrap_or(0.0);
                         let idx = (v as u64 * cap + (a % cap)) as usize;

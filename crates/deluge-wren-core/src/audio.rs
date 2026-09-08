@@ -1,9 +1,9 @@
 //! Client-side id allocators + control-rate command emitters for the Wren audio
 //! bindings. The binding owns the `NodeId` free-list and `BusId` allocation (no
-//! round-trip); each emitter builds a `deluge_audio_graph::Cmd` and ships it
+//! round-trip); each emitter builds a `flare_graph::Cmd` and ships it
 //! through the registered [`Host`](crate::Host). Single-threaded VM context.
 
-use deluge_audio_graph::{BusId, Cmd, Input, Kind, MAX_GATES, MAX_TRIGGERS, NodeId};
+use flare_graph::{BusId, Cmd, Input, Kind, MAX_GATES, MAX_TRIGGERS, NodeId};
 
 use crate::host::host;
 
@@ -449,15 +449,15 @@ pub fn new_wavetable(id: u16, table_id: u16, freq: Input) {
     });
     host().audio_cmd(Cmd::BindTable {
         node: NodeId(id),
-        src: deluge_audio_graph::node::TableSrc::Static(deluge_dsp_kernels::wavetable::TableId(
+        src: flare_graph::node::TableSrc::Static(flare_kernels::wavetable::TableId(
             table_id,
         )),
     });
 }
-/// Upload a base-cycle table (`mipgen::N` samples) to the host's pool, building
+/// Upload a base-cycle table (`flare_mipgen::N` samples) to the host's pool, building
 /// its band-limited mip pyramid. `None` on a host with no pool (e.g. the
 /// Cmd-capture test host) or on pool exhaustion. Used by `Wavetable.from`.
-pub fn upload_table(base: &[f32]) -> Option<deluge_audio_graph::PoolHandle> {
+pub fn upload_table(base: &[f32]) -> Option<flare_graph::PoolHandle> {
     host().upload_table(base)
 }
 /// Upload a multi-frame table (`nframes` base-cycles, each filled by
@@ -467,13 +467,13 @@ pub fn upload_table(base: &[f32]) -> Option<deluge_audio_graph::PoolHandle> {
 pub fn upload_table_2d(
     nframes: usize,
     fill_frame: &mut dyn FnMut(usize, &mut [f32]),
-) -> Option<deluge_audio_graph::PoolHandle> {
+) -> Option<flare_graph::PoolHandle> {
     host().upload_table_2d(nframes, fill_frame)
 }
 /// Create a `Kind::Wavetable` node and bind it to a pooled (dynamically
 /// uploaded) table. The pooled counterpart of [`new_wavetable`]. Used by
 /// `Node.wavetable_pooled_(wt, freq)`.
-pub fn new_wavetable_pooled(id: u16, handle: deluge_audio_graph::PoolHandle, freq: Input) {
+pub fn new_wavetable_pooled(id: u16, handle: flare_graph::PoolHandle, freq: Input) {
     if id == NULL_ID {
         return;
     }
@@ -484,7 +484,7 @@ pub fn new_wavetable_pooled(id: u16, handle: deluge_audio_graph::PoolHandle, fre
     });
     host().audio_cmd(Cmd::BindTable {
         node: NodeId(id),
-        src: deluge_audio_graph::node::TableSrc::Pooled(handle),
+        src: flare_graph::node::TableSrc::Pooled(handle),
     });
 }
 
@@ -504,7 +504,7 @@ pub fn new_polywt(id: u16, kind: Kind, table_id: u16, freq: Input) {
     });
     host().audio_cmd(Cmd::BindTable {
         node: NodeId(id),
-        src: deluge_audio_graph::node::TableSrc::Static(deluge_dsp_kernels::wavetable::TableId(
+        src: flare_graph::node::TableSrc::Static(flare_kernels::wavetable::TableId(
             table_id,
         )),
     });
@@ -512,7 +512,7 @@ pub fn new_polywt(id: u16, kind: Kind, table_id: u16, freq: Input) {
 /// Poly counterpart of `new_wavetable_pooled`: creates a `PolyWt`/`PolyWtMorph`
 /// node bound to a pooled (dynamically-uploaded) table. Used by
 /// `Node.polywt_pooled_(wt, freq)`.
-pub fn new_polywt_pooled(id: u16, kind: Kind, handle: deluge_audio_graph::PoolHandle, freq: Input) {
+pub fn new_polywt_pooled(id: u16, kind: Kind, handle: flare_graph::PoolHandle, freq: Input) {
     if id == NULL_ID {
         return;
     }
@@ -523,21 +523,21 @@ pub fn new_polywt_pooled(id: u16, kind: Kind, handle: deluge_audio_graph::PoolHa
     });
     host().audio_cmd(Cmd::BindTable {
         node: NodeId(id),
-        src: deluge_audio_graph::node::TableSrc::Pooled(handle),
+        src: flare_graph::node::TableSrc::Pooled(handle),
     });
 }
 
 /// Allocate a zeroed effect ring buffer in the host pool (`None` on a host with
 /// no pool, e.g. the Cmd-capture test host, or on exhaustion). Used by
 /// `Node.delay_`.
-pub fn alloc_buffer(len: usize) -> Option<deluge_audio_graph::PoolHandle> {
+pub fn alloc_buffer(len: usize) -> Option<flare_graph::PoolHandle> {
     host().alloc_buffer(len)
 }
 
 /// Write a single f32 at `index` into the pool region backing `h` (no-op on a
 /// host with no pool, or out-of-range `index`). Used by `SampleBuffer.from`
 /// to upload raw PCM verbatim, one element at a time.
-pub fn pool_set(h: deluge_audio_graph::PoolHandle, index: usize, value: f32) {
+pub fn pool_set(h: flare_graph::PoolHandle, index: usize, value: f32) {
     host().pool_set(h, index, value);
 }
 
@@ -548,7 +548,7 @@ pub fn pool_set(h: deluge_audio_graph::PoolHandle, index: usize, value: f32) {
 /// [`new_wavetable_pooled`].
 pub fn new_delay(
     id: u16,
-    handle: Option<deluge_audio_graph::PoolHandle>,
+    handle: Option<flare_graph::PoolHandle>,
     input: Input,
     time: Input,
     feedback: Input,
@@ -564,7 +564,7 @@ pub fn new_delay(
     if let Some(h) = handle {
         host().audio_cmd(Cmd::BindTable {
             node: NodeId(id),
-            src: deluge_audio_graph::node::TableSrc::Pooled(h),
+            src: flare_graph::node::TableSrc::Pooled(h),
         });
     }
 }
@@ -576,7 +576,7 @@ pub fn new_delay(
 /// whole sample; an unbound one (upload failed) still creates the node but
 /// skips both the bind and the loop_end seed — same graceful-degrade contract
 /// as [`new_delay`]/[`new_wavetable_pooled`].
-pub fn new_sample_player(id: u16, handle: Option<deluge_audio_graph::PoolHandle>, len: u32) {
+pub fn new_sample_player(id: u16, handle: Option<flare_graph::PoolHandle>, len: u32) {
     if id == NULL_ID {
         return;
     }
@@ -588,7 +588,7 @@ pub fn new_sample_player(id: u16, handle: Option<deluge_audio_graph::PoolHandle>
     if let Some(h) = handle {
         host().audio_cmd(Cmd::BindTable {
             node: NodeId(id),
-            src: deluge_audio_graph::node::TableSrc::Pooled(h),
+            src: flare_graph::node::TableSrc::Pooled(h),
         });
         host().audio_cmd(Cmd::SetParam {
             node: NodeId(id),
@@ -603,7 +603,7 @@ pub fn new_sample_player(id: u16, handle: Option<deluge_audio_graph::PoolHandle>
 /// bound/unbound-`handle` shape: a bound `handle` emits `NewNode` +
 /// `BindTable{Pooled}` + the zone table (`offset, len, low, high, root` per
 /// zone) as `SetParam`s, per the scheme
-/// `deluge_dsp_kernels::sampler::PolySamplePlayer::set_zone_field` numbers
+/// `flare_kernels::sampler::PolySamplePlayer::set_zone_field` numbers
 /// (0=offset,1=len,2=low,3=high,4=root): param 0 = n_zones, param 1 =
 /// loop_mode, then per zone `z` a 5-block at base `2 + z*5`. An unbound
 /// `handle` (upload failed / no pool) still creates the node but skips both
@@ -613,7 +613,7 @@ pub fn new_sample_player(id: u16, handle: Option<deluge_audio_graph::PoolHandle>
 /// panics. Used by `Node.polysampleplayer_(pitch, source)` (Sa-2 Task 6).
 pub fn new_poly_sample_player(
     id: u16,
-    handle: Option<deluge_audio_graph::PoolHandle>,
+    handle: Option<flare_graph::PoolHandle>,
     pitch: Input,
     zones: &[(u32, u32, u8, u8, u8)],
     loop_mode: bool,
@@ -629,7 +629,7 @@ pub fn new_poly_sample_player(
     if let Some(h) = handle {
         host().audio_cmd(Cmd::BindTable {
             node: NodeId(id),
-            src: deluge_audio_graph::node::TableSrc::Pooled(h),
+            src: flare_graph::node::TableSrc::Pooled(h),
         });
         let sp = |param: u8, value: f32| {
             host().audio_cmd(Cmd::SetParam {
@@ -655,7 +655,7 @@ pub fn new_poly_sample_player(
 /// (PolyMtof Hz) tile on port 0 — mirrors [`new_poly_sample_player`]'s
 /// bound/unbound-`handle` shape, but emits NO `SetParam`s: the kernel's
 /// `PolyGranular::new()` defaults (root=60, position=0, size=50ms,
-/// density=20/s, spray=0 — see `deluge_dsp_kernels::granular::PolyGranular`)
+/// density=20/s, spray=0 — see `flare_kernels::granular::PolyGranular`)
 /// are used as-is, and `position=`/`size=`/`density=`/`spray=` retarget them
 /// afterward via the four Wren setters (a granular `root=` setter is
 /// deferred this slice, same as `new_stream_player`'s `root` param above —
@@ -664,7 +664,7 @@ pub fn new_poly_sample_player(
 /// creates the node but skips the bind — same graceful-degrade contract as
 /// [`new_poly_sample_player`]/[`new_polywt_pooled`], never panics. Used by
 /// `Node.granular_(pitch, source)` (Sa-4 Task 3).
-pub fn new_poly_granular(id: u16, handle: Option<deluge_audio_graph::PoolHandle>, pitch: Input) {
+pub fn new_poly_granular(id: u16, handle: Option<flare_graph::PoolHandle>, pitch: Input) {
     if id == NULL_ID {
         return;
     }
@@ -676,7 +676,7 @@ pub fn new_poly_granular(id: u16, handle: Option<deluge_audio_graph::PoolHandle>
     if let Some(h) = handle {
         host().audio_cmd(Cmd::BindTable {
             node: NodeId(id),
-            src: deluge_audio_graph::node::TableSrc::Pooled(h),
+            src: flare_graph::node::TableSrc::Pooled(h),
         });
     }
 }
@@ -686,7 +686,7 @@ pub fn new_poly_granular(id: u16, handle: Option<deluge_audio_graph::PoolHandle>
 /// host prefetch task (registered separately via `stream_register`).
 pub fn new_stream_player(
     id: u16,
-    handle: Option<deluge_audio_graph::PoolHandle>,
+    handle: Option<flare_graph::PoolHandle>,
     pitch: Input,
     root: f32,
 ) {
@@ -701,7 +701,7 @@ pub fn new_stream_player(
     if let Some(h) = handle {
         host().audio_cmd(Cmd::BindTable {
             node: NodeId(id),
-            src: deluge_audio_graph::node::TableSrc::Pooled(h),
+            src: flare_graph::node::TableSrc::Pooled(h),
         });
     }
     host().audio_cmd(Cmd::SetParam {
@@ -712,7 +712,7 @@ pub fn new_stream_player(
 }
 
 /// Register a streamed node+ring with the host's prefetch (no-op host → ignored).
-pub fn stream_register(id: u16, handle: Option<deluge_audio_graph::PoolHandle>, path: &str) {
+pub fn stream_register(id: u16, handle: Option<flare_graph::PoolHandle>, path: &str) {
     if let Some(h) = handle {
         host().stream_register(NodeId(id), h, path);
     }
@@ -724,7 +724,7 @@ pub fn stream_register(id: u16, handle: Option<deluge_audio_graph::PoolHandle>, 
 pub fn new_pooled_node(
     id: u16,
     kind: Kind,
-    handle: Option<deluge_audio_graph::PoolHandle>,
+    handle: Option<flare_graph::PoolHandle>,
     input: Input,
 ) {
     if id == NULL_ID {
@@ -738,7 +738,7 @@ pub fn new_pooled_node(
     if let Some(h) = handle {
         host().audio_cmd(Cmd::BindTable {
             node: NodeId(id),
-            src: deluge_audio_graph::node::TableSrc::Pooled(h),
+            src: flare_graph::node::TableSrc::Pooled(h),
         });
     }
 }

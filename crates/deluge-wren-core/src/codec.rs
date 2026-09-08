@@ -35,10 +35,10 @@
 //! the worklet's own clock would need a companion record carrying the sample
 //! position. The web sim does not schedule.
 
-use deluge_audio_graph::ids::CtrlBusId;
-use deluge_audio_graph::node::{Rate, TableSrc};
-use deluge_audio_graph::pool::PoolHandle;
-use deluge_audio_graph::{BusId, Cmd, Input, Kind, NodeId, OutputSrc, TableId};
+use flare_graph::ids::CtrlBusId;
+use flare_graph::node::{Rate, TableSrc};
+use flare_graph::pool::PoolHandle;
+use flare_graph::{BusId, Cmd, Input, Kind, NodeId, OutputSrc, TableId};
 
 /// Bytes per command record. Sized by `StreamFill` (tag + node + voice + three
 /// `u64`s = 28), rounded to 32.
@@ -699,7 +699,7 @@ mod tests {
     fn every_kind_survives_a_round_trip() {
         // `NewNode` is the only command carrying a `Kind`, and a wrong byte
         // would build a different node entirely.
-        for k in deluge_audio_graph::node::ALL_KINDS {
+        for k in flare_graph::node::ALL_KINDS {
             assert_round(Cmd::NewNode {
                 node: NodeId(1),
                 kind: k,

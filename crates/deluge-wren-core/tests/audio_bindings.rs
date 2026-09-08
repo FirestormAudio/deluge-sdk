@@ -1,6 +1,6 @@
 #![cfg(feature = "test-support")]
-use deluge_audio_graph::StereoFrame;
-use deluge_audio_graph::node::TableSrc;
+use flare_graph::StereoFrame;
+use flare_graph::node::TableSrc;
 use deluge_wren_core::Host as _;
 use deluge_wren_core::test_support::{
     EngineHost, run_and_capture_cmds, run_and_capture_update, run_and_capture_updates,
@@ -778,15 +778,15 @@ fn wavetable_from2d_round_trip_renders_finite_nonsilent_and_morphs() {
 #[test]
 fn engine_host_upload_table_builds_band_limited() {
     let mut host = EngineHost::new(48_000.0);
-    let mut base = [0.0f32; mipgen::N];
+    let mut base = [0.0f32; flare_mipgen::N];
     for (i, s) in base.iter_mut().enumerate() {
-        *s = 2.0 * (i as f32 / mipgen::N as f32) - 1.0;
+        *s = 2.0 * (i as f32 / flare_mipgen::N as f32) - 1.0;
     }
     let h = host.upload_table(&base).expect("upload");
     // level 0 region round-trips to a saw-ish shape; deeper levels are band-limited.
     let region = host.engine().pool_slice(h);
     assert_eq!(region.len(), deluge_wren_core::PYRAMID_LEN);
-    assert!(region[..mipgen::N].iter().any(|&x| x != 0.0));
+    assert!(region[..flare_mipgen::N].iter().any(|&x| x != 0.0));
 }
 
 #[test]
@@ -812,7 +812,7 @@ fn osc_sync_render_bounded_nonsilent() {
 
 #[test]
 fn delay_new_emits_newnode_and_bindtable_on_engine_host_and_renders_bounded() {
-    use deluge_audio_graph::StereoFrame;
+    use flare_graph::StereoFrame;
     use deluge_wren_core::test_support::run_and_render;
     let mut out = [StereoFrame::default(); 32];
     run_and_render(
@@ -831,7 +831,7 @@ fn delay_new_emits_newnode_and_bindtable_on_engine_host_and_renders_bounded() {
 
 #[test]
 fn delay_on_cmd_capture_host_creates_node_without_bindtable() {
-    use deluge_audio_graph::{Cmd, Kind};
+    use flare_graph::{Cmd, Kind};
     use deluge_wren_core::test_support::run_and_capture_cmds;
     // CmdCaptureHost has no pool → alloc_buffer returns None → the node is
     // created but NOT bound (dry passthrough), never a bogus BindTable.
@@ -854,7 +854,7 @@ fn delay_on_cmd_capture_host_creates_node_without_bindtable() {
 
 #[test]
 fn delay_mix_and_damp_emit_setparam_0_and_1() {
-    use deluge_audio_graph::Cmd;
+    use flare_graph::Cmd;
     use deluge_wren_core::test_support::run_and_capture_cmds;
     let cmds = run_and_capture_cmds(
         "var d = Delay.new(Osc.saw(110), 0.01, 0.4)\nd.mix = 0.5\nd.damp = 0.3",
@@ -873,7 +873,7 @@ fn delay_mix_and_damp_emit_setparam_0_and_1() {
 
 #[test]
 fn pan_new_emits_kind_pan_node() {
-    use deluge_audio_graph::{Cmd, Kind};
+    use flare_graph::{Cmd, Kind};
     use deluge_wren_core::test_support::run_and_capture_cmds;
     let cmds = run_and_capture_cmds("var p = Pan.new(Osc.saw(110), -0.5)");
     assert!(
@@ -890,7 +890,7 @@ fn pan_new_emits_kind_pan_node() {
 
 #[test]
 fn patch_stereo_node_emits_two_side_writes() {
-    use deluge_audio_graph::Cmd;
+    use flare_graph::Cmd;
     use deluge_wren_core::test_support::run_and_capture_cmds;
     // Out.patch of a width-2 Pan → two BusWriteGains: (1,0) and (0,1) to master.
     let cmds = run_and_capture_cmds("Out.patch(Pan.new(Osc.saw(110), 0.0))");
@@ -913,7 +913,7 @@ fn patch_stereo_node_emits_two_side_writes() {
 
 #[test]
 fn patch_mono_node_still_emits_single_center_write() {
-    use deluge_audio_graph::Cmd;
+    use flare_graph::Cmd;
     use deluge_wren_core::test_support::run_and_capture_cmds;
     // A mono node patched → exactly one plain center BusWrite, no gained writes.
     let cmds = run_and_capture_cmds("Out.patch(Osc.saw(110))");
@@ -937,7 +937,7 @@ fn patch_mono_node_still_emits_single_center_write() {
 
 #[test]
 fn stereo_pan_renders_distinct_l_and_r() {
-    use deluge_audio_graph::StereoFrame;
+    use flare_graph::StereoFrame;
     use deluge_wren_core::test_support::run_and_render;
     let mut out = [StereoFrame::default(); 32];
     // Hard-left pan → L carries signal, R ≈ silent.
@@ -951,7 +951,7 @@ fn stereo_pan_renders_distinct_l_and_r() {
 
 #[test]
 fn chorus_new_emits_node_and_params_no_bind_on_capture_host() {
-    use deluge_audio_graph::{Cmd, Kind};
+    use flare_graph::{Cmd, Kind};
     use deluge_wren_core::test_support::run_and_capture_cmds;
     // CmdCaptureHost has no pool → alloc_buffer None → NewNode + SetParams but
     // NO BindTable (dry-passthrough contract, same as Ef-1 Delay). The real
@@ -980,7 +980,7 @@ fn chorus_new_emits_node_and_params_no_bind_on_capture_host() {
 
 #[test]
 fn chorus_patch_routes_stereo() {
-    use deluge_audio_graph::Cmd;
+    use flare_graph::Cmd;
     use deluge_wren_core::test_support::run_and_capture_cmds;
     // A Chorus is width-2 → Out.patch emits the two side-writes.
     let cmds = run_and_capture_cmds("Out.patch(Chorus.new(Osc.saw(110), 0.5, 0.4, 0.5))");
@@ -999,7 +999,7 @@ fn chorus_patch_routes_stereo() {
 
 #[test]
 fn flanger_regen_sets_feedback_param() {
-    use deluge_audio_graph::Cmd;
+    use flare_graph::Cmd;
     use deluge_wren_core::test_support::run_and_capture_cmds;
     let cmds = run_and_capture_cmds(
         "var f = Flanger.new(Osc.saw(110), 0.3, 0.7, 0.6, 0.5)\nf.regen = 0.8",
@@ -1017,7 +1017,7 @@ fn flanger_regen_sets_feedback_param() {
 
 #[test]
 fn chorus_renders_stereo_bounded_on_engine_host() {
-    use deluge_audio_graph::StereoFrame;
+    use flare_graph::StereoFrame;
     use deluge_wren_core::test_support::run_and_render;
     let mut out = [StereoFrame::default(); 32];
     run_and_render(
@@ -1036,7 +1036,7 @@ fn chorus_renders_stereo_bounded_on_engine_host() {
 
 #[test]
 fn room_new_emits_node_and_params_no_bind_on_capture_host() {
-    use deluge_audio_graph::{Cmd, Kind};
+    use flare_graph::{Cmd, Kind};
     use deluge_wren_core::test_support::run_and_capture_cmds;
     let cmds = run_and_capture_cmds("var r = Room.new(Osc.saw(110), 0.7, 0.4, 0.5)");
     assert!(cmds.iter().any(|c| matches!(
@@ -1061,7 +1061,7 @@ fn room_new_emits_node_and_params_no_bind_on_capture_host() {
 
 #[test]
 fn room_patch_routes_stereo() {
-    use deluge_audio_graph::Cmd;
+    use flare_graph::Cmd;
     use deluge_wren_core::test_support::run_and_capture_cmds;
     let cmds = run_and_capture_cmds("Out.patch(Room.new(Osc.saw(110), 0.7, 0.4, 0.5))");
     let gains: std::vec::Vec<(f32, f32)> = cmds
@@ -1079,7 +1079,7 @@ fn room_patch_routes_stereo() {
 
 #[test]
 fn room_size_and_spread_set_params_2_and_3() {
-    use deluge_audio_graph::Cmd;
+    use flare_graph::Cmd;
     use deluge_wren_core::test_support::run_and_capture_cmds;
     let cmds = run_and_capture_cmds(
         "var r = Room.new(Osc.saw(110), 0.5, 0.5, 0.5)\nr.size = 0.9\nr.spread = 0.3",
@@ -1098,7 +1098,7 @@ fn room_size_and_spread_set_params_2_and_3() {
 
 #[test]
 fn room_renders_stereo_bounded_on_engine_host() {
-    use deluge_audio_graph::StereoFrame;
+    use flare_graph::StereoFrame;
     use deluge_wren_core::test_support::run_and_render;
     let mut out = [StereoFrame::default(); 32];
     run_and_render("Out.patch(Room.new(Osc.saw(110), 0.7, 0.4, 0.6))", &mut out);
@@ -1114,7 +1114,7 @@ fn room_renders_stereo_bounded_on_engine_host() {
 
 #[test]
 fn hall_new_emits_node_and_params_no_bind_on_capture_host() {
-    use deluge_audio_graph::{Cmd, Kind};
+    use flare_graph::{Cmd, Kind};
     use deluge_wren_core::test_support::run_and_capture_cmds;
     let cmds = run_and_capture_cmds("var h = Hall.new(Osc.saw(110), 0.8, 0.4, 0.5)");
     assert!(cmds.iter().any(|c| matches!(
@@ -1139,7 +1139,7 @@ fn hall_new_emits_node_and_params_no_bind_on_capture_host() {
 
 #[test]
 fn hall_patch_routes_stereo_and_size_setter_reused() {
-    use deluge_audio_graph::Cmd;
+    use flare_graph::Cmd;
     use deluge_wren_core::test_support::run_and_capture_cmds;
     // Reuses the Room `size=` setter (param 2) — proves the shared surface works on a Hall.
     let cmds = run_and_capture_cmds(
@@ -1165,7 +1165,7 @@ fn hall_patch_routes_stereo_and_size_setter_reused() {
 
 #[test]
 fn hall_renders_stereo_bounded_on_engine_host() {
-    use deluge_audio_graph::StereoFrame;
+    use flare_graph::StereoFrame;
     use deluge_wren_core::test_support::run_and_render;
     let mut out = [StereoFrame::default(); 32];
     run_and_render(
@@ -1184,7 +1184,7 @@ fn hall_renders_stereo_bounded_on_engine_host() {
 
 #[test]
 fn plate_new_emits_node_and_params_no_bind_on_capture_host() {
-    use deluge_audio_graph::{Cmd, Kind};
+    use flare_graph::{Cmd, Kind};
     use deluge_wren_core::test_support::run_and_capture_cmds;
     let cmds = run_and_capture_cmds("var p = Plate.new(Osc.saw(110), 0.8, 0.4, 0.5)");
     assert!(cmds.iter().any(|c| matches!(
@@ -1209,7 +1209,7 @@ fn plate_new_emits_node_and_params_no_bind_on_capture_host() {
 
 #[test]
 fn plate_patch_routes_stereo() {
-    use deluge_audio_graph::Cmd;
+    use flare_graph::Cmd;
     use deluge_wren_core::test_support::run_and_capture_cmds;
     let cmds = run_and_capture_cmds("Out.patch(Plate.new(Osc.saw(110), 0.8, 0.4, 0.5))");
     let gains: std::vec::Vec<(f32, f32)> = cmds
@@ -1227,7 +1227,7 @@ fn plate_patch_routes_stereo() {
 
 #[test]
 fn plate_renders_stereo_bounded_on_engine_host() {
-    use deluge_audio_graph::StereoFrame;
+    use flare_graph::StereoFrame;
     use deluge_wren_core::test_support::run_and_render;
     let mut out = [StereoFrame::default(); 32];
     run_and_render(
@@ -1246,7 +1246,7 @@ fn plate_renders_stereo_bounded_on_engine_host() {
 
 #[test]
 fn drive_factories_emit_kind_drive_with_shape() {
-    use deluge_audio_graph::{Cmd, Kind};
+    use flare_graph::{Cmd, Kind};
     use deluge_wren_core::test_support::run_and_capture_cmds;
     for (call, shape) in [
         ("soft", 0.0f32),
@@ -1281,7 +1281,7 @@ fn drive_factories_emit_kind_drive_with_shape() {
 
 #[test]
 fn drive_setters_map_to_params() {
-    use deluge_audio_graph::Cmd;
+    use flare_graph::Cmd;
     use deluge_wren_core::test_support::run_and_capture_cmds;
     let cmds = run_and_capture_cmds(
         "var d = Drive.soft(Osc.saw(110), 0.5, 0.5, 0.5)\nd.drive = 0.9\nd.tone = 0.3\nd.wet = 0.7",
@@ -1305,7 +1305,7 @@ fn drive_setters_map_to_params() {
 
 #[test]
 fn drive_renders_mono_bounded_on_engine_host() {
-    use deluge_audio_graph::StereoFrame;
+    use flare_graph::StereoFrame;
     use deluge_wren_core::test_support::run_and_render;
     let mut out = [StereoFrame::default(); 32];
     run_and_render(
@@ -1318,7 +1318,7 @@ fn drive_renders_mono_bounded_on_engine_host() {
 
 #[test]
 fn eq_factories_emit_kind_eq_with_type() {
-    use deluge_audio_graph::{Cmd, Kind};
+    use flare_graph::{Cmd, Kind};
     use deluge_wren_core::test_support::run_and_capture_cmds;
     for (call, code) in [("peak", 0.0f32), ("lowShelf", 1.0), ("highShelf", 2.0)] {
         let src = std::format!("var e = EQ.{}(Osc.saw(110), 1000, 6, 1)", call);
@@ -1341,7 +1341,7 @@ fn eq_factories_emit_kind_eq_with_type() {
 
 #[test]
 fn eq_setters_map_to_params() {
-    use deluge_audio_graph::Cmd;
+    use flare_graph::Cmd;
     use deluge_wren_core::test_support::run_and_capture_cmds;
     let cmds = run_and_capture_cmds(
         "var e = EQ.peak(Osc.saw(110), 1000, 0, 1)\ne.hz = 2000\ne.gain = 6\ne.q = 2",
@@ -1365,7 +1365,7 @@ fn eq_setters_map_to_params() {
 
 #[test]
 fn eq_renders_mono_bounded_on_engine_host() {
-    use deluge_audio_graph::StereoFrame;
+    use flare_graph::StereoFrame;
     use deluge_wren_core::test_support::run_and_render;
     let mut out = [StereoFrame::default(); 32];
     run_and_render(
@@ -1378,7 +1378,7 @@ fn eq_renders_mono_bounded_on_engine_host() {
 
 #[test]
 fn lfo_factories_emit_kind_lfo_with_shape() {
-    use deluge_audio_graph::{Cmd, Kind};
+    use flare_graph::{Cmd, Kind};
     use deluge_wren_core::test_support::run_and_capture_cmds;
     for (call, code) in [
         ("sine", 0.0f32),
@@ -1406,7 +1406,7 @@ fn lfo_factories_emit_kind_lfo_with_shape() {
 
 #[test]
 fn lfo_to_builds_scaling_graph() {
-    use deluge_audio_graph::{Cmd, Kind};
+    use flare_graph::{Cmd, Kind};
     use deluge_wren_core::test_support::run_and_capture_cmds;
     // `.to(200, 2000)` = this*900 + 1100 → a Mul then an Add node.
     let cmds = run_and_capture_cmds("var m = LFO.sine(1).to(200, 2000)");
@@ -1434,7 +1434,7 @@ fn lfo_to_builds_scaling_graph() {
 
 #[test]
 fn lfo_phase_setter_maps_to_param_1() {
-    use deluge_audio_graph::Cmd;
+    use flare_graph::Cmd;
     use deluge_wren_core::test_support::run_and_capture_cmds;
     let cmds = run_and_capture_cmds("var l = LFO.saw(1)\nl.phase = 0.25");
     assert!(
@@ -1446,7 +1446,7 @@ fn lfo_phase_setter_maps_to_param_1() {
 
 #[test]
 fn lfo_renders_bounded_on_engine_host() {
-    use deluge_audio_graph::StereoFrame;
+    use flare_graph::StereoFrame;
     use deluge_wren_core::test_support::run_and_render;
     let mut out = [StereoFrame::default(); 32];
     run_and_render("Out.patch(LFO.tri(1000))", &mut out); // fast LFO so it moves
@@ -1455,7 +1455,7 @@ fn lfo_renders_bounded_on_engine_host() {
 
 #[test]
 fn sample_hold_and_slew_factories_emit_nodes() {
-    use deluge_audio_graph::{Cmd, Kind};
+    use flare_graph::{Cmd, Kind};
     use deluge_wren_core::test_support::run_and_capture_cmds;
     let cmds = run_and_capture_cmds(
         "var a = SampleHold.new(Noise.pink(), Osc.square(4))\nvar b = Slew.new(a, 0.05)",
@@ -1484,7 +1484,7 @@ fn sample_hold_and_slew_factories_emit_nodes() {
 
 #[test]
 fn steps_factory_emits_len_and_values() {
-    use deluge_audio_graph::{Cmd, Kind};
+    use flare_graph::{Cmd, Kind};
     use deluge_wren_core::test_support::run_and_capture_cmds;
     let cmds = run_and_capture_cmds("var s = Steps.new([10, 20, 30], Osc.square(2))");
     assert!(
@@ -1512,7 +1512,7 @@ fn steps_factory_emits_len_and_values() {
 
 #[test]
 fn steps_renders_bounded_on_engine_host() {
-    use deluge_audio_graph::StereoFrame;
+    use flare_graph::StereoFrame;
     use deluge_wren_core::test_support::run_and_render;
     let mut out = [StereoFrame::default(); 32];
     run_and_render(
@@ -2320,7 +2320,7 @@ fn polyosc_no_width_unchanged_no_setinput_port1() {
     // must not emit any SetInput on port 1 (the poly width port) — it stays
     // at its NewNode-time default (Const(0.0) ⇒ 0.5 duty), bit-identical to
     // the pre-Sy-2d PolyOsc (proven bit-exact at the engine level — see
-    // deluge-audio-graph's node.rs tests).
+    // flare-graph's node.rs tests).
     let cmds = run_and_capture_cmds("var b = Synth.new { |p| Osc.square(p) * Env.ar(0.01, 0.3) }");
     assert!(
         cmds.iter().any(|c| matches!(
@@ -3197,7 +3197,7 @@ fn keymap_from_uploads_through_real_pool_without_panicking() {
 // error. These three scripts each hit one of the vulnerable shapes — arg
 // not a list, zone not a list, zone list shorter than 4 elements — and must
 // still build without crashing, degrading the missing fields to
-// `deluge_dsp_kernels::sampler::Zone::empty()`'s defaults instead.
+// `flare_kernels::sampler::Zone::empty()`'s defaults instead.
 #[test]
 fn keymap_from_malformed_arg_not_a_list_does_not_crash() {
     assert!(
@@ -3532,7 +3532,7 @@ fn out_patch_malformed_non_source_does_not_crash() {
 // aborts the whole script before `pm=` is even reached; dropped to a bare
 // `c.pm = m` (the same idiom already proven by `poly_osc_pm_emits_setinput_port2`
 // above) — `pm` is added directly as a phase offset in the kernel
-// (`rp = p + pm + fb`, deluge-dsp-kernels/src/poly.rs), so an unscaled
+// (`rp = p + pm + fb`, ../flare/crates/flare-kernels/src/poly.rs), so an unscaled
 // full-amplitude ([-1,1]) modulator is already strongly audible FM, no
 // index multiply needed to prove the chain sounds. (2) multi-statement
 // Synth builder blocks need an explicit `return` on the last line — Wren
@@ -3796,7 +3796,7 @@ fn granular_new_binds_pooled_samplebuffer() {
 fn granular_setters_emit_setparam() {
     // `.grainPosition =`/`.size =`/`.density =`/`.spray =` must emit
     // `SetParam{node, {1,2,3,4}, value}` per `PolyGranular`'s
-    // `Node::set_param` scheme (`crates/deluge-audio-graph/src/node.rs`).
+    // `Node::set_param` scheme (`../flare/crates/flare-graph/src/node.rs`).
     let cmds = run_and_capture_cmds(
         "var b = Synth.new { |p|\n\
          \x20 var g = Granular.new(p, SampleBuffer.from([0, 0.5, 1, 0.5, 0, -0.5, -1, -0.5]))\n\

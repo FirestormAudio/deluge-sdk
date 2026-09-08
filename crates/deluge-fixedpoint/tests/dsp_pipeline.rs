@@ -14,7 +14,7 @@
 //! reachable from here, so nothing is lost by testing it from this side.
 
 use armv7_dsp_intrinsics::smmul;
-use deluge_fft::{Complex, Fft};
+use flare_fft::{Complex, Fft};
 use fixedpoint::Q31;
 
 const N: usize = 256;

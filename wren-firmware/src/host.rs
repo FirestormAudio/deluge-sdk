@@ -72,7 +72,7 @@ impl Host for FwHost {
         crate::audio::submit(cmd);
     }
 
-    fn upload_table(&mut self, base: &[f32]) -> Option<deluge_audio_graph::PoolHandle> {
+    fn upload_table(&mut self, base: &[f32]) -> Option<flare_graph::PoolHandle> {
         crate::audio::upload_table(base)
     }
 
@@ -80,15 +80,15 @@ impl Host for FwHost {
         &mut self,
         nframes: usize,
         fill_frame: &mut dyn FnMut(usize, &mut [f32]),
-    ) -> Option<deluge_audio_graph::PoolHandle> {
+    ) -> Option<flare_graph::PoolHandle> {
         crate::audio::upload_table_2d(nframes, fill_frame)
     }
 
-    fn pool_set(&mut self, h: deluge_audio_graph::PoolHandle, index: usize, value: f32) {
+    fn pool_set(&mut self, h: flare_graph::PoolHandle, index: usize, value: f32) {
         crate::audio::pool_set(h, index, value);
     }
 
-    fn alloc_buffer(&mut self, len: usize) -> Option<deluge_audio_graph::PoolHandle> {
+    fn alloc_buffer(&mut self, len: usize) -> Option<flare_graph::PoolHandle> {
         crate::audio::alloc_buffer(len)
     }
 
@@ -99,8 +99,8 @@ impl Host for FwHost {
     // node simply stays silent until then.
     fn stream_register(
         &mut self,
-        node: deluge_audio_graph::NodeId,
-        handle: deluge_audio_graph::PoolHandle,
+        node: flare_graph::NodeId,
+        handle: flare_graph::PoolHandle,
         path: &str,
     ) {
         #[cfg(not(target_os = "none"))]

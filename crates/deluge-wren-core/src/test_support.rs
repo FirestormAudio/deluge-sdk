@@ -10,7 +10,7 @@
 use core::ffi::{c_char, c_int};
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use deluge_audio_graph::{Engine, StereoFrame};
+use flare_graph::{Engine, StereoFrame};
 
 use crate::{CV_CHANNELS, Cmd, GATE_CHANNELS, Host};
 
@@ -363,7 +363,7 @@ pub fn run_and_capture_updates(sources: &[&str]) -> Vec<Vec<crate::Cmd>> {
 /// deliberately poolless (see
 /// `delay_on_cmd_capture_host_creates_node_without_bindtable` in
 /// `tests/audio_bindings.rs`), so it can't exercise a bound `handle`. This
-/// host backs a small real [`deluge_audio_graph::Pool`] so `Sample.stream`'s
+/// host backs a small real [`flare_graph::Pool`] so `Sample.stream`'s
 /// ring `alloc_buffer` call returns `Some`, which in turn exercises the
 /// `BindTable` + [`Host::stream_register`] paths — plus a minimal recording
 /// override of `stream_register` (`last_stream_register`), read back by
@@ -371,15 +371,15 @@ pub fn run_and_capture_updates(sources: &[&str]) -> Vec<Vec<crate::Cmd>> {
 /// `CmdCaptureHost`'s own (poolless) semantics.
 pub struct StreamCaptureHost {
     pub cmds: Vec<crate::Cmd>,
-    pool: deluge_audio_graph::Pool<65536, 64>,
+    pool: flare_graph::Pool<65536, 64>,
     /// Set by the last `Host::stream_register` call this host received.
-    pub last_stream_register: Option<(deluge_audio_graph::NodeId, std::string::String)>,
+    pub last_stream_register: Option<(flare_graph::NodeId, std::string::String)>,
 }
 impl StreamCaptureHost {
     pub fn new() -> Self {
         StreamCaptureHost {
             cmds: Vec::new(),
-            pool: deluge_audio_graph::Pool::new(),
+            pool: flare_graph::Pool::new(),
             last_stream_register: None,
         }
     }
@@ -399,13 +399,13 @@ impl Host for StreamCaptureHost {
     fn audio_cmd(&mut self, cmd: crate::Cmd) {
         self.cmds.push(cmd);
     }
-    fn alloc_buffer(&mut self, len: usize) -> Option<deluge_audio_graph::PoolHandle> {
+    fn alloc_buffer(&mut self, len: usize) -> Option<flare_graph::PoolHandle> {
         self.pool.alloc(len)
     }
     fn stream_register(
         &mut self,
-        node: deluge_audio_graph::NodeId,
-        _handle: deluge_audio_graph::PoolHandle,
+        node: flare_graph::NodeId,
+        _handle: flare_graph::PoolHandle,
         path: &str,
     ) {
         self.last_stream_register = Some((node, path.into()));
@@ -423,7 +423,7 @@ pub fn run_and_capture_cmds_stream(
     src: &str,
 ) -> (
     Vec<crate::Cmd>,
-    Option<(deluge_audio_graph::NodeId, std::string::String)>,
+    Option<(flare_graph::NodeId, std::string::String)>,
 ) {
     // Serialize: shares `crate::set_host`/VM-boot/`reset` process-globals with
     // `run_and_capture_cmds` et al. — see `CAP_LOCK`'s docs.
@@ -542,7 +542,7 @@ pub fn run_script_ok(src: &str) -> bool {
 /// engine — generous enough for the small golden scripts this helper runs.
 type TestEng = Engine<32, 64, 128, 8, 90112, 2048>;
 
-/// A host that applies every audio command to a real [`deluge_audio_graph::Engine`],
+/// A host that applies every audio command to a real [`flare_graph::Engine`],
 /// so a script's rendered audio (not just its emitted `Cmd`s) can be asserted on.
 pub struct EngineHost {
     pub eng: TestEng,
@@ -590,7 +590,7 @@ impl Host for EngineHost {
     fn audio_cmd(&mut self, cmd: crate::Cmd) {
         self.eng.apply(cmd);
     }
-    fn upload_table(&mut self, base: &[f32]) -> Option<deluge_audio_graph::PoolHandle> {
+    fn upload_table(&mut self, base: &[f32]) -> Option<flare_graph::PoolHandle> {
         let h = self.eng.pool_alloc(crate::PYRAMID_LEN)?;
         crate::host::build_pyramid_into(base, self.eng.pool_slice_mut(h));
         Some(h)
@@ -599,7 +599,7 @@ impl Host for EngineHost {
         &mut self,
         nframes: usize,
         fill_frame: &mut dyn FnMut(usize, &mut [f32]),
-    ) -> Option<deluge_audio_graph::PoolHandle> {
+    ) -> Option<flare_graph::PoolHandle> {
         if nframes == 0 {
             return None;
         }
@@ -615,12 +615,12 @@ impl Host for EngineHost {
         }
         Some(h)
     }
-    fn alloc_buffer(&mut self, len: usize) -> Option<deluge_audio_graph::PoolHandle> {
+    fn alloc_buffer(&mut self, len: usize) -> Option<flare_graph::PoolHandle> {
         let h = self.eng.pool_alloc(len)?;
         self.eng.pool_slice_mut(h).fill(0.0); // ring buffers must start clean
         Some(h)
     }
-    fn pool_set(&mut self, h: deluge_audio_graph::PoolHandle, index: usize, value: f32) {
+    fn pool_set(&mut self, h: flare_graph::PoolHandle, index: usize, value: f32) {
         let region = self.eng.pool_slice_mut(h);
         if index < region.len() {
             region[index] = value;

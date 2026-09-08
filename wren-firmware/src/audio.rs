@@ -29,7 +29,7 @@ use core::mem::MaybeUninit;
 use core::ptr::addr_of_mut;
 
 use deluge::Audio;
-use deluge_audio_graph::Engine;
+use flare_graph::Engine;
 use deluge_wren_core::Cmd;
 use embassy_sync::blocking_mutex::{Mutex, raw::CriticalSectionRawMutex};
 
@@ -112,7 +112,7 @@ pub fn submit(c: Cmd) {
 /// exhaustion. Blocks the executor for the (sub-millisecond, IFFT) build — see the
 /// `## Concurrency` docs and the device-upload spec for why this fits the audio
 /// write-ahead lead.
-pub fn upload_table(base: &[f32]) -> Option<deluge_audio_graph::PoolHandle> {
+pub fn upload_table(base: &[f32]) -> Option<flare_graph::PoolHandle> {
     // SAFETY: ENGINE was initialized by `init_engine` in `main` before any task ran.
     // This runs synchronously inside a Wren foreign call on the one cooperative
     // executor; audio_task is parked at its `.await` holding no ENGINE borrow; no ISR
@@ -129,7 +129,7 @@ pub fn upload_table(base: &[f32]) -> Option<deluge_audio_graph::PoolHandle> {
 /// silently ignored — see [`Host::pool_set`](deluge_wren_core::Host::pool_set)'s
 /// docs. Same synchronous, non-yielding, single-executor argument as
 /// [`upload_table`] applies here.
-pub fn pool_set(h: deluge_audio_graph::PoolHandle, index: usize, value: f32) {
+pub fn pool_set(h: flare_graph::PoolHandle, index: usize, value: f32) {
     // SAFETY: see `upload_table`'s SAFETY comment above.
     let eng: &mut Eng = unsafe { (*addr_of_mut!(ENGINE)).assume_init_mut() };
     let region = eng.pool_slice_mut(h);
@@ -145,7 +145,7 @@ pub fn pool_set(h: deluge_audio_graph::PoolHandle, index: usize, value: f32) {
 /// device prefetch is slice 5 — so this is gated host-only with the rest of
 /// that prefetch rather than left dead-code on device.
 #[cfg(not(target_os = "none"))]
-pub fn stream_read_cursor(node: deluge_audio_graph::NodeId, voice: usize) -> Option<u64> {
+pub fn stream_read_cursor(node: flare_graph::NodeId, voice: usize) -> Option<u64> {
     // SAFETY: see `upload_table`'s SAFETY comment above — read-only borrow,
     // same synchronous, non-yielding, single-executor argument applies.
     let eng: &Eng = unsafe { (*addr_of_mut!(ENGINE)).assume_init_ref() };
@@ -156,7 +156,7 @@ pub fn stream_read_cursor(node: deluge_audio_graph::NodeId, voice: usize) -> Opt
 /// derive a `StreamPlayer` ring's per-voice sub-ring capacity (`len /
 /// VOICES`). Host-only for the same reason as [`stream_read_cursor`].
 #[cfg(not(target_os = "none"))]
-pub fn pool_len(h: deluge_audio_graph::PoolHandle) -> usize {
+pub fn pool_len(h: flare_graph::PoolHandle) -> usize {
     // SAFETY: see `upload_table`'s SAFETY comment above — read-only borrow.
     let eng: &Eng = unsafe { (*addr_of_mut!(ENGINE)).assume_init_ref() };
     eng.pool_slice(h).len()
@@ -167,7 +167,7 @@ pub fn pool_len(h: deluge_audio_graph::PoolHandle) -> usize {
 /// (out-of-range `index` is silently ignored, per `pool_set`'s docs).
 /// Host-only for the same reason as [`stream_read_cursor`].
 #[cfg(not(target_os = "none"))]
-pub fn pool_write(h: deluge_audio_graph::PoolHandle, index: usize, value: f32) {
+pub fn pool_write(h: flare_graph::PoolHandle, index: usize, value: f32) {
     pool_set(h, index, value);
 }
 
@@ -177,7 +177,7 @@ pub fn pool_write(h: deluge_audio_graph::PoolHandle, index: usize, value: f32) {
 /// dry/silence (the documented pooled-node contract). Called synchronously from
 /// Wren foreign factories (via `FwHost::alloc_buffer`). Same single-executor,
 /// non-yielding SAFETY argument as [`upload_table`].
-pub fn alloc_buffer(len: usize) -> Option<deluge_audio_graph::PoolHandle> {
+pub fn alloc_buffer(len: usize) -> Option<flare_graph::PoolHandle> {
     // SAFETY: see `upload_table`'s SAFETY comment above.
     let eng: &mut Eng = unsafe { (*addr_of_mut!(ENGINE)).assume_init_mut() };
     let h = eng.pool_alloc(len)?;
@@ -211,7 +211,7 @@ const _: () = assert!(PCAP >= deluge_wren_core::PYRAMID_LEN);
 pub fn upload_table_2d(
     nframes: usize,
     fill_frame: &mut dyn FnMut(usize, &mut [f32]),
-) -> Option<deluge_audio_graph::PoolHandle> {
+) -> Option<flare_graph::PoolHandle> {
     if nframes == 0 {
         return None;
     }
@@ -259,12 +259,12 @@ pub async fn audio_task(audio: Audio) {
             // engine's, so render into a local scratch buffer and copy.
             // Chunk size must equal the engine's BLOCK (32) so `render` fills
             // each chunk fully.
-            let mut scratch = [deluge_audio_graph::StereoFrame::default(); 32];
+            let mut scratch = [flare_graph::StereoFrame::default(); 32];
             // Task 3: `block` arrives pre-loaded with captured codec input.
             // Copy each chunk's current (input) contents into an engine-typed
             // scratch buffer BEFORE rendering — `chunk` is about to be
             // overwritten with output, and input/output must not alias.
-            let mut in_scratch = [deluge_audio_graph::StereoFrame::default(); 32];
+            let mut in_scratch = [flare_graph::StereoFrame::default(); 32];
             for chunk in block.chunks_mut(32) {
                 let n = chunk.len();
                 // Capture the pre-loaded codec input for this chunk.

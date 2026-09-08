@@ -931,7 +931,7 @@ class EQ {
 }
 
 // Named static wavetable ids, in the generated `TABLES` registry order
-// (deluge-dsp-kernels' `wavetables_generated.rs`). Ids 0-5 are single-cycle
+// (flare-kernels' `wavetables_generated.rs`). Ids 0-5 are single-cycle
 // tables (one frame; `Osc.wavetable(WT.x, f)` plays them directly). Ids 6-7
 // are named *2D* (multi-frame) morph banks, built at `gen_tables` time (no
 // runtime build): bind them the same way, then sweep `.position` (0 = first

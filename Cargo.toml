@@ -10,10 +10,6 @@ members = [
   "crates/rza1l-hal",
   "crates/deluge-alloc",
   "crates/deluge-bsp",
-  "crates/deluge-dsp-kernels",
-  "crates/deluge-audio-graph",
-  "crates/deluge-fft",
-  "crates/mipgen",
   "app-loader",
   "crates/deluge-sdk",
   "crates/deluge-image",
@@ -59,7 +55,6 @@ exclude = [
   "tools/wren-web-debug",
   "tools/wren-analyzer-wasm",
   "crates/deluge-sim-link",
-  "crates/deluge-dsp-test",
   "crates/deluge-sys",
   "crates/deluge-hal-linux",
   "crates/deluge-linux-ui",
@@ -79,6 +74,17 @@ repository = "https://github.com/FirestormAudio/deluge-sdk"
 homepage = "https://github.com/FirestormAudio/deluge-sdk"
 
 [workspace.dependencies]
+# The audio engine, extracted to its own repo (see
+# docs/superpowers/specs/2026-09-08-flare-audio-engine-extraction-design.md).
+# A path dependency on a sibling checkout: flare has no remote, exactly as
+# deluge-ndk has none. Swapping this for a pinned git dependency is a later,
+# separate decision.
+flare = { path = "../flare/crates/flare" }
+flare-graph = { path = "../flare/crates/flare-graph" }
+flare-kernels = { path = "../flare/crates/flare-kernels" }
+flare-fft = { path = "../flare/crates/flare-fft" }
+flare-mipgen = { path = "../flare/crates/flare-mipgen" }
+
 # Embassy async runtime + USB stacks — pinned to crates.io releases so builds
 # are reproducible and don't track a moving `main`. Bump versions here only.
 embassy-executor = "0.10.0"
@@ -125,9 +131,6 @@ opt-level = "s"
 lto = true
 codegen-units = 1
 debug = true
-
-[profile.release.package.deluge-fft]
-opt-level = 3
 
 [profile.dev]
 opt-level = 1

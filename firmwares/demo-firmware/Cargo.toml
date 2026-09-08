@@ -22,7 +22,7 @@ embassy-usb-driver = { workspace = true }
 embassy-usb-host = { workspace = true }
 log = { workspace = true }
 embassy-futures = { workspace = true }
-deluge-fft = { path = "../../crates/deluge-fft" }
+flare-fft.workspace = true
 rtt-target = { workspace = true, optional = true }
 
 [features]
