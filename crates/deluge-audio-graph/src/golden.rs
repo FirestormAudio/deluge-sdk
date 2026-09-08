@@ -10,10 +10,25 @@
 //! say so in a dated comment. A golden that gets re-pinned whenever it goes red
 //! is not a golden, it is a very slow way of writing `assert!(true)`.
 //!
-//! Every golden is deliberately config-invariant: the same digest must hold in
-//! the scalar and `simd` configurations, and on both the 64-bit host and the
-//! 32-bit ARM bucket. That is what makes them a usable gate for a SIMD
-//! refactor.
+//! Every golden is **target-invariant**: a digest must hold on both the 64-bit
+//! host and the 32-bit ARM bucket. That is what makes them a usable gate.
+//!
+//! Most are also **config-invariant** — the same digest in the scalar and
+//! `simd` configurations. Two are not, and the distinction is worth
+//! understanding rather than working around. Some `f32x8` kernels are bit-exact
+//! reimplementations of their scalar oracle; others reorder the arithmetic and
+//! agree only to a tolerance. The kernels say which is which in their own test
+//! names — `wavetable::simd_matches_scalar_within_tol` is explicit about it,
+//! and `polysync_matches_scalar_oracle_all_waves` asserts `<= 1e-4`. A digest
+//! is bit-exact by construction, so it sees a difference no audible measure
+//! does: for both divergent kinds the two configurations render to the same
+//! peak and an RMS agreeing to ~1e-6.
+//!
+//! Those two pin one constant per configuration rather than loosening to a
+//! tolerance, so the gate keeps its full strength — a voice-chunking change
+//! that misroutes a lane breaks the constant in whichever configuration it is
+//! built. A `#[cfg]` pair on a digest means "this kernel reorders arithmetic
+//! under SIMD", not "this test was hard to pin".
 
 #![cfg(test)]
 
@@ -433,23 +448,10 @@ fn golden_poly_sync_saw() {
     assert_eq!(crate::nrt::digest(&out), POLY_SYNC_DIGEST);
 }
 
-// The one golden in this module that is NOT config-invariant.
-//
-// `PolySync`'s scalar and `f32x8` paths do not agree bit-for-bit. They agree
-// to well within the kernels' own tolerance — `polysync_matches_scalar_oracle_all_waves`
-// (poly.rs:1719) asserts `<= 1e-4` and passes, and this patch renders to an
-// identical peak (0.768475) and RMS (0.17343627) in both configurations — but
-// a digest is bit-exact by construction, so it sees a difference that no
-// audible measure does. The cause is operation ordering in the phase-reset
-// maths, not a defect: each configuration is internally consistent across
-// x86-64 and 32-bit ARM, so both constants below are stable, just not equal.
-//
-// Two constants rather than one loosened check, so the gate keeps its full
-// strength: a voice-chunking change that misroutes a lane breaks BOTH of
-// these, in whichever configuration it is built.
-//
-// Every other golden here is config-invariant. If a second kind ever needs
-// this treatment, that is worth understanding before adding it.
+// Config-divergent (see the module doc). `PolySync` reorders the phase-reset
+// arithmetic under SIMD; `polysync_matches_scalar_oracle_all_waves`
+// (poly.rs:1719) asserts the two agree to `<= 1e-4`, and this patch renders to
+// an identical peak (0.768475) and RMS (0.17343627) in both configurations.
 /// Pinned 2026-09-08 (scalar path). See the module doc before regenerating.
 #[cfg(not(feature = "simd"))]
 const POLY_SYNC_DIGEST: u64 = 5_048_936_015_975_409_105;
@@ -539,3 +541,56 @@ fn golden_poly_adsr_staggered_voices() {
 }
 /// Pinned 2026-09-08. See the module doc before regenerating.
 const POLY_ADSR_DIGEST: u64 = 9_789_364_865_555_762_341;
+
+/// CHARACTERIZATION golden: a static-table `Wavetable` oscillator stepped
+/// across its mip pyramid.
+///
+/// `wavetable.rs` carries 37 `f32x8` sites, the largest SIMD surface outside
+/// `poly.rs`, and its read path is index arithmetic over a flat static slice —
+/// the kind of code that a 32-bit `usize` and a changed block size both
+/// threaten. Stepping the pitch up makes the render cross mip levels, so the
+/// digest covers level selection and not just one table.
+#[test]
+fn golden_wavetable_static_sweep() {
+    let mut e = G::new(48_000.0);
+    e.create(NodeId(0), Kind::Wavetable);
+    *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(110.0);
+    e.apply(Cmd::BindTable {
+        node: NodeId(0),
+        src: crate::node::TableSrc::Static(crate::TableId(0)),
+    });
+    e.apply(Cmd::BusWrite {
+        src: Input::Node {
+            node: NodeId(0),
+            port: 0,
+        },
+        bus: BusId(0),
+    });
+    e.apply(Cmd::SetRoot { bus: BusId(0) });
+
+    // Step the pitch up across the render so several mip levels are selected.
+    for (i, hz) in [220.0f32, 440.0, 880.0, 1760.0, 3520.0].iter().enumerate() {
+        e.apply_at(
+            (i as u64 + 1) * 640,
+            Cmd::SetInput {
+                node: NodeId(0),
+                port: 0,
+                src: Input::Const(*hz),
+            },
+        );
+    }
+
+    let out = render_4096(&mut e);
+    assert_eq!(crate::nrt::digest(&out), WAVETABLE_DIGEST);
+}
+// Config-divergent (see the module doc). The wavetable interpolation reorders
+// under SIMD; the kernels name that outright in
+// `wavetable::simd_matches_scalar_within_tol`. Both configurations render to
+// an identical peak (1.0) and an RMS agreeing to ~1e-6 (0.5673494 scalar,
+// 0.56734884 simd).
+/// Pinned 2026-09-08 (scalar path). See the module doc before regenerating.
+#[cfg(not(feature = "simd"))]
+const WAVETABLE_DIGEST: u64 = 6_994_743_113_167_035_253;
+/// Pinned 2026-09-08 (`f32x8` path). See the module doc before regenerating.
+#[cfg(feature = "simd")]
+const WAVETABLE_DIGEST: u64 = 18_147_409_328_667_502_341;
