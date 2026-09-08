@@ -557,9 +557,47 @@ test, having no FPU at all, so every `f32` is soft-float and `core::simd` must
 scalarise completely.
 
 Each × `{default, simd}`, plus the voice/block feature configurations on the
-host. The Cortex-M target is the one expected to find latent assumptions —
-`MAX_BLOCK` stack scratch and the `PCAP`/`PCHUNK` wavetable pool are the likely
-sites.
+host.
+
+**Phase 4 complete (2026-09-08).** The matrix is built, and the phase turned out
+to be about *execution* rather than porting: flare already built for every
+remaining target, including `--features simd` on a Cortex-M3 with no FPU.
+
+*wasm now runs tests, not just builds.* `cargo test --target wasm32-wasip1`
+executes via a small `node:wasi` runner (no install needed; `.cargo/config.toml`
+says how to swap in wasmtime). 324 `flare-graph` tests pass there in both
+configurations. `wasm32-wasip1` rather than `wasm32-unknown-unknown` because the
+harness needs WASI to report results and set an exit code; the SIMD lowering is
+the same.
+
+*The headline result:* **the characterisation digests are
+architecture-invariant.** The values pinned on x86-64 hold identically on 32-bit
+ARM and on wasm32 — three ISAs, three `core::simd` lowerings (SSE/AVX, NEON,
+simd128), two pointer widths — and also under `lto = false`, `thin` and `fat`,
+and in debug as in release. Verified across six target/config combinations
+before being written into `golden.rs` and the README. A digest that differs
+*between targets* is therefore a portability bug, not a golden needing a re-pin,
+and the module doc now says so.
+
+*Bare-metal guards:* `armv7a-none-eabihf`, `thumbv7m-none-eabi` and
+`thumbv8m.main-none-eabihf`, both configurations each. `thumbv7m` earns its
+place by having no FPU at all, so every `f32` is soft-float and `core::simd`
+must scalarise completely. These are labelled build guards in the runner's own
+output — they cannot catch wrong audio, and a green line should not imply
+they can.
+
+*One documented limitation:* `flare-kernels`' library builds for wasm but its
+tests cannot, because proptest's transitive `wait-timeout` has no wasm support.
+The cost is low and the reason is worth recording: the graph goldens drive those
+same kernels through the engine under simd on wasm and match the x86-64 digests
+bit for bit, which is a stronger statement than the kernels' own
+tolerance-based equivalence tests would add. Fixing it would mean a
+target-specific dev-dependency plus `#[cfg]` on 26 `proptest!` blocks.
+
+*`tools/test.sh` is now the single definition of the matrix*, and the CI
+workflow calls it rather than restating it, so a developer running it locally
+gets exactly what CI would. The workflow is inert until flare has a remote and
+says so at the top.
 
 ## 5. Testing
 
