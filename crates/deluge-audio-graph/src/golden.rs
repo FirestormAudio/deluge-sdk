@@ -1,0 +1,222 @@
+//! Characterisation goldens: fixed patches rendered offline and pinned as
+//! digests.
+//!
+//! These do not assert that the audio is *good* — they assert that it has not
+//! *changed*. A failure here means some edit moved the numeric output of a
+//! kernel or of the graph. That is occasionally intended and usually not.
+//!
+//! **Re-pinning a constant is not how you fix a failure here.** Re-pin only
+//! when the output change is intended and has been reviewed, and when you do,
+//! say so in a dated comment. A golden that gets re-pinned whenever it goes red
+//! is not a golden, it is a very slow way of writing `assert!(true)`.
+//!
+//! Every golden is deliberately config-invariant: the same digest must hold in
+//! the scalar and `simd` configurations, and on both the 64-bit host and the
+//! 32-bit ARM bucket. That is what makes them a usable gate for a SIMD
+//! refactor.
+
+#![cfg(test)]
+
+use crate::node::Kind;
+use crate::{BusId, Cmd, Engine, Input, NodeId, StereoFrame};
+
+/// The engine shape every digest golden uses. Wider than `cmd.rs`'s `E`
+/// because the poly patches need the extra nodes and output slots.
+type G = Engine<64, 16, 64, 4, 45056, 2048>;
+
+/// Frames rendered by every digest golden. 4096 at 48 kHz is ~85 ms — long
+/// enough for an envelope to open and close and for a filter's transient to
+/// settle, so a coefficient change that only shows up after a few hundred
+/// samples cannot slip through.
+const FRAMES: usize = 4096;
+
+/// Render `FRAMES` frames offline and assert the output is not obviously
+/// broken before anyone pins a digest of it.
+///
+/// The cleanliness check is the point: a digest of NaN or of silence is a
+/// perfectly stable digest, and pinning one would produce a green test that
+/// guards nothing. Every golden goes through here.
+fn render_4096(e: &mut G) -> [StereoFrame; FRAMES] {
+    let mut out = [StereoFrame::default(); FRAMES];
+    e.render_offline(&mut out);
+    assert!(
+        crate::nrt::is_clean(&out),
+        "output must be finite and within [-1, 1] before it is worth pinning"
+    );
+    assert!(
+        crate::nrt::peak(&out) > 1e-3,
+        "output is silent ({}) — a digest of silence guards nothing",
+        crate::nrt::peak(&out)
+    );
+    out
+}
+
+/// CHARACTERIZATION golden (spec §8 P0 testing gate): pins the first 8
+/// rendered samples of the deterministic saw→lpf→env patch as literal
+/// constants. Complements the digest golden below: this one says *how* the
+/// output drifted, because you can read the numbers.
+///
+/// Regenerating the pinned constants is the correct response ONLY when the
+/// output change is intended and has been reviewed.
+#[test]
+fn golden_saw_lpf_env_first_block() {
+    type E = Engine<16, 8, 8, 4, 45056, 2048>;
+    let mut e = E::new(48_000.0);
+    e.apply(Cmd::NewNode {
+        node: NodeId(0),
+        kind: Kind::Saw,
+        args: [Input::Const(4.0), Input::Const(0.0), Input::Const(0.0)],
+    });
+    e.apply(Cmd::NewNode {
+        node: NodeId(1),
+        kind: Kind::Lpf,
+        args: [
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            Input::Const(800.0),
+            Input::Const(0.0),
+        ],
+    });
+    e.apply(Cmd::NewNode {
+        node: NodeId(2),
+        kind: Kind::Env,
+        args: [Input::Const(0.01), Input::Const(0.1), Input::Const(0.0)],
+    });
+    e.apply(Cmd::Gate {
+        node: NodeId(2),
+        on: true,
+    });
+    e.apply(Cmd::NewNode {
+        node: NodeId(3),
+        kind: Kind::Mul,
+        args: [
+            Input::Node {
+                node: NodeId(1),
+                port: 0,
+            },
+            Input::Node {
+                node: NodeId(2),
+                port: 0,
+            },
+            Input::Const(0.0),
+        ],
+    });
+    e.apply(Cmd::BusWrite {
+        src: Input::Node {
+            node: NodeId(3),
+            port: 0,
+        },
+        bus: BusId(0),
+    });
+    e.apply(Cmd::SetRoot { bus: BusId(0) });
+
+    let mut out = [StereoFrame::default(); 8];
+    let sil = [StereoFrame::default(); 8];
+    e.render(&mut out, &sil);
+
+    // CHARACTERIZATION golden re-pinned 2026-07-07 after Osc band-limiting (Tasks 1-3).
+    // Regenerate only on an intended, reviewed output change.
+    const EXPECTED: [f32; 8] = [
+        0.0,
+        -0.000_399_898_62,
+        -0.001_191_312_4,
+        -0.002_294_306_4,
+        -0.003_657_662_3,
+        -0.005_237_465_3,
+        -0.006_996_135,
+        -0.008_901_581,
+    ];
+    let actual: [f32; 8] = core::array::from_fn(|i| out[i].l);
+    for (i, (a, x)) in actual.iter().zip(EXPECTED.iter()).enumerate() {
+        assert!(
+            (a - x).abs() < 1e-6,
+            "sample {i}: actual {a} vs pinned {x} (diff {})",
+            (a - x).abs()
+        );
+    }
+}
+
+/// CHARACTERIZATION golden, wide rather than deep: the same patch as
+/// [`golden_saw_lpf_env_first_block`], rendered offline for 4096 frames and
+/// pinned as one digest. Released partway through, so the decay is covered.
+///
+/// The two are complementary, not redundant. The sample-wise golden covers 8
+/// frames and tells you *how* the output drifted — you can read the numbers.
+/// This one covers 512× more audio, through the envelope's attack and decay
+/// rather than just its first moments, and tells you *that* something drifted.
+#[test]
+fn golden_saw_lpf_env_offline_digest() {
+    type E = Engine<16, 8, 8, 4, 45056, 2048>;
+    let mut e = E::new(48_000.0);
+    e.apply(Cmd::NewNode {
+        node: NodeId(0),
+        kind: Kind::Saw,
+        args: [Input::Const(4.0), Input::Const(0.0), Input::Const(0.0)],
+    });
+    e.apply(Cmd::NewNode {
+        node: NodeId(1),
+        kind: Kind::Lpf,
+        args: [
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            Input::Const(800.0),
+            Input::Const(0.0),
+        ],
+    });
+    e.apply(Cmd::NewNode {
+        node: NodeId(2),
+        kind: Kind::Env,
+        args: [Input::Const(0.01), Input::Const(0.1), Input::Const(0.0)],
+    });
+    e.apply(Cmd::Gate {
+        node: NodeId(2),
+        on: true,
+    });
+    e.apply(Cmd::NewNode {
+        node: NodeId(3),
+        kind: Kind::Mul,
+        args: [
+            Input::Node {
+                node: NodeId(1),
+                port: 0,
+            },
+            Input::Node {
+                node: NodeId(2),
+                port: 0,
+            },
+            Input::Const(0.0),
+        ],
+    });
+    e.apply(Cmd::BusWrite {
+        src: Input::Node {
+            node: NodeId(3),
+            port: 0,
+        },
+        bus: BusId(0),
+    });
+    e.apply(Cmd::SetRoot { bus: BusId(0) });
+    // Release partway through, so the digest covers the decay too.
+    e.apply_at(
+        2048,
+        Cmd::Gate {
+            node: NodeId(2),
+            on: false,
+        },
+    );
+
+    let mut out = [StereoFrame::default(); 4096];
+    e.render_offline(&mut out);
+
+    assert!(crate::nrt::is_clean(&out), "finite and within [-1, 1]");
+    assert_eq!(
+        crate::nrt::digest(&out),
+        SAW_LPF_ENV_DIGEST,
+        "patch output changed; the sample-wise golden above will say how"
+    );
+}
+/// Pinned 2026-09-08. See the module doc before regenerating.
+const SAW_LPF_ENV_DIGEST: u64 = 4_722_302_078_756_468_769;
