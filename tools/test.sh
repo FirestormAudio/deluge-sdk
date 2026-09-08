@@ -36,8 +36,10 @@ echo "==> QEMU ARM bucket ($QEMU)"
 # under QEMU. The portable fallback is covered in the host bucket below.
 cargo test --target "$QEMU" -p armv7-dsp-intrinsics --lib
 cargo test --target "$QEMU" -p armv7-dsp-intrinsics --features nightly --lib
-cargo test --target "$QEMU" -p deluge-fixedpoint --lib
-# No --lib: also runs the cross-crate dsp_pipeline integration test.
+# No --lib: also runs the cross-crate dsp_pipeline integration test, which moved
+# here from deluge-fft (that crate becomes flare-fft in its own repo and must not
+# dev-depend on anything staying in the SDK).
+cargo test --target "$QEMU" -p deluge-fixedpoint
 cargo test --target "$QEMU" -p deluge-fft --features test-utils
 cargo test --target "$QEMU" -p rza1l-hal --lib
 cargo test --target "$QEMU" -p deluge-bsp --features usb-host --lib
