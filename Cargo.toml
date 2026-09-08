@@ -132,6 +132,18 @@ lto = true
 codegen-units = 1
 debug = true
 
+# The FFT is the one dependency whose release performance is load-bearing
+# regardless of the firmware's size-first default above.
+#
+# This has to live here, not in flare. A `[profile.*]` section only applies in
+# the workspace that is the build ROOT, so flare's own copy governs its
+# benchmarks and nothing else; when this workspace builds the firmware, this
+# manifest's profile is the only one Cargo reads. Without this entry flare-fft
+# was silently compiled at `opt-level = "s"` along with everything else —
+# verified with `cargo build -v` before it was added.
+[profile.release.package.flare-fft]
+opt-level = 3
+
 [profile.dev]
 opt-level = 1
 debug = true
