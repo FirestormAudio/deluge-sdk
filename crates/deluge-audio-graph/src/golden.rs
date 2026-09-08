@@ -332,3 +332,53 @@ fn golden_poly_moog_lp4() {
 }
 /// Pinned 2026-09-08. See the module doc before regenerating.
 const POLY_MOOG_DIGEST: u64 = 2_880_730_269_612_293_409;
+
+/// CHARACTERIZATION golden: `PolyCtrl` → `PolyOsc` → `PolyMs20Lp` →
+/// `VoiceSum`.
+///
+/// `PolyMs20` holds four `f32x8` fields — `ic1`, `ic2`, `dc_x`, `dc_y` — all
+/// `#[cfg(feature = "simd")]`-only; the scalar config keeps `[Ms20; VOICES]`
+/// and already scales with the voice count. So this golden's real work is done
+/// in the `simd` configuration, and the two configurations agreeing is the
+/// assertion that matters.
+#[test]
+fn golden_poly_ms20_lp() {
+    let mut e = G::new(48_000.0);
+    e.create(NodeId(0), Kind::PolyCtrl);
+    poly_pitches(&mut e, NodeId(0), 165.0);
+    e.create(NodeId(1), Kind::PolyOsc);
+    *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node {
+        node: NodeId(0),
+        port: 0,
+    };
+    e.create(NodeId(2), Kind::PolyMs20Lp);
+    *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node {
+        node: NodeId(1),
+        port: 0,
+    };
+    *e.node_input_mut(NodeId(2), 1).unwrap() = Input::Const(900.0);
+    *e.node_input_mut(NodeId(2), 2).unwrap() = Input::Const(0.6);
+    e.create(NodeId(3), Kind::VoiceSum);
+    *e.node_input_mut(NodeId(3), 0).unwrap() = Input::Node {
+        node: NodeId(2),
+        port: 0,
+    };
+    e.apply(Cmd::SetParam {
+        node: NodeId(3),
+        param: 0,
+        value: 0.1,
+    });
+    e.apply(Cmd::BusWrite {
+        src: Input::Node {
+            node: NodeId(3),
+            port: 0,
+        },
+        bus: BusId(0),
+    });
+    e.apply(Cmd::SetRoot { bus: BusId(0) });
+
+    let out = render_4096(&mut e);
+    assert_eq!(crate::nrt::digest(&out), POLY_MS20_DIGEST);
+}
+/// Pinned 2026-09-08. See the module doc before regenerating.
+const POLY_MS20_DIGEST: u64 = 16_487_278_233_059_771_593;
