@@ -279,3 +279,56 @@ fn golden_poly_osc_voicesum() {
 }
 /// Pinned 2026-09-08. See the module doc before regenerating.
 const POLY_OSC_DIGEST: u64 = 6_026_717_215_524_760_865;
+
+/// CHARACTERIZATION golden: `PolyCtrl` → `PolyOsc` → `PolyMoogLp4` →
+/// `VoiceSum`.
+///
+/// `PolyMoog` carries `[f32x8; POLES]` of per-voice ladder state, the most
+/// structurally invasive of the four SIMD state layouts a voice-chunking change
+/// has to rework. A ladder is also the least forgiving thing to get wrong: its
+/// state is fed back per sample, so a lane that reads the wrong chunk does not
+/// produce slightly wrong audio, it diverges.
+#[test]
+fn golden_poly_moog_lp4() {
+    let mut e = G::new(48_000.0);
+    e.create(NodeId(0), Kind::PolyCtrl);
+    poly_pitches(&mut e, NodeId(0), 110.0);
+    e.create(NodeId(1), Kind::PolyOsc);
+    *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node {
+        node: NodeId(0),
+        port: 0,
+    };
+    e.create(NodeId(2), Kind::PolyMoogLp4);
+    *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node {
+        node: NodeId(1),
+        port: 0,
+    };
+    // Trailing shared mono controls: cutoff, resonance. Resonance is set high
+    // enough that the feedback path is doing real work — a near-zero-resonance
+    // ladder is close to a plain cascade and would hide a feedback-state bug.
+    *e.node_input_mut(NodeId(2), 1).unwrap() = Input::Const(1200.0);
+    *e.node_input_mut(NodeId(2), 2).unwrap() = Input::Const(0.7);
+    e.create(NodeId(3), Kind::VoiceSum);
+    *e.node_input_mut(NodeId(3), 0).unwrap() = Input::Node {
+        node: NodeId(2),
+        port: 0,
+    };
+    e.apply(Cmd::SetParam {
+        node: NodeId(3),
+        param: 0,
+        value: 0.1,
+    });
+    e.apply(Cmd::BusWrite {
+        src: Input::Node {
+            node: NodeId(3),
+            port: 0,
+        },
+        bus: BusId(0),
+    });
+    e.apply(Cmd::SetRoot { bus: BusId(0) });
+
+    let out = render_4096(&mut e);
+    assert_eq!(crate::nrt::digest(&out), POLY_MOOG_DIGEST);
+}
+/// Pinned 2026-09-08. See the module doc before regenerating.
+const POLY_MOOG_DIGEST: u64 = 2_880_730_269_612_293_409;
