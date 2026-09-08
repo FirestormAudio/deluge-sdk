@@ -147,9 +147,12 @@ happen to go out over USB; in flare they are aux sends. Rename only:
 | `ids::USB_CHANNELS` | `ids::AUX_OUTS` |
 | `Engine::fill_usb` | `Engine::fill_aux` |
 | `Engine.usb_out` (private) | `Engine.aux_out` |
+| `Cmd::SetUsbOut` (`cmd.rs:72`) | `Cmd::SetAuxOut` |
 
-`OutputSrc` and `Cmd::RouteOutput` are already generic and keep their names.
-Roughly 12 sites (`ids.rs:40`, `lib.rs:42`, `cmd.rs:70`, `engine.rs` ×9).
+`OutputSrc` is already generic and keeps its name. Roughly 13 sites
+(`ids.rs:40`, `lib.rs:42`, `cmd.rs:70-74`, `engine.rs` ×9). `Cmd::SetAuxOut`
+keeps the `{ channel: u8, src: OutputSrc }` shape, so `deluge-wren-core`'s
+binding changes name only.
 
 ### 2b. `MAX_BLOCK` configurable
 
@@ -314,8 +317,24 @@ on ARM. That is thin cover for a 47k-line move plus a poly SIMD refactor, and
 
 So, first: extend characterisation goldens to cover the poly path specifically —
 `PolyOsc`, `PolyMoog`, `PolyMs20`, `PolySyncOsc`, the four structs whose state
-gains a chunk dimension — plus wavetable, sampler, granular and the effect
-chain. Each is an offline render pinned as an `nrt::digest`.
+gains a chunk dimension — plus per-voice gating (the allocator side of the
+voice/lane mapping), the wavetable path across mip levels, and the master chain
+with two buses. Each is an offline render pinned as an `nrt::digest`.
+
+**Sampler and granular are deliberately excluded.** `sampler.rs` and
+`granular.rs` contain zero `f32x8` sites — they are entirely scalar — so §2c,
+which reworks only `f32x8` state, cannot reach them; their `[T; VOICES]` arrays
+scale with the voice count for free. They keep their existing unit tests. If
+Phase 3c's implementation turns out to touch them after all, they get goldens
+then.
+
+Prerequisite discovered while planning: **the `simd` configuration is currently
+built by nothing.** `tools/test.sh` never passes `--features simd` and no CI
+workflow does, so the kernels' scalar==simd equivalence tests only run when
+invoked by hand. Phase 3c refactors that code; it cannot be gated by a
+configuration nobody builds. Adding both configurations to the runner is
+therefore the first task of Phase 1, not a nicety. (Verified 2026-09-08: both
+configs pass today — kernels 288 scalar / 286 simd, graph 313 both.)
 
 Also in this phase: relocate `deluge-fft/tests/dsp_pipeline.rs` to
 `deluge-fixedpoint`.
