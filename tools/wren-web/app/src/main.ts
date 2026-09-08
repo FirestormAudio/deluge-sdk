@@ -295,9 +295,20 @@ async function boot() {
   const scope = $<HTMLCanvasElement>("#scope");
   const scopeCtx = scope.getContext("2d")!;
 
-  const run = () => {
+  // Has a script run since the last full reset? The first run has no graph to
+  // preserve, so it takes the reset path regardless.
+  let hasRun = false;
+
+  /// `fresh` forces a full teardown (every voice restarts from silence).
+  /// Otherwise a re-run is incremental: the audio graph keeps playing and only
+  /// the parts of the patch the edit actually changed are rebuilt (GL2).
+  const run = (fresh = false) => {
     // Run the project's entry file; imports resolve from the other files.
-    const res = sim.runProject(store.project.files, store.project.entry);
+    const res =
+      fresh || !hasRun
+        ? sim.runProject(store.project.files, store.project.entry)
+        : sim.updateProject(store.project.files, store.project.entry);
+    hasRun = true;
     const entryModel = tabs.model(store.project.entry);
     setErrorMarker(entryModel, res.ok ? -1 : res.errorLine, res.ok ? "" : res.error.split("\n")[0] ?? "error");
     log(res.output, "out");
@@ -305,17 +316,20 @@ async function boot() {
   };
 
   // Running is a user gesture, so it's also where we (re)start audio.
-  const runWithAudio = async () => {
-    run();
+  const runWithAudio = async (fresh = false) => {
+    run(fresh);
     await audio.start();
     audioState.textContent = "live";
     audioState.classList.add("on");
   };
 
   const runBtn = $("#run");
-  runBtn.addEventListener("click", runWithAudio);
-  // Cmd/Ctrl-Enter to run.
-  editor.addCommand(2048 | 3 /* KeyMod.CtrlCmd | KeyCode.Enter */, runWithAudio);
+  // Shift is the escape hatch back to a clean instrument — the only way to
+  // clear state an incremental re-run deliberately preserves.
+  runBtn.addEventListener("click", (e) => void runWithAudio(e.shiftKey));
+  // Cmd/Ctrl-Enter to run; add Shift for a full reset.
+  editor.addCommand(2048 | 3 /* KeyMod.CtrlCmd | KeyCode.Enter */, () => void runWithAudio(false));
+  editor.addCommand(2048 | 1024 | 3 /* CtrlCmd | Shift | Enter */, () => void runWithAudio(true));
 
   // Shared debug session: owns the DebugController lifecycle, state machine,
   // output routing, isolation gate + compile pre-flight. Both the transport
@@ -411,7 +425,7 @@ async function boot() {
     createFile: (p: string, c = "") => store.create(p, c),
     activate: (p: string) => store.activate(p),
     setEntry: (p: string) => store.setEntry(p),
-    run: () => run(),
+    run: (fresh = false) => run(fresh),
     // Breakpoint inspection (used by tests).
     breakpoints: (p: string) => store.breakpointsFor(p),
     // Analyzer markers for any file's model (not just the active one).

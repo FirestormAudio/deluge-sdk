@@ -3,8 +3,8 @@ use deluge_audio_graph::StereoFrame;
 use deluge_audio_graph::node::TableSrc;
 use deluge_wren_core::Host as _;
 use deluge_wren_core::test_support::{
-    EngineHost, run_and_capture_cmds, run_and_render, run_and_render_with_input,
-    run_midi_capture_cmds, run_script_ok,
+    EngineHost, run_and_capture_cmds, run_and_capture_update, run_and_capture_updates,
+    run_and_render, run_and_render_with_input, run_midi_capture_cmds, run_script_ok,
 };
 use deluge_wren_core::{BusId, Cmd, Input, Kind, NodeId};
 
@@ -4323,5 +4323,125 @@ fn out_without_dcblock_passes_dc() {
         (out[63].l - 0.5).abs() < 1e-6,
         "DC should pass unblocked: {}",
         out[63].l
+    );
+}
+
+// ── GL2: incremental patch update ────────────────────────────────────────
+
+#[test]
+fn re_running_a_script_under_an_update_emits_the_identical_command_stream() {
+    // This is what makes GL2 work here without a parser or an AST diff: node
+    // ids come from a deterministic allocator, so re-running the same script
+    // re-emits exactly the same `NewNode`s for exactly the same ids. The
+    // engine then keeps every node whose kind is unchanged and sweeps the rest,
+    // which means the *script re-run is the diff*.
+    let (first, second) = run_and_capture_update("Out.patch(Svf.lp(Osc.saw(110), 800, 0.3))");
+    assert_eq!(second.first(), Some(&Cmd::BeginUpdate));
+    assert_eq!(second.last(), Some(&Cmd::EndUpdate));
+    assert_eq!(
+        &second[1..second.len() - 1],
+        &first[..],
+        "same ids, same kinds, same order"
+    );
+}
+
+#[test]
+fn an_update_does_not_reset_the_engine() {
+    // The distinction from `reset()`: no `Cmd::Reset` anywhere, so the running
+    // graph — and every node's DSP state — survives the re-run.
+    let (_, second) = run_and_capture_update("Out.patch(Osc.saw(110))");
+    assert!(
+        !second.contains(&Cmd::Reset),
+        "an update must not tear the graph down: {second:?}"
+    );
+}
+
+// ── GL6: explicit names pin node identity across an edit ─────────────────
+
+/// The `NodeId` of the first node of `kind` created in this run.
+fn id_of(cmds: &[Cmd], kind: Kind) -> NodeId {
+    cmds.iter()
+        .find_map(|c| match c {
+            Cmd::NewNode { node, kind: k, .. } if *k == kind => Some(*node),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no {kind:?} node in {cmds:?}"))
+}
+
+#[test]
+fn a_named_scope_keeps_its_ids_when_a_stage_is_inserted_above_it() {
+    // The GL2 hole GL6 closes: ids come from a bump allocator, so inserting a
+    // node earlier in the script shifts every later id by one, and the engine's
+    // (id, kind) match then reattaches state to the wrong node. A name pins the
+    // ids inside its scope regardless of what moves around it.
+    let runs = run_and_capture_updates(&[
+        r#"Patch.named("bass", Fn.new { Out.patch(Osc.saw(110)) })"#,
+        r#"Out.patch(Noise.pink())
+Patch.named("bass", Fn.new { Out.patch(Osc.saw(110)) })"#,
+    ]);
+    assert_eq!(
+        id_of(&runs[1], Kind::Saw),
+        id_of(&runs[0], Kind::Saw),
+        "the named saw kept its id across the insertion"
+    );
+}
+
+#[test]
+fn an_unnamed_node_still_shifts_when_a_stage_is_inserted_above_it() {
+    // The honest limit: naming is opt-in, and what you do not name is still
+    // positional. Pinned so the boundary of the feature is not folklore.
+    let runs = run_and_capture_updates(&[
+        r#"Out.patch(Osc.saw(110))"#,
+        r#"Out.patch(Noise.pink())
+Out.patch(Osc.saw(110))"#,
+    ]);
+    assert_ne!(id_of(&runs[1], Kind::Saw), id_of(&runs[0], Kind::Saw));
+}
+
+#[test]
+fn names_survive_reordering_of_the_scopes_themselves() {
+    // Swapping two named blocks must not swap their nodes' identities.
+    let runs = run_and_capture_updates(&[
+        r#"Patch.named("a", Fn.new { Out.patch(Osc.saw(110)) })
+Patch.named("b", Fn.new { Out.patch(Noise.pink()) })"#,
+        r#"Patch.named("b", Fn.new { Out.patch(Noise.pink()) })
+Patch.named("a", Fn.new { Out.patch(Osc.saw(110)) })"#,
+    ]);
+    assert_eq!(id_of(&runs[1], Kind::Saw), id_of(&runs[0], Kind::Saw));
+    assert_eq!(
+        id_of(&runs[1], Kind::PinkNoise),
+        id_of(&runs[0], Kind::PinkNoise)
+    );
+}
+
+#[test]
+fn a_name_pins_every_node_in_its_scope_by_position() {
+    // Two nodes under one name: both keep their ids, and they stay distinct.
+    let runs = run_and_capture_updates(&[
+        r#"Patch.named("v", Fn.new { Out.patch(Svf.lp(Osc.saw(110), 800, 0.3)) })"#,
+        r#"Out.patch(Noise.pink())
+Patch.named("v", Fn.new { Out.patch(Svf.lp(Osc.saw(110), 800, 0.3)) })"#,
+    ]);
+    assert_eq!(id_of(&runs[1], Kind::Saw), id_of(&runs[0], Kind::Saw));
+    assert_eq!(id_of(&runs[1], Kind::SvfLp), id_of(&runs[0], Kind::SvfLp));
+    assert_ne!(id_of(&runs[0], Kind::Saw), id_of(&runs[0], Kind::SvfLp));
+}
+
+#[test]
+fn dropping_a_named_scope_returns_its_ids_for_reuse() {
+    // The sweep must reach the id map too, or a patch that grows and shrinks
+    // leaks binding-side ids until `WREN_MAX_NODES` runs out.
+    let runs = run_and_capture_updates(&[
+        r#"Patch.named("a", Fn.new { Out.patch(Osc.saw(110)) })
+Patch.named("b", Fn.new { Out.patch(Noise.pink()) })"#,
+        r#"Patch.named("b", Fn.new { Out.patch(Noise.pink()) })"#,
+        r#"Patch.named("b", Fn.new { Out.patch(Noise.pink()) })
+Patch.named("c", Fn.new { Out.patch(Osc.tri(220)) })"#,
+    ]);
+    let dropped = id_of(&runs[0], Kind::Saw);
+    assert_eq!(
+        id_of(&runs[2], Kind::Tri),
+        dropped,
+        "the id freed with scope \"a\" came back for scope \"c\""
     );
 }

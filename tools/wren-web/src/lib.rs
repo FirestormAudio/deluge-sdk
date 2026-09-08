@@ -17,10 +17,43 @@
 use core::ffi::{c_char, c_int};
 use core::ptr::addr_of_mut;
 
-use deluge_wren_core::{CV_CHANNELS, Cmd, Engine, GATE_CHANNELS, Host};
+use deluge_wren_core::{CV_CHANNELS, Cmd, Engine, GATE_CHANNELS, Host, StereoFrame};
+
+/// The web simulator's concrete engine.
+///
+/// `BLOCK` is 128 to match the AudioWorklet's render quantum exactly, so a
+/// worklet callback is one `render` with no partial block discarded. `NODES` /
+/// `BUSES` meet the binding-side minimums (`WREN_MAX_NODES` / `WREN_MAX_BUSES`);
+/// `OUTS` is 128 rows, enough for 16 poly (`VOICES`-wide) nodes alongside a
+/// mono chain.
+type WebEngine = Engine<128, 64, 128, 8, 90112, 2048>;
+const WEB_BLOCK: usize = 128;
+
+/// The engine's sample rate. The page's `AudioContext` must match it.
+const SAMPLE_RATE: f32 = 44_100.0;
+
+/// Render `out.len()` mono samples, downmixing the engine's stereo output.
+///
+/// `out.len()` is a whole number of `WEB_BLOCK`s in the worklet (the quantum is
+/// 128, `WEB_BLOCK` is 128); a shorter tail renders a full block and uses the
+/// prefix, which costs a little work but never a discontinuity, since the
+/// engine's own position advances by the block either way.
+fn render_mono(eng: &mut WebEngine, out: &mut [f32]) {
+    let silence = [StereoFrame::default(); WEB_BLOCK];
+    let mut buf = [StereoFrame::default(); WEB_BLOCK];
+    let mut done = 0;
+    while done < out.len() {
+        eng.render(&mut buf, &silence);
+        let n = (out.len() - done).min(WEB_BLOCK);
+        for i in 0..n {
+            out[done + i] = ((buf[i].l + buf[i].r) * 0.5).clamp(-1.0, 1.0);
+        }
+        done += n;
+    }
+}
 use wren_sys::{Vm, WrenVM};
 
-mod codec;
+use deluge_wren_core::codec;
 mod oled;
 use oled::Oled;
 
@@ -50,10 +83,15 @@ struct WebHost {
     oled: Oled,
     midi_tx: [u8; MIDI_TX_CAP],
     midi_tx_len: usize,
-    engine: Engine,
+    engine: Option<WebEngine>,
 }
 
 impl WebHost {
+    /// The scope engine, built on first use.
+    fn engine(&mut self) -> &mut WebEngine {
+        self.engine.get_or_insert_with(|| WebEngine::new(SAMPLE_RATE))
+    }
+
     const fn new() -> Self {
         WebHost {
             now_ms: 0,
@@ -63,7 +101,7 @@ impl WebHost {
             oled: Oled::new(),
             midi_tx: [0; MIDI_TX_CAP],
             midi_tx_len: 0,
-            engine: Engine::new(),
+            engine: None,
         }
     }
 }
@@ -110,7 +148,7 @@ impl Host for WebHost {
     fn audio_cmd(&mut self, cmd: Cmd) {
         // Apply to the local engine (used to render the on-screen scope) and also
         // queue the serialized command for the AudioWorklet's render engine.
-        self.engine.apply(cmd);
+        self.engine().apply(cmd);
         push_cmd_out(cmd);
     }
 }
@@ -153,7 +191,7 @@ static mut CMD_OUT_LEN: usize = 0;
 // The AudioWorklet instance's render engine + its incoming-command buffer. These
 // statics are exercised only by the worklet copy of this module (a second wasm
 // instance with its own memory); the main copy never touches them.
-static mut WORKLET_ENGINE: Engine = Engine::new();
+static mut WORKLET_ENGINE: Option<WebEngine> = None;
 static mut ECMD: [u8; CMD_CAP] = [0; CMD_CAP];
 
 // Module registry (see MAX_MODULES). MOD_NAME_BUF is a scratch input for one
@@ -308,6 +346,45 @@ pub extern "C" fn sim_reset() -> i32 {
     }
     push_cmd_out(Cmd::Reset);
     sim_boot()
+}
+
+/// Begin an **incremental** re-run (GL2): rebuild the VM, but keep the running
+/// audio graph instead of tearing it down. Returns 1 on success.
+///
+/// This is [`sim_reset`]'s sibling, and the difference is exactly what does
+/// *not* happen: `HOST` is left alone (so the local engine keeps its graph, and
+/// the OLED/CV/LED surface keeps its contents until the script redraws), and
+/// the outgoing command queue is not cleared — `Cmd::BeginUpdate` is appended
+/// to it, ahead of whatever the re-run emits.
+///
+/// The VM itself *is* freed and re-booted, exactly as on a full reset, so the
+/// script re-runs against fresh module variables. Node identity survives that
+/// because ids come from the deterministic Wren-side allocator, not from the
+/// VM: the same logical node in the re-run gets the same id, which is how the
+/// engine tells "unchanged, keep its DSP state" from "new".
+///
+/// Call [`sim_load`] between this and [`sim_update_end`]; anything the re-run
+/// does not re-emit is swept when the update closes.
+#[unsafe(no_mangle)]
+pub extern "C" fn sim_update_begin() -> i32 {
+    unsafe {
+        if !VM.is_null() {
+            wren_sys::wrenFreeVM(VM);
+            VM = core::ptr::null_mut();
+        }
+    }
+    // Nulls every VM-referencing handle and rewinds the node allocator, then
+    // emits `Cmd::BeginUpdate` through the host — which both applies it to the
+    // local engine and queues it for the worklet.
+    deluge_wren_core::begin_update();
+    sim_boot()
+}
+
+/// Close an incremental re-run opened by [`sim_update_begin`], freeing every
+/// node the re-run did not re-emit.
+#[unsafe(no_mangle)]
+pub extern "C" fn sim_update_end() {
+    deluge_wren_core::end_update();
 }
 
 /// Pointer to the source-input buffer: JS writes up to `sim_src_cap()` bytes here,
@@ -529,9 +606,7 @@ pub extern "C" fn sim_render(n: usize) -> usize {
     let host = unsafe { &mut *addr_of_mut!(HOST) };
     let buf = unsafe { &mut *addr_of_mut!(AUDIO) };
     let n = n.min(AUDIO_CAP);
-    for s in buf.iter_mut().take(n) {
-        *s = host.engine.render_frame().clamp(-1.0, 1.0);
-    }
+    render_mono(host.engine(), &mut buf[..n]);
     n
 }
 
@@ -565,11 +640,20 @@ pub extern "C" fn sim_engine_cmd_ptr() -> *mut u8 {
 pub extern "C" fn sim_engine_cmd_cap() -> usize {
     CMD_CAP
 }
+/// The worklet's engine, built on first use. Separate from the main thread's
+/// scope engine: a different wasm instance with its own graph, fed only by the
+/// serialized command stream.
+fn worklet_engine() -> &'static mut WebEngine {
+    // SAFETY: the worklet is single-threaded and owns this instance.
+    let slot = unsafe { &mut *addr_of_mut!(WORKLET_ENGINE) };
+    slot.get_or_insert_with(|| WebEngine::new(SAMPLE_RATE))
+}
+
 /// Apply the `len` bytes of serialized commands now in the engine command buffer.
 #[unsafe(no_mangle)]
 pub extern "C" fn sim_engine_apply(len: usize) {
     let buf = unsafe { &*addr_of_mut!(ECMD) };
-    let eng = unsafe { &mut *addr_of_mut!(WORKLET_ENGINE) };
+    let eng = worklet_engine();
     let len = len.min(CMD_CAP);
     let mut off = 0;
     while off + codec::REC <= len {
@@ -580,11 +664,8 @@ pub extern "C" fn sim_engine_apply(len: usize) {
 /// Render `n` mono samples from the worklet engine into the audio buffer.
 #[unsafe(no_mangle)]
 pub extern "C" fn sim_engine_render(n: usize) -> usize {
-    let eng = unsafe { &mut *addr_of_mut!(WORKLET_ENGINE) };
     let buf = unsafe { &mut *addr_of_mut!(AUDIO) };
     let n = n.min(AUDIO_CAP);
-    for s in buf.iter_mut().take(n) {
-        *s = eng.render_frame().clamp(-1.0, 1.0);
-    }
+    render_mono(worklet_engine(), &mut buf[..n]);
     n
 }

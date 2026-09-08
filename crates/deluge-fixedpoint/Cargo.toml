@@ -19,6 +19,15 @@ armv7-dsp-intrinsics.workspace = true
 
 [dev-dependencies]
 proptest = "1.5"
+# The cross-crate dsp_pipeline integration test (tests/dsp_pipeline.rs):
+# quantise + fixed-point gain feeding the FFT. It lives on this side of the
+# eventual flare seam so `deluge-fft` — which becomes `flare-fft` in its own
+# repo — keeps no dev-dependency on a crate that stays in the SDK.
+deluge-fft = { path = "../deluge-fft" }
+# The test exercises the real DSP instructions (SMMUL etc.), which need
+# `nightly`; the normal dependency above is featureless so the firmware keeps
+# the raw-`asm!` path.
+armv7-dsp-intrinsics = { workspace = true, features = ["nightly"] }
 
 [lib]
 name = "fixedpoint"

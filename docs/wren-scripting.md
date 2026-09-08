@@ -119,6 +119,27 @@ Combining: `a * b`, `a + b`, `a - b` (operands may be nodes or numbers).
 Params: `node.freq = …`, `node.cutoff = …`, `node.gate(bool)`, `node.trigger()`.
 Output is mono, duplicated to both channels.
 
+### Keeping a patch alive across an edit — `Patch.named`
+
+A live editor re-runs your whole script on every Run. The engine keeps any node
+whose id and kind are unchanged (so oscillators keep their phase and envelopes
+keep their stage, and the audio does not click), but node ids are handed out in
+creation order — so inserting anything *above* a node shifts its id and
+restarts it.
+
+Name the parts you edit around, and their ids stay put wherever the block moves:
+
+```wren
+var bass = Patch.named("bass", Fn.new {
+  Out.patch(Osc.saw(110).lpf(800))
+})
+```
+
+`Patch.named` returns whatever the block returns, so it drops into an existing
+chain without restructuring anything. Inside a name, nodes are still pinned by
+position, so name the *units* you work on — a voice, an fx chain — rather than
+every node. Anything unnamed keeps the old positional behaviour.
+
 ## Examples
 
 See `wren-firmware/examples/`:

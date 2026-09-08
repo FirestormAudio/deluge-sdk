@@ -16,7 +16,8 @@ jobs:
         with:
           toolchain: nightly
           # QEMU ARM bucket + host bucket (see tools/test.sh).
-          targets: armv7-unknown-linux-gnueabihf, x86_64-unknown-linux-gnu
+          # + wasm32-wasip1 for the web sim's build guard (see tools/test.sh).
+          targets: armv7-unknown-linux-gnueabihf, x86_64-unknown-linux-gnu, wasm32-wasip1
           components: rust-src,llvm-tools-preview
 
       - name: Cache Cargo dependencies

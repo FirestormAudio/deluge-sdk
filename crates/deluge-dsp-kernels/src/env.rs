@@ -40,6 +40,13 @@ impl Ar {
         self.stage = Stage::Attack;
     }
 
+    /// `true` once the release has fully decayed (or before the first gate).
+    /// A fresh `Ar` is idle, so the graph must treat idle as an *edge*, not a
+    /// level, when reporting completion (see `deluge-audio-graph`'s `Event`).
+    pub fn is_idle(&self) -> bool {
+        self.stage == Stage::Idle
+    }
+
     /// Advance one sample; returns the new level. attack/release in seconds.
     pub fn tick(&mut self, attack: f32, release: f32, dt: f32) -> f32 {
         let atk = attack.max(0.0001);
@@ -114,6 +121,12 @@ impl Adsr {
 
     pub fn set_sustain(&mut self, s: f32) {
         self.sustain = s.clamp(0.0, 1.0);
+    }
+
+    /// `true` once the release has fully decayed (or before the first gate).
+    /// See [`Ar::is_idle`] for the edge-vs-level caveat.
+    pub fn is_idle(&self) -> bool {
+        self.stage == Stage::Idle
     }
 
     /// Advance one sample; returns the new level. a/d/r in seconds.

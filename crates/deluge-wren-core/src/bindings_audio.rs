@@ -672,7 +672,10 @@ pub(crate) unsafe extern "C" fn node_wavetable(raw: *mut WrenVM) {
 /// node gets bound to this `Wavetable` (e.g. via `Node.wavetable_pooled_`),
 /// *not* by the `Wavetable` Wren object's GC. Bind the returned `Wavetable`
 /// to a node and free that node to release the table's memory; don't rely
-/// on GC to free it. Don't free a node while another node still shares the
+/// on GC to free it. Rebinding a node to a different table releases the region
+/// it held, unless another live node still holds it — that is what keeps a
+/// patch update (which re-uploads and re-binds on every run) from leaking one
+/// pyramid per edit. Don't free a node while another node still shares the
 /// same `Wavetable` — that reclaims the region out from under the survivor.
 /// Consequences of misuse are always graceful (silence or a finite leak
 /// until the pool exhausts), never UB or a panic, but this is an accepted
@@ -2771,6 +2774,28 @@ pub(crate) unsafe extern "C" fn node_reset(raw: *mut WrenVM) {
     node_reset_impl(&vm);
 }
 
+/// `Node.scopeBegin_(name)` — open a named identity scope (GL6). The name is
+/// read through `checked_str`, so a non-String argument reads as `""` (the
+/// global scope) rather than tripping the VM's disabled asserts.
+pub(crate) fn node_scope_begin_impl<S: SlotApi>(vm: &S) {
+    audio::scope_begin(crate::slotapi::checked_str(vm, 1));
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_scope_begin(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_scope_begin_impl(&vm);
+}
+
+/// `Node.scopeEnd_()` — close the innermost identity scope.
+pub(crate) fn node_scope_end_impl<S: SlotApi>(_vm: &S) {
+    audio::scope_end();
+}
+#[cfg(feature = "wren-sys-backend")]
+pub(crate) unsafe extern "C" fn node_scope_end(raw: *mut WrenVM) {
+    let vm = Vm(raw);
+    node_scope_end_impl(&vm);
+}
+
 pub(crate) fn node_master_limit_impl<S: SlotApi>(vm: &S) {
     let ceiling = vm.get_f(1) as f32;
     let release = vm.get_f(2) as f32;
@@ -3392,6 +3417,24 @@ pub(crate) fn register_audio<S: SlotApi>(
         node_mono_begin_impl::<S>,
     );
     method("main", "Node", true, "monoEnd_(_)", node_mono_end_impl::<S>);
+    // Named identity scopes (GL6). These exist in the `METHODS` table used by
+    // the wren-sys backend; they must be here too, or every wren-core-backed
+    // host (the debug harness) fails to boot the prelude, which declares them
+    // `foreign static`.
+    method(
+        "main",
+        "Node",
+        true,
+        "scopeBegin_(_)",
+        node_scope_begin_impl::<S>,
+    );
+    method(
+        "main",
+        "Node",
+        true,
+        "scopeEnd_()",
+        node_scope_end_impl::<S>,
+    );
     method(
         "main",
         "Synth",

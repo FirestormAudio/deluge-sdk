@@ -48,6 +48,7 @@ fn compact_levels(region: &[f32]) -> [&[f32]; LEVELS] {
 pub const MAX_INPUTS: usize = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum Kind {
     Sine,
     Saw,
@@ -133,6 +134,110 @@ pub enum Kind {
     PolyGranular,
 }
 
+/// Every [`Kind`], in declaration order, so `ALL_KINDS[i] as u8 == i`.
+///
+/// Exists so a `Kind` can cross a wire (the web sim serializes `Cmd`s between
+/// the VM thread and the AudioWorklet's engine). `#[repr(u8)]` makes
+/// `kind as u8` well-defined; this table is the safe inverse, which a
+/// `transmute` would not be. `all_kinds_match_their_discriminants` fails if
+/// this list ever drifts from the enum.
+pub const ALL_KINDS: [Kind; 80] = [
+    Kind::Sine,
+    Kind::Saw,
+    Kind::Square,
+    Kind::Tri,
+    Kind::SyncSine,
+    Kind::SyncSaw,
+    Kind::SyncSquare,
+    Kind::SyncTri,
+    Kind::Noise,
+    Kind::PinkNoise,
+    Kind::BrownNoise,
+    Kind::Env,
+    Kind::Adsr,
+    Kind::Lpf,
+    Kind::SvfLp,
+    Kind::SvfHp,
+    Kind::SvfBp,
+    Kind::SvfNotch,
+    Kind::Tb303,
+    Kind::MoogLp4,
+    Kind::MoogLp2,
+    Kind::Ms20Lp,
+    Kind::Ms20Hp,
+    Kind::Modal,
+    Kind::Mul,
+    Kind::Add,
+    Kind::Sub,
+    Kind::Split2,
+    Kind::Pan,
+    Kind::Input,
+    Kind::Wavetable,
+    Kind::Delay,
+    Kind::Chorus,
+    Kind::Flanger,
+    Kind::Room,
+    Kind::Hall,
+    Kind::Plate,
+    Kind::Drive,
+    Kind::Comp,
+    Kind::Gate,
+    Kind::Bitcrush,
+    Kind::Decimate,
+    Kind::Eq,
+    Kind::Lfo,
+    Kind::SampleHold,
+    Kind::Slew,
+    Kind::Steps,
+    Kind::Curve,
+    Kind::QuantStep,
+    Kind::QuantPitch,
+    Kind::Mtof,
+    Kind::Ctrl,
+    Kind::PolyCtrl,
+    Kind::PolyOsc,
+    Kind::VoiceSum,
+    Kind::StereoVoiceSum,
+    Kind::PolyAr,
+    Kind::PolyAdsr,
+    Kind::PolySvf,
+    Kind::PolySlew,
+    Kind::PolyMul,
+    Kind::PolyMtof,
+    Kind::PolyAdd,
+    Kind::PolyNoise,
+    Kind::PolyPink,
+    Kind::PolyBrown,
+    Kind::PolyMoogLp4,
+    Kind::PolyMoogLp2,
+    Kind::PolyMs20Lp,
+    Kind::PolyMs20Hp,
+    Kind::PolySyncSine,
+    Kind::PolySyncSaw,
+    Kind::PolySyncSquare,
+    Kind::PolySyncTri,
+    Kind::PolyWt,
+    Kind::PolyWtMorph,
+    Kind::SamplePlayer,
+    Kind::PolySamplePlayer,
+    Kind::StreamPlayer,
+    Kind::PolyGranular,
+];
+
+impl Kind {
+    /// This kind's stable wire byte.
+    #[inline]
+    pub fn to_u8(self) -> u8 {
+        self as u8
+    }
+
+    /// The kind for a wire byte, or `None` if it names no kind.
+    #[inline]
+    pub fn from_u8(b: u8) -> Option<Kind> {
+        ALL_KINDS.get(b as usize).copied()
+    }
+}
+
 /// Per-kind DSP state. Only the active variant's kernel is used.
 #[derive(Clone, Copy)]
 enum State {
@@ -202,6 +307,32 @@ pub enum TableSrc {
     Pooled(crate::pool::PoolHandle),
 }
 
+/// How often a node is evaluated.
+///
+/// `Audio` (the default) evaluates every sample of the block. `Control`
+/// evaluates **once per block** and broadcasts that value across the node's
+/// output row — the modulation-source rate, scsynth's `.kr`. A control-rate
+/// node costs one kernel evaluation per block instead of `BLOCK`, and its
+/// consumers receive it as [`In::K`], so kernels take their `as_const` fast
+/// path instead of indexing a row.
+///
+/// Two consequences worth knowing:
+///
+/// - A control-rate node is handed `BLOCK * dt`, not `dt`, so time-based
+///   kernels (LFOs, envelopes, slews) advance at the same wall-clock rate they
+///   would at audio rate. Its resolution is one block, not one sample.
+/// - Every input of a control-rate node is sampled at the block's **first**
+///   sample (scsynth's `A2K`), so feeding an audio-rate signal into one is a
+///   sample-and-hold, not an average.
+///
+/// Only width-1 nodes may be `Control`; see [`crate::Engine::set_rate`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Rate {
+    #[default]
+    Audio,
+    Control,
+}
+
 #[derive(Clone, Copy)]
 pub struct Node {
     pub(crate) kind: Kind,
@@ -211,6 +342,7 @@ pub struct Node {
     inputs: [Input; MAX_INPUTS],
     state: State,
     table: Option<TableSrc>,
+    rate: Rate,
 }
 
 impl Node {
@@ -295,7 +427,16 @@ impl Node {
             inputs: [Input::Const(0.0); MAX_INPUTS],
             state,
             table: None,
+            rate: Rate::Audio,
         }
+    }
+
+    pub fn rate(&self) -> Rate {
+        self.rate
+    }
+
+    pub fn set_rate(&mut self, rate: Rate) {
+        self.rate = rate;
     }
 
     pub fn out_width(kind: Kind) -> usize {
@@ -449,6 +590,29 @@ impl Node {
             State::PolyGranular(p) => p.trigger_voice(v),
             _ => {}
         }
+    }
+
+    /// Envelope-completion state, as a bitmask of finished lanes.
+    ///
+    /// `None` for kinds that carry no envelope. For the mono envelopes
+    /// (`Env`/`Adsr`) bit 0 tracks the single envelope; for the poly envelopes
+    /// bit `v` tracks lane `v`. The engine diffs this against the previous
+    /// block's mask and emits [`crate::Event`]s on the rising edge — a fresh
+    /// envelope reads as idle, so the level alone is not a completion signal.
+    pub fn idle_mask(&self) -> Option<u32> {
+        match &self.state {
+            State::Ar(a) => Some(a.is_idle() as u32),
+            State::Adsr(a) => Some(a.is_idle() as u32),
+            State::PolyAr(a) => Some(a.idle_mask()),
+            State::PolyAdsr(a) => Some(a.idle_mask()),
+            _ => None,
+        }
+    }
+
+    /// `true` if this kind reports completion per voice lane rather than as a
+    /// single mono envelope — selects `VoiceDone` over `Done`.
+    pub fn is_poly_env(&self) -> bool {
+        matches!(self.state, State::PolyAr(_) | State::PolyAdsr(_))
     }
 
     /// Set a non-signal scalar parameter. For oscillators, `param 0` = feedback.
@@ -1882,6 +2046,19 @@ mod tests {
             "compressed well below input, got {}",
             buf[buf.len() - 1]
         );
+    }
+
+    #[test]
+    fn all_kinds_match_their_discriminants() {
+        // `ALL_KINDS` is hand-listed, so it can drift from the enum. It is the
+        // safe inverse of `kind as u8` used for the wire, and a wrong entry
+        // would silently decode one node kind as another.
+        for (i, k) in ALL_KINDS.iter().enumerate() {
+            assert_eq!(k.to_u8() as usize, i, "ALL_KINDS[{i}] = {k:?} is misplaced");
+            assert_eq!(Kind::from_u8(i as u8), Some(*k));
+        }
+        assert_eq!(Kind::from_u8(ALL_KINDS.len() as u8), None, "past the end");
+        assert_eq!(Kind::from_u8(u8::MAX), None);
     }
 
     #[test]

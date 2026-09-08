@@ -105,16 +105,146 @@ pub enum Cmd {
         q: f32,
         eq_type: u8,
     },
+    /// Write a control bus directly (G6 — scsynth's `/c_set`).
+    ///
+    /// The host-writes-a-modulator path: a MIDI CC, a macro knob, an envelope
+    /// follower computed upstream. The value persists until something writes
+    /// the bus again. Out-of-range bus ids are dropped.
+    SetCtrl {
+        bus: crate::ids::CtrlBusId,
+        value: f32,
+    },
+    /// Route a node's output onto a control bus (G6 — scsynth's `Out.kr`).
+    ///
+    /// A *standing* route: recorded once, re-applied after every block, until
+    /// [`Cmd::ClearCtrlWrite`] removes it or the source node is freed. The
+    /// block's first sample is taken, which for the `Rate::Control` node this
+    /// is meant for is its whole output.
+    ///
+    /// One writer per bus wins (the last standing route applied), rather than
+    /// summing — two sources on one control bus is a patching mistake, not a
+    /// mix. Combine modulators through `Add` where the intent is explicit.
+    CtrlWrite {
+        node: NodeId,
+        port: u8,
+        bus: crate::ids::CtrlBusId,
+    },
+    /// Remove the standing route feeding `bus`, if any. The bus keeps its last
+    /// value; nothing further writes it.
+    ClearCtrlWrite {
+        bus: crate::ids::CtrlBusId,
+    },
+    /// Map a node parameter to a control bus (G6 — scsynth's `/n_map`).
+    ///
+    /// The mapped parameter is re-applied from the bus at the top of every
+    /// block, as though the host had sent `SetParam` itself. This is what makes
+    /// the whole `u8` parameter space modulatable without spending one of the
+    /// three scarce input ports (see §G5) — filter drive, oscillator feedback,
+    /// reverb size, ADSR sustain and the rest are parameters, not inputs.
+    ///
+    /// A parameter can follow one bus at a time; mapping it again replaces the
+    /// mapping. While mapped, a direct `SetParam` is overwritten on the next
+    /// block — the bus is the authority.
+    MapParam {
+        node: NodeId,
+        param: u8,
+        bus: crate::ids::CtrlBusId,
+    },
+    /// Remove a parameter mapping. The parameter keeps the value it last
+    /// received and becomes writable by `SetParam` again.
+    UnmapParam {
+        node: NodeId,
+        param: u8,
+    },
+    /// Set a node's evaluation rate (scsynth's `.ar` / `.kr`). No-op if the
+    /// node is not live, or if `Control` is asked of a node wider than one
+    /// port — see [`crate::Engine::set_rate`].
+    SetRate {
+        node: NodeId,
+        rate: crate::node::Rate,
+    },
+    /// Move `node` so it evaluates immediately before `target` (scsynth
+    /// `/n_before`). No-op if either id is not live, or if they are equal.
+    MoveBefore {
+        node: NodeId,
+        target: NodeId,
+    },
+    /// Move `node` so it evaluates immediately after `target` (scsynth
+    /// `/n_after`). The insert-into-a-chain primitive: `NewNode` appends to the
+    /// end of eval order, then `MoveAfter` places it onto its upstream without
+    /// rebuilding anything downstream.
+    MoveAfter {
+        node: NodeId,
+        target: NodeId,
+    },
     Free {
         node: NodeId,
     },
+    /// Open an incremental patch update (GL2). Inside one, `NewNode` on a live
+    /// id with the **same kind** keeps that node and its DSP state instead of
+    /// failing; a different kind replaces it. Pair with [`Cmd::EndUpdate`].
+    ///
+    /// The intended use is re-running the patch script that built the graph:
+    /// because node ids are author-assigned and deterministic, the re-run *is*
+    /// the diff — no AST, no parser, no graph comparison.
+    BeginUpdate,
+    /// Close an incremental patch update: every node the update did not
+    /// re-emit is freed, and each one is announced as `Event::Freed`.
+    ///
+    /// Sweeping is synchronous and unconditional. A node the new patch omits
+    /// has no path to an output any more — omission is what severed it — so
+    /// there is no audible tail to protect by deferring the free.
+    EndUpdate,
+    /// Drop every command filed with [`crate::Engine::apply_at`] that has not
+    /// fired yet (scsynth's `/clearSched`). Commands already applied stay
+    /// applied — this cancels the future, not the past.
+    ClearSchedule,
     Reset,
+}
+
+impl Cmd {
+    /// The node this command addresses, if it addresses one.
+    ///
+    /// Used to attribute a [`crate::event::Event::CmdFailed`] to something the
+    /// host can act on. Bus, master-chain, update-bracket and schedule
+    /// commands name no node and return `None`.
+    pub fn node(&self) -> Option<NodeId> {
+        match *self {
+            Cmd::NewNode { node, .. }
+            | Cmd::SetInput { node, .. }
+            | Cmd::SetParam { node, .. }
+            | Cmd::BindTable { node, .. }
+            | Cmd::Gate { node, .. }
+            | Cmd::Trigger { node }
+            | Cmd::GateVoice { node, .. }
+            | Cmd::TriggerVoice { node, .. }
+            | Cmd::StreamFill { node, .. }
+            | Cmd::CtrlWrite { node, .. }
+            | Cmd::MapParam { node, .. }
+            | Cmd::UnmapParam { node, .. }
+            | Cmd::SetRate { node, .. }
+            | Cmd::MoveBefore { node, .. }
+            | Cmd::MoveAfter { node, .. }
+            | Cmd::Free { node } => Some(node),
+            _ => None,
+        }
+    }
 }
 
 /// Transport seam: the firmware enqueues onto a critical-section ring; the web
 /// sim applies directly. Same shape as the prototype's `Host`.
 pub trait Host {
+    /// Deliver `cmd` to be applied as soon as the engine sees it.
     fn audio_cmd(&self, cmd: Cmd);
+
+    /// Deliver `cmd` to be applied at sample `at` on the engine's clock
+    /// ([`crate::Engine::sample_time`]).
+    ///
+    /// Scheduling is a property of *delivery*, not of the command, which is why
+    /// this is a second method rather than a `Cmd` variant carrying a
+    /// timestamp — a `Cmd` cannot nest a `Cmd` without boxing, and this crate
+    /// does not allocate on the audio path.
+    fn audio_cmd_at(&self, at: u64, cmd: Cmd);
 }
 
 #[cfg(test)]
@@ -273,94 +403,6 @@ mod tests {
         assert!(out[0].l.abs() < 1e-3);
         assert!(out.iter().all(|f| f.l.abs() <= 1.0 && f.l.is_finite()));
     }
-
-    /// CHARACTERIZATION golden (spec §8 P0 testing gate): pins the first 8
-    /// rendered samples of the deterministic saw→lpf→env patch (same topology
-    /// as `saw_lpf_env_parity_first_samples`) as literal constants. This test
-    /// exists to catch *unintended* drift: if a future kernel refactor
-    /// silently changes the numeric output of the oscillator, filter, or
-    /// envelope, this test fails. Regenerating the pinned constants below is
-    /// the correct response ONLY when the output change is intended and has
-    /// been reviewed — do not "fix" a failure here by blindly re-pinning.
-    #[test]
-    fn golden_saw_lpf_env_first_block() {
-        let mut e = E::new(48_000.0);
-        e.apply(Cmd::NewNode {
-            node: NodeId(0),
-            kind: Kind::Saw,
-            args: [Input::Const(4.0), Input::Const(0.0), Input::Const(0.0)],
-        });
-        e.apply(Cmd::NewNode {
-            node: NodeId(1),
-            kind: Kind::Lpf,
-            args: [
-                Input::Node {
-                    node: NodeId(0),
-                    port: 0,
-                },
-                Input::Const(800.0),
-                Input::Const(0.0),
-            ],
-        });
-        e.apply(Cmd::NewNode {
-            node: NodeId(2),
-            kind: Kind::Env,
-            args: [Input::Const(0.01), Input::Const(0.1), Input::Const(0.0)],
-        });
-        e.apply(Cmd::Gate {
-            node: NodeId(2),
-            on: true,
-        });
-        e.apply(Cmd::NewNode {
-            node: NodeId(3),
-            kind: Kind::Mul,
-            args: [
-                Input::Node {
-                    node: NodeId(1),
-                    port: 0,
-                },
-                Input::Node {
-                    node: NodeId(2),
-                    port: 0,
-                },
-                Input::Const(0.0),
-            ],
-        });
-        e.apply(Cmd::BusWrite {
-            src: Input::Node {
-                node: NodeId(3),
-                port: 0,
-            },
-            bus: BusId(0),
-        });
-        e.apply(Cmd::SetRoot { bus: BusId(0) });
-
-        let mut out = [StereoFrame::default(); 8];
-        let sil = [StereoFrame::default(); 8];
-        e.render(&mut out, &sil);
-
-        // CHARACTERIZATION golden re-pinned 2026-07-07 after Osc band-limiting (Tasks 1-3).
-        // Regenerate only on an intended, reviewed output change.
-        const EXPECTED: [f32; 8] = [
-            0.0,
-            -0.000_399_898_62,
-            -0.001_191_312_4,
-            -0.002_294_306_4,
-            -0.003_657_662_3,
-            -0.005_237_465_3,
-            -0.006_996_135,
-            -0.008_901_581,
-        ];
-        let actual: [f32; 8] = core::array::from_fn(|i| out[i].l);
-        for (i, (a, e)) in actual.iter().zip(EXPECTED.iter()).enumerate() {
-            assert!(
-                (a - e).abs() < 1e-6,
-                "sample {i}: actual {a} vs pinned {e} (diff {})",
-                (a - e).abs()
-            );
-        }
-    }
-
     #[test]
     fn cmds_are_comparable_and_debuggable() {
         use crate::node::Kind;

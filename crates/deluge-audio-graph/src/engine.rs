@@ -1,5 +1,6 @@
 //! The block-rendering engine. Owns the arena and the per-slot output arena and
-//! evaluates nodes in topological (eval-order) order, a block at a time.
+//! evaluates nodes in eval order — **topologically sorted** whenever the graph's
+//! shape changes (see [`crate::arena::Arena::sort`]) — a block at a time.
 //!
 //! ## Borrow model (spec §3.5)
 //! The output arena is one `UnsafeCell<[[f32; BLOCK]; OUTS]>`. Each `render_block`
@@ -8,9 +9,9 @@
 //! writes the node's own slot-run. Memory-safety comes from this copy-out
 //! discipline: every read is copied into `scratch` before the mutable-write
 //! `unsafe` deref is created, so the write borrow never overlaps a read. This
-//! holds regardless of eval order — topological order is what makes the
-//! *values* correct (so a node sees its inputs' current-block outputs), not
-//! what makes the borrow sound.
+//! holds regardless of eval order — the topological sort is what makes the
+//! *values* correct (so a node sees its inputs' current-block outputs), not what
+//! makes the borrow sound.
 
 use core::cell::UnsafeCell;
 
@@ -21,8 +22,26 @@ use deluge_dsp_kernels::limiter::MasterLimiter;
 use deluge_dsp_kernels::poly::VOICES;
 
 use crate::arena::Arena;
+use crate::event::CmdError;
+use crate::ids::CtrlBusId;
 use crate::node::{Kind, MAX_BLOCK, MAX_INPUTS, OutView};
 use crate::{BusId, Input, Node, NodeId, OutputSrc, StereoFrame, USB_CHANNELS};
+
+/// Maximum simultaneous parameter→control-bus mappings (G6, scsynth `/n_map`).
+///
+/// One per modulated parameter across the whole patch. 32 covers a rich
+/// instrument (a dozen macro destinations per voice group); a full table
+/// refuses the mapping and reports [`CmdError::MapTableFull`] rather than
+/// silently dropping it.
+pub const MAX_PARAM_MAPS: usize = 32;
+
+/// One `param ← control bus` mapping, re-applied every block.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct ParamMap {
+    node: NodeId,
+    param: u8,
+    bus: u16,
+}
 
 pub struct Engine<
     const BLOCK: usize,
@@ -70,6 +89,54 @@ pub struct Engine<
     // Opt-in master EQ on the root bus, applied at the render seam between the
     // DC-block and the limiter. `None` = disabled (render path byte-unchanged).
     master_eq: Option<MasterEq>,
+    // Envelope-completion tracking (G1). Previous block's `Node::idle_mask` per
+    // node slot; diffed at the end of `render_block` so completion is reported
+    // as a rising edge, never a level. Seeded on create (see `seed_prev_idle`)
+    // so a freshly created envelope never announces a release it never played.
+    prev_idle: [u32; NODES],
+    // Engine → host events drained by the host after render. See `event.rs`.
+    events: crate::event::EventQueue,
+    // Samples elapsed since construction (or the last `Cmd::Reset`), advanced
+    // by `BLOCK` per `render_block`. The engine's only time source: scheduled
+    // commands timestamp against it, and a host converts musical time (bars,
+    // ms) to sample positions on its side of the `Cmd` seam.
+    sample_clock: u64,
+    // Set whenever the graph's shape changes (a node created or freed, an input
+    // rewired). `render_block` re-sorts eval order when it is set, so a burst of
+    // edits inside one block costs one sort. Explicit `move_before` /
+    // `move_after` deliberately do NOT set it: a move is an author's decision
+    // and holds until the graph's shape changes again.
+    graph_dirty: bool,
+    // Opt-in: skip nodes that reach no output root (G11). Off by default — the
+    // engine cannot see what the host reads (`node_output`, `fill_usb`, a
+    // prefetch cursor), so deciding on its own that a node is pointless would
+    // silently freeze a node someone is legitimately reading.
+    cull: bool,
+    // Which nodes reach an output root, recomputed with the sort. Meaningless
+    // (and unread) while `cull` is false.
+    reachable: [bool; NODES],
+    // Incremental patch update (GL2). `epoch` advances on `BeginUpdate`;
+    // `node_epoch[i]` records the epoch in which node `i` was last (re-)emitted.
+    // `EndUpdate` frees every live node still carrying an older epoch.
+    in_update: bool,
+    epoch: u8,
+    node_epoch: [u8; NODES],
+    // Commands filed against a future sample position (G7). Drained at the top
+    // of `render_block`, before the topological re-sort, so a scheduled
+    // `NewNode` joins eval order in the same block it lands in.
+    sched: crate::sched::SchedQueue,
+    // ── Control buses (G6) ──
+    // Persistent mono modulation values. Unlike `bus_l`/`bus_r` these are NOT
+    // zeroed per block: a host-written CC must survive until something writes
+    // it again. See `ctrl.rs`.
+    ctrl: crate::ctrl::CtrlBuses,
+    // Standing node→control-bus routes, indexed BY BUS so one writer wins
+    // rather than summing. `Some((node, port))` = that bus is driven.
+    ctrl_writes: [Option<(NodeId, u8)>; crate::ids::CTRL_BUSES],
+    // Parameter mappings (scsynth `/n_map`), re-applied at the top of every
+    // block. Fixed capacity; a full table refuses and reports.
+    param_maps: [Option<ParamMap>; MAX_PARAM_MAPS],
+    param_maps_len: usize,
 }
 
 impl<
@@ -103,7 +170,242 @@ impl<
             master_limiter: None,
             master_dcblock: None,
             master_eq: None,
+            prev_idle: [0; NODES],
+            events: crate::event::EventQueue::new(),
+            sample_clock: 0,
+            // A fresh engine has no nodes, so there is nothing to sort.
+            graph_dirty: false,
+            cull: false,
+            reachable: [false; NODES],
+            in_update: false,
+            epoch: 0,
+            node_epoch: [0; NODES],
+            sched: crate::sched::SchedQueue::new(),
+            ctrl: crate::ctrl::CtrlBuses::new(),
+            ctrl_writes: [None; crate::ids::CTRL_BUSES],
+            param_maps: [None; MAX_PARAM_MAPS],
+            param_maps_len: 0,
         }
+    }
+
+    /// Samples elapsed since construction or the last [`Cmd::Reset`].
+    ///
+    /// Advances by `BLOCK` per [`Self::render_block`], so it names the first
+    /// sample of the *next* block. Free-running: it is not wall-clock and does
+    /// not follow a host transport — a host that needs bar or millisecond
+    /// positions converts against this on its own side.
+    pub fn sample_time(&self) -> u64 {
+        self.sample_clock
+    }
+
+    /// File `cmd` to be applied at sample `at` on the engine's clock, instead
+    /// of immediately (G7 — scsynth's OSC bundle timetags).
+    ///
+    /// This is what decouples a sequencer's timing from control-thread jitter:
+    /// the host decides *when* a note lands rather than *when it got round to
+    /// asking*.
+    ///
+    /// **Block accurate.** The command fires at the start of the block
+    /// containing `at`, so resolution is `BLOCK` samples. A command whose block
+    /// has already passed fires at the next block rather than being dropped —
+    /// late is recoverable, vanishing is not.
+    ///
+    /// Returns `false` if the queue is full; the command is not stored and
+    /// [`crate::event::CmdError::ScheduleFull`] is reported against the
+    /// command's node (see [`Cmd::node`]). Cancel everything still pending with
+    /// [`Cmd::ClearSchedule`]; [`Cmd::Reset`] clears it too, since the clock
+    /// restarts at zero and pending timestamps would no longer mean anything.
+    pub fn apply_at(&mut self, at: u64, cmd: crate::cmd::Cmd) -> bool {
+        if self.sched.push(at, cmd) {
+            return true;
+        }
+        let node = cmd.node().unwrap_or(NodeId(0));
+        self.fail(node, CmdError::ScheduleFull);
+        false
+    }
+
+    /// Value standing on control bus `b` (G6). Out-of-range reads `0.0`.
+    pub fn ctrl_bus(&self, b: CtrlBusId) -> f32 {
+        self.ctrl.get(b.0)
+    }
+
+    /// Write control bus `b` directly (scsynth `/c_set`). `false` if the id is
+    /// out of range, in which case the write is dropped.
+    pub fn set_ctrl(&mut self, b: CtrlBusId, value: f32) -> bool {
+        if (b.0 as usize) >= crate::ids::CTRL_BUSES {
+            return false;
+        }
+        self.ctrl.set(b.0, value);
+        true
+    }
+
+    /// Route `node`'s output `port` onto control bus `b` every block (scsynth
+    /// `Out.kr`). Replaces any existing route on that bus — one writer wins.
+    /// `false` if the bus id is out of range.
+    pub fn ctrl_write(&mut self, node: NodeId, port: u8, b: CtrlBusId) -> bool {
+        let i = b.0 as usize;
+        if i >= crate::ids::CTRL_BUSES {
+            return false;
+        }
+        self.ctrl_writes[i] = Some((node, port));
+        true
+    }
+
+    /// Remove the standing route feeding control bus `b`. The bus keeps its
+    /// last value.
+    pub fn clear_ctrl_write(&mut self, b: CtrlBusId) {
+        let i = b.0 as usize;
+        if i < crate::ids::CTRL_BUSES {
+            self.ctrl_writes[i] = None;
+        }
+    }
+
+    /// Map `node`'s `param` to control bus `b`, re-applied every block
+    /// (scsynth `/n_map`). Mapping a parameter that is already mapped replaces
+    /// the mapping rather than adding a second.
+    ///
+    /// `false` if the bus id is out of range or the table is full; the caller
+    /// gets [`CmdError::BadCtrlBus`] / [`CmdError::MapTableFull`] through the
+    /// event queue when this goes via `Cmd`.
+    pub fn map_param(&mut self, node: NodeId, param: u8, b: CtrlBusId) -> bool {
+        if (b.0 as usize) >= crate::ids::CTRL_BUSES {
+            return false;
+        }
+        // Replace an existing mapping for this (node, param).
+        for slot in self.param_maps[..self.param_maps_len].iter_mut() {
+            if let Some(m) = slot {
+                if m.node == node && m.param == param {
+                    m.bus = b.0;
+                    return true;
+                }
+            }
+        }
+        // Reuse a hole left by `unmap_param` before growing the table.
+        let entry = ParamMap {
+            node,
+            param,
+            bus: b.0,
+        };
+        for slot in self.param_maps[..self.param_maps_len].iter_mut() {
+            if slot.is_none() {
+                *slot = Some(entry);
+                return true;
+            }
+        }
+        if self.param_maps_len == MAX_PARAM_MAPS {
+            return false;
+        }
+        self.param_maps[self.param_maps_len] = Some(entry);
+        self.param_maps_len += 1;
+        true
+    }
+
+    /// Remove a parameter mapping. The parameter keeps its last value and
+    /// becomes writable by `SetParam` again.
+    pub fn unmap_param(&mut self, node: NodeId, param: u8) {
+        for slot in self.param_maps[..self.param_maps_len].iter_mut() {
+            if let Some(m) = slot {
+                if m.node == node && m.param == param {
+                    *slot = None;
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Number of live parameter→control-bus mappings.
+    pub fn param_map_count(&self) -> usize {
+        self.param_maps[..self.param_maps_len]
+            .iter()
+            .filter(|s| s.is_some())
+            .count()
+    }
+
+    /// Push every mapped parameter from its control bus into its node, and
+    /// apply the standing node→bus routes.
+    ///
+    /// Ordering within the block: maps are applied at the *top* of
+    /// `render_block` (so a node renders with this block's mapped values), and
+    /// `ctrl_writes` are collected at the *end* (so a bus carries the value its
+    /// source just produced, read by consumers on the next block — the same
+    /// one-block rule `Input::Bus` follows).
+    fn apply_param_maps(&mut self) {
+        for i in 0..self.param_maps_len {
+            let Some(m) = self.param_maps[i] else {
+                continue;
+            };
+            let v = self.ctrl.get(m.bus);
+            if let Some(n) = self.arena.node_mut(m.node) {
+                n.set_param(m.param, v);
+            }
+        }
+    }
+
+    /// Collect the standing node→control-bus routes into the bus values.
+    /// A route whose source node is gone leaves the bus at its last value.
+    fn collect_ctrl_writes(&mut self) {
+        for b in 0..crate::ids::CTRL_BUSES {
+            let Some((node, port)) = self.ctrl_writes[b] else {
+                continue;
+            };
+            let Some((base, kind)) = self.arena.out_base_and_kind(node) else {
+                continue;
+            };
+            let row = base + port as usize;
+            if (port as usize) >= Node::out_width(kind) || row >= OUTS {
+                continue;
+            }
+            // SAFETY: shared read of the output arena; no writer is live here
+            // (the render loop has finished for this block).
+            let arr = unsafe { &*self.outs.get() };
+            self.ctrl.set(b as u16, arr[row][0]);
+        }
+    }
+
+    /// Number of commands filed with [`Self::apply_at`] that have not fired.
+    pub fn scheduled_len(&self) -> usize {
+        self.sched.len()
+    }
+
+    /// Sample position of the earliest command still pending, if any.
+    pub fn next_scheduled_at(&self) -> Option<u64> {
+        self.sched.next_at()
+    }
+
+    /// Enqueue a build-time command failure for the host (see
+    /// [`crate::event::Event::CmdFailed`]).
+    fn fail(&mut self, node: NodeId, reason: CmdError) {
+        self.events
+            .push(crate::event::Event::CmdFailed { node, reason });
+    }
+
+    /// Seed a node's previous-idle mask from its current state, so a freshly
+    /// created envelope (which reads as idle before its first gate) does not
+    /// register a spurious rising edge on its first render.
+    fn seed_prev_idle(&mut self, id: NodeId) {
+        let idx = id.0 as usize;
+        if idx < NODES {
+            self.prev_idle[idx] = self.arena.node(id).and_then(|n| n.idle_mask()).unwrap_or(0);
+        }
+    }
+
+    /// Dequeue one engine event, oldest first. Drain until `None` after each
+    /// `render` to keep the queue from overflowing.
+    pub fn pop_event(&mut self) -> Option<crate::event::Event> {
+        self.events.pop()
+    }
+
+    /// Drain every pending event through `f`, oldest first.
+    pub fn drain_events(&mut self, mut f: impl FnMut(crate::event::Event)) {
+        while let Some(ev) = self.events.pop() {
+            f(ev);
+        }
+    }
+
+    /// Events lost to queue overflow since construction. Non-zero means the
+    /// host is not draining every block, or `EVENT_QUEUE` is undersized.
+    pub fn events_dropped(&self) -> u16 {
+        self.events.dropped()
     }
 
     pub fn pool_alloc(&mut self, len: usize) -> Option<crate::pool::PoolHandle> {
@@ -120,11 +422,227 @@ impl<
     }
 
     pub fn create(&mut self, id: NodeId, kind: crate::node::Kind) -> bool {
-        self.arena.create(id, kind)
+        let ok = self.arena.create(id, kind);
+        if ok {
+            self.seed_prev_idle(id);
+            self.graph_dirty = true;
+        }
+        ok
     }
 
+    /// Skip nodes that cannot reach an output when rendering (G11).
+    ///
+    /// Off by default. An "output root" is a node feeding a bus write or a USB
+    /// output channel; reachability is transitive through input edges. With
+    /// culling on, an unreachable node is not evaluated at all: its output row
+    /// holds whatever it last wrote and its DSP state stops advancing, so
+    /// `node_output` on such a node is stale by design. Turn it on when the
+    /// host's only outputs are the buses and the USB map.
+    pub fn set_cull_unreachable(&mut self, on: bool) {
+        self.cull = on;
+        // The reachable set is computed alongside the sort, so a fresh opt-in
+        // must force that pass — otherwise everything reads as unreachable.
+        self.graph_dirty = true;
+    }
+
+    /// Recompute which nodes reach an output root. Roots are the nodes feeding
+    /// bus writes and USB output channels; reachability then walks backwards
+    /// along input edges to a fixpoint (the set only grows, so it terminates).
+    fn compute_reachable(&mut self) {
+        let mut r = [false; NODES];
+        for w in 0..self.writes_len {
+            if let Some((Input::Node { node, .. }, ..)) = self.writes[w] {
+                if (node.0 as usize) < NODES {
+                    r[node.0 as usize] = true;
+                }
+            }
+        }
+        for o in self.usb_out {
+            if let OutputSrc::Node { node, .. } = o {
+                if (node.0 as usize) < NODES {
+                    r[node.0 as usize] = true;
+                }
+            }
+        }
+        loop {
+            let mut changed = false;
+            for k in 0..self.arena.eval_order().len() {
+                let id = self.arena.eval_order()[k];
+                if !r[id as usize] {
+                    continue;
+                }
+                let Some(n) = self.arena.node(NodeId(id)) else {
+                    continue;
+                };
+                for inp in n.inputs_snapshot() {
+                    if let Input::Node { node: src, .. } = inp {
+                        let idx = src.0 as usize;
+                        if idx < NODES && !r[idx] && self.arena.node(src).is_some() {
+                            r[idx] = true;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        self.reachable = r;
+    }
+
+    /// Free one node and everything keyed to it: its pooled table region, its
+    /// stream cursors, its idle history, its arena slot and its bus writes.
+    ///
+    /// The single free path — `Cmd::Free` and the `EndUpdate` sweep both land
+    /// here, so a swept node can never be cleaned up less thoroughly than an
+    /// explicitly freed one.
+    fn free_node(&mut self, node: NodeId) {
+        // Free a pooled table region (if bound) BEFORE reclaiming the node's
+        // arena slot: `table_src()` reads through the node, which must still
+        // be live.
+        if let Some(n) = self.arena.node_mut(node) {
+            if let Some(crate::node::TableSrc::Pooled(h)) = n.table_src() {
+                self.pool.free(h);
+            }
+        }
+        let idx = node.0 as usize;
+        if idx < NODES {
+            self.stream_state[idx] = None;
+            // A recreated id re-seeds this on create; clearing here keeps a
+            // dead slot from spuriously edging in between.
+            self.prev_idle[idx] = 0;
+        }
+        self.arena.free(node);
+        self.graph_dirty = true;
+        // Invalidate this node's bus writes so a reused id inherits no stale
+        // routing (IO-2a). Const/Bus-sourced writes are untouched.
+        for w in self.writes.iter_mut() {
+            if let Some((Input::Node { node: n, .. }, ..)) = w {
+                if *n == node {
+                    *w = None;
+                }
+            }
+        }
+    }
+
+    /// Close an incremental update: sweep every node the update did not
+    /// re-emit, announcing each one so the host can drop its id.
+    fn end_update(&mut self) {
+        self.in_update = false;
+        for idx in 0..NODES {
+            let id = NodeId(idx as u16);
+            if self.arena.node(id).is_some() && self.node_epoch[idx] != self.epoch {
+                self.free_node(id);
+                self.events.push(crate::event::Event::Freed { node: id });
+            }
+        }
+    }
+
+    /// Is any live node bound to this pooled table region?
+    ///
+    /// A linear scan rather than a refcount: regions are few, binding is a
+    /// build-time act, and a count would be one more thing to keep honest
+    /// across `Free`, the update sweep and rebinding.
+    fn pooled_region_in_use(&self, h: crate::pool::PoolHandle) -> bool {
+        (0..NODES).any(|i| {
+            self.arena
+                .node(NodeId(i as u16))
+                .and_then(|n| n.table_src())
+                .is_some_and(|t| matches!(t, crate::node::TableSrc::Pooled(x) if x == h))
+        })
+    }
+
+    /// Record that `node` belongs to the patch as of the current epoch.
+    fn stamp(&mut self, node: NodeId) {
+        let idx = node.0 as usize;
+        if idx < NODES {
+            self.node_epoch[idx] = self.epoch;
+        }
+    }
+
+    /// A node's `Kind`, or `None` if it is not live.
+    pub fn kind_of(&self, node: NodeId) -> Option<crate::node::Kind> {
+        self.arena.kind_of(node)
+    }
+
+    /// Mutable access to one input edge. Rewiring changes the graph's shape, so
+    /// this marks eval order for re-sorting whether or not the caller writes
+    /// through the reference — a spurious sort costs one pass, a missed one
+    /// costs a block-stale read.
     pub fn node_input_mut(&mut self, id: NodeId, port: u8) -> Option<&mut Input> {
+        self.graph_dirty = true;
         self.arena.node_mut(id)?.input_mut(port)
+    }
+
+    /// Set a node's evaluation rate. `false` (and no change) if the node is
+    /// not live, or if [`Rate::Control`] is asked of a node wider than one
+    /// output port.
+    ///
+    /// Poly (`VOICES`-wide) and stereo (2-wide) kinds are refused: their output
+    /// is a multi-row tile, and broadcasting one control value across it is a
+    /// separate design. Control rate is for modulation sources — LFOs,
+    /// envelopes used as modulators, `Ctrl`, `SampleHold`, `Slew`, `Steps`,
+    /// `Mtof`, the quantisers — and those are all width 1.
+    ///
+    /// Nothing stops you putting an oscillator or a filter at control rate;
+    /// scsynth allows the same, and the result is the same kind of nonsense.
+    /// See [`Rate`] for the `BLOCK * dt` and input sample-and-hold semantics.
+    pub fn set_rate(&mut self, node: NodeId, rate: crate::node::Rate) -> bool {
+        use crate::node::Rate;
+        if rate == Rate::Control {
+            // Width 1 (a mono modulator) and the `VOICES`-wide poly tile are
+            // both supported. A stereo (width-2) kind is not: its two ports are
+            // independent rows rather than one tile, so it needs its own
+            // broadcast, and no stereo kind is a modulation source.
+            match self.arena.kind_of(node) {
+                // A mono modulator, or a poly node whose output is the
+                // `VOICES`-wide sample-major tile.
+                Some(k) if Node::out_width(k) == 1 => {}
+                Some(k) if Node::is_poly(k) && Node::out_width(k) == VOICES => {}
+                // Everything else is a width-2 stereo pair, stored as two
+                // independent row-major rows rather than one interleaved tile
+                // (`StereoVoiceSum`, `Pan`, the reverbs). Broadcasting across
+                // that needs a different loop, and none of them is a modulation
+                // source, so it is refused rather than guessed at.
+                _ => return false,
+            }
+        }
+        match self.arena.node_mut(node) {
+            Some(n) => {
+                n.set_rate(rate);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// A node's current evaluation rate, or `None` if it is not live.
+    pub fn rate_of(&self, node: NodeId) -> Option<crate::node::Rate> {
+        self.arena.node(node).map(|n| n.rate())
+    }
+
+    /// Move `node` so it evaluates immediately before `target`. `false` if
+    /// either id is not live, or if they are equal. Takes effect next render.
+    pub fn move_before(&mut self, node: NodeId, target: NodeId) -> bool {
+        self.arena.move_before(node, target)
+    }
+
+    /// Move `node` so it evaluates immediately after `target`. `false` if
+    /// either id is not live, or if they are equal. Takes effect next render.
+    pub fn move_after(&mut self, node: NodeId, target: NodeId) -> bool {
+        self.arena.move_after(node, target)
+    }
+
+    /// Current eval order, as `NodeId` raw values.
+    ///
+    /// A pending sort is applied at the next [`Self::render_block`], so between
+    /// a structural edit and that render this still shows the pre-sort order.
+    /// A node reading a source that appears later here sees that source's
+    /// *previous* block — after a render that can only happen inside a feedback
+    /// cycle or under an explicit `move_before` / `move_after`.
+    pub fn eval_order(&self) -> &[u16] {
+        self.arena.eval_order()
     }
 
     /// Apply one control-rate `Cmd`, mutating the arena/engine state it names.
@@ -133,6 +651,28 @@ impl<
         match cmd {
             Cmd::Nop => {}
             Cmd::NewNode { node, kind, args } => {
+                // Inside an update, re-emitting an unchanged node is not an
+                // error — it is the script saying "this stage is still here".
+                // Same kind keeps the running node and its DSP state; a
+                // different kind cannot (there is no way to carry a saw's phase
+                // into a square's), so it is rebuilt.
+                if self.in_update && self.arena.node(node).is_some() {
+                    if self.arena.kind_of(node) == Some(kind) {
+                        if let Some(n) = self.arena.node_mut(node) {
+                            for p in 0..crate::cmd::MAX_ARGS {
+                                if let Some(slot) = n.input_mut(p as u8) {
+                                    *slot = args[p];
+                                }
+                            }
+                        }
+                        self.stamp(node);
+                        self.graph_dirty = true;
+                        return;
+                    }
+                    // Replaced, not swept: the id stays live, so this emits no
+                    // `Freed` — a host's gate wired to this id still works.
+                    self.free_node(node);
+                }
                 if self.arena.create(node, kind) {
                     if let Some(n) = self.arena.node_mut(node) {
                         for p in 0..crate::cmd::MAX_ARGS {
@@ -141,6 +681,11 @@ impl<
                             }
                         }
                     }
+                    self.seed_prev_idle(node);
+                    self.stamp(node);
+                    self.graph_dirty = true;
+                } else {
+                    self.fail(node, CmdError::CreateFailed);
                 }
             }
             Cmd::SetInput { node, port, src } => {
@@ -148,16 +693,34 @@ impl<
                     if let Some(slot) = n.input_mut(port) {
                         *slot = src;
                     }
+                    self.graph_dirty = true;
+                } else {
+                    self.fail(node, CmdError::DeadNode);
                 }
             }
-            Cmd::SetParam { node, param, value } => {
-                if let Some(n) = self.arena.node_mut(node) {
-                    n.set_param(param, value);
-                }
-            }
+            Cmd::SetParam { node, param, value } => match self.arena.node_mut(node) {
+                Some(n) => n.set_param(param, value),
+                None => self.fail(node, CmdError::DeadNode),
+            },
             Cmd::BindTable { node, src } => {
+                // Rebinding releases the pooled region this node held, unless
+                // another live node still holds it. Without this, a patch
+                // update — which re-uploads and re-binds a surviving
+                // wavetable node's table on every run — leaks one pyramid per
+                // edit and exhausts the pool in a handful of them.
+                let prev = self.arena.node(node).and_then(|n| n.table_src());
                 if let Some(n) = self.arena.node_mut(node) {
                     n.bind_table(src);
+                } else {
+                    self.fail(node, CmdError::DeadNode);
+                    return;
+                }
+                if let Some(crate::node::TableSrc::Pooled(old)) = prev {
+                    let rebound_to_itself =
+                        matches!(src, crate::node::TableSrc::Pooled(h) if h == old);
+                    if !rebound_to_itself && !self.pooled_region_in_use(old) {
+                        self.pool.free(old);
+                    }
                 }
             }
             Cmd::Gate { node, on } => {
@@ -202,6 +765,7 @@ impl<
                 let c = channel as usize;
                 if c < USB_CHANNELS {
                     self.usb_out[c] = src;
+                    self.graph_dirty = true;
                 }
             }
             Cmd::BusGain { bus, gain } => self.set_bus_gain(bus, gain),
@@ -226,32 +790,71 @@ impl<
                 Some(eq) => eq.set_params(freq, gain_db, q, eq_type),
                 None => self.master_eq = Some(MasterEq::new(freq, gain_db, q, eq_type)),
             },
-            Cmd::Free { node } => {
-                // Free a pooled table region (if bound) BEFORE reclaiming the
-                // node's arena slot: `table_src()` reads through the node,
-                // which must still be live.
-                if let Some(n) = self.arena.node_mut(node) {
-                    if let Some(crate::node::TableSrc::Pooled(h)) = n.table_src() {
-                        self.pool.free(h);
-                    }
-                }
-                let idx = node.0 as usize;
-                if idx < NODES {
-                    self.stream_state[idx] = None;
-                }
-                self.arena.free(node);
-                // Invalidate this node's bus writes so a reused id inherits no
-                // stale routing (IO-2a). Const/Bus-sourced writes are untouched.
-                for w in self.writes.iter_mut() {
-                    if let Some((Input::Node { node: n, .. }, ..)) = w {
-                        if *n == node {
-                            *w = None;
-                        }
-                    }
+            Cmd::SetRate { node, rate } => {
+                if !self.set_rate(node, rate) {
+                    // Distinguish "no such node" from "this node cannot run at
+                    // control rate" — they send the host looking in different
+                    // places.
+                    let reason = if self.arena.node(node).is_some() {
+                        CmdError::UnsupportedRate
+                    } else {
+                        CmdError::DeadNode
+                    };
+                    self.fail(node, reason);
                 }
             }
+            Cmd::MoveBefore { node, target } => {
+                if !self.arena.move_before(node, target) {
+                    self.fail(node, CmdError::DeadNode);
+                }
+            }
+            Cmd::MoveAfter { node, target } => {
+                if !self.arena.move_after(node, target) {
+                    self.fail(node, CmdError::DeadNode);
+                }
+            }
+            Cmd::Free { node } => self.free_node(node),
+            Cmd::BeginUpdate => {
+                self.in_update = true;
+                self.epoch = self.epoch.wrapping_add(1);
+            }
+            Cmd::EndUpdate => self.end_update(),
+            Cmd::SetCtrl { bus, value } => {
+                if !self.set_ctrl(bus, value) {
+                    self.fail(NodeId(0), CmdError::BadCtrlBus);
+                }
+            }
+            Cmd::CtrlWrite { node, port, bus } => {
+                if !self.ctrl_write(node, port, bus) {
+                    self.fail(node, CmdError::BadCtrlBus);
+                }
+            }
+            Cmd::ClearCtrlWrite { bus } => self.clear_ctrl_write(bus),
+            Cmd::MapParam { node, param, bus } => {
+                if (bus.0 as usize) >= crate::ids::CTRL_BUSES {
+                    self.fail(node, CmdError::BadCtrlBus);
+                } else if self.arena.node(node).is_none() {
+                    self.fail(node, CmdError::DeadNode);
+                } else if !self.map_param(node, param, bus) {
+                    self.fail(node, CmdError::MapTableFull);
+                }
+            }
+            Cmd::UnmapParam { node, param } => self.unmap_param(node, param),
+            Cmd::ClearSchedule => self.sched.clear(),
             Cmd::Reset => {
                 self.arena.reset();
+                self.sample_clock = 0;
+                // The clock restarts at zero, so pending timestamps no longer
+                // name anything meaningful — keeping them would fire a whole
+                // patch's worth of commands into a freshly emptied graph.
+                self.sched.clear();
+                self.ctrl.clear();
+                self.ctrl_writes = [None; crate::ids::CTRL_BUSES];
+                self.param_maps = [None; MAX_PARAM_MAPS];
+                self.param_maps_len = 0;
+                self.graph_dirty = false;
+                self.in_update = false;
+                self.node_epoch = [0; NODES];
                 self.writes = [None; NODES];
                 self.writes_len = 0;
                 self.root = None;
@@ -265,12 +868,37 @@ impl<
                 self.bus_sends_len = 0;
                 self.bus_l = [[0.0; BLOCK]; BUSES];
                 self.bus_r = [[0.0; BLOCK]; BUSES];
+                self.prev_idle = [0; NODES];
+                self.events.clear();
             }
         }
     }
 
     /// Evaluate every live node in eval order into the output arena.
     pub fn render_block(&mut self) {
+        self.sample_clock = self.sample_clock.wrapping_add(BLOCK as u64);
+        // Scheduled commands due in this block (G7), applied BEFORE the sort
+        // below so a scheduled `NewNode` joins eval order in the block it lands
+        // in rather than a block late. The clock has already advanced, so it
+        // names the first sample of the next block and `at < sample_clock` is
+        // exactly "this block contains `at`" — overdue entries included.
+        while let Some(cmd) = self.sched.pop_due(self.sample_clock) {
+            self.apply(cmd);
+        }
+        // Push mapped parameters from their control buses BEFORE evaluating, so
+        // a node renders with this block's mapped values rather than last
+        // block's (G6). The matching `collect_ctrl_writes` runs at the end.
+        self.apply_param_maps();
+        // Eval order is topological by construction (G11): every node runs after
+        // the nodes it reads. Sorting here rather than in `apply` means a whole
+        // patch build costs one sort, not one per command.
+        if self.graph_dirty {
+            self.arena.sort();
+            if self.cull {
+                self.compute_reachable();
+            }
+            self.graph_dirty = false;
+        }
         // Snapshot eval order so we don't borrow the arena across the loop.
         let mut order = [0u16; NODES];
         let live = {
@@ -281,7 +909,10 @@ impl<
 
         for k in 0..live {
             let id = NodeId(order[k]);
-            let (base, kind, width, inputs, table_src) = {
+            if self.cull && !self.reachable[order[k] as usize] {
+                continue; // reaches no output root — see `set_cull_unreachable`
+            }
+            let (base, kind, width, inputs, table_src, rate) = {
                 let n = self.arena.node(id).expect("eval-order node exists");
                 (
                     n.out_base as usize,
@@ -289,8 +920,28 @@ impl<
                     Node::out_width(n.kind),
                     n.inputs_snapshot(),
                     n.table_src(),
+                    n.rate(),
                 )
             };
+            // Which input ports carry one value for the whole block. Those are
+            // handed down as `In::K`, so the consuming kernel takes its
+            // `as_const` fast path instead of indexing a row of identical
+            // values — and the row need not be materialised at all.
+            let mut src_const = [false; MAX_INPUTS];
+            for (p, flag) in src_const.iter_mut().enumerate() {
+                *flag = match inputs[p] {
+                    // A literal: by far the commonest input in any patch, which
+                    // is why this is worth more than the kr cases below.
+                    Input::Const(_) => true,
+                    Input::Node { node, .. } => {
+                        self.arena.node(node).map(|n| n.rate()) == Some(crate::node::Rate::Control)
+                    }
+                    // A control bus is one value for the block by definition.
+                    Input::CtrlBus(_) => true,
+                    // An audio bus genuinely varies across the block.
+                    Input::Bus(_) => false,
+                };
+            }
 
             // ── Resolve inputs into scratch (all reads copied out first) ──
             let mut scratch = [[0.0f32; BLOCK]; MAX_INPUTS];
@@ -300,13 +951,20 @@ impl<
                 let arr = unsafe { &*self.outs.get() };
                 for (p, row) in scratch.iter_mut().enumerate() {
                     match inputs[p] {
-                        Input::Const(v) => row.fill(v),
+                        // Only slot 0 is written: a constant port resolves to
+                        // `In::K(scratch[p][0])` below, so the rest of the row
+                        // is never read. `scratch` is a fresh local each
+                        // iteration, so the untouched tail is zeros, not stale.
+                        Input::Const(v) => row[0] = v,
                         Input::Node { node, port } => match self.arena.out_base(node) {
                             Some(sbase) if sbase + (port as usize) < OUTS => {
                                 *row = arr[sbase + port as usize]
                             }
                             _ => *row = [0.0; BLOCK], // dangling ref or out-of-range port → silence (never panic, never slot-0 crosstalk)
                         },
+                        // One persistent value for the whole block; `src_kr`
+                        // marks the port so it is handed down as `In::K`.
+                        Input::CtrlBus(cb) => row.fill(self.ctrl.get(cb.0)),
                         Input::Bus(bus) => {
                             let b = bus.0 as usize;
                             for i in 0..BLOCK {
@@ -356,11 +1014,20 @@ impl<
                     }
                 }
             }
-            let ins = [
-                In::A(&scratch[0][..]),
-                In::A(&scratch[1][..]),
-                In::A(&scratch[2][..]),
-            ];
+            // A control-rate node is evaluated once per block, so every one of
+            // its inputs collapses to the block's first sample (scsynth's
+            // `A2K` sample-and-hold). An audio-rate node keeps full rows,
+            // except on ports fed by a control-rate source, which are already
+            // constant and so cost nothing to pass as `In::K`.
+            let kr = rate == crate::node::Rate::Control;
+            let resolve = |p: usize| -> In<'_> {
+                if kr || src_const[p] {
+                    In::K(scratch[p][0])
+                } else {
+                    In::A(&scratch[p][..])
+                }
+            };
+            let ins = [resolve(0), resolve(1), resolve(2)];
 
             // ── Write this node's ports ──
             // SAFETY (deref soundness): every read for this iteration was already
@@ -375,25 +1042,41 @@ impl<
             let arr = unsafe { &mut *self.outs.get() };
             if Node::is_poly(kind) {
                 // Poly path: voice-interleaved tile in/out, isolated dispatch.
+                //
+                // The tile is **sample-major**: lane `v` of sample `i` lives at
+                // `tile[i * VOICES + v]` (see `poly::voice_sum` and every
+                // `Poly*::process`). The arena rows backing it are storage, not
+                // lanes — a poly node's `out_width` of `VOICES` reserves
+                // `VOICES * BLOCK` floats and nothing more. Copies are made row
+                // by row, which is contiguous and so preserves that order.
+                //
+                // At control rate the kernel is asked for ONE sample, which is
+                // the tile's first `VOICES` floats (`i = 0`, every lane), and
+                // that prefix is then broadcast across the block below.
                 let count = Node::poly_in_count(kind);
+                // Input tiles are always `VOICES` lanes wide. The output is
+                // `width` wide — which for a collapse node like `VoiceSum` is
+                // 1, not `VOICES` — so the two lengths are computed apart.
+                let in_len = if kr { VOICES } else { VOICES * BLOCK };
+                let out_len = if kr { width } else { width * BLOCK };
                 let poly_in: [Option<&[f32]>; 3] = [
                     if count > 0 {
-                        Some(poly_scratch[0].as_flattened())
+                        Some(&poly_scratch[0].as_flattened()[..in_len])
                     } else {
                         None
                     },
                     if count > 1 {
-                        Some(poly_scratch[1].as_flattened())
+                        Some(&poly_scratch[1].as_flattened()[..in_len])
                     } else {
                         None
                     },
                     if count > 2 {
-                        Some(poly_scratch[2].as_flattened())
+                        Some(&poly_scratch[2].as_flattened()[..in_len])
                     } else {
                         None
                     },
                 ];
-                let out = arr[base..base + width].as_flattened_mut(); // width*BLOCK
+                let out = &mut arr[base..base + width].as_flattened_mut()[..out_len];
                 // Resolve a pooled node's region MUTABLY before the node's
                 // `&mut` borrow below, exactly as the mono path does at its
                 // call site below — only `PolyWt`/`PolyWtMorph` read this;
@@ -411,8 +1094,28 @@ impl<
                         None
                     }
                 };
+                // `BLOCK * dt` at control rate for the same reason the mono
+                // path scales it: one evaluation covers a whole block of wall
+                // time, so the per-sample dt would run every time-based lane
+                // (envelope stages, slew, LFO phase) BLOCK times too slow.
+                let dt = if kr { BLOCK as f32 * self.dt } else { self.dt };
                 if let Some(n) = self.arena.node_mut(id) {
-                    n.poly_process(&ins, poly_in, self.dt, out, pool_region, stream);
+                    n.poly_process(&ins, poly_in, dt, out, pool_region, stream);
+                }
+                if kr {
+                    // Broadcast sample 0's lanes across the rest of the tile, so
+                    // downstream readers — `VoiceSum`, a poly filter, the
+                    // per-lane splat — see a full block as they always do.
+                    // One evaluation produced `width` floats — the tile's
+                    // sample 0 for a producer, the single output sample for a
+                    // collapse node. Repeat them across the block. `set_rate`
+                    // admits only widths 1 and `VOICES`, both of which are
+                    // sample-major, so a flat `width`-sized repeat is correct.
+                    let full = arr[base..base + width].as_flattened_mut();
+                    let (head, rest) = full.split_at_mut(width);
+                    for chunk in rest.chunks_mut(width) {
+                        chunk.copy_from_slice(&head[..chunk.len()]);
+                    }
                 }
             } else if kind == Kind::Input {
                 // Stereo line-in: copy engine input rows into port0 (L) / port1 (R).
@@ -422,6 +1125,30 @@ impl<
                     arr[base][i] = self.in_l[i];
                     arr[base + 1][i] = self.in_r[i];
                 }
+            } else if kr && width == 1 {
+                // ── Control rate: evaluate ONE sample, then broadcast it ──
+                // The kernel is handed `BLOCK * dt` so time-based state (LFO
+                // phase, envelope stages, slew) advances the same wall-clock
+                // amount per block as it would at audio rate; passing `self.dt`
+                // here would run every such node BLOCK times too slow.
+                //
+                // The row is still filled, because readers other than kernels
+                // — bus writes, `node_output`, `fill_usb`, the poly-lane splat
+                // — index it directly. Filling BLOCK floats is far cheaper
+                // than BLOCK kernel evaluations, which is the whole point.
+                let pool_region: Option<&mut [f32]> = match table_src {
+                    Some(crate::node::TableSrc::Pooled(h)) => Some(self.pool.slice_mut(h)),
+                    _ => None,
+                };
+                {
+                    let row = &mut arr[base];
+                    let mut view = OutView::single(&mut row[..1]);
+                    if let Some(n) = self.arena.node_mut(id) {
+                        n.process_resolved(&ins, BLOCK as f32 * self.dt, &mut view, pool_region);
+                    }
+                }
+                let v = arr[base][0];
+                arr[base][1..].fill(v);
             } else {
                 let mut view = OutView::from_arena::<OUTS, BLOCK>(arr, base, width);
                 // Resolve a pooled node's region MUTABLY (delay lines write it;
@@ -439,6 +1166,55 @@ impl<
                 }
             }
         }
+
+        self.collect_events(&order[..live]);
+        // Standing node→control-bus routes, collected AFTER the render so a bus
+        // carries the value its source just produced. Consumers read it on the
+        // next block — the same one-block rule `Input::Bus` follows, and why
+        // control-bus edges are not sort dependencies (`arena.rs`).
+        self.collect_ctrl_writes();
+    }
+
+    /// Diff every live node's envelope-completion mask against last block's and
+    /// enqueue an [`crate::Event`] per rising (not-idle → idle) lane.
+    ///
+    /// Rising-edge only: an envelope reads as idle both before its first gate
+    /// and after its release decays, so a level would announce completions that
+    /// never happened. `seed_prev_idle` covers the create-time case.
+    fn collect_events(&mut self, order: &[u16]) {
+        for &raw in order {
+            let id = NodeId(raw);
+            let idx = raw as usize;
+            if idx >= NODES {
+                continue;
+            }
+            // Disjoint field borrows: `self.arena` (shared) vs `self.prev_idle`
+            // / `self.events` (mutable) — same discipline as the render loop.
+            let (mask, poly) = match self.arena.node(id) {
+                Some(n) => match n.idle_mask() {
+                    Some(m) => (m, n.is_poly_env()),
+                    None => continue, // not an envelope kind
+                },
+                None => continue,
+            };
+            let rising = mask & !self.prev_idle[idx];
+            self.prev_idle[idx] = mask;
+            if rising == 0 {
+                continue;
+            }
+            if poly {
+                for v in 0..VOICES {
+                    if rising & (1 << v) != 0 {
+                        self.events.push(crate::event::Event::VoiceDone {
+                            node: id,
+                            voice: v as u8,
+                        });
+                    }
+                }
+            } else if rising & 1 != 0 {
+                self.events.push(crate::event::Event::Done { node: id });
+            }
+        }
     }
 
     /// A `StreamPlayer` voice's playback read-cursor (⌊pos⌋). `None` if `node`
@@ -446,6 +1222,20 @@ impl<
     /// prefetch task polls this to trail playback.
     pub fn stream_read_cursor(&self, node: NodeId, voice: usize) -> Option<u64> {
         self.arena.node(node)?.stream_read_cursor(voice)
+    }
+
+    /// Test/inspection accessor: sample `i`, lane `v` of a poly node's output.
+    ///
+    /// The poly tile is **sample-major** — `tile[i * VOICES + v]` — and is
+    /// spread across the node's `VOICES` arena rows, so those rows are storage
+    /// and NOT lanes. Indexing `node_output(id, v)` would read a scrambled mix
+    /// of lanes, which is why this exists.
+    pub fn poly_tile_sample(&self, id: NodeId, i: usize, v: usize) -> f32 {
+        let base = self.arena.out_base(id).expect("node exists");
+        let k = i * VOICES + v;
+        // SAFETY: shared read; no writer is live outside `render_block`.
+        let arr = unsafe { &*self.outs.get() };
+        arr[base + k / BLOCK][k % BLOCK]
     }
 
     /// Test/inspection accessor: a node's rendered output port.
@@ -464,6 +1254,20 @@ impl<
     /// Record a bus write with per-side gains (`gl` → L, `gr` → R). A stereo
     /// source routes as two of these: `(port0, 1, 0)` and `(port1, 0, 1)`.
     pub fn bus_write_gains(&mut self, src: Input, bus: BusId, gl: f32, gr: f32) {
+        // Routing is what makes a node reachable, so this invalidates the
+        // culling set just as an edge change invalidates eval order.
+        self.graph_dirty = true;
+        // A write is a routing statement, not an accumulator: re-stating the
+        // same source→bus route updates its gains in place. Without this, a
+        // patch re-run (GL2) would append a second entry and add 6 dB per edit.
+        for w in 0..self.writes_len {
+            if let Some((s, b, ..)) = self.writes[w] {
+                if s == src && b.0 == bus.0 {
+                    self.writes[w] = Some((src, bus, gl, gr));
+                    return;
+                }
+            }
+        }
         // Reuse a freed (`None`) slot first so free/patch cycles don't leak
         // slots; otherwise append. No holes exist without a prior `Free`, so a
         // fresh engine appends in the same order as before (byte-identical).
@@ -582,6 +1386,10 @@ impl<
                             _ => 0.0, // dangling ref or out-of-range port → contributes silence
                         },
                         Input::Bus(_) => 0.0, // bus→bus not in P0
+                        // A control value is constant across the block, so
+                        // this writes a DC level onto the audio bus. Coherent
+                        // and cheap; the `Const` case with an indirection.
+                        Input::CtrlBus(cb) => self.ctrl.get(cb.0),
                     };
                     self.bus_l[b][i] += v * gl;
                     self.bus_r[b][i] += v * gr;
@@ -1654,6 +2462,1427 @@ mod tests {
         );
     }
 
+    // ── G6: control buses ─────────────────────────────────────────────────
+
+    use crate::ids::CtrlBusId as CB;
+
+    type CE = Engine<16, 8, 16, 4, 45056, 2048>;
+
+    /// A `Ctrl` node holding `v` — a readable, settable mono value.
+    fn cnode(e: &mut CE, id: u16, v: f32) {
+        e.apply(Cmd::NewNode {
+            node: NodeId(id),
+            kind: Kind::Ctrl,
+            args: [Input::Const(0.0); 3],
+        });
+        e.apply(Cmd::SetParam {
+            node: NodeId(id),
+            param: 0,
+            value: v,
+        });
+    }
+
+    #[test]
+    fn a_control_bus_persists_rather_than_being_zeroed_each_block() {
+        // The defining difference from an audio bus: written once, it holds.
+        // Zeroing per block would wipe a host's CC write on the next render.
+        let mut e = CE::new(48_000.0);
+        e.apply(Cmd::SetCtrl {
+            bus: CB(3),
+            value: 0.7,
+        });
+        for _ in 0..8 {
+            e.render_block();
+        }
+        assert_eq!(e.ctrl_bus(CB(3)), 0.7, "still standing 8 blocks later");
+    }
+
+    #[test]
+    fn a_node_reads_a_control_bus_as_a_constant() {
+        let mut e = CE::new(48_000.0);
+        e.apply(Cmd::SetCtrl {
+            bus: CB(1),
+            value: 0.25,
+        });
+        e.apply(Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::Add,
+            args: [Input::CtrlBus(CB(1)), Input::Const(0.5), Input::Const(0.0)],
+        });
+        e.render_block();
+        let out = e.node_output(NodeId(0), 0);
+        assert!(
+            out.iter().all(|s| (*s - 0.75).abs() < 1e-6),
+            "constant across the block: {:?}",
+            &out[..4]
+        );
+    }
+
+    #[test]
+    fn one_control_bus_fans_out_to_many_readers() {
+        // The point of G6: one modulator, N destinations, without N edges.
+        let mut e = CE::new(48_000.0);
+        e.apply(Cmd::SetCtrl {
+            bus: CB(0),
+            value: 0.4,
+        });
+        for id in 0..4u16 {
+            e.apply(Cmd::NewNode {
+                node: NodeId(id),
+                kind: Kind::Add,
+                args: [Input::CtrlBus(CB(0)), Input::Const(0.0), Input::Const(0.0)],
+            });
+        }
+        e.render_block();
+        for id in 0..4u16 {
+            assert!((e.node_output(NodeId(id), 0)[0] - 0.4).abs() < 1e-6);
+        }
+        // Move the bus once; every reader follows.
+        e.apply(Cmd::SetCtrl {
+            bus: CB(0),
+            value: 0.9,
+        });
+        e.render_block();
+        for id in 0..4u16 {
+            assert!((e.node_output(NodeId(id), 0)[0] - 0.9).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn a_standing_route_drives_a_control_bus_from_a_node() {
+        let mut e = CE::new(48_000.0);
+        cnode(&mut e, 0, 0.6);
+        e.apply(Cmd::CtrlWrite {
+            node: NodeId(0),
+            port: 0,
+            bus: CB(2),
+        });
+        assert_eq!(e.ctrl_bus(CB(2)), 0.0, "nothing collected yet");
+        e.render_block();
+        assert_eq!(e.ctrl_bus(CB(2)), 0.6, "collected after the render");
+        // The route is standing: a new source value propagates next block.
+        e.apply(Cmd::SetParam {
+            node: NodeId(0),
+            param: 0,
+            value: 0.2,
+        });
+        e.render_block();
+        assert_eq!(e.ctrl_bus(CB(2)), 0.2);
+    }
+
+    #[test]
+    fn a_routed_bus_reaches_a_reader_one_block_later() {
+        // Documented semantics: writes are collected after the render, so a
+        // reader sees the previous block's value — the same rule Input::Bus
+        // follows, and why control edges are not sort dependencies.
+        let mut e = CE::new(48_000.0);
+        cnode(&mut e, 0, 0.8);
+        e.apply(Cmd::CtrlWrite {
+            node: NodeId(0),
+            port: 0,
+            bus: CB(1),
+        });
+        e.apply(Cmd::NewNode {
+            node: NodeId(1),
+            kind: Kind::Add,
+            args: [Input::CtrlBus(CB(1)), Input::Const(0.0), Input::Const(0.0)],
+        });
+        e.render_block();
+        assert_eq!(e.node_output(NodeId(1), 0)[0], 0.0, "one block behind");
+        e.render_block();
+        assert_eq!(e.node_output(NodeId(1), 0)[0], 0.8);
+    }
+
+    #[test]
+    fn clearing_a_route_leaves_the_bus_at_its_last_value() {
+        let mut e = CE::new(48_000.0);
+        cnode(&mut e, 0, 0.5);
+        e.apply(Cmd::CtrlWrite {
+            node: NodeId(0),
+            port: 0,
+            bus: CB(0),
+        });
+        e.render_block();
+        assert_eq!(e.ctrl_bus(CB(0)), 0.5);
+        e.apply(Cmd::ClearCtrlWrite { bus: CB(0) });
+        e.apply(Cmd::SetParam {
+            node: NodeId(0),
+            param: 0,
+            value: 0.1,
+        });
+        e.render_block();
+        assert_eq!(
+            e.ctrl_bus(CB(0)),
+            0.5,
+            "frozen, not zeroed and not tracking"
+        );
+    }
+
+    #[test]
+    fn one_writer_wins_rather_than_summing() {
+        // Two sources on one control bus is a patching mistake, not a mix.
+        let mut e = CE::new(48_000.0);
+        cnode(&mut e, 0, 0.3);
+        cnode(&mut e, 1, 0.4);
+        e.apply(Cmd::CtrlWrite {
+            node: NodeId(0),
+            port: 0,
+            bus: CB(0),
+        });
+        e.apply(Cmd::CtrlWrite {
+            node: NodeId(1),
+            port: 0,
+            bus: CB(0),
+        }); // replaces
+        e.render_block();
+        assert_eq!(e.ctrl_bus(CB(0)), 0.4, "last route wins; not 0.7");
+    }
+
+    #[test]
+    fn a_route_from_a_freed_node_leaves_the_bus_alone() {
+        let mut e = CE::new(48_000.0);
+        cnode(&mut e, 0, 0.5);
+        e.apply(Cmd::CtrlWrite {
+            node: NodeId(0),
+            port: 0,
+            bus: CB(0),
+        });
+        e.render_block();
+        e.apply(Cmd::Free { node: NodeId(0) });
+        e.render_block(); // must not panic, must not zero
+        assert_eq!(e.ctrl_bus(CB(0)), 0.5);
+    }
+
+    // ── /n_map ──
+
+    #[test]
+    fn a_mapped_param_follows_its_bus() {
+        // The G5-relieving half: `Ctrl`'s value is param 0, not an input port,
+        // so without /n_map it could not be modulated at all.
+        let mut e = CE::new(48_000.0);
+        cnode(&mut e, 0, 0.1);
+        e.apply(Cmd::SetCtrl {
+            bus: CB(4),
+            value: 0.65,
+        });
+        e.apply(Cmd::MapParam {
+            node: NodeId(0),
+            param: 0,
+            bus: CB(4),
+        });
+        assert_eq!(e.param_map_count(), 1);
+        e.render_block();
+        assert!((e.node_output(NodeId(0), 0)[0] - 0.65).abs() < 1e-6);
+        e.apply(Cmd::SetCtrl {
+            bus: CB(4),
+            value: 0.2,
+        });
+        e.render_block();
+        assert!((e.node_output(NodeId(0), 0)[0] - 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_mapped_param_overrides_a_direct_set_param() {
+        // While mapped, the bus is the authority — as in scsynth.
+        let mut e = CE::new(48_000.0);
+        cnode(&mut e, 0, 0.1);
+        e.apply(Cmd::SetCtrl {
+            bus: CB(0),
+            value: 0.65,
+        });
+        e.apply(Cmd::MapParam {
+            node: NodeId(0),
+            param: 0,
+            bus: CB(0),
+        });
+        e.apply(Cmd::SetParam {
+            node: NodeId(0),
+            param: 0,
+            value: 0.9,
+        });
+        e.render_block();
+        assert!(
+            (e.node_output(NodeId(0), 0)[0] - 0.65).abs() < 1e-6,
+            "the map re-applies at the top of the block"
+        );
+    }
+
+    #[test]
+    fn unmapping_frees_the_param_and_keeps_its_last_value() {
+        let mut e = CE::new(48_000.0);
+        cnode(&mut e, 0, 0.1);
+        e.apply(Cmd::SetCtrl {
+            bus: CB(0),
+            value: 0.65,
+        });
+        e.apply(Cmd::MapParam {
+            node: NodeId(0),
+            param: 0,
+            bus: CB(0),
+        });
+        e.render_block();
+        e.apply(Cmd::UnmapParam {
+            node: NodeId(0),
+            param: 0,
+        });
+        assert_eq!(e.param_map_count(), 0);
+        e.render_block();
+        assert!(
+            (e.node_output(NodeId(0), 0)[0] - 0.65).abs() < 1e-6,
+            "keeps the value it last received"
+        );
+        // ...and SetParam works again.
+        e.apply(Cmd::SetParam {
+            node: NodeId(0),
+            param: 0,
+            value: 0.3,
+        });
+        e.render_block();
+        assert!((e.node_output(NodeId(0), 0)[0] - 0.3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn remapping_a_param_replaces_rather_than_duplicating() {
+        let mut e = CE::new(48_000.0);
+        cnode(&mut e, 0, 0.0);
+        e.apply(Cmd::SetCtrl {
+            bus: CB(0),
+            value: 0.2,
+        });
+        e.apply(Cmd::SetCtrl {
+            bus: CB(1),
+            value: 0.8,
+        });
+        e.apply(Cmd::MapParam {
+            node: NodeId(0),
+            param: 0,
+            bus: CB(0),
+        });
+        e.apply(Cmd::MapParam {
+            node: NodeId(0),
+            param: 0,
+            bus: CB(1),
+        });
+        assert_eq!(e.param_map_count(), 1, "replaced, not a second entry");
+        e.render_block();
+        assert!((e.node_output(NodeId(0), 0)[0] - 0.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn unmap_reuses_its_slot_so_the_table_does_not_leak() {
+        let mut e = CE::new(48_000.0);
+        cnode(&mut e, 0, 0.0);
+        for _ in 0..(MAX_PARAM_MAPS * 3) {
+            e.apply(Cmd::MapParam {
+                node: NodeId(0),
+                param: 0,
+                bus: CB(0),
+            });
+            e.apply(Cmd::UnmapParam {
+                node: NodeId(0),
+                param: 0,
+            });
+        }
+        assert_eq!(e.param_map_count(), 0);
+        // A fresh mapping still fits: the freed slot was reused each time.
+        assert!(e.map_param(NodeId(0), 0, CB(0)));
+    }
+
+    #[test]
+    fn a_full_map_table_refuses_and_reports() {
+        let mut e = CE::new(48_000.0);
+        cnode(&mut e, 0, 0.0);
+        e.drain_events(|_| {});
+        for p in 0..MAX_PARAM_MAPS {
+            assert!(e.map_param(NodeId(0), p as u8, CB(0)), "fits");
+        }
+        e.apply(Cmd::MapParam {
+            node: NodeId(0),
+            param: 250,
+            bus: CB(0),
+        });
+        assert_eq!(
+            e.pop_event(),
+            Some(crate::event::Event::CmdFailed {
+                node: NodeId(0),
+                reason: CmdError::MapTableFull
+            })
+        );
+    }
+
+    #[test]
+    fn out_of_range_bus_ids_are_refused_and_reported() {
+        let mut e = CE::new(48_000.0);
+        cnode(&mut e, 0, 0.0);
+        e.drain_events(|_| {});
+        let bad = CB(crate::ids::CTRL_BUSES as u16);
+
+        e.apply(Cmd::SetCtrl {
+            bus: bad,
+            value: 1.0,
+        });
+        assert!(matches!(
+            e.pop_event(),
+            Some(crate::event::Event::CmdFailed {
+                reason: CmdError::BadCtrlBus,
+                ..
+            })
+        ));
+        e.apply(Cmd::MapParam {
+            node: NodeId(0),
+            param: 0,
+            bus: bad,
+        });
+        assert!(matches!(
+            e.pop_event(),
+            Some(crate::event::Event::CmdFailed {
+                reason: CmdError::BadCtrlBus,
+                ..
+            })
+        ));
+        assert_eq!(e.param_map_count(), 0);
+        // Reading one is silence, not a panic.
+        assert_eq!(e.ctrl_bus(bad), 0.0);
+        e.render_block();
+    }
+
+    #[test]
+    fn mapping_a_dead_node_is_refused() {
+        let mut e = CE::new(48_000.0);
+        e.drain_events(|_| {});
+        e.apply(Cmd::MapParam {
+            node: NodeId(7),
+            param: 0,
+            bus: CB(0),
+        });
+        assert_eq!(
+            e.pop_event(),
+            Some(crate::event::Event::CmdFailed {
+                node: NodeId(7),
+                reason: CmdError::DeadNode
+            })
+        );
+        assert_eq!(e.param_map_count(), 0);
+    }
+
+    #[test]
+    fn a_map_onto_a_freed_node_is_inert() {
+        let mut e = CE::new(48_000.0);
+        cnode(&mut e, 0, 0.0);
+        e.map_param(NodeId(0), 0, CB(0));
+        e.apply(Cmd::Free { node: NodeId(0) });
+        e.render_block(); // must not panic on the stale mapping
+        assert_eq!(e.ctrl_bus(CB(0)), 0.0);
+    }
+
+    #[test]
+    fn a_control_bus_source_can_feed_an_audio_bus() {
+        let mut e = CE::new(48_000.0);
+        e.apply(Cmd::SetCtrl {
+            bus: CB(0),
+            value: 0.5,
+        });
+        e.apply(Cmd::BusWrite {
+            src: Input::CtrlBus(CB(0)),
+            bus: BusId(0),
+        });
+        e.apply(Cmd::SetRoot { bus: BusId(0) });
+        let mut out = [StereoFrame::default(); 16];
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil);
+        assert!(out.iter().all(|f| (f.l - 0.5).abs() < 1e-6));
+    }
+
+    #[test]
+    fn reset_clears_buses_routes_and_maps() {
+        let mut e = CE::new(48_000.0);
+        cnode(&mut e, 0, 0.5);
+        e.apply(Cmd::SetCtrl {
+            bus: CB(0),
+            value: 0.9,
+        });
+        e.apply(Cmd::CtrlWrite {
+            node: NodeId(0),
+            port: 0,
+            bus: CB(1),
+        });
+        e.map_param(NodeId(0), 0, CB(0));
+        e.apply(Cmd::Reset);
+        assert_eq!(e.ctrl_bus(CB(0)), 0.0);
+        assert_eq!(e.param_map_count(), 0);
+        cnode(&mut e, 0, 0.5);
+        e.render_block();
+        assert_eq!(e.ctrl_bus(CB(1)), 0.0, "the standing route is gone too");
+    }
+
+    #[test]
+    fn an_lfo_at_control_rate_modulates_through_a_bus() {
+        // The end-to-end shape G2 and G6 were both for: a kr LFO drives a bus,
+        // the bus drives a mapped parameter, and one modulator could feed many.
+        let mut e = CE::new(48_000.0);
+        e.apply(Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::Lfo,
+            args: [Input::Const(30.0), Input::Const(0.0), Input::Const(0.0)],
+        });
+        assert!(e.set_rate(NodeId(0), crate::node::Rate::Control));
+        e.apply(Cmd::CtrlWrite {
+            node: NodeId(0),
+            port: 0,
+            bus: CB(0),
+        });
+        cnode(&mut e, 1, 0.0);
+        e.apply(Cmd::MapParam {
+            node: NodeId(1),
+            param: 0,
+            bus: CB(0),
+        });
+
+        let mut seen_low = false;
+        let mut seen_high = false;
+        for _ in 0..80 {
+            e.render_block();
+            let v = e.node_output(NodeId(1), 0)[0];
+            assert!(v.is_finite());
+            seen_low |= v < -0.4;
+            seen_high |= v > 0.4;
+        }
+        assert!(seen_low && seen_high, "the mapped param swept with the LFO");
+    }
+
+    // ── G7: scheduled commands ────────────────────────────────────────────
+
+    type SE7 = Engine<16, 8, 16, 4, 45056, 2048>;
+
+    /// A `Ctrl` node whose value `SetParam` can move, so a scheduled command's
+    /// effect is directly readable from the node's output.
+    fn ctrl(e: &mut SE7, id: u16, v: f32) {
+        e.apply(Cmd::NewNode {
+            node: NodeId(id),
+            kind: Kind::Ctrl,
+            args: [Input::Const(0.0); 3],
+        });
+        e.apply(Cmd::SetParam {
+            node: NodeId(id),
+            param: 0,
+            value: v,
+        });
+    }
+
+    fn set_at(e: &mut SE7, at: u64, id: u16, v: f32) -> bool {
+        e.apply_at(
+            at,
+            Cmd::SetParam {
+                node: NodeId(id),
+                param: 0,
+                value: v,
+            },
+        )
+    }
+
+    #[test]
+    fn a_scheduled_command_fires_in_the_block_containing_its_sample() {
+        // BLOCK = 16. Sample 20 lives in block 1 ([16, 32)), so it must not
+        // have fired after block 0 and must have fired after block 1.
+        let mut e = SE7::new(48_000.0);
+        ctrl(&mut e, 0, 0.25);
+        assert!(set_at(&mut e, 20, 0, 0.75));
+        assert_eq!(e.scheduled_len(), 1);
+        assert_eq!(e.next_scheduled_at(), Some(20));
+
+        e.render_block(); // block 0: samples 0..16
+        assert_eq!(e.node_output(NodeId(0), 0)[0], 0.25, "not yet");
+        assert_eq!(e.scheduled_len(), 1);
+
+        e.render_block(); // block 1: samples 16..32, contains 20
+        assert_eq!(e.node_output(NodeId(0), 0)[0], 0.75, "fired");
+        assert_eq!(e.scheduled_len(), 0);
+    }
+
+    #[test]
+    fn a_command_scheduled_for_sample_zero_fires_on_the_first_block() {
+        let mut e = SE7::new(48_000.0);
+        ctrl(&mut e, 0, 0.25);
+        assert!(set_at(&mut e, 0, 0, 0.75));
+        e.render_block();
+        assert_eq!(e.node_output(NodeId(0), 0)[0], 0.75);
+    }
+
+    #[test]
+    fn an_overdue_command_fires_rather_than_vanishing() {
+        let mut e = SE7::new(48_000.0);
+        ctrl(&mut e, 0, 0.25);
+        for _ in 0..10 {
+            e.render_block(); // clock is now well past sample 5
+        }
+        assert!(set_at(&mut e, 5, 0, 0.75), "filing in the past is allowed");
+        e.render_block();
+        assert_eq!(
+            e.node_output(NodeId(0), 0)[0],
+            0.75,
+            "late is recoverable; dropping it would not be"
+        );
+    }
+
+    #[test]
+    fn a_scheduled_command_fires_exactly_once() {
+        let mut e = SE7::new(48_000.0);
+        ctrl(&mut e, 0, 0.25);
+        set_at(&mut e, 20, 0, 0.75);
+        e.render_block();
+        e.render_block();
+        assert_eq!(e.node_output(NodeId(0), 0)[0], 0.75);
+        // Move the value by hand; a re-fire would stomp it back to 0.75.
+        e.apply(Cmd::SetParam {
+            node: NodeId(0),
+            param: 0,
+            value: 0.1,
+        });
+        for _ in 0..4 {
+            e.render_block();
+        }
+        assert_eq!(e.node_output(NodeId(0), 0)[0], 0.1, "did not fire twice");
+    }
+
+    #[test]
+    fn commands_at_the_same_sample_apply_in_arrival_order() {
+        let mut e = SE7::new(48_000.0);
+        ctrl(&mut e, 0, 0.0);
+        set_at(&mut e, 20, 0, 0.5);
+        set_at(&mut e, 20, 0, 0.9); // later arrival wins
+        e.render_block();
+        e.render_block();
+        assert_eq!(e.node_output(NodeId(0), 0)[0], 0.9);
+    }
+
+    #[test]
+    fn out_of_order_filing_still_applies_in_time_order() {
+        let mut e = SE7::new(48_000.0);
+        ctrl(&mut e, 0, 0.0);
+        set_at(&mut e, 40, 0, 0.9); // filed first, due later
+        set_at(&mut e, 20, 0, 0.5);
+        e.render_block(); // block 0
+        e.render_block(); // block 1 → sample 20
+        assert_eq!(e.node_output(NodeId(0), 0)[0], 0.5);
+        e.render_block(); // block 2 → sample 40 (block 2 is [32,48))
+        assert_eq!(e.node_output(NodeId(0), 0)[0], 0.9);
+    }
+
+    #[test]
+    fn a_scheduled_new_node_joins_eval_order_the_block_it_lands_in() {
+        // The drain runs before the topological re-sort, so a node created by a
+        // scheduled command is sorted in and rendered immediately rather than
+        // sitting silent for one block.
+        let mut e = SE7::new(48_000.0);
+        e.apply_at(
+            4,
+            Cmd::NewNode {
+                node: NodeId(0),
+                kind: Kind::Ctrl,
+                args: [Input::Const(0.0); 3],
+            },
+        );
+        e.apply_at(
+            4,
+            Cmd::SetParam {
+                node: NodeId(0),
+                param: 0,
+                value: 0.6,
+            },
+        );
+        e.render_block();
+        assert_eq!(e.eval_order(), &[0], "created and sorted in this block");
+        assert_eq!(
+            e.node_output(NodeId(0), 0)[0],
+            0.6,
+            "and rendered, not silent for a block"
+        );
+    }
+
+    #[test]
+    fn a_full_queue_refuses_and_reports_schedule_full() {
+        let mut e = SE7::new(48_000.0);
+        ctrl(&mut e, 0, 0.0);
+        e.drain_events(|_| {});
+        for n in 0..crate::sched::SCHED_QUEUE {
+            assert!(set_at(&mut e, 1_000 + n as u64, 0, 0.5), "fits");
+        }
+        assert!(!set_at(&mut e, 2_000, 0, 0.9), "full → refused");
+        assert_eq!(
+            e.pop_event(),
+            Some(crate::event::Event::CmdFailed {
+                node: NodeId(0),
+                reason: CmdError::ScheduleFull
+            }),
+            "the host is told, rather than the command silently vanishing"
+        );
+        assert_eq!(e.scheduled_len(), crate::sched::SCHED_QUEUE);
+    }
+
+    #[test]
+    fn clear_schedule_cancels_the_future_but_not_the_past() {
+        let mut e = SE7::new(48_000.0);
+        ctrl(&mut e, 0, 0.25);
+        set_at(&mut e, 20, 0, 0.5); // block 1
+        set_at(&mut e, 60, 0, 0.9); // block 3
+        e.render_block();
+        e.render_block(); // 0.5 has now been applied
+        assert_eq!(e.node_output(NodeId(0), 0)[0], 0.5);
+
+        e.apply(Cmd::ClearSchedule);
+        assert_eq!(e.scheduled_len(), 0);
+        for _ in 0..6 {
+            e.render_block();
+        }
+        assert_eq!(
+            e.node_output(NodeId(0), 0)[0],
+            0.5,
+            "the applied command stands; the pending one is gone"
+        );
+    }
+
+    #[test]
+    fn reset_clears_pending_commands() {
+        // Reset restarts the clock at zero, so a pending timestamp would name a
+        // block that is about to come round again — firing a dead patch's
+        // commands into the new one.
+        let mut e = SE7::new(48_000.0);
+        ctrl(&mut e, 0, 0.25);
+        set_at(&mut e, 200, 0, 0.9);
+        assert_eq!(e.scheduled_len(), 1);
+        e.apply(Cmd::Reset);
+        assert_eq!(e.scheduled_len(), 0);
+        assert_eq!(e.next_scheduled_at(), None);
+    }
+
+    #[test]
+    fn scheduling_survives_the_clock_and_does_not_disturb_rendering() {
+        // A patch that is actually making sound keeps making it while commands
+        // are pending, and the pending command lands on the running graph.
+        let mut e = SE7::new(48_000.0);
+        e.apply(Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::Saw,
+            args: [Input::Const(220.0), Input::Const(0.0), Input::Const(0.0)],
+        });
+        e.apply(Cmd::BusWrite {
+            src: Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            bus: BusId(0),
+        });
+        e.apply(Cmd::SetRoot { bus: BusId(0) });
+        e.apply_at(
+            20,
+            Cmd::SetInput {
+                node: NodeId(0),
+                port: 0,
+                src: Input::Const(110.0),
+            },
+        );
+        let mut out = [StereoFrame::default(); 16];
+        let sil = [StereoFrame::default(); 16];
+        e.render(&mut out, &sil);
+        assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0));
+        e.render(&mut out, &sil);
+        assert!(out.iter().all(|f| f.l.is_finite() && f.l.abs() <= 1.0));
+        assert_eq!(e.scheduled_len(), 0, "fired during the second render");
+    }
+
+    // ── G2: control rate ──────────────────────────────────────────────────
+
+    type KE = Engine<64, 8, 16, 4, 45056, 2048>;
+
+    /// An LFO at `hz`, optionally at control rate.
+    fn lfo(e: &mut KE, id: u16, hz: f32, kr: bool) {
+        e.apply(Cmd::NewNode {
+            node: NodeId(id),
+            kind: Kind::Lfo,
+            args: [Input::Const(hz), Input::Const(0.0), Input::Const(0.0)],
+        });
+        if kr {
+            assert!(e.set_rate(NodeId(id), crate::node::Rate::Control));
+        }
+    }
+
+    #[test]
+    fn control_rate_output_is_constant_across_the_block() {
+        let mut e = KE::new(48_000.0);
+        lfo(&mut e, 0, 500.0, true); // fast enough to move within one block
+        lfo(&mut e, 1, 500.0, false);
+        e.render_block();
+
+        let kr_row = e.node_output(NodeId(0), 0);
+        assert!(
+            kr_row.iter().all(|s| *s == kr_row[0]),
+            "control rate broadcasts one value across the row"
+        );
+        let ar_row = e.node_output(NodeId(1), 0);
+        assert!(
+            ar_row.iter().any(|s| *s != ar_row[0]),
+            "audio rate still varies within the block"
+        );
+    }
+
+    #[test]
+    fn control_rate_advances_at_the_same_wall_clock_rate() {
+        // The `BLOCK * dt` scaling is the whole correctness question here: with
+        // plain `dt` a control-rate node would advance BLOCK times too slowly.
+        // A slow LFO keeps the inherent one-block quantisation well below the
+        // tolerance, so this measures the scaling rather than the lag.
+        let mut e = KE::new(48_000.0);
+        lfo(&mut e, 0, 2.0, true);
+        lfo(&mut e, 1, 2.0, false);
+        for _ in 0..200 {
+            e.render_block();
+        }
+        let kr = e.node_output(NodeId(0), 0)[0];
+        let ar = e.node_output(NodeId(1), 0)[0];
+        assert!(
+            (kr - ar).abs() < 0.05,
+            "kr {kr} should track ar {ar} (one block of lag, not BLOCK× slower)"
+        );
+        // ...and it has actually gone somewhere: a BLOCK-times-too-slow LFO
+        // would still be within a rounding error of its starting value.
+        assert!(kr.abs() > 0.1, "kr {kr} barely moved — dt scaling missing?");
+    }
+
+    #[test]
+    fn control_rate_without_dt_scaling_would_be_visibly_slower() {
+        // Guards the scaling from being "simplified" away: over enough blocks a
+        // BLOCK-times-too-slow LFO cannot have completed a full cycle, so its
+        // output would still be pinned near the start of the ramp.
+        let mut e = KE::new(48_000.0);
+        lfo(&mut e, 0, 50.0, true); // 50 Hz → a cycle every 960 samples = 15 blocks
+        let mut seen_low = false;
+        let mut seen_high = false;
+        for _ in 0..60 {
+            e.render_block();
+            let v = e.node_output(NodeId(0), 0)[0];
+            seen_low |= v < -0.5;
+            seen_high |= v > 0.5;
+        }
+        assert!(
+            seen_low && seen_high,
+            "a correctly-clocked kr LFO sweeps its full range"
+        );
+    }
+
+    #[test]
+    fn a_control_rate_source_reaches_its_consumer() {
+        // The consumer is handed `In::K`, not a row; the value must still be
+        // the one the source produced.
+        let mut e = KE::new(48_000.0);
+        // `Ctrl` takes its value from `SetParam`, not from an input arg.
+        e.apply(Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::Ctrl,
+            args: [Input::Const(0.0); 3],
+        });
+        e.apply(Cmd::SetParam {
+            node: NodeId(0),
+            param: 0,
+            value: 0.25,
+        });
+        assert!(e.set_rate(NodeId(0), crate::node::Rate::Control));
+        e.apply(Cmd::NewNode {
+            node: NodeId(1),
+            kind: Kind::Add,
+            args: [
+                Input::Node {
+                    node: NodeId(0),
+                    port: 0,
+                },
+                Input::Const(0.5),
+                Input::Const(0.0),
+            ],
+        });
+        e.render_block();
+        let out = e.node_output(NodeId(1), 0);
+        assert!(
+            out.iter().all(|s| (*s - 0.75).abs() < 1e-6),
+            "consumer saw {:?}",
+            &out[..4]
+        );
+    }
+
+    #[test]
+    fn set_rate_accepts_poly_tiles_but_refuses_stereo_pairs() {
+        let mut e = KE::new(48_000.0);
+        use crate::node::Rate;
+        e.create(NodeId(0), Kind::PolyOsc); // VOICES wide — a sample-major tile
+        e.create(NodeId(1), Kind::Pan); // 2 wide — two independent rows
+        e.create(NodeId(2), Kind::Lfo); // 1 wide
+        assert!(e.set_rate(NodeId(0), Rate::Control), "poly accepted");
+        assert!(!e.set_rate(NodeId(1), Rate::Control), "stereo refused");
+        assert!(e.set_rate(NodeId(2), Rate::Control), "mono accepted");
+        assert_eq!(e.rate_of(NodeId(0)), Some(Rate::Control));
+        assert_eq!(e.rate_of(NodeId(1)), Some(Rate::Audio), "stereo unchanged");
+        assert_eq!(e.rate_of(NodeId(2)), Some(Rate::Control));
+    }
+
+    // ── G2, poly half ──
+
+    type PKE = Engine<64, 8, 40, 4, 45056, 2048>;
+
+    /// A `PolyAr` with a fast attack, gated on the given lanes.
+    fn poly_env_on(e: &mut PKE, id: u16, lanes: &[u8], kr: bool) {
+        e.apply(Cmd::NewNode {
+            node: NodeId(id),
+            kind: Kind::PolyAr,
+            args: [Input::Const(0.0005), Input::Const(0.05), Input::Const(0.0)],
+        });
+        if kr {
+            assert!(
+                e.set_rate(NodeId(id), crate::node::Rate::Control),
+                "poly kinds accept control rate"
+            );
+        }
+        for &v in lanes {
+            e.apply(Cmd::GateVoice {
+                node: NodeId(id),
+                voice: v,
+                on: true,
+            });
+        }
+    }
+
+    #[test]
+    fn a_control_rate_poly_tile_is_constant_across_the_block() {
+        let mut e = PKE::new(48_000.0);
+        poly_env_on(&mut e, 0, &[0, 3], true);
+        e.render_block();
+
+        // The tile is sample-major: lane v of sample i is at `i * VOICES + v`.
+        // Every sample must carry sample 0's lane values.
+        let flat: [f32; 64 * VOICES] =
+            core::array::from_fn(|k| e.poly_tile_sample(NodeId(0), k / VOICES, k % VOICES));
+        for i in 1..64 {
+            for v in 0..VOICES {
+                assert_eq!(
+                    flat[i * VOICES + v],
+                    flat[v],
+                    "lane {v} varies within the block at sample {i}"
+                );
+            }
+        }
+        // ...and it is not simply all zeros: the gated lanes are sounding.
+        assert!(flat[0] > 0.0, "lane 0 gated on");
+        assert!(flat[3] > 0.0, "lane 3 gated on");
+        assert_eq!(flat[1], 0.0, "lane 1 was never gated");
+    }
+
+    #[test]
+    fn a_control_rate_poly_envelope_tracks_its_audio_rate_twin() {
+        // The `BLOCK * dt` scaling again: without it the kr envelope would
+        // advance BLOCK times too slowly and never reach the ar one.
+        let mut e = PKE::new(48_000.0);
+        poly_env_on(&mut e, 0, &[0], true); // kr
+        poly_env_on(&mut e, 1, &[0], false); // ar
+        for _ in 0..40 {
+            e.render_block();
+        }
+        let kr = e.poly_tile_sample(NodeId(0), 0, 0);
+        let ar = e.poly_tile_sample(NodeId(1), 0, 0);
+        assert!(
+            (kr - ar).abs() < 0.05,
+            "kr {kr} should track ar {ar}, not lag by a factor of BLOCK"
+        );
+        assert!(kr > 0.5, "kr {kr} actually advanced");
+    }
+
+    #[test]
+    fn a_control_rate_poly_source_still_drives_a_voice_sum() {
+        // The broadcast exists so downstream readers see a full block. VoiceSum
+        // collapses the tile per sample, so a half-filled tile would show up as
+        // a block that starts loud and falls silent.
+        let mut e = PKE::new(48_000.0);
+        poly_env_on(&mut e, 0, &[0, 1, 2], true);
+        e.apply(Cmd::NewNode {
+            node: NodeId(1),
+            kind: Kind::VoiceSum,
+            args: [
+                Input::Node {
+                    node: NodeId(0),
+                    port: 0,
+                },
+                Input::Const(0.0),
+                Input::Const(0.0),
+            ],
+        });
+        for _ in 0..8 {
+            e.render_block();
+        }
+        let out = e.node_output(NodeId(1), 0);
+        assert!(out[0] > 0.0, "sounding");
+        assert!(
+            out.iter().all(|s| (*s - out[0]).abs() < 1e-6),
+            "the whole block carries the broadcast value: {:?}",
+            &out[..4]
+        );
+    }
+
+    #[test]
+    fn a_poly_collapse_node_may_also_run_at_control_rate() {
+        // `VoiceSum` is `is_poly` but only one port wide, so it exercises the
+        // `width != VOICES` side of the broadcast.
+        let mut e = PKE::new(48_000.0);
+        poly_env_on(&mut e, 0, &[0, 1], false);
+        e.apply(Cmd::NewNode {
+            node: NodeId(1),
+            kind: Kind::VoiceSum,
+            args: [
+                Input::Node {
+                    node: NodeId(0),
+                    port: 0,
+                },
+                Input::Const(0.0),
+                Input::Const(0.0),
+            ],
+        });
+        assert!(e.set_rate(NodeId(1), crate::node::Rate::Control));
+        for _ in 0..8 {
+            e.render_block();
+        }
+        let out = e.node_output(NodeId(1), 0);
+        assert!(out[0] > 0.0, "sounding");
+        assert!(
+            out.iter().all(|s| *s == out[0]),
+            "constant across the block"
+        );
+    }
+
+    #[test]
+    fn switching_a_poly_node_back_to_audio_rate_restores_detail() {
+        // A slow attack, so the envelope is still ramping after the first
+        // block: `poly_env_on`'s fast attack reaches sustain within one kr tick
+        // and would then be legitimately constant at audio rate too.
+        let mut e = PKE::new(48_000.0);
+        e.apply(Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::PolyAr,
+            args: [Input::Const(0.5), Input::Const(0.5), Input::Const(0.0)],
+        });
+        assert!(e.set_rate(NodeId(0), crate::node::Rate::Control));
+        e.apply(Cmd::GateVoice {
+            node: NodeId(0),
+            voice: 0,
+            on: true,
+        });
+        e.render_block();
+        assert_eq!(
+            e.poly_tile_sample(NodeId(0), 1, 0),
+            e.poly_tile_sample(NodeId(0), 0, 0),
+            "kr: flat across the block"
+        );
+        e.apply(Cmd::SetRate {
+            node: NodeId(0),
+            rate: crate::node::Rate::Audio,
+        });
+        e.render_block();
+        assert_ne!(
+            e.poly_tile_sample(NodeId(0), 1, 0),
+            e.poly_tile_sample(NodeId(0), 0, 0),
+            "ar: the envelope moves within the block again"
+        );
+    }
+
+    #[test]
+    fn set_rate_on_a_dead_node_is_refused() {
+        let mut e = KE::new(48_000.0);
+        use crate::node::Rate;
+        assert!(!e.set_rate(NodeId(5), Rate::Control));
+        assert!(!e.set_rate(NodeId(5), Rate::Audio));
+        assert_eq!(e.rate_of(NodeId(5)), None);
+    }
+
+    #[test]
+    fn rate_resets_to_audio_on_recreate() {
+        let mut e = KE::new(48_000.0);
+        use crate::node::Rate;
+        lfo(&mut e, 0, 20.0, true);
+        assert_eq!(e.rate_of(NodeId(0)), Some(Rate::Control));
+        e.apply(Cmd::Free { node: NodeId(0) });
+        lfo(&mut e, 0, 20.0, false); // same id, fresh node
+        assert_eq!(
+            e.rate_of(NodeId(0)),
+            Some(Rate::Audio),
+            "a recreated id must not inherit the old node's rate"
+        );
+    }
+
+    #[test]
+    fn switching_back_to_audio_rate_restores_per_sample_detail() {
+        let mut e = KE::new(48_000.0);
+        use crate::node::Rate;
+        lfo(&mut e, 0, 500.0, true);
+        e.render_block();
+        let row = e.node_output(NodeId(0), 0);
+        assert!(row.iter().all(|s| *s == row[0]));
+
+        e.apply(Cmd::SetRate {
+            node: NodeId(0),
+            rate: Rate::Audio,
+        });
+        e.render_block();
+        let row = e.node_output(NodeId(0), 0);
+        assert!(
+            row.iter().any(|s| *s != row[0]),
+            "back at audio rate the row varies again"
+        );
+    }
+
+    #[test]
+    fn control_rate_node_still_routes_to_a_bus() {
+        // Bus writes read the output row directly rather than going through
+        // `In::K`, so the broadcast fill is what keeps them correct.
+        let mut e = KE::new(48_000.0);
+        e.apply(Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::Ctrl,
+            args: [Input::Const(0.0); 3],
+        });
+        e.apply(Cmd::SetParam {
+            node: NodeId(0),
+            param: 0,
+            value: 0.5,
+        });
+        assert!(e.set_rate(NodeId(0), crate::node::Rate::Control));
+        e.apply(Cmd::BusWrite {
+            src: Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            bus: BusId(0),
+        });
+        e.apply(Cmd::SetRoot { bus: BusId(0) });
+        let mut out = [StereoFrame::default(); 64];
+        let sil = [StereoFrame::default(); 64];
+        e.render(&mut out, &sil);
+        assert!(
+            out.iter().all(|f| (f.l - 0.5).abs() < 1e-6),
+            "every frame carries the broadcast value"
+        );
+    }
+
+    // ── G4b: reordering ───────────────────────────────────────────────────
+
+    #[test]
+    fn a_move_that_contradicts_a_dependency_is_undone_by_the_next_sort() {
+        // `MoveBefore` / `MoveAfter` are an override, not a pin. A move takes
+        // effect immediately — including one that puts a consumer *before* its
+        // source, which is the deliberate one-block-delay case — and it holds
+        // for as long as the graph's shape is unchanged. The next structural
+        // edit re-sorts, and the dependency wins.
+        //
+        // Node 0 is a `Saw`, so its value differs every block: that is what
+        // makes "this block" and "the previous block" distinguishable without
+        // touching the graph (and touching it would itself force a re-sort).
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        e.apply(Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::Saw,
+            args: [Input::Const(2_000.0), Input::Const(0.0), Input::Const(0.0)],
+        });
+        let follow = |e: &mut ME, id: u16, src: u16| {
+            e.apply(Cmd::NewNode {
+                node: NodeId(id),
+                kind: Kind::Add,
+                args: [
+                    Input::Node {
+                        node: NodeId(src),
+                        port: 0,
+                    },
+                    Input::Const(0.0),
+                    Input::Const(0.0),
+                ],
+            });
+        };
+        follow(&mut e, 1, 0);
+        follow(&mut e, 2, 1);
+
+        e.render_block();
+        let one_a = e.node_output(NodeId(1), 0)[0];
+        assert_eq!(
+            e.node_output(NodeId(2), 0)[0],
+            one_a,
+            "sorted: node 2 sees node 1's current block"
+        );
+
+        // Override: put the consumer ahead of its source on purpose.
+        assert!(e.move_before(NodeId(2), NodeId(1)));
+        assert_eq!(e.eval_order(), &[0, 2, 1]);
+        e.render_block();
+        let one_b = e.node_output(NodeId(1), 0)[0];
+        assert_ne!(one_b, one_a, "the saw moved on, so the two blocks differ");
+        assert_eq!(
+            e.node_output(NodeId(2), 0)[0],
+            one_a,
+            "reads node 1's PREVIOUS block: the override is honoured"
+        );
+
+        // A structural edit — here an unrelated new node — re-sorts, and the
+        // dependency reasserts itself.
+        assert!(e.create(NodeId(3), Kind::Saw));
+        e.render_block();
+        assert_eq!(e.eval_order(), &[0, 1, 2, 3]);
+        assert_eq!(
+            e.node_output(NodeId(2), 0)[0],
+            e.node_output(NodeId(1), 0)[0],
+            "current block again"
+        );
+    }
+
+    #[test]
+    fn reordering_preserves_bus_routing_and_output() {
+        // Bus writes are keyed by source `Input`, not eval position, so moving
+        // a routed node must not drop or duplicate its contribution.
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        for (id, v) in [(0u16, 0.25f32), (1, 0.5)] {
+            e.apply(Cmd::NewNode {
+                node: NodeId(id),
+                kind: Kind::Add,
+                args: [Input::Const(v), Input::Const(0.0), Input::Const(0.0)],
+            });
+            e.apply(Cmd::BusWrite {
+                src: Input::Node {
+                    node: NodeId(id),
+                    port: 0,
+                },
+                bus: BusId(0),
+            });
+        }
+        e.apply(Cmd::SetRoot { bus: BusId(0) });
+        let mut out = [StereoFrame::default(); 8];
+        let sil = [StereoFrame::default(); 8];
+        e.render(&mut out, &sil);
+        let before = out[0].l;
+        assert!((before - 0.75).abs() < 1e-6);
+
+        e.apply(Cmd::MoveBefore {
+            node: NodeId(1),
+            target: NodeId(0),
+        });
+        e.render(&mut out, &sil);
+        assert!(
+            (out[0].l - before).abs() < 1e-6,
+            "routing survives the move: {} vs {before}",
+            out[0].l
+        );
+    }
+
+    #[test]
+    fn move_of_a_freed_node_is_a_noop() {
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        for id in 0..3u16 {
+            e.create(NodeId(id), Kind::Saw);
+        }
+        e.apply(Cmd::Free { node: NodeId(1) });
+        assert!(!e.move_after(NodeId(1), NodeId(0)));
+        assert!(!e.move_after(NodeId(0), NodeId(1)));
+        assert_eq!(e.eval_order(), &[0, 2]);
+        e.render_block(); // must not panic on a stale order entry
+    }
+
+    // ── G1: engine → host events ──────────────────────────────────────────
+
+    /// Render blocks until `f` reports done or `max` blocks elapse; returns the
+    /// blocks consumed. Envelope releases take many blocks to decay.
+    fn render_until(
+        e: &mut Engine<64, 8, 40, 4, 45056, 2048>,
+        max: usize,
+        mut f: impl FnMut(&mut Engine<64, 8, 40, 4, 45056, 2048>) -> bool,
+    ) -> usize {
+        for n in 0..max {
+            e.render_block();
+            if f(e) {
+                return n + 1;
+            }
+        }
+        max
+    }
+
+    type EvE = Engine<64, 8, 40, 4, 45056, 2048>;
+
+    fn poly_env(e: &mut EvE) {
+        e.create(NodeId(0), Kind::PolyAr);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.0005); // fast attack
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.001); // fast release
+    }
+
+    #[test]
+    fn fresh_envelope_emits_no_event() {
+        // A newly created envelope reads as Idle. If completion were reported as
+        // a level rather than a rising edge, this would announce a release that
+        // never happened. `seed_prev_idle` is what prevents it.
+        let mut e = EvE::new(48_000.0);
+        poly_env(&mut e);
+        for _ in 0..8 {
+            e.render_block();
+        }
+        assert_eq!(e.pop_event(), None, "fresh envelope must stay silent");
+        assert_eq!(e.events_dropped(), 0);
+    }
+
+    #[test]
+    fn poly_release_completion_emits_voice_done_once() {
+        let mut e = EvE::new(48_000.0);
+        poly_env(&mut e);
+        e.apply(Cmd::GateVoice {
+            node: NodeId(0),
+            voice: 3,
+            on: true,
+        });
+        // Held: attack then sustain, never idle → no event.
+        for _ in 0..16 {
+            e.render_block();
+        }
+        assert_eq!(e.pop_event(), None, "a held voice has not completed");
+
+        e.apply(Cmd::GateVoice {
+            node: NodeId(0),
+            voice: 3,
+            on: false,
+        });
+        render_until(&mut e, 200, |e| !e.events.is_empty());
+
+        assert_eq!(
+            e.pop_event(),
+            Some(crate::event::Event::VoiceDone {
+                node: NodeId(0),
+                voice: 3
+            })
+        );
+        // Rising edge only: the lane stays idle but must not re-announce.
+        for _ in 0..32 {
+            e.render_block();
+        }
+        assert_eq!(
+            e.pop_event(),
+            None,
+            "idle is a level, completion is an edge"
+        );
+    }
+
+    #[test]
+    fn only_the_released_lane_reports() {
+        let mut e = EvE::new(48_000.0);
+        poly_env(&mut e);
+        for v in [1u8, 5] {
+            e.apply(Cmd::GateVoice {
+                node: NodeId(0),
+                voice: v,
+                on: true,
+            });
+        }
+        for _ in 0..16 {
+            e.render_block();
+        }
+        e.apply(Cmd::GateVoice {
+            node: NodeId(0),
+            voice: 5,
+            on: false,
+        });
+        render_until(&mut e, 200, |e| !e.events.is_empty());
+
+        let mut got = [0u8; 8];
+        let mut n = 0;
+        e.drain_events(|ev| {
+            if let crate::event::Event::VoiceDone { voice, .. } = ev {
+                got[n] = voice;
+                n += 1;
+            }
+        });
+        assert_eq!(&got[..n], &[5], "lane 1 is still held");
+    }
+
+    #[test]
+    fn mono_envelope_reports_done_not_voice_done() {
+        let mut e = EvE::new(48_000.0);
+        e.create(NodeId(0), Kind::Env);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(0.0005);
+        *e.node_input_mut(NodeId(0), 1).unwrap() = Input::Const(0.001);
+        e.apply(Cmd::Gate {
+            node: NodeId(0),
+            on: true,
+        });
+        for _ in 0..16 {
+            e.render_block();
+        }
+        e.apply(Cmd::Gate {
+            node: NodeId(0),
+            on: false,
+        });
+        render_until(&mut e, 200, |e| !e.events.is_empty());
+        assert_eq!(
+            e.pop_event(),
+            Some(crate::event::Event::Done { node: NodeId(0) })
+        );
+    }
+
+    #[test]
+    fn non_envelope_kinds_never_emit() {
+        let mut e = EvE::new(48_000.0);
+        e.create(NodeId(0), Kind::Saw);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(220.0);
+        e.create(NodeId(1), Kind::Lpf);
+        *e.node_input_mut(NodeId(1), 1).unwrap() = Input::Const(800.0);
+        for _ in 0..32 {
+            e.render_block();
+        }
+        assert_eq!(e.pop_event(), None);
+    }
+
+    #[test]
+    fn freed_node_does_not_edge_on_a_reused_slot() {
+        // Free a released envelope, then recreate the id as a fresh envelope.
+        // The new node must not inherit the old slot's idle history.
+        let mut e = EvE::new(48_000.0);
+        poly_env(&mut e);
+        e.apply(Cmd::GateVoice {
+            node: NodeId(0),
+            voice: 0,
+            on: true,
+        });
+        for _ in 0..8 {
+            e.render_block();
+        }
+        e.apply(Cmd::Free { node: NodeId(0) });
+        e.drain_events(|_| {});
+        poly_env(&mut e); // same id, fresh PolyAr
+        for _ in 0..16 {
+            e.render_block();
+        }
+        assert_eq!(e.pop_event(), None);
+    }
+
+    #[test]
+    fn reset_clears_pending_events_and_history() {
+        let mut e = EvE::new(48_000.0);
+        poly_env(&mut e);
+        e.apply(Cmd::GateVoice {
+            node: NodeId(0),
+            voice: 2,
+            on: true,
+        });
+        for _ in 0..16 {
+            e.render_block();
+        }
+        e.apply(Cmd::GateVoice {
+            node: NodeId(0),
+            voice: 2,
+            on: false,
+        });
+        render_until(&mut e, 200, |e| !e.events.is_empty());
+        assert!(!e.events.is_empty());
+        e.apply(Cmd::Reset);
+        assert_eq!(e.pop_event(), None, "Reset drops queued events");
+    }
+
     #[test]
     fn gate_voice_reaches_only_addressed_lane() {
         // A PolyAr gated on voice 3 only → after some samples, VoiceSum > 0 comes
@@ -2659,6 +4888,700 @@ mod tests {
             usb[0][0].abs() < 1e-6,
             "Reset should clear the usb map, got {}",
             usb[0][0]
+        );
+    }
+
+    // ── Sample clock (transport seam for scheduled commands) ──────────────
+
+    #[test]
+    fn sample_time_advances_by_one_block_per_render() {
+        let mut e = E::new(48_000.0);
+        assert_eq!(e.sample_time(), 0, "a fresh engine starts at sample 0");
+        e.render_block();
+        assert_eq!(e.sample_time(), 16, "one block of BLOCK=16 samples elapsed");
+        e.render_block();
+        assert_eq!(e.sample_time(), 32);
+    }
+
+    #[test]
+    fn sample_time_advances_through_the_full_render_path() {
+        // `render` calls `render_block` exactly once, so the clock must not
+        // double-count when the host uses the outer entry point.
+        let mut e = E::new(48_000.0);
+        let mut out = [StereoFrame { l: 0.0, r: 0.0 }; 16];
+        e.render(&mut out, &[]);
+        assert_eq!(e.sample_time(), 16);
+    }
+
+    #[test]
+    fn reset_rewinds_the_sample_clock() {
+        let mut e = E::new(48_000.0);
+        e.render_block();
+        e.apply(Cmd::Reset);
+        assert_eq!(e.sample_time(), 0, "Reset returns the engine to time zero");
+    }
+
+    // ── Command failure reporting (GL7) ──────────────────────────────────
+
+    #[test]
+    fn a_new_node_that_cannot_be_created_reports_cmd_failed() {
+        // NODES = 8, so id 8 is out of range: the node is never created and the
+        // host would otherwise wire a whole patch onto silence without knowing.
+        let mut e = E::new(48_000.0);
+        e.apply(Cmd::NewNode {
+            node: NodeId(8),
+            kind: Kind::Saw,
+            args: [Input::Const(0.0); 3],
+        });
+        assert_eq!(
+            e.pop_event(),
+            Some(crate::event::Event::CmdFailed {
+                node: NodeId(8),
+                reason: crate::event::CmdError::CreateFailed,
+            })
+        );
+    }
+
+    #[test]
+    fn creating_a_node_twice_reports_cmd_failed() {
+        let mut e = E::new(48_000.0);
+        e.create(NodeId(0), Kind::Saw);
+        e.apply(Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::Saw,
+            args: [Input::Const(0.0); 3],
+        });
+        assert_eq!(
+            e.pop_event(),
+            Some(crate::event::Event::CmdFailed {
+                node: NodeId(0),
+                reason: crate::event::CmdError::CreateFailed,
+            })
+        );
+    }
+
+    #[test]
+    fn wiring_an_input_on_a_dead_node_reports_cmd_failed() {
+        let mut e = E::new(48_000.0);
+        e.apply(Cmd::SetInput {
+            node: NodeId(3),
+            port: 0,
+            src: Input::Const(1.0),
+        });
+        assert_eq!(
+            e.pop_event(),
+            Some(crate::event::Event::CmdFailed {
+                node: NodeId(3),
+                reason: crate::event::CmdError::DeadNode,
+            })
+        );
+    }
+
+    #[test]
+    fn a_patch_that_builds_cleanly_reports_no_failure() {
+        let mut e = E::new(48_000.0);
+        e.apply(Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::Saw,
+            args: [Input::Const(220.0); 3],
+        });
+        e.apply(Cmd::SetInput {
+            node: NodeId(0),
+            port: 0,
+            src: Input::Const(110.0),
+        });
+        e.apply(Cmd::SetParam {
+            node: NodeId(0),
+            param: 0,
+            value: 0.5,
+        });
+        assert_eq!(e.pop_event(), None, "a clean build emits no events");
+    }
+
+    #[test]
+    fn performance_commands_on_a_dead_node_stay_silent() {
+        // Gate/Trigger run at note rate; a stuck note must not flood the queue
+        // and evict envelope-completion events. Only build-time commands report.
+        let mut e = E::new(48_000.0);
+        e.apply(Cmd::Gate {
+            node: NodeId(4),
+            on: true,
+        });
+        e.apply(Cmd::Trigger { node: NodeId(4) });
+        assert_eq!(e.pop_event(), None);
+    }
+
+    #[test]
+    fn control_rate_on_a_poly_node_reports_unsupported_rate_not_a_dead_node() {
+        // `set_rate` refuses a stereo kind, but the node is alive and well —
+        // telling the host "dead node" would send it hunting for a lifecycle
+        // bug that isn't there.
+        //
+        // (Poly kinds used to be refused here too. They are now supported; the
+        // stereo pair is what remains unsupported, because its two ports are
+        // independent row-major rows rather than one interleaved tile.)
+        use crate::node::Rate;
+        let mut e = E::new(48_000.0);
+        e.create(NodeId(0), Kind::Pan);
+        e.apply(Cmd::SetRate {
+            node: NodeId(0),
+            rate: Rate::Control,
+        });
+        assert_eq!(
+            e.pop_event(),
+            Some(crate::event::Event::CmdFailed {
+                node: NodeId(0),
+                reason: crate::event::CmdError::UnsupportedRate,
+            })
+        );
+    }
+
+    // ── G11: automatic topological eval order ────────────────────────────
+
+    #[test]
+    fn a_consumer_created_before_its_source_reads_the_current_block() {
+        // The hazard G4b existed to repair by hand: build 0 → 1 → 2 in the
+        // wrong creation order (0, 2, 1). The engine now sorts before it
+        // renders, so node 2 sees node 1's CURRENT block on the very first
+        // render — no stale zero, no manual `MoveAfter`.
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        let add = |e: &mut ME, id: u16, src: Input, k: f32| {
+            e.apply(Cmd::NewNode {
+                node: NodeId(id),
+                kind: Kind::Add,
+                args: [src, Input::Const(k), Input::Const(0.0)],
+            });
+        };
+        add(&mut e, 0, Input::Const(1.0), 0.0); // → 1.0
+        add(
+            &mut e,
+            2,
+            Input::Node {
+                node: NodeId(1),
+                port: 0,
+            },
+            0.0,
+        );
+        add(
+            &mut e,
+            1,
+            Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            10.0,
+        ); // → 11.0
+
+        assert_eq!(e.eval_order(), &[0, 2, 1], "creation order, before render");
+        e.render_block();
+        assert_eq!(e.eval_order(), &[0, 1, 2], "sorted at render time");
+        assert_eq!(
+            e.node_output(NodeId(2), 0)[0],
+            11.0,
+            "current block, not the previous one"
+        );
+    }
+
+    #[test]
+    fn sorting_runs_once_per_block_not_once_per_command() {
+        // The dirty flag must clear: a second render with no edits in between
+        // must not re-sort (and so must not disturb an order the author set
+        // with `MoveBefore` / `MoveAfter`).
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        e.create(NodeId(0), Kind::Saw);
+        e.create(NodeId(1), Kind::Saw);
+        e.render_block();
+        e.apply(Cmd::MoveBefore {
+            node: NodeId(1),
+            target: NodeId(0),
+        });
+        assert_eq!(e.eval_order(), &[1, 0]);
+        e.render_block();
+        assert_eq!(
+            e.eval_order(),
+            &[1, 0],
+            "no structural change, so no re-sort to undo the move"
+        );
+    }
+
+    #[test]
+    fn an_explicit_move_survives_sorting_when_it_respects_dependencies() {
+        // Independent nodes: a move expresses author intent the sort has no
+        // reason to overrule, so it must survive the next structural change.
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        e.create(NodeId(0), Kind::Saw);
+        e.create(NodeId(1), Kind::Saw);
+        e.create(NodeId(2), Kind::Saw);
+        e.apply(Cmd::MoveBefore {
+            node: NodeId(2),
+            target: NodeId(0),
+        });
+        assert_eq!(e.eval_order(), &[2, 0, 1]);
+        e.create(NodeId(3), Kind::Saw); // dirties the graph → re-sort
+        e.render_block();
+        assert_eq!(e.eval_order(), &[2, 0, 1, 3], "stable: the move is kept");
+    }
+
+    #[test]
+    fn a_feedback_cycle_still_renders_and_keeps_its_authors_order() {
+        // Two nodes reading each other have no topological order. The engine
+        // must render them, not hang, and leave the author's choice of which
+        // one reads a block late alone.
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        e.create(NodeId(0), Kind::Add);
+        e.create(NodeId(1), Kind::Add);
+        *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Node {
+            node: NodeId(1),
+            port: 0,
+        };
+        *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node {
+            node: NodeId(0),
+            port: 0,
+        };
+        e.render_block();
+        assert_eq!(e.eval_order(), &[0, 1]);
+    }
+
+    // ── G11: reachability culling (opt-in) ───────────────────────────────
+
+    /// Two saws: node 0 written to the root bus, node 1 wired to nothing.
+    fn one_live_one_orphan(e: &mut Engine<8, 8, 8, 4, 45056, 2048>) {
+        for id in [0u16, 1] {
+            e.apply(Cmd::NewNode {
+                node: NodeId(id),
+                kind: Kind::Saw,
+                args: [Input::Const(2_000.0), Input::Const(0.0), Input::Const(0.0)],
+            });
+        }
+        e.apply(Cmd::BusWrite {
+            src: Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            bus: BusId(0),
+        });
+        e.apply(Cmd::SetRoot { bus: BusId(0) });
+    }
+
+    #[test]
+    fn culling_is_off_by_default_so_an_orphan_node_still_runs() {
+        // The engine cannot know what the host reads — `node_output`,
+        // `fill_usb`, a prefetch cursor — so it must not decide on its own that
+        // a node is pointless.
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        one_live_one_orphan(&mut e);
+        e.render_block();
+        assert_ne!(
+            e.node_output(NodeId(1), 0)[1],
+            0.0,
+            "the orphan rendered anyway"
+        );
+    }
+
+    #[test]
+    fn culling_skips_a_node_that_reaches_no_output() {
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        e.set_cull_unreachable(true);
+        one_live_one_orphan(&mut e);
+        e.render_block();
+        assert_ne!(e.node_output(NodeId(0), 0)[1], 0.0, "node 0 feeds the root");
+        assert_eq!(
+            e.node_output(NodeId(1), 0),
+            &[0.0; 8],
+            "the orphan was never evaluated"
+        );
+    }
+
+    #[test]
+    fn culling_keeps_every_node_that_feeds_a_written_node() {
+        // Reachability is transitive: node 1 feeds node 0, which is written to
+        // the root bus, so node 1 must still run.
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        e.set_cull_unreachable(true);
+        e.apply(Cmd::NewNode {
+            node: NodeId(1),
+            kind: Kind::Saw,
+            args: [Input::Const(2_000.0), Input::Const(0.0), Input::Const(0.0)],
+        });
+        e.apply(Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::Add,
+            args: [
+                Input::Node {
+                    node: NodeId(1),
+                    port: 0,
+                },
+                Input::Const(0.0),
+                Input::Const(0.0),
+            ],
+        });
+        e.apply(Cmd::BusWrite {
+            src: Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            bus: BusId(0),
+        });
+        e.apply(Cmd::SetRoot { bus: BusId(0) });
+        e.render_block();
+        assert_ne!(e.node_output(NodeId(1), 0)[1], 0.0, "source still runs");
+        assert_eq!(
+            e.node_output(NodeId(0), 0)[1],
+            e.node_output(NodeId(1), 0)[1]
+        );
+    }
+
+    #[test]
+    fn culling_treats_a_usb_routed_node_as_an_output_root() {
+        // A node routed to USB reaches an output without touching any bus.
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        e.set_cull_unreachable(true);
+        e.apply(Cmd::NewNode {
+            node: NodeId(1),
+            kind: Kind::Saw,
+            args: [Input::Const(2_000.0), Input::Const(0.0), Input::Const(0.0)],
+        });
+        e.apply(Cmd::SetUsbOut {
+            channel: 0,
+            src: OutputSrc::Node {
+                node: NodeId(1),
+                port: 0,
+            },
+        });
+        e.render_block();
+        assert_ne!(e.node_output(NodeId(1), 0)[1], 0.0);
+    }
+
+    #[test]
+    fn wiring_a_culled_node_up_brings_it_back() {
+        // Reachability must be recomputed when routing changes, not frozen at
+        // the first render.
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        e.set_cull_unreachable(true);
+        one_live_one_orphan(&mut e);
+        e.render_block();
+        assert_eq!(e.node_output(NodeId(1), 0), &[0.0; 8]);
+        e.apply(Cmd::BusWrite {
+            src: Input::Node {
+                node: NodeId(1),
+                port: 0,
+            },
+            bus: BusId(0),
+        });
+        e.render_block();
+        assert_ne!(
+            e.node_output(NodeId(1), 0)[1],
+            0.0,
+            "now it reaches the bus"
+        );
+    }
+
+    // ── GL2: epoch mark-and-sweep patch update ───────────────────────────
+
+    fn saw(e: &mut Engine<8, 8, 8, 4, 45056, 2048>, id: u16, hz: f32) {
+        e.apply(Cmd::NewNode {
+            node: NodeId(id),
+            kind: Kind::Saw,
+            args: [Input::Const(hz), Input::Const(0.0), Input::Const(0.0)],
+        });
+    }
+
+    #[test]
+    fn re_emitting_an_unchanged_node_inside_an_update_preserves_its_state() {
+        // The whole point of GL2: re-running the patch script must not restart
+        // the oscillator that the script did not change.
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut control = ME::new(48_000.0);
+        saw(&mut control, 0, 2_000.0);
+        control.render_block();
+        control.render_block();
+        let expected = control.node_output(NodeId(0), 0)[0];
+
+        let mut e = ME::new(48_000.0);
+        saw(&mut e, 0, 2_000.0);
+        e.render_block();
+        e.apply(Cmd::BeginUpdate);
+        saw(&mut e, 0, 2_000.0); // same id, same kind: keep the running node
+        e.apply(Cmd::EndUpdate);
+        e.render_block();
+        assert_eq!(
+            e.node_output(NodeId(0), 0)[0],
+            expected,
+            "phase continued across the update"
+        );
+        assert_eq!(e.pop_event(), None, "not a failure, and nothing was freed");
+    }
+
+    #[test]
+    fn changing_a_nodes_kind_inside_an_update_replaces_it() {
+        // State cannot survive a kind change — there is no meaningful way to
+        // carry a saw's phase into a square's — so the node is rebuilt.
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        saw(&mut e, 0, 2_000.0);
+        e.render_block();
+        e.apply(Cmd::BeginUpdate);
+        e.apply(Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::Square,
+            args: [Input::Const(2_000.0), Input::Const(0.0), Input::Const(0.0)],
+        });
+        e.apply(Cmd::EndUpdate);
+        assert_eq!(e.kind_of(NodeId(0)), Some(Kind::Square));
+    }
+
+    #[test]
+    fn a_node_the_new_patch_omits_is_swept_and_announced() {
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        saw(&mut e, 0, 2_000.0);
+        saw(&mut e, 1, 3_000.0);
+        e.render_block();
+        e.apply(Cmd::BeginUpdate);
+        saw(&mut e, 0, 2_000.0); // the new patch mentions only node 0
+        e.apply(Cmd::EndUpdate);
+        assert_eq!(e.kind_of(NodeId(0)), Some(Kind::Saw), "kept");
+        assert_eq!(e.kind_of(NodeId(1)), None, "swept");
+        assert_eq!(
+            e.pop_event(),
+            Some(crate::event::Event::Freed { node: NodeId(1) })
+        );
+    }
+
+    #[test]
+    fn an_update_that_re_emits_everything_frees_nothing() {
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        saw(&mut e, 0, 2_000.0);
+        saw(&mut e, 1, 3_000.0);
+        e.apply(Cmd::BeginUpdate);
+        saw(&mut e, 0, 2_000.0);
+        saw(&mut e, 1, 3_000.0);
+        e.apply(Cmd::EndUpdate);
+        assert_eq!(e.kind_of(NodeId(0)), Some(Kind::Saw));
+        assert_eq!(e.kind_of(NodeId(1)), Some(Kind::Saw));
+        assert_eq!(e.pop_event(), None);
+    }
+
+    #[test]
+    fn creating_a_live_id_outside_an_update_still_fails() {
+        // Outside an update, a duplicate `NewNode` is a host bug, not an edit.
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        saw(&mut e, 0, 2_000.0);
+        saw(&mut e, 0, 2_000.0);
+        assert_eq!(
+            e.pop_event(),
+            Some(crate::event::Event::CmdFailed {
+                node: NodeId(0),
+                reason: crate::event::CmdError::CreateFailed,
+            })
+        );
+    }
+
+    #[test]
+    fn an_update_rewires_a_surviving_node_without_rebuilding_it() {
+        // The insert-a-stage case: node 1 keeps running, but now reads node 2,
+        // which the update introduced.
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        saw(&mut e, 0, 2_000.0);
+        e.apply(Cmd::NewNode {
+            node: NodeId(1),
+            kind: Kind::Add,
+            args: [
+                Input::Node {
+                    node: NodeId(0),
+                    port: 0,
+                },
+                Input::Const(0.0),
+                Input::Const(0.0),
+            ],
+        });
+        e.render_block();
+
+        e.apply(Cmd::BeginUpdate);
+        saw(&mut e, 0, 2_000.0);
+        e.apply(Cmd::NewNode {
+            node: NodeId(2),
+            kind: Kind::Add,
+            args: [
+                Input::Node {
+                    node: NodeId(0),
+                    port: 0,
+                },
+                Input::Const(1.0),
+                Input::Const(0.0),
+            ],
+        });
+        e.apply(Cmd::NewNode {
+            node: NodeId(1),
+            kind: Kind::Add,
+            args: [
+                Input::Node {
+                    node: NodeId(2),
+                    port: 0,
+                },
+                Input::Const(0.0),
+                Input::Const(0.0),
+            ],
+        });
+        e.apply(Cmd::EndUpdate);
+        e.render_block();
+        assert_eq!(
+            e.eval_order(),
+            &[0, 2, 1],
+            "the new stage sorted into place"
+        );
+        assert_eq!(
+            e.node_output(NodeId(1), 0)[0],
+            e.node_output(NodeId(0), 0)[0] + 1.0
+        );
+    }
+
+    #[test]
+    fn re_emitting_a_bus_write_does_not_double_it() {
+        // A bus write is a routing statement, not an accumulator. Re-running
+        // the patch script re-emits every write; appending a second entry would
+        // add 6 dB per edit.
+        type ME = Engine<8, 8, 8, 4, 45056, 2048>;
+        let mut e = ME::new(48_000.0);
+        e.apply(Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::Add,
+            args: [Input::Const(0.25), Input::Const(0.0), Input::Const(0.0)],
+        });
+        let write = Cmd::BusWrite {
+            src: Input::Node {
+                node: NodeId(0),
+                port: 0,
+            },
+            bus: BusId(0),
+        };
+        e.apply(write);
+        e.apply(Cmd::SetRoot { bus: BusId(0) });
+        let mut out = [StereoFrame::default(); 8];
+        e.render(&mut out, &[]);
+        let once = out[0].l;
+        e.apply(write);
+        e.render(&mut out, &[]);
+        assert_eq!(out[0].l, once, "the second write replaced, not stacked");
+    }
+
+    // ── Pooled-table rebinding (GL2 pool hygiene) ────────────────────────
+
+    /// Allocate a pooled pyramid region, as the runtime upload path does.
+    fn upload(e: &mut E) -> crate::pool::PoolHandle {
+        let compact_len = deluge_dsp_kernels::wavetable::COMPACT_LEN;
+        let h = e.pool_alloc(compact_len).expect("pool room");
+        let mut base = [0.0f32; mipgen::N];
+        for (i, s) in base.iter_mut().enumerate() {
+            *s = 2.0 * (i as f32 / mipgen::N as f32) - 1.0;
+        }
+        mipgen::build_pyramid_flat_compact(&base, e.pool_slice_mut(h));
+        h
+    }
+
+    #[test]
+    fn rebinding_a_pooled_table_releases_the_region_it_replaced() {
+        // Under an incremental update a surviving wavetable node is re-bound to
+        // a freshly uploaded table on every run. Without releasing the region
+        // it held, the pool leaks one pyramid per edit and exhausts in a
+        // handful of them.
+        let mut e = E::new(48_000.0);
+        let first = upload(&mut e);
+        e.create(NodeId(0), Kind::Wavetable);
+        e.apply(Cmd::BindTable {
+            node: NodeId(0),
+            src: TableSrc::Pooled(first),
+        });
+        let second = upload(&mut e);
+        e.apply(Cmd::BindTable {
+            node: NodeId(0),
+            src: TableSrc::Pooled(second),
+        });
+        // First-fit: the freed region is the lowest free run, so the next
+        // allocation of the same size hands back exactly that handle.
+        assert_eq!(
+            e.pool_alloc(deluge_dsp_kernels::wavetable::COMPACT_LEN),
+            Some(first),
+            "the replaced region went back to the pool"
+        );
+    }
+
+    #[test]
+    fn rebinding_keeps_a_region_another_node_still_uses() {
+        // Two nodes sharing one table: rebinding one must not reclaim the
+        // region out from under the other.
+        let mut e = E::new(48_000.0);
+        let shared = upload(&mut e);
+        for id in [0u16, 1] {
+            e.create(NodeId(id), Kind::Wavetable);
+            e.apply(Cmd::BindTable {
+                node: NodeId(id),
+                src: TableSrc::Pooled(shared),
+            });
+        }
+        let other = upload(&mut e);
+        e.apply(Cmd::BindTable {
+            node: NodeId(0),
+            src: TableSrc::Pooled(other),
+        });
+        assert_ne!(
+            e.pool_alloc(deluge_dsp_kernels::wavetable::COMPACT_LEN),
+            Some(shared),
+            "node 1 still holds it"
+        );
+    }
+
+    #[test]
+    fn rebinding_to_a_static_table_also_releases_the_pooled_region() {
+        let mut e = E::new(48_000.0);
+        let h = upload(&mut e);
+        e.create(NodeId(0), Kind::Wavetable);
+        e.apply(Cmd::BindTable {
+            node: NodeId(0),
+            src: TableSrc::Pooled(h),
+        });
+        e.apply(Cmd::BindTable {
+            node: NodeId(0),
+            src: TableSrc::Static(deluge_dsp_kernels::wavetable::TableId(0)),
+        });
+        assert_eq!(
+            e.pool_alloc(deluge_dsp_kernels::wavetable::COMPACT_LEN),
+            Some(h)
+        );
+    }
+
+    #[test]
+    fn rebinding_a_node_to_the_same_region_keeps_it() {
+        // The idempotent case: re-emitting an unchanged binding must not free
+        // the very region it is re-binding.
+        let mut e = E::new(48_000.0);
+        let h = upload(&mut e);
+        e.create(NodeId(0), Kind::Wavetable);
+        for _ in 0..2 {
+            e.apply(Cmd::BindTable {
+                node: NodeId(0),
+                src: TableSrc::Pooled(h),
+            });
+        }
+        e.render_block();
+        let out = e.node_output(NodeId(0), 0);
+        assert!(out.iter().all(|s| s.is_finite()));
+        assert_ne!(
+            e.pool_alloc(deluge_dsp_kernels::wavetable::COMPACT_LEN),
+            Some(h),
+            "still bound, so still held"
         );
     }
 }

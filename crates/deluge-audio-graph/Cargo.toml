@@ -12,6 +12,9 @@ keywords = ["dsp", "audio", "no-std", "graph", "synthesis"]
 
 [dependencies]
 deluge-dsp-kernels = { path = "../deluge-dsp-kernels" }
+# `no_std` float maths. Only `sqrtf`, for `nrt::rms`; already in the tree via
+# deluge-dsp-kernels, so this adds no new third-party code.
+libm = "0.2"
 
 [dev-dependencies]
 mipgen = { path = "../mipgen" }

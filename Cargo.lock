@@ -1381,6 +1381,7 @@ name = "deluge-audio-graph"
 version = "0.1.0"
 dependencies = [
  "deluge-dsp-kernels",
+ "libm",
  "mipgen",
 ]
 
@@ -1445,9 +1446,7 @@ name = "deluge-fft"
 version = "0.1.0"
 dependencies = [
  "approx",
- "armv7-dsp-intrinsics",
  "criterion",
- "deluge-fixedpoint",
  "rustfft",
 ]
 
@@ -1456,6 +1455,7 @@ name = "deluge-fixedpoint"
 version = "0.1.0"
 dependencies = [
  "armv7-dsp-intrinsics",
+ "deluge-fft",
  "proptest",
 ]
 

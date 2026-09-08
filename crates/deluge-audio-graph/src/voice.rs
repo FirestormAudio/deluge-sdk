@@ -5,6 +5,7 @@
 
 use crate::NodeId;
 use crate::cmd::Cmd;
+use crate::event::Event;
 use deluge_dsp_kernels::poly::VOICES;
 
 /// MIDI note of the `PolyMtof` reference (A4 = 440 Hz). The allocator writes
@@ -44,7 +45,10 @@ fn width_offset(u: usize, count: usize, amount: f32) -> f32 {
 /// Per-lane lifecycle for release-tail-aware allocation.
 #[derive(Clone, Copy, PartialEq)]
 enum LaneState {
-    Free,      // never used (never reclaimed — the allocator has no time source)
+    /// Silent and available. Entered at construction, and re-entered when
+    /// `on_event` has seen every configured gate report `VoiceDone` for the
+    /// lane (G1) — before that channel existed, a lane never returned here.
+    Free,
     Held(u8),  // sounding a held note (the MIDI note)
     Releasing, // note-off fired, gate off, tail still ringing — lane stays occupied
 }
@@ -64,6 +68,15 @@ pub struct VoiceAllocator {
     lane_ctx: [(u8, u8); VOICES], // (u-index, group size U) for each Held lane
     triggers: [NodeId; MAX_TRIGGERS], // pooled sample sources: TriggerVoice(triggers[i], lane)
     n_triggers: usize,            // number of valid entries in `triggers`
+    // Per-lane bitmask of which `gates[i]` have reported `VoiceDone` since the
+    // lane's last note-on. A lane returns to `Free` only when ALL `n_gates`
+    // bits are set: a filter envelope finishing before the amp envelope must
+    // not free a lane that is still sounding.
+    lane_done: [u8; VOICES],
+    // Gates whose node has been freed (`Event::Freed`, GL2). Their `VoiceDone`
+    // can never arrive, so these bits count as permanently reported — for lanes
+    // already waiting and for every note started afterwards.
+    gates_dead: u8,
 }
 
 impl VoiceAllocator {
@@ -91,6 +104,65 @@ impl VoiceAllocator {
             lane_ctx: [(0, 0); VOICES],
             triggers,
             n_triggers,
+            lane_done: [0; VOICES],
+            gates_dead: 0,
+        }
+    }
+
+    /// Consume one engine [`Event`], reclaiming a voice lane once every
+    /// configured gate has reported completion for it.
+    ///
+    /// Events for nodes this allocator does not own are ignored, so a host may
+    /// fan the whole engine event stream at every allocator. Only a `Releasing`
+    /// lane is reclaimed: a `Held` lane whose envelope has decayed still has
+    /// its key down, and freeing it would let the next note steal a lane the
+    /// player is still holding.
+    pub fn on_event(&mut self, ev: Event) {
+        match ev {
+            Event::VoiceDone { node, voice } => {
+                let lane = voice as usize;
+                if lane >= VOICES {
+                    return;
+                }
+                let Some(g) = self.gate_index(node) else {
+                    return; // not one of our gates
+                };
+                self.lane_done[lane] |= 1 << g;
+                self.reclaim_if_complete(lane);
+            }
+            // A gate node the patch update swept can never report again. Treat
+            // it as reported — for the lanes already waiting on it, and (via
+            // `gates_dead`) for every note started from here on.
+            Event::Freed { node } => {
+                let Some(g) = self.gate_index(node) else {
+                    return;
+                };
+                self.gates_dead |= 1 << g;
+                for lane in 0..VOICES {
+                    self.lane_done[lane] |= 1 << g;
+                    self.reclaim_if_complete(lane);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Index of `node` in this allocator's gate list, if it owns it.
+    fn gate_index(&self, node: NodeId) -> Option<usize> {
+        self.gates[..self.n_gates].iter().position(|n| *n == node)
+    }
+
+    /// Return `lane` to `Free` once every gate has reported for it. A `Held`
+    /// lane is never reclaimed: its key is still down.
+    fn reclaim_if_complete(&mut self, lane: usize) {
+        let all = if self.n_gates >= 8 {
+            u8::MAX
+        } else {
+            (1u8 << self.n_gates) - 1
+        };
+        if self.lane_done[lane] & all == all && self.lane_state[lane] == LaneState::Releasing {
+            self.lane_state[lane] = LaneState::Free;
+            self.lane_done[lane] = self.gates_dead;
         }
     }
 
@@ -194,6 +266,11 @@ impl VoiceAllocator {
             let lane = self.pick_lane();
             self.lane_state[lane] = LaneState::Held(note);
             self.lane_ctx[lane] = (u as u8, u_count as u8);
+            // Fresh note: discard any completion bits from the previous note on
+            // this lane (including a steal, where some gates had reported).
+            // Gates whose node is gone stay reported — nothing will ever
+            // report for them again.
+            self.lane_done[lane] = self.gates_dead;
             self.lane_age[lane] = self.clock;
             self.clock = self.clock.wrapping_add(1);
             let value = note as f32 - A440_NOTE + unison_offset(u, u_count, self.detune_cents);
@@ -486,6 +563,56 @@ mod tests {
     // 1-gate VoiceAllocator for unison tests: pitch=NodeId(10), gate=NodeId(20), no vel node.
     fn mk_poly() -> VoiceAllocator {
         mk()
+    }
+
+    // 2-gate VoiceAllocator (e.g. amp + filter envelopes sharing a lane):
+    // gates = NodeId(20), NodeId(21).
+    fn mk_two_gate() -> VoiceAllocator {
+        let mut g = [NodeId(0); MAX_GATES];
+        g[0] = NodeId(20);
+        g[1] = NodeId(21);
+        VoiceAllocator::new(
+            NodeId(10),
+            g,
+            2,
+            None,
+            NodeId(30),
+            [NodeId(0); MAX_TRIGGERS],
+            0,
+        )
+    }
+
+    /// The lane a note-on chose, read back from its pitch `SetParam`.
+    fn lane_of(cmds: &[Cmd]) -> u8 {
+        cmds.iter()
+            .find_map(|c| match c {
+                Cmd::SetParam {
+                    node: NodeId(10),
+                    param,
+                    ..
+                } => Some(*param),
+                _ => None,
+            })
+            .expect("note_on emits a pitch SetParam")
+    }
+
+    fn done(a: &mut VoiceAllocator, gate: u16, voice: u8) {
+        a.on_event(Event::VoiceDone {
+            node: NodeId(gate),
+            voice,
+        });
+    }
+
+    /// Fill every lane, then release them in reverse order so the
+    /// oldest-*released* lane is lane 7 while the lowest-indexed lane is 0.
+    /// The two reclaim policies then pick visibly different lanes.
+    fn fill_and_release_all(a: &mut VoiceAllocator) {
+        for n in 0..VOICES as u8 {
+            on(a, 60 + n, 100);
+        }
+        for n in (0..VOICES as u8).rev() {
+            off(a, 60 + n);
+        }
     }
 
     // mk_poly, but with a registered trigger list (for source-retrigger tests).
@@ -1784,5 +1911,179 @@ mod tests {
             m.set_width(1.0, &mut s);
         }
         assert_eq!(cmds.len(), 0, "no sounding note → no re-emit");
+    }
+
+    // ── G1: lane reclamation via engine events ────────────────────────────
+
+    #[test]
+    fn without_events_all_lanes_stay_occupied() {
+        // Characterises the pre-G1 behaviour that motivated the event channel:
+        // with no completion reports, every lane is stuck Releasing and the
+        // next note steals the longest-released lane (7) rather than a free one.
+        let mut a = mk_poly();
+        fill_and_release_all(&mut a);
+        assert_eq!(lane_of(&on(&mut a, 72, 100)), 7, "steals oldest release");
+    }
+
+    #[test]
+    fn completion_events_return_lanes_to_free() {
+        let mut a = mk_poly();
+        fill_and_release_all(&mut a);
+        for v in 0..VOICES as u8 {
+            done(&mut a, 20, v);
+        }
+        // Every lane is Free again, so allocation prefers the lowest index
+        // instead of stealing a still-ringing tail.
+        assert_eq!(lane_of(&on(&mut a, 72, 100)), 0, "picks a free lane");
+    }
+
+    #[test]
+    fn a_single_lane_completion_frees_only_that_lane() {
+        let mut a = mk_poly();
+        fill_and_release_all(&mut a);
+        done(&mut a, 20, 4); // only lane 4 finished
+        assert_eq!(lane_of(&on(&mut a, 72, 100)), 4, "the one free lane");
+        // The rest are still Releasing → next note falls back to stealing.
+        assert_eq!(lane_of(&on(&mut a, 73, 100)), 7);
+    }
+
+    #[test]
+    fn lane_frees_only_when_every_gate_reports() {
+        // A filter envelope finishing before the amp envelope must not free a
+        // lane that is still sounding.
+        let mut a = mk_two_gate();
+        fill_and_release_all(&mut a);
+        for v in 0..VOICES as u8 {
+            done(&mut a, 21, v); // filter envelopes only
+        }
+        assert_eq!(
+            lane_of(&on(&mut a, 72, 100)),
+            7,
+            "one of two gates reported → still occupied"
+        );
+
+        let mut a = mk_two_gate();
+        fill_and_release_all(&mut a);
+        for v in 0..VOICES as u8 {
+            done(&mut a, 20, v);
+            done(&mut a, 21, v);
+        }
+        assert_eq!(lane_of(&on(&mut a, 72, 100)), 0, "both gates reported");
+    }
+
+    #[test]
+    fn events_from_foreign_nodes_are_ignored() {
+        let mut a = mk_poly();
+        fill_and_release_all(&mut a);
+        for v in 0..VOICES as u8 {
+            done(&mut a, 999, v); // not one of our gates
+        }
+        assert_eq!(lane_of(&on(&mut a, 72, 100)), 7, "unchanged");
+    }
+
+    #[test]
+    fn completion_while_held_does_not_free_the_lane() {
+        // Key still down: the envelope may be idle (zero sustain), but stealing
+        // the lane would drop a note the player is holding.
+        let mut a = mk_poly();
+        for n in 0..VOICES as u8 {
+            on(&mut a, 60 + n, 100);
+        }
+        for v in 0..VOICES as u8 {
+            done(&mut a, 20, v);
+        }
+        // All still Held → allocation falls through to oldest-allocated (0).
+        assert_eq!(lane_of(&on(&mut a, 72, 100)), 0);
+        // ...and lane 0 is genuinely a steal, not a reclaim: note 60 is gone.
+        assert_eq!(off(&mut a, 60).len(), 0, "note 60 no longer held");
+    }
+
+    #[test]
+    fn out_of_range_voice_is_a_noop() {
+        let mut a = mk_poly();
+        fill_and_release_all(&mut a);
+        a.on_event(Event::VoiceDone {
+            node: NodeId(20),
+            voice: 200,
+        });
+        a.on_event(Event::Done { node: NodeId(20) }); // mono variant: not ours
+        assert_eq!(lane_of(&on(&mut a, 72, 100)), 7, "unchanged");
+    }
+
+    #[test]
+    fn stale_completion_does_not_free_a_retriggered_lane() {
+        // Lane released, then stolen by a new note before its VoiceDone lands.
+        // The late event must not free the lane out from under the new note.
+        let mut a = mk_two_gate();
+        fill_and_release_all(&mut a);
+        done(&mut a, 20, 7); // one of two gates reports for lane 7
+        let l = lane_of(&on(&mut a, 72, 100)); // steals lane 7
+        assert_eq!(l, 7);
+        done(&mut a, 21, 7); // the straggler arrives for the *previous* note
+        // Lane 7 is Held, so it must not have been freed; the next note steals
+        // the oldest release (6) rather than finding 7 free.
+        assert_eq!(lane_of(&on(&mut a, 73, 100)), 6);
+    }
+
+    // ── GL2: a swept gate node must not wedge its lanes ──────────────────
+
+    #[test]
+    fn a_swept_gate_node_stops_wedging_the_lanes_waiting_on_it() {
+        // A patch update freed the filter-envelope node. Its `VoiceDone` can
+        // never arrive, so every released lane would wait forever and new notes
+        // would be forced to steal — G1's bug, back through the update path.
+        let mut a = mk_two_gate();
+        fill_and_release_all(&mut a);
+        for v in 0..VOICES as u8 {
+            done(&mut a, 20, v); // amp envelopes reported; node 21 never will
+        }
+        a.on_event(Event::Freed { node: NodeId(21) });
+        assert_eq!(
+            lane_of(&on(&mut a, 72, 100)),
+            0,
+            "lanes reclaimed once the missing gate is known to be gone"
+        );
+    }
+
+    #[test]
+    fn a_gate_freed_before_a_note_is_never_waited_on() {
+        // The gate is gone for good: notes started *after* the sweep must not
+        // wait on it either.
+        let mut a = mk_two_gate();
+        a.on_event(Event::Freed { node: NodeId(21) });
+        fill_and_release_all(&mut a);
+        for v in 0..VOICES as u8 {
+            done(&mut a, 20, v);
+        }
+        assert_eq!(lane_of(&on(&mut a, 72, 100)), 0);
+    }
+
+    #[test]
+    fn freeing_a_gate_does_not_free_a_held_lane() {
+        // Same rule as `VoiceDone`: the key is still down, so the lane stays.
+        let mut a = mk_two_gate();
+        let held = lane_of(&on(&mut a, 60, 100));
+        a.on_event(Event::Freed { node: NodeId(20) });
+        a.on_event(Event::Freed { node: NodeId(21) });
+        assert_ne!(
+            lane_of(&on(&mut a, 61, 100)),
+            held,
+            "a held note is not stolen just because its envelopes went away"
+        );
+    }
+
+    #[test]
+    fn freeing_a_foreign_node_leaves_the_allocator_alone() {
+        let mut a = mk_two_gate();
+        fill_and_release_all(&mut a);
+        for v in 0..VOICES as u8 {
+            done(&mut a, 20, v);
+        }
+        a.on_event(Event::Freed { node: NodeId(999) });
+        assert_eq!(
+            lane_of(&on(&mut a, 72, 100)),
+            7,
+            "still waiting on gate 21, so the new note steals"
+        );
     }
 }
