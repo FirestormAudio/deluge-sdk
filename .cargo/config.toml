@@ -64,12 +64,8 @@ elf2uf2              = "run --manifest-path tools/elf2uf2/Cargo.toml --target x8
 # --target overrides the armv7a [build] target above so it builds for the host.
 # Usage: cargo test-wren-debug
 test-wren-debug       = "test --manifest-path tools/wren-web-debug/Cargo.toml --target x86_64-unknown-linux-gnu"
-# Host-side static-wavetable generator (crates/mipgen, bin gen_tables). The
-# explicit --target overrides the armv7a [build] target above so it builds for
-# the host; --features gen-tables switches on the `required-features` gate that
-# keeps this std-only bin out of the default ARM `cargo build`.
-# Usage: cargo gen-tables > crates/deluge-dsp-kernels/src/wavetables_generated.rs
-gen-tables           = "run -p mipgen --bin gen_tables --features gen-tables --target x86_64-unknown-linux-gnu --release"
+# The static-wavetable generator moved to flare (flare-mipgen). Run it there:
+#   cd ../flare && cargo gen-tables > crates/flare-kernels/src/wavetables_generated.rs
 build-wren           = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem -p wren-firmware"
 build-wren-bin       = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p wren-firmware -- -O binary target/armv7a-none-eabihf/release/wren-firmware.bin"
 

@@ -12,7 +12,7 @@
 //! on its VM thread:
 //! - calls [`tick`] each loop iteration (advances CV slew + fires metros),
 //! - feeds input via [`midi_rx`], [`input_dispatch`], [`enc_turn`],
-//! - drains [`Cmd`]s from its `Host::audio_cmd` into a `deluge_audio_graph::Engine`
+//! - drains [`Cmd`]s from its `Host::audio_cmd` into a `flare_graph::Engine`
 //!   it renders.
 
 #![no_std]
@@ -30,15 +30,15 @@ pub mod test_support;
 pub use audio::{WREN_MAX_BUSES, WREN_MAX_NODES};
 
 /// Length (in f32) of one full wavetable mip pyramid: the flat, compact
-/// (per-level-length) layout's `deluge_dsp_kernels::wavetable::COMPACT_LEN`.
+/// (per-level-length) layout's `flare_kernels::wavetable::COMPACT_LEN`.
 /// A pooled wavetable region is exactly this long. Firmware sizes its `pool_alloc`
-/// by this so it needs no direct `mipgen`/`deluge-dsp-kernels` dependency.
-pub const PYRAMID_LEN: usize = deluge_dsp_kernels::wavetable::COMPACT_LEN;
+/// by this so it needs no direct `flare_mipgen`/`flare-kernels` dependency.
+pub const PYRAMID_LEN: usize = flare_kernels::wavetable::COMPACT_LEN;
 /// Length (in f32) of one base-cycle buffer a `Wavetable.from`/`from2d` frame is
-/// read into before its pyramid is built (`mipgen::N`). Re-exported so a host
+/// read into before its pyramid is built (`flare_mipgen::N`). Re-exported so a host
 /// (e.g. the firmware, which builds pyramids inline for `Host::upload_table_2d`)
-/// can size its per-frame scratch buffer without a direct `mipgen` dependency.
-pub const BASE_LEN: usize = mipgen::N;
+/// can size its per-frame scratch buffer without a direct `flare_mipgen` dependency.
+pub const BASE_LEN: usize = flare_mipgen::N;
 #[cfg(feature = "wren-sys-backend")]
 pub use bindings::{CLASSES, METHODS, enc_turn, input_dispatch, midi_rx, prelude_ptr, tick};
 pub mod codec;
@@ -46,10 +46,10 @@ pub use bindings::{
     begin_update, enc_turn_impl, end_update, input_dispatch_impl, midi_rx_impl, prelude_str,
     register_foreign, reset, tick_impl,
 };
-pub use deluge_audio_graph::ids::{CTRL_BUSES, CtrlBusId};
-pub use deluge_audio_graph::node::{ALL_KINDS, Rate, TableSrc};
-pub use deluge_audio_graph::pool::PoolHandle;
-pub use deluge_audio_graph::{
+pub use flare_graph::ids::{CTRL_BUSES, CtrlBusId};
+pub use flare_graph::node::{ALL_KINDS, Rate, TableSrc};
+pub use flare_graph::pool::PoolHandle;
+pub use flare_graph::{
     BusId, Cmd, Engine, Input, Kind, NodeId, OutputSrc, StereoFrame, TableId,
 };
 pub use host::{CV_CHANNELS, GATE_CHANNELS, Host, build_pyramid_into, set_host};

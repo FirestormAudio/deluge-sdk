@@ -11,7 +11,7 @@ use embassy_futures::yield_now;
 use embassy_time::Timer;
 
 use crate::tasks::audio::USB_AUDIO_STREAMING;
-use deluge_fft::{Complex, RealFft, apply_hann_window_real};
+use flare_fft::{Complex, RealFft, apply_hann_window_real};
 
 // ---------------------------------------------------------------------------
 // Shared output buffers
