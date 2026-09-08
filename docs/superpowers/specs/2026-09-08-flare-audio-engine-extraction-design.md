@@ -409,6 +409,50 @@ of ARM only.
 is a pure rename, *any* digest change is a bug — which makes a large diff
 trivially reviewable.
 
+**Phase 2 complete (2026-09-08).** flare lives at `~/GitHub/flare`, a local repo
+with no remote — as `deluge-ndk` has been since July. Publishing stays a
+separate decision.
+
+*History preserved, verified not assumed:* `git filter-repo` kept 256 of 972
+commits, and per-directory counts match the pre-split repo exactly (kernels 114,
+graph 124, fft 9, mipgen 10, dsp-test 10). `git log --follow` resolves through
+the rename to the same depth (24 for `poly.rs`, 59 for `engine.rs`), and all
+five source trees were byte-identical to their originals immediately after the
+split.
+
+*The gate passed on all four checks:* all 10 golden digest constants
+byte-identical to the pre-split values; `cargo test -- --list` produces the same
+test set in both repos for the graph and the kernels; both repos' full runners
+green; and `grep deluge` over flare's manifests returns nothing at all. The
+perturbation check was re-run in flare's new home and reproduced Phase 1's
+result exactly — 5 of 9 goldens fail scalar, 1 of 9 simd — proving the net
+still reaches the same code.
+
+*One acceptance step could not be run here:* linking `wren-firmware` and
+`demo-firmware` needs `arm-none-eabi-gcc` to build `wren-sys`'s C VM, which is
+not installed on this machine; `main` fails identically, so it is a pre-existing
+environment gap, not a regression. What that link was standing in for was
+verified directly instead: `flare-kernels`, `flare-graph` and the `flare` facade
+all cross-compile `no_std` to `armv7a-none-eabihf`, scalar and NEON, and
+`flare/tools/test.sh` now carries that as a permanent build guard.
+
+*Spec §7's facade question, answered:* the facade is **not** sufficient for
+`deluge-wren-core`, and should not be. wren-core reaches 11 `flare_kernels::`
+paths and 2 `flare_mipgen::` ones, none incidental —
+`reverb::{HALL,PLATE,REVERB}_BUF_SAMPLES` size buffers the host must allocate,
+`sampler::{Zone::empty, PolySamplePlayer::set_zone_field, MAX_ZONES}` configure
+nodes, `build_pyramid_flat_compact` builds tables. A host that sizes reverb
+buffers and builds wavetable pyramids legitimately needs kernel-level types. The
+facade is for patch-building consumers, proven by two integration tests that
+name nothing but `flare::`; wren-core is a deeper integration and depends on the
+underlying crates directly, which is clearer than routing through
+`flare::kernels::` for no gain.
+
+*Two corrections to this spec, both found by executing it:* the extraction is
+five crates plus a facade, not four (`deluge-dsp-test`, recorded in §1), and
+`flare` deliberately has **no default build target**, so `cargo test` works
+without the `--target` dance deluge-sdk requires.
+
 ### Phase 3 — Generalize (in flare)
 
 `3a` aux rename → `3b` `MAX_BLOCK` feature → `3c` `VOICES` chunking → `3d`
