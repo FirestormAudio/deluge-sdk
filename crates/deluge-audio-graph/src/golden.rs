@@ -456,3 +456,86 @@ const POLY_SYNC_DIGEST: u64 = 5_048_936_015_975_409_105;
 /// Pinned 2026-09-08 (`f32x8` path). See the module doc before regenerating.
 #[cfg(feature = "simd")]
 const POLY_SYNC_DIGEST: u64 = 12_807_496_639_129_318_169;
+
+/// CHARACTERIZATION golden: per-voice gating, `PolyCtrl` → `PolyOsc` ×
+/// `PolyAdsr` → `VoiceSum`.
+///
+/// The other poly goldens drive every voice continuously, which cannot
+/// distinguish "voice 3" from "lane 3 of a single wide register". This one
+/// gates voices on at staggered times and releases half of them early, so the
+/// digest depends on each voice index reaching the correct lane — the
+/// allocator-side half of the voice/lane mapping, which a chunking change
+/// touches from the opposite direction to the kernels.
+#[test]
+fn golden_poly_adsr_staggered_voices() {
+    let mut e = G::new(48_000.0);
+    e.create(NodeId(0), Kind::PolyCtrl);
+    poly_pitches(&mut e, NodeId(0), 196.0);
+    e.create(NodeId(1), Kind::PolyOsc);
+    *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node {
+        node: NodeId(0),
+        port: 0,
+    };
+    e.create(NodeId(2), Kind::PolyAdsr);
+    // attack, decay, sustain — shared mono controls, short enough that 4096
+    // frames covers the whole shape.
+    *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Const(0.005);
+    *e.node_input_mut(NodeId(2), 1).unwrap() = Input::Const(0.05);
+    *e.node_input_mut(NodeId(2), 2).unwrap() = Input::Const(0.6);
+    e.create(NodeId(3), Kind::PolyMul);
+    *e.node_input_mut(NodeId(3), 0).unwrap() = Input::Node {
+        node: NodeId(1),
+        port: 0,
+    };
+    *e.node_input_mut(NodeId(3), 1).unwrap() = Input::Node {
+        node: NodeId(2),
+        port: 0,
+    };
+    e.create(NodeId(4), Kind::VoiceSum);
+    *e.node_input_mut(NodeId(4), 0).unwrap() = Input::Node {
+        node: NodeId(3),
+        port: 0,
+    };
+    e.apply(Cmd::SetParam {
+        node: NodeId(4),
+        param: 0,
+        value: 0.15,
+    });
+    e.apply(Cmd::BusWrite {
+        src: Input::Node {
+            node: NodeId(4),
+            port: 0,
+        },
+        bus: BusId(0),
+    });
+    e.apply(Cmd::SetRoot { bus: BusId(0) });
+
+    // Stagger the gates across the render so each voice sits at a distinct
+    // envelope position — a chunking bug that swaps lanes changes the sum.
+    for v in 0..crate::VOICES {
+        e.apply_at(
+            (v as u64) * 128,
+            Cmd::GateVoice {
+                node: NodeId(2),
+                voice: v as u8,
+                on: true,
+            },
+        );
+    }
+    // Release the even voices early, the odd ones not at all.
+    for v in (0..crate::VOICES).step_by(2) {
+        e.apply_at(
+            2048 + (v as u64) * 64,
+            Cmd::GateVoice {
+                node: NodeId(2),
+                voice: v as u8,
+                on: false,
+            },
+        );
+    }
+
+    let out = render_4096(&mut e);
+    assert_eq!(crate::nrt::digest(&out), POLY_ADSR_DIGEST);
+}
+/// Pinned 2026-09-08. See the module doc before regenerating.
+const POLY_ADSR_DIGEST: u64 = 9_789_364_865_555_762_341;
