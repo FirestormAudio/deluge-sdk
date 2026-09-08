@@ -491,6 +491,93 @@ mod tests {
         }
     }
 
+    /// CHARACTERIZATION golden, wide rather than deep: the same patch as
+    /// `golden_saw_lpf_env_first_block`, rendered offline for 4096 frames and
+    /// pinned as a single digest.
+    ///
+    /// The two are complementary, not redundant. The sample-wise golden above
+    /// covers 8 frames and tells you *how* the output drifted — you can read
+    /// the numbers. This one covers 512× more audio, through the envelope's
+    /// attack and decay rather than just its first moments, and tells you
+    /// *that* something drifted. A change to a filter coefficient that only
+    /// shows up after a few hundred samples slips past the first test entirely.
+    ///
+    /// Regenerate only on an intended, reviewed output change — and when you
+    /// do, check the sample-wise golden first, since it will say what moved.
+    #[test]
+    fn golden_saw_lpf_env_offline_digest() {
+        let mut e = E::new(48_000.0);
+        e.apply(Cmd::NewNode {
+            node: NodeId(0),
+            kind: Kind::Saw,
+            args: [Input::Const(4.0), Input::Const(0.0), Input::Const(0.0)],
+        });
+        e.apply(Cmd::NewNode {
+            node: NodeId(1),
+            kind: Kind::Lpf,
+            args: [
+                Input::Node {
+                    node: NodeId(0),
+                    port: 0,
+                },
+                Input::Const(800.0),
+                Input::Const(0.0),
+            ],
+        });
+        e.apply(Cmd::NewNode {
+            node: NodeId(2),
+            kind: Kind::Env,
+            args: [Input::Const(0.01), Input::Const(0.1), Input::Const(0.0)],
+        });
+        e.apply(Cmd::Gate {
+            node: NodeId(2),
+            on: true,
+        });
+        e.apply(Cmd::NewNode {
+            node: NodeId(3),
+            kind: Kind::Mul,
+            args: [
+                Input::Node {
+                    node: NodeId(1),
+                    port: 0,
+                },
+                Input::Node {
+                    node: NodeId(2),
+                    port: 0,
+                },
+                Input::Const(0.0),
+            ],
+        });
+        e.apply(Cmd::BusWrite {
+            src: Input::Node {
+                node: NodeId(3),
+                port: 0,
+            },
+            bus: BusId(0),
+        });
+        e.apply(Cmd::SetRoot { bus: BusId(0) });
+        // Release partway through, so the digest covers the decay too.
+        e.apply_at(
+            2048,
+            Cmd::Gate {
+                node: NodeId(2),
+                on: false,
+            },
+        );
+
+        let mut out = [StereoFrame::default(); 4096];
+        e.render_offline(&mut out);
+
+        assert!(crate::nrt::is_clean(&out), "finite and within [-1, 1]");
+        assert_eq!(
+            crate::nrt::digest(&out),
+            GOLDEN_DIGEST,
+            "patch output changed; the sample-wise golden above will say how"
+        );
+    }
+    /// Pinned 2026-09-08. See the doc comment above before regenerating.
+    const GOLDEN_DIGEST: u64 = 4_722_302_078_756_468_769;
+
     #[test]
     fn cmds_are_comparable_and_debuggable() {
         use crate::node::Kind;

@@ -26,6 +26,7 @@ pub mod event;
 pub mod frame;
 pub mod ids;
 pub mod node;
+pub mod nrt;
 pub mod pool;
 pub mod sched;
 pub mod stream;
