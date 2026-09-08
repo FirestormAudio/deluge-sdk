@@ -69,7 +69,7 @@ Flare is therefore `MIT OR Apache-2.0` throughout, and carries a
 
 ## 1. Topology
 
-A new repo, `flare`, holding a five-crate workspace: the four existing crates
+A new repo, `flare`, holding a six-crate workspace: the five existing crates
 renamed, plus a facade.
 
 | flare crate | from | lines | purpose |
@@ -78,7 +78,18 @@ renamed, plus a facade.
 | `flare-graph` | `crates/deluge-audio-graph` | 13.4k | the block-rendering engine |
 | `flare-fft` | `crates/deluge-fft` | 3.5k | const-generic portable-SIMD FFT |
 | `flare-mipgen` | `crates/mipgen` | 0.6k | band-limited wavetable mip pyramids |
+| `flare-dsp-test` | `crates/deluge-dsp-test` | 0.7k | host-side DSP measurement harness |
 | `flare` | *new* | ~100 | facade re-exporting the public surface |
+
+**`deluge-dsp-test` corrected in (2026-09-08).** This design originally listed
+four crates. `deluge-dsp-test` is a `[dev-dependencies]` entry of both
+`deluge-dsp-kernels` and `mipgen`, so leaving it behind would make flare
+dev-depend on the SDK — the one thing the seam forbids. It was missed on the
+first survey because it sits in the workspace `exclude` list (`Cargo.toml:62`),
+being std-only (`realfft`), rather than in `members`. Nothing that stays in
+deluge-sdk uses it, so it moves cleanly and orphans nothing. Its own module doc
+records the invariant that makes it safe to move: *"it never depends on the
+kernel or graph crates."*
 
 The facade re-exports what `deluge-audio-graph/src/lib.rs` re-exports today —
 `Engine`, `Cmd`, `Host`, `Node`, `Kind`, `Rate`, `In`, `Input`, `NodeId`,
