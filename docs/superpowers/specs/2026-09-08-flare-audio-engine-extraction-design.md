@@ -428,13 +428,16 @@ perturbation check was re-run in flare's new home and reproduced Phase 1's
 result exactly — 5 of 9 goldens fail scalar, 1 of 9 simd — proving the net
 still reaches the same code.
 
-*One acceptance step could not be run here:* linking `wren-firmware` and
-`demo-firmware` needs `arm-none-eabi-gcc` to build `wren-sys`'s C VM, which is
-not installed on this machine; `main` fails identically, so it is a pre-existing
-environment gap, not a regression. What that link was standing in for was
-verified directly instead: `flare-kernels`, `flare-graph` and the `flare` facade
-all cross-compile `no_std` to `armv7a-none-eabihf`, scalar and NEON, and
-`flare/tools/test.sh` now carries that as a permanent build guard.
+*The firmware link, deferred then completed (2026-09-08):* this step initially
+could not run because `wren-sys`'s C VM needs `arm-none-eabi-gcc`, which was
+absent — only `arm-none-eabi-binutils`, `-newlib` and `-gdb` were installed, so
+the linker and assembler were present but the compiler was not. Installing that
+one package resolved it. **Both `wren-firmware` and `demo-firmware` now link for
+`armv7a-none-eabihf` against flare**, producing statically-linked 32-bit ARM
+ELF executables, and `arm-none-eabi-nm` finds 93 `flare_graph`/`flare_kernels`
+symbols in `wren-firmware` — the engine is genuinely linked in, not
+dead-stripped. `flare/tools/test.sh` additionally carries a bare-metal build
+guard for the engine crates alone.
 
 *Spec §7's facade question, answered:* the facade is **not** sufficient for
 `deluge-wren-core`, and should not be. wren-core reaches 11 `flare_kernels::`
@@ -540,13 +543,61 @@ A CI matrix, because otherwise "portable" is an assertion:
 |---|---|
 | `armv7a-none-eabihf` | the device; NEON `f32x8`; the status quo |
 | `x86_64-unknown-linux-gnu` | host tests; `core::simd` → SSE/AVX |
-| `wasm32-unknown-unknown` | the web simulator's target; `core::simd` → simd128 |
-| `thumbv7em-none-eabihf` | Cortex-M; the real portability proof |
+| `wasm32-wasip1` | `core::simd` → simd128, and a third ISA for the digests |
+| `thumbv7m-none-eabi` | Cortex-M, **no FPU**; the real portability proof |
+| `thumbv8m.main-none-eabihf` | Cortex-M33, hard float |
+
+**Two substitutions, made when planning (2026-09-08).** `wasm32-wasip1` rather
+than `wasm32-unknown-unknown`, because the test harness needs WASI to print
+results and set an exit code — the SIMD lowering exercised is the same, and this
+makes wasm a target that *runs* tests rather than only building. And
+`thumbv7m-none-eabi` plus `thumbv8m.main-none-eabihf` rather than
+`thumbv7em-none-eabihf`, which is not installed: `thumbv7m` is a strictly harder
+test, having no FPU at all, so every `f32` is soft-float and `core::simd` must
+scalarise completely.
 
 Each × `{default, simd}`, plus the voice/block feature configurations on the
-host. The Cortex-M target is the one expected to find latent assumptions —
-`MAX_BLOCK` stack scratch and the `PCAP`/`PCHUNK` wavetable pool are the likely
-sites.
+host.
+
+**Phase 4 complete (2026-09-08).** The matrix is built, and the phase turned out
+to be about *execution* rather than porting: flare already built for every
+remaining target, including `--features simd` on a Cortex-M3 with no FPU.
+
+*wasm now runs tests, not just builds.* `cargo test --target wasm32-wasip1`
+executes via a small `node:wasi` runner (no install needed; `.cargo/config.toml`
+says how to swap in wasmtime). 324 `flare-graph` tests pass there in both
+configurations. `wasm32-wasip1` rather than `wasm32-unknown-unknown` because the
+harness needs WASI to report results and set an exit code; the SIMD lowering is
+the same.
+
+*The headline result:* **the characterisation digests are
+architecture-invariant.** The values pinned on x86-64 hold identically on 32-bit
+ARM and on wasm32 — three ISAs, three `core::simd` lowerings (SSE/AVX, NEON,
+simd128), two pointer widths — and also under `lto = false`, `thin` and `fat`,
+and in debug as in release. Verified across six target/config combinations
+before being written into `golden.rs` and the README. A digest that differs
+*between targets* is therefore a portability bug, not a golden needing a re-pin,
+and the module doc now says so.
+
+*Bare-metal guards:* `armv7a-none-eabihf`, `thumbv7m-none-eabi` and
+`thumbv8m.main-none-eabihf`, both configurations each. `thumbv7m` earns its
+place by having no FPU at all, so every `f32` is soft-float and `core::simd`
+must scalarise completely. These are labelled build guards in the runner's own
+output — they cannot catch wrong audio, and a green line should not imply
+they can.
+
+*One documented limitation:* `flare-kernels`' library builds for wasm but its
+tests cannot, because proptest's transitive `wait-timeout` has no wasm support.
+The cost is low and the reason is worth recording: the graph goldens drive those
+same kernels through the engine under simd on wasm and match the x86-64 digests
+bit for bit, which is a stronger statement than the kernels' own
+tolerance-based equivalence tests would add. Fixing it would mean a
+target-specific dev-dependency plus `#[cfg]` on 26 `proptest!` blocks.
+
+*`tools/test.sh` is now the single definition of the matrix*, and the CI
+workflow calls it rather than restating it, so a developer running it locally
+gets exactly what CI would. The workflow is inert until flare has a remote and
+says so at the top.
 
 ## 5. Testing
 
