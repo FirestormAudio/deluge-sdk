@@ -382,3 +382,77 @@ fn golden_poly_ms20_lp() {
 }
 /// Pinned 2026-09-08. See the module doc before regenerating.
 const POLY_MS20_DIGEST: u64 = 16_487_278_233_059_771_593;
+
+/// CHARACTERIZATION golden: two `PolyCtrl`s → `PolySyncSaw` → `VoiceSum`.
+///
+/// `PolySyncOsc` holds `master_phase` and `slave_phase` as `f32x8`. Hard sync
+/// is driven by phase resets, so a lane that reads the wrong chunk resets at
+/// the wrong instant — which is both clearly audible and a clean digest break,
+/// making this the sharpest of the poly goldens.
+///
+/// Note both pitches are *poly edges*, not a mono ratio control: port 0 is the
+/// master pitch tile and port 1 the slave pitch tile. Feeding port 1 a
+/// `Const` would broadcast that value as a frequency in Hz to every lane, so
+/// the slave gets its own `PolyCtrl` running at ~2.5× the master.
+#[test]
+fn golden_poly_sync_saw() {
+    let mut e = G::new(48_000.0);
+    e.create(NodeId(0), Kind::PolyCtrl);
+    poly_pitches(&mut e, NodeId(0), 130.0);
+    e.create(NodeId(1), Kind::PolyCtrl);
+    poly_pitches(&mut e, NodeId(1), 325.0); // 2.5× the master
+    e.create(NodeId(2), Kind::PolySyncSaw);
+    *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node {
+        node: NodeId(0),
+        port: 0,
+    };
+    *e.node_input_mut(NodeId(2), 1).unwrap() = Input::Node {
+        node: NodeId(1),
+        port: 0,
+    };
+    e.create(NodeId(3), Kind::VoiceSum);
+    *e.node_input_mut(NodeId(3), 0).unwrap() = Input::Node {
+        node: NodeId(2),
+        port: 0,
+    };
+    e.apply(Cmd::SetParam {
+        node: NodeId(3),
+        param: 0,
+        value: 0.1,
+    });
+    e.apply(Cmd::BusWrite {
+        src: Input::Node {
+            node: NodeId(3),
+            port: 0,
+        },
+        bus: BusId(0),
+    });
+    e.apply(Cmd::SetRoot { bus: BusId(0) });
+
+    let out = render_4096(&mut e);
+    assert_eq!(crate::nrt::digest(&out), POLY_SYNC_DIGEST);
+}
+
+// The one golden in this module that is NOT config-invariant.
+//
+// `PolySync`'s scalar and `f32x8` paths do not agree bit-for-bit. They agree
+// to well within the kernels' own tolerance — `polysync_matches_scalar_oracle_all_waves`
+// (poly.rs:1719) asserts `<= 1e-4` and passes, and this patch renders to an
+// identical peak (0.768475) and RMS (0.17343627) in both configurations — but
+// a digest is bit-exact by construction, so it sees a difference that no
+// audible measure does. The cause is operation ordering in the phase-reset
+// maths, not a defect: each configuration is internally consistent across
+// x86-64 and 32-bit ARM, so both constants below are stable, just not equal.
+//
+// Two constants rather than one loosened check, so the gate keeps its full
+// strength: a voice-chunking change that misroutes a lane breaks BOTH of
+// these, in whichever configuration it is built.
+//
+// Every other golden here is config-invariant. If a second kind ever needs
+// this treatment, that is worth understanding before adding it.
+/// Pinned 2026-09-08 (scalar path). See the module doc before regenerating.
+#[cfg(not(feature = "simd"))]
+const POLY_SYNC_DIGEST: u64 = 5_048_936_015_975_409_105;
+/// Pinned 2026-09-08 (`f32x8` path). See the module doc before regenerating.
+#[cfg(feature = "simd")]
+const POLY_SYNC_DIGEST: u64 = 12_807_496_639_129_318_169;
