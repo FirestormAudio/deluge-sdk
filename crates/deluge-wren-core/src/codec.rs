@@ -60,7 +60,7 @@ const TRIGGER_VOICE: u8 = 10;
 const STREAM_FILL: u8 = 11;
 const BUS_WRITE: u8 = 12;
 const BUS_WRITE_GAINS: u8 = 13;
-const SET_USB_OUT: u8 = 14;
+const SET_AUX_OUT: u8 = 14;
 const BUS_GAIN: u8 = 15;
 const BUS_SEND: u8 = 16;
 const SET_MASTER_LIMIT: u8 = 17;
@@ -256,8 +256,8 @@ pub fn encode(c: Cmd) -> [u8; REC] {
             r[0] = SET_ROOT;
             put_u16(&mut r, 2, bus.0);
         }
-        Cmd::SetUsbOut { channel, src } => {
-            r[0] = SET_USB_OUT;
+        Cmd::SetAuxOut { channel, src } => {
+            r[0] = SET_AUX_OUT;
             r[1] = channel;
             put_output_src(&mut r, 4, src);
         }
@@ -410,7 +410,7 @@ pub fn decode(r: &[u8]) -> Cmd {
             gr: get_f32(r, 14),
         },
         SET_ROOT => Cmd::SetRoot { bus },
-        SET_USB_OUT => Cmd::SetUsbOut {
+        SET_AUX_OUT => Cmd::SetAuxOut {
             channel: r[1],
             src: get_output_src(r, 4),
         },
@@ -562,14 +562,14 @@ mod tests {
                 gr: 0.75,
             },
             Cmd::SetRoot { bus: BusId(4) },
-            Cmd::SetUsbOut {
+            Cmd::SetAuxOut {
                 channel: 5,
                 src: OutputSrc::Node {
                     node: NodeId(21),
                     port: 1,
                 },
             },
-            Cmd::SetUsbOut {
+            Cmd::SetAuxOut {
                 channel: 6,
                 src: OutputSrc::BusR(BusId(2)),
             },
@@ -647,7 +647,7 @@ mod tests {
         // first matching decode arm would win and could still compare equal).
         //
         // Keyed by variant discriminant, not by list position: `one_of_each`
-        // carries two `BindTable`s and two `SetUsbOut`s to cover their
+        // carries two `BindTable`s and two `SetAuxOut`s to cover their
         // sub-variants, and those *should* share a tag.
         use core::mem::{Discriminant, discriminant};
         let mut owner: [Option<Discriminant<Cmd>>; 256] = [None; 256];
@@ -691,7 +691,7 @@ mod tests {
                 port: 1,
             },
         ] {
-            assert_round(Cmd::SetUsbOut { channel: 0, src });
+            assert_round(Cmd::SetAuxOut { channel: 0, src });
         }
     }
 
