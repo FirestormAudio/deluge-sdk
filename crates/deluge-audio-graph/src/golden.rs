@@ -220,3 +220,62 @@ fn golden_saw_lpf_env_offline_digest() {
 }
 /// Pinned 2026-09-08. See the module doc before regenerating.
 const SAW_LPF_ENV_DIGEST: u64 = 4_722_302_078_756_468_769;
+
+/// Set each voice of a `PolyCtrl` node to a distinct frequency.
+///
+/// Distinct rather than uniform on purpose: identical voices would sum to
+/// exactly 8× one voice, and a digest of that cannot tell "eight independent
+/// lanes" from "one lane copied eight times" — which is precisely the
+/// distinction a voice-chunking refactor could break.
+fn poly_pitches(e: &mut G, ctrl: NodeId, base_hz: f32) {
+    for v in 0..crate::VOICES {
+        e.apply(Cmd::SetParam {
+            node: ctrl,
+            param: v as u8,
+            value: base_hz * (1.0 + 0.13 * v as f32),
+        });
+    }
+}
+
+/// CHARACTERIZATION golden: the basic poly chain, `PolyCtrl` → `PolyOsc` →
+/// `VoiceSum` → bus.
+///
+/// Guards the voice-interleaved tile layout and the voice→mono collapse. In the
+/// `simd` configuration `PolyOsc::process` is the `f32x8` fast path, so this
+/// digest must hold identically in both configurations — that is what makes it
+/// a usable gate for a change to how voices map onto SIMD lanes.
+#[test]
+fn golden_poly_osc_voicesum() {
+    let mut e = G::new(48_000.0);
+    e.create(NodeId(0), Kind::PolyCtrl);
+    poly_pitches(&mut e, NodeId(0), 220.0);
+    e.create(NodeId(1), Kind::PolyOsc);
+    *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Node {
+        node: NodeId(0),
+        port: 0,
+    };
+    e.create(NodeId(2), Kind::VoiceSum);
+    *e.node_input_mut(NodeId(2), 0).unwrap() = Input::Node {
+        node: NodeId(1),
+        port: 0,
+    };
+    // VoiceSum gain: 8 voices would otherwise clip the [-1, 1] check.
+    e.apply(Cmd::SetParam {
+        node: NodeId(2),
+        param: 0,
+        value: 0.1,
+    });
+    e.apply(Cmd::BusWrite {
+        src: Input::Node {
+            node: NodeId(2),
+            port: 0,
+        },
+        bus: BusId(0),
+    });
+    e.apply(Cmd::SetRoot { bus: BusId(0) });
+
+    let out = render_4096(&mut e);
+    assert_eq!(crate::nrt::digest(&out), POLY_OSC_DIGEST);
+}
+/// Pinned 2026-09-08. See the module doc before regenerating.
+const POLY_OSC_DIGEST: u64 = 6_026_717_215_524_760_865;
