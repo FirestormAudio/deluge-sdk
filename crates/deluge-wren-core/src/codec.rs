@@ -78,6 +78,9 @@ const CTRL_WRITE: u8 = 28;
 const CLEAR_CTRL_WRITE: u8 = 29;
 const MAP_PARAM: u8 = 30;
 const UNMAP_PARAM: u8 = 31;
+// Appended, not inserted: existing opcodes keep their numbers so the web
+// simulator decodes previously-recorded streams unchanged.
+const BEGIN_UPDATE_SCOPED: u8 = 32;
 
 // ── Field helpers ────────────────────────────────────────────────────────────
 // Each writes at a fixed offset so `encode`/`decode` stay symmetrical by
@@ -339,6 +342,10 @@ pub fn encode(c: Cmd) -> [u8; REC] {
             put_u16(&mut r, 2, node.0);
         }
         Cmd::BeginUpdate => r[0] = BEGIN_UPDATE,
+        Cmd::BeginUpdateScoped { scope } => {
+            r[0] = BEGIN_UPDATE_SCOPED;
+            r[1] = scope;
+        }
         Cmd::EndUpdate => r[0] = END_UPDATE,
         Cmd::ClearSchedule => r[0] = CLEAR_SCHEDULE,
         Cmd::Reset => r[0] = RESET,
@@ -472,6 +479,7 @@ pub fn decode(r: &[u8]) -> Cmd {
         },
         FREE => Cmd::Free { node },
         BEGIN_UPDATE => Cmd::BeginUpdate,
+        BEGIN_UPDATE_SCOPED => Cmd::BeginUpdateScoped { scope: r[1] },
         END_UPDATE => Cmd::EndUpdate,
         CLEAR_SCHEDULE => Cmd::ClearSchedule,
         RESET => Cmd::Reset,
@@ -636,6 +644,9 @@ mod tests {
         }
         // The bracket commands carry no payload but must not collapse to Nop.
         assert_round(Cmd::BeginUpdate);
+        assert_round(Cmd::BeginUpdateScoped { scope: 0 });
+        assert_round(Cmd::BeginUpdateScoped { scope: 7 });
+        assert_round(Cmd::BeginUpdateScoped { scope: 255 });
         assert_round(Cmd::EndUpdate);
         assert_round(Cmd::ClearSchedule);
     }
