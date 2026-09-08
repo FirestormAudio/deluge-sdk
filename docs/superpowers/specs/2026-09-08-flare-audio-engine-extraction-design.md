@@ -345,6 +345,42 @@ verifiable rather than hopeful.
 **Gate:** new goldens green on x86-64 and on the device target, in both `simd`
 and scalar configurations.
 
+**Phase 1 complete (2026-09-08).** `tools/test.sh` now runs both configurations;
+the `simd` feature had been built by nothing, leaving 14 scalar-oracle
+equivalence tests — including `polymoog_matches_scalar_oracle_both_slopes` and
+`polysync_matches_scalar_oracle_all_waves` — never executed in CI.
+
+Goldens live in `crates/deluge-audio-graph/src/golden.rs`: 9 tests, 8 of them
+digest-pinned (10 constants; see below), covering the saw→lpf→env baseline, the
+poly osc/`VoiceSum` path, `PolyMoog`, `PolyMs20`, `PolySyncOsc`, staggered
+per-voice gating, a static wavetable sweep across mip levels, and the master
+chain (bus gain, bus send, DC-block → EQ → limiter) with two buses.
+
+All are **target-invariant** — identical digests on x86-64 and on 32-bit ARM
+under NEON. Most are **config-invariant** too, but two are not, and the
+distinction is now documented in the module: some `f32x8` kernels are bit-exact
+reimplementations of their scalar oracle, while `PolySync` and the wavetable
+interpolation reorder the arithmetic and agree only to a tolerance (the kernels
+say so in their own test names — `simd_matches_scalar_within_tol`, and sync's
+`<= 1e-4`). Those two pin one constant per configuration rather than loosening
+to a tolerance, so the gate keeps full strength in whichever config is built.
+Both divergences are inaudible: identical peak, RMS agreeing to ~1e-6.
+
+**Verified catching a regression, not merely written.** Changing one constant in
+`fast_sin` from `0.225` to `0.226` fails **5 of 9 goldens** in the scalar
+configuration. The 4 survivors are exactly those with no sine in their path
+(Saw+Lpf, the Saw-shape sync patch, the Saw wavetable), so the failure set is
+explainable rather than incidental. The same one-line change fails only **1 of
+9** under `simd`, because the `f32x8` path uses a separate `fast_sin_x8` and
+only the master EQ (a scalar kernel) is shared — which is the concrete argument
+for running both configurations: a single-config CI would have missed four of
+those five regressions.
+
+`deluge-fft`'s `Cargo.toml` now names no other `deluge-*` crate; the
+`dsp_pipeline` test moved to `deluge-fixedpoint` and, as a side effect of
+dropping `--lib` from its runner line, now runs in both target buckets instead
+of ARM only.
+
 ### Phase 2 — The move (pure rename, zero behaviour change)
 
 - `git filter-repo` to split the four crate directories into `flare` with
