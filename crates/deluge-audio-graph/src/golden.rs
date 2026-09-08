@@ -594,3 +594,70 @@ const WAVETABLE_DIGEST: u64 = 6_994_743_113_167_035_253;
 /// Pinned 2026-09-08 (`f32x8` path). See the module doc before regenerating.
 #[cfg(feature = "simd")]
 const WAVETABLE_DIGEST: u64 = 18_147_409_328_667_502_341;
+
+/// CHARACTERIZATION golden: two sources into two buses, one sending into the
+/// other, through the full master chain.
+///
+/// Everything else in this module ends at a bare bus. This covers the parts a
+/// rename of the aux-output surface touches, and the master DC-blocker → EQ →
+/// limiter chain, plus the multi-bus summing that is how several instruments
+/// play at once.
+#[test]
+fn golden_master_chain_two_buses() {
+    let mut e = G::new(48_000.0);
+    // Instrument A: saw → bus 0.
+    e.create(NodeId(0), Kind::Saw);
+    *e.node_input_mut(NodeId(0), 0).unwrap() = Input::Const(110.0);
+    e.apply(Cmd::BusWrite {
+        src: Input::Node {
+            node: NodeId(0),
+            port: 0,
+        },
+        bus: BusId(0),
+    });
+    // Instrument B: square → bus 1.
+    e.create(NodeId(1), Kind::Square);
+    *e.node_input_mut(NodeId(1), 0).unwrap() = Input::Const(164.81);
+    e.apply(Cmd::BusWrite {
+        src: Input::Node {
+            node: NodeId(1),
+            port: 0,
+        },
+        bus: BusId(1),
+    });
+    // Distinct gains, so a bug that swaps the two buses changes the digest.
+    e.apply(Cmd::BusGain {
+        bus: BusId(0),
+        gain: 0.4,
+    });
+    e.apply(Cmd::BusGain {
+        bus: BusId(1),
+        gain: 0.25,
+    });
+    // B sends into A, so the render covers the send path as well as the sum.
+    // `from` must exceed `to` (see `Cmd::BusSend`).
+    e.apply(Cmd::BusSend {
+        from: BusId(1),
+        to: BusId(0),
+        gain: 0.3,
+    });
+    // The whole master chain, in its applied order: DC block, then EQ, then
+    // the limiter.
+    e.apply(Cmd::SetMasterDcBlock { cutoff_hz: 20.0 });
+    e.apply(Cmd::SetMasterEq {
+        freq: 1000.0,
+        gain_db: 6.0,
+        q: 0.707,
+        eq_type: 1,
+    });
+    e.apply(Cmd::SetMasterLimit {
+        ceiling: 0.9,
+        release: 0.05,
+    });
+    e.apply(Cmd::SetRoot { bus: BusId(0) });
+
+    let out = render_4096(&mut e);
+    assert_eq!(crate::nrt::digest(&out), MASTER_CHAIN_DIGEST);
+}
+/// Pinned 2026-09-08. See the module doc before regenerating.
+const MASTER_CHAIN_DIGEST: u64 = 11_429_719_371_133_759_189;
