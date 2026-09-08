@@ -6,6 +6,12 @@
 //! result stays within numerical bounds. Runs in the QEMU ARM bucket so the
 //! real DSP instructions (SMMUL etc.) are exercised, not just the portable
 //! fallback.
+//!
+//! Lives here rather than in `deluge-fft` because that crate is destined to
+//! become `flare-fft` in a separate repo, where a dev-dependency on
+//! `fixedpoint` and `armv7-dsp-intrinsics` would point back at the SDK — the
+//! one thing the flare seam forbids. Both halves of this pipeline are
+//! reachable from here, so nothing is lost by testing it from this side.
 
 use armv7_dsp_intrinsics::smmul;
 use deluge_fft::{Complex, Fft};

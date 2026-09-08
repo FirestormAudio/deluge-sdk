@@ -36,8 +36,10 @@ echo "==> QEMU ARM bucket ($QEMU)"
 # under QEMU. The portable fallback is covered in the host bucket below.
 cargo test --target "$QEMU" -p armv7-dsp-intrinsics --lib
 cargo test --target "$QEMU" -p armv7-dsp-intrinsics --features nightly --lib
-cargo test --target "$QEMU" -p deluge-fixedpoint --lib
-# No --lib: also runs the cross-crate dsp_pipeline integration test.
+# No --lib: also runs the cross-crate dsp_pipeline integration test, which moved
+# here from deluge-fft (that crate becomes flare-fft in its own repo and must not
+# dev-depend on anything staying in the SDK).
+cargo test --target "$QEMU" -p deluge-fixedpoint
 cargo test --target "$QEMU" -p deluge-fft --features test-utils
 cargo test --target "$QEMU" -p rza1l-hal --lib
 cargo test --target "$QEMU" -p deluge-bsp --features usb-host --lib
@@ -50,6 +52,12 @@ cargo test --target "$QEMU" -p deluge-fonts --lib
 cargo test --target "$QEMU" -p deluge-dsp-kernels
 cargo test --target "$QEMU" -p deluge-audio-graph
 cargo test --target "$QEMU" -p deluge-wren-core
+# Again with NEON. `simd` is default-OFF, so the runs above are the scalar
+# oracle and these are the f32x8 fast path. Both are required: the kernels'
+# scalar==simd equivalence tests only mean something if the simd config is
+# actually built, and it was previously built by nothing at all.
+cargo test --target "$QEMU" -p deluge-dsp-kernels --features simd
+cargo test --target "$QEMU" -p deluge-audio-graph --features simd
 
 echo "==> Host bucket ($HOST)"
 # Portable-fallback / non-NEON paths of the DSP crates (the QEMU bucket above
@@ -66,6 +74,10 @@ cargo test --target "$HOST" -p deluge-sdk-macros
 cargo test --target "$HOST" -p deluge-dsp-kernels
 cargo test --target "$HOST" -p deluge-audio-graph
 cargo test --target "$HOST" -p deluge-wren-core
+# The portable-SIMD path off ARM: `core::simd` lowers to SSE/AVX here, so this
+# also proves the f32x8 code is not secretly NEON-specific.
+cargo test --target "$HOST" -p deluge-dsp-kernels --features simd
+cargo test --target "$HOST" -p deluge-audio-graph --features simd
 # The SDK facade: `adapt_block` (the linux backend's frame adaptation) is pure
 # logic and testable here. Needs an explicit backend feature — `sim` is the only
 # one that builds on the host (`linux` requires the musl libdeluge sysroot).

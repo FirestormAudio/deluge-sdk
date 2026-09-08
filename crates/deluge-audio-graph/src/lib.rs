@@ -29,6 +29,9 @@ pub mod node;
 pub mod nrt;
 pub mod pool;
 pub mod sched;
+// Characterisation goldens. Tests, not API — not `pub`, not re-exported.
+#[cfg(test)]
+mod golden;
 pub mod stream;
 pub mod voice;
 
