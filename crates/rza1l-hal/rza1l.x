@@ -37,7 +37,12 @@ SECTIONS {
      */
     .ttb_mmu1 ORIGIN(RAM) (NOLOAD) : ALIGN(0x4000) {
         ttb_mmu1_base = .;
-        . += TTB_SIZE;
+        /* rza1l_hal::mmu::TTB itself (16 KB, 16 KB-aligned), here rather than in
+         * .bss. KEEP, because nothing references the input section by name. The
+         * reservation stays TTB_SIZE whatever it holds; a table that outgrew it
+         * would move the location counter backwards, which is a link error. */
+        KEEP(*(.ttb_mmu1 .ttb_mmu1.*))
+        . = ttb_mmu1_base + TTB_SIZE;
         . = ALIGN(4);
         ttb_mmu1_end = .;
     } > RAM

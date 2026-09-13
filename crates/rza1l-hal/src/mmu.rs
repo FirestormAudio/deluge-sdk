@@ -42,8 +42,16 @@ pub use crate::memmap::{
 #[repr(C, align(16384))]
 struct Ttb([u32; 4096]);
 
-/// The Level-1 Translation Table.  Zero-initialised (BSS), filled by
-/// [`init_and_enable`] before the MMU is turned on.
+/// The Level-1 Translation Table, filled entry by entry by [`init_and_enable`]
+/// before the MMU is turned on.
+///
+/// Placed in `.ttb_mmu1`, the NOLOAD window `rza1l.x` / `rza1l_rtt.x` reserve at
+/// the bottom of on-chip SRAM for exactly this table, rather than in `.bss`. In
+/// `.bss` its 16 KB alignment made it jump a whole 16 KB block whenever the
+/// `.bss` in front of it crossed a boundary, and it sat beside the reservation
+/// meant for it. Nothing zeroes `.ttb_mmu1`, and nothing needs to:
+/// [`init_and_enable`] writes all 4096 entries before the table is used.
+#[unsafe(link_section = ".ttb_mmu1")]
 static mut TTB: Ttb = Ttb([0; 4096]);
 
 // ---------------------------------------------------------------------------
