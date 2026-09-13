@@ -26,7 +26,9 @@ ENTRY(_start)
  */
 INCLUDE memory.x
 
-TTB_SIZE = 0x8000;
+/* One level-1 translation table: 4096 x 4 B, one 1 MB section per entry, TTBR0
+ * only (TTBCR.N = 0) and no second-level tables, so nothing else needs room here. */
+TTB_SIZE = 0x4000;
 
 SECTIONS {
     /*
