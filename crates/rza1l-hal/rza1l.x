@@ -26,7 +26,9 @@ ENTRY(_start)
  */
 INCLUDE memory.x
 
-TTB_SIZE = 0x8000;
+/* One level-1 translation table: 4096 x 4 B, one 1 MB section per entry, TTBR0
+ * only (TTBCR.N = 0) and no second-level tables, so nothing else needs room here. */
+TTB_SIZE = 0x4000;
 
 SECTIONS {
     /*
@@ -37,7 +39,12 @@ SECTIONS {
      */
     .ttb_mmu1 ORIGIN(RAM) (NOLOAD) : ALIGN(0x4000) {
         ttb_mmu1_base = .;
-        . += TTB_SIZE;
+        /* rza1l_hal::mmu::TTB itself (16 KB, 16 KB-aligned), here rather than in
+         * .bss. KEEP, because nothing references the input section by name. The
+         * reservation stays TTB_SIZE whatever it holds; a table that outgrew it
+         * would move the location counter backwards, which is a link error. */
+        KEEP(*(.ttb_mmu1 .ttb_mmu1.*))
+        . = ttb_mmu1_base + TTB_SIZE;
         . = ALIGN(4);
         ttb_mmu1_end = .;
     } > RAM
