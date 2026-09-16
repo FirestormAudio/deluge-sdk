@@ -69,15 +69,15 @@ cargo test --target "$HOST" -p deluge-wren-core
 # does not cross-compile to the QEMU ARM bucket's target.
 cargo test --target "$HOST" -p deluge-sdk --features sim
 cargo test --target "$HOST" --manifest-path tools/cargo-deluge/Cargo.toml
-cargo test --target "$HOST" --manifest-path tools/wren-web-debug/Cargo.toml
+cargo test --target "$HOST" --manifest-path wren/wren-web-debug/Cargo.toml
 
-# `tools/wren-web` is the web simulator's wasm core. It is excluded from the
+# `wren/wren-web` is the web simulator's wasm core. It is excluded from the
 # workspace and only builds for wasm, so nothing else here compiles it — which
 # is exactly how it silently rotted through several `Cmd`-surface changes before
 # anyone noticed. Its logic (the `Cmd` wire codec) lives in deluge-wren-core so
 # it is unit-tested above; this is the build guard that catches API drift.
 if rustup target list --installed | grep -q '^wasm32-wasip1$'; then
-  cargo check --manifest-path tools/wren-web/Cargo.toml --target wasm32-wasip1
+  cargo check --manifest-path wren/wren-web/Cargo.toml --target wasm32-wasip1
 else
   echo "  (skipped: wasm32-wasip1 target not installed)"
 fi

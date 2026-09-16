@@ -138,7 +138,7 @@ Benign for a filter's delay line; wrong for a `StreamPlayer` inheriting another
 voice's cursor. So `(id, kind)` alone is not a sound key, and mid-script edits
 need the stable names of GL6 — which cost the engine nothing (see there).
 
-**This is not speculative.** `tools/wren-web/app/src/sim.ts:103,116` — the web
+**This is not speculative.** `wren/wren-web/app/src/sim.ts:103,116` — the web
 editor's Run calls `sim_reset()` and rebuilds the project from scratch, so every
 ⌘↵ tears down the graph and drops audio. M3/M4 of the web-editor plan are done
 and shipping. That is glicol's exact workflow, live in this repo, with the

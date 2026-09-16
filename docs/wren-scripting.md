@@ -142,7 +142,7 @@ every node. Anything unnamed keeps the old positional behaviour.
 
 ## Examples
 
-See `wren-firmware/examples/`:
+See `wren/wren-firmware/examples/`:
 
 - `hello.wren` — print + OLED text.
 - `cv_lfo.wren` — metro-driven CV triangle LFO + gate blink.
@@ -151,7 +151,7 @@ See `wren-firmware/examples/`:
 
 ## Authoring on a computer
 
-`wren-firmware/wren/prelude.wren` is the single source of truth for the scripting
+`wren/deluge-wren-core/wren/prelude.wren` is the single source of truth for the scripting
 API — every `foreign` class + signature is declared there. Point the `wren-rs`
 toolchain (`~/GitHub/wren-rs`: LSP, analyzer, formatter) at it as a library/context
 to get completion, go-to-definition, and diagnostics while editing `.wren` files,

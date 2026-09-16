@@ -1,7 +1,7 @@
 // The instrument: a faithful Deluge faceplate (pads, named buttons + LEDs, named
 // encoders placed at their real positions, see deluge-layout.ts) plus a separate
 // large OLED. Input widgets call the PanelClient; output widgets read it each
-// frame. Slimmed from tools/wren-web/app's Panel: no CV/gate scope, MIDI monitor,
+// frame. Slimmed from wren/wren-web/app's Panel: no CV/gate scope, MIDI monitor,
 // or on-screen keyboard — this faceplate is driven purely by the deluge-protocol
 // wire (illumination in, input out).
 import { PanelClient } from "./panel-client";

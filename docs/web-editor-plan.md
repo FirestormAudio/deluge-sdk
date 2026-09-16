@@ -120,7 +120,7 @@ hooks). To avoid maintaining two drifting binding implementations, extract a
 portable crate **before** building anything web:
 
 ```
-crates/deluge-wren-core   (new, no_std, target-agnostic)
+wren/deluge-wren-core   (new, no_std, target-agnostic)
   ├─ engine.rs     pure DSP node graph (moved from wren-firmware/src/audio.rs;
   │                the embassy `audio_task` / `deluge::Audio` plumbing stays in firmware)
   ├─ kinds.rs      node-kind constants (K_SINE…K_SUB) — single source of truth,
@@ -337,22 +337,22 @@ Remaining risks, lower (none gating):
 
 1. **M0 — Spikes. ✅ DONE.** S1 + S2 both passed (§9); wasm targets decided
    (`wasm32-wasi` for the VM, `wasm32-unknown-unknown` for the analyzer).
-2. **M1 — Core refactor. ✅ DONE.** Extracted `crates/deluge-wren-core` (engine,
+2. **M1 — Core refactor. ✅ DONE.** Extracted `wren/deluge-wren-core` (engine,
    kinds, prelude, bindings, callback dispatch) + the `Host` trait. `wren-firmware`
    now implements `Host` (`src/host.rs`, `FwHost`) and keeps only the
    firmware-specific transport (`src/audio.rs`: command ring + render task). Both
    the device (`armv7a-none-eabihf`) and host (`x86_64`) builds are green;
    behavior-preserving. No web code yet.
-3. **M2 — Headless runtime module. ✅ DONE.** `tools/wren-web`: a `Host` impl over
+3. **M2 — Headless runtime module. ✅ DONE.** `wren/wren-web`: a `Host` impl over
    in-memory buffers + a C-ABI surface (`sim_boot`/`sim_load` + input injection +
    output drains) + a JS loader (`web/loader.mjs`). Builds to a ~230 KB wasm; a
    Node smoke test (`web/test.mjs`) passes — load scripts, OLED text rasterises,
    MIDI→handler→CV, metro→gate, compile errors with line numbers. `wren-sys`
    gained a wasm build branch (C against wasi-sysroot + a `clock` shim).
-4. **M3 — Editor. ✅ DONE.** `tools/wren-web/app`: Vite + TS + Monaco with Wren
+4. **M3 — Editor. ✅ DONE.** `wren/wren-web/app`: Vite + TS + Monaco with Wren
    highlighting + a prelude-seeded completion provider, the wasm loaded via a
    browser WASI shim (`@bjorn3/browser_wasi_shim`), Run (⌘↵) + VM errors as editor
-   markers. **Live static analysis** now runs off-thread: `tools/wren-analyzer-wasm`
+   markers. **Live static analysis** now runs off-thread: `wren/wren-analyzer-wasm`
    wraps `wren-analyzer` (from the sibling wren-rs checkout) into an import-free
    144 KB wasm; a Web Worker (`analyzer-worker.ts`) analyzes on each edit
    (debounced) and the diagnostics become Monaco markers (`owner: wren-analyzer`,
@@ -402,10 +402,10 @@ Remaining risks, lower (none gating):
 ## 11. Crate / repo layout
 
 ```
-crates/deluge-wren-core/    (new) portable runtime: engine + kinds + prelude + bindings + Host trait
+wren/deluge-wren-core/    (new) portable runtime: engine + kinds + prelude + bindings + Host trait
 wren-firmware/              device Host impl (refactored onto deluge-wren-core); unchanged behavior
-tools/wren-web/             (new) wasm-bindgen crate: WebHost + Sim exports (depends on wren-sys + deluge-wren-core)
-tools/wren-web-lsp/         (new) wasm-bindgen crate: analyzer + lsp feature fns for the worker
+wren/wren-web/             (new) wasm-bindgen crate: WebHost + Sim exports (depends on wren-sys + deluge-wren-core)
+wren/wren-web-lsp/         (new) wasm-bindgen crate: analyzer + lsp feature fns for the worker
 web/                        (new) Vite + TS frontend: Monaco, panel widgets, workers, AudioWorklet glue
 ```
 

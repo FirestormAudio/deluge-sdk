@@ -60,10 +60,10 @@ build-app-loader-bin = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-b
 # --target overrides the armv7a [build] target above so it builds for the host.
 # Usage: cargo elf2uf2 path/to/firmware.elf [-o out.uf2] [--bin]
 elf2uf2              = "run --manifest-path tools/elf2uf2/Cargo.toml --target x86_64-unknown-linux-gnu --release --"
-# Host-side wren-core debug harness (tools/wren-web-debug). The explicit
+# Host-side wren-core debug harness (wren/wren-web-debug). The explicit
 # --target overrides the armv7a [build] target above so it builds for the host.
 # Usage: cargo test-wren-debug
-test-wren-debug       = "test --manifest-path tools/wren-web-debug/Cargo.toml --target x86_64-unknown-linux-gnu"
+test-wren-debug       = "test --manifest-path wren/wren-web-debug/Cargo.toml --target x86_64-unknown-linux-gnu"
 # The static-wavetable generator moved to flare (flare-mipgen). Run it there:
 #   cd ../flare && cargo gen-tables > crates/flare-kernels/src/wavetables_generated.rs
 build-wren           = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem -p wren-firmware"

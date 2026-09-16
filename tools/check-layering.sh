@@ -9,7 +9,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-WREN_DIRS=(wren-sys wren-firmware crates/deluge-wren-core tools/wren-web tools/wren-web-debug tools/wren-analyzer-wasm)
+WREN_DIRS=(wren)
 
 # Code lines only: a `//` comment naming a BSP item for reference is fine.
 code_hits="$(grep -rnE --include='*.rs' --exclude-dir=target --exclude-dir=node_modules \
