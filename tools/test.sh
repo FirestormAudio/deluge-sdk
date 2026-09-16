@@ -27,6 +27,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+tools/check-layering.sh
+
 QEMU=armv7-unknown-linux-gnueabihf
 HOST=x86_64-unknown-linux-gnu
 

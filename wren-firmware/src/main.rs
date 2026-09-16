@@ -19,7 +19,6 @@
 //! `/MAIN.WREN` is loaded and run at boot.
 //!
 //! ## Tasks
-//! - `usb_task` — drives the `embassy_usb` device state machine.
 //! - `cdc_rx_task` — host → [`RX`] ring (bulk-OUT packets, newline-framed).
 //! - `cdc_tx_task` — [`TX`] ring → host (bulk-IN packets).
 //! - `vm_task` — owns the VM: drains the REPL, runs the boot script.
@@ -37,7 +36,6 @@ use core::ffi::c_char;
 use core::ptr::addr_of_mut;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU16, AtomicUsize, Ordering};
 
-use deluge::deluge_bsp;
 use deluge::prelude::*;
 use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::{Mutex, raw::CriticalSectionRawMutex};
@@ -46,15 +44,11 @@ use wren_sys::{Vm, WrenVM};
 
 // The USB-CDC REPL transport is device-only — the desktop simulator has no USB,
 // so the host build drives the REPL over stdin/stdout instead (see `host_repl`
-// and `host_tx_task`). `rza1l_hal` is only re-exported by the SDK on the device.
+// and `host_tx_task`).
 #[cfg(target_os = "none")]
-use deluge::rza1l_hal;
+use deluge::usb_serial::{Driver, UsbIdentity};
 #[cfg(target_os = "none")]
-use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver, Sender, State};
-#[cfg(target_os = "none")]
-use embassy_usb::{Builder, Config, UsbDevice};
-#[cfg(target_os = "none")]
-use rza1l_hal::usb::{Rusb1Driver, USB0_IRQ, dcd_int_handler, init_device_mode};
+use embassy_usb::class::cdc_acm::{Receiver, Sender};
 
 mod audio;
 mod host;
@@ -96,8 +90,8 @@ static UI_LED: Mutex<CriticalSectionRawMutex, RefCell<ByteRing<128>>> =
     Mutex::new(RefCell::new(ByteRing::new()));
 /// OLED frame buffer: drawn by the `Oled.*` bindings (vm_task), rendered by
 /// `ui_task` on `OLED_SHOW`.
-static OLED_FB: Mutex<CriticalSectionRawMutex, RefCell<deluge_bsp::oled::FrameBuffer>> =
-    Mutex::new(RefCell::new(deluge_bsp::oled::FrameBuffer::new()));
+static OLED_FB: Mutex<CriticalSectionRawMutex, RefCell<deluge::oled::FrameBuffer>> =
+    Mutex::new(RefCell::new(deluge::oled::FrameBuffer::new()));
 static OLED_SHOW: AtomicBool = AtomicBool::new(false);
 
 // ── VM handle + persistence handshakes ──────────────────────────────────────
@@ -234,7 +228,7 @@ pub(crate) fn oled_clear() {
 }
 /// Draw a string into the OLED frame buffer (5×7 font; `x`,`y` in pixels).
 pub(crate) fn oled_text(x: usize, y: usize, s: &[u8]) {
-    OLED_FB.lock(|r| deluge_bsp::oled::text::draw_str(&mut r.borrow_mut(), x, y, s));
+    OLED_FB.lock(|r| deluge::oled::draw_str(&mut r.borrow_mut(), x, y, s));
 }
 /// Set/clear one OLED pixel.
 pub(crate) fn oled_pixel(x: usize, y: usize, on: bool) {
@@ -355,37 +349,16 @@ extern "C" fn wren_host_load_module(_name: *const c_char) -> *const c_char {
     core::ptr::null()
 }
 
-// ── USB device static buffers (need 'static for embassy_usb::Builder) ───────
-
-#[cfg(target_os = "none")]
-static mut USB_CONFIG_DESC: [u8; 256] = [0; 256];
-#[cfg(target_os = "none")]
-static mut USB_BOS_DESC: [u8; 64] = [0; 64];
-#[cfg(target_os = "none")]
-static mut USB_MSOS_DESC: [u8; 0] = [];
-#[cfg(target_os = "none")]
-static mut USB_CONTROL_BUF: [u8; 64] = [0; 64];
-#[cfg(target_os = "none")]
-static mut CDC_ACM_STATE: State<'static> = State::new();
-
 // ── Pre-interrupt setup (runs with IRQs masked) ──────────────────────────────
 
 /// Synchronous bring-up that must complete before interrupts are enabled.
 ///
 /// The SDK has already initialised heaps + clocks (see
-/// [`#[deluge::app]`](deluge::app)); here we register the USB0 ISR and boot the
-/// Wren VM (pure allocation + compilation, so safe with IRQs masked). All
-/// peripheral init is owned by the SDK capability handles acquired in `main`.
+/// [`#[deluge::app]`](deluge::app)); here we boot the Wren VM (pure allocation +
+/// compilation, so safe with IRQs masked). All peripheral init is owned by the
+/// SDK capability handles acquired in `main`.
 fn setup() {
     info!("wren-firmware: starting (M1)");
-
-    // USB0 device-mode interrupt. Registering here (before global enable) is
-    // sufficient; the interrupt source is only raised once `usb_task` runs.
-    // Device-only — the host REPL uses stdin/stdout, not USB.
-    #[cfg(target_os = "none")]
-    unsafe {
-        rza1l_hal::gic::register(USB0_IRQ, || dcd_int_handler(0))
-    };
 
     // Host: start the blocking stdin reader that feeds the REPL `RX` ring. Runs
     // on the brain thread before the executor, alongside the GUI on the main
@@ -424,37 +397,20 @@ async fn main(dlg: Deluge) {
     let spawner = dlg.spawner();
 
     // ── REPL transport ───────────────────────────────────────────────────────
-    // Device: a USB-CDC-ACM port (ISR registered in `setup`). Host: stdin/stdout
+    // Device: a USB-CDC-ACM port (`Deluge::usb_serial`). Host: stdin/stdout
     // (reader started in `setup`; `host_tx_task` drains the TX ring to stdout).
     #[cfg(target_os = "none")]
     {
-        let (device, cdc) = unsafe {
-            let (_port, driver) = init_device_mode(0);
-            let mut config = Config::new(0x1209, 0x5741);
-            config.manufacturer = Some("skyline");
-            config.product = Some("wren: deluge");
-            config.serial_number = Some("deluge-wren");
-            config.self_powered = false;
-            config.max_power = 250;
-
-            let mut builder = Builder::new(
-                driver,
-                config,
-                &mut *addr_of_mut!(USB_CONFIG_DESC),
-                &mut *addr_of_mut!(USB_BOS_DESC),
-                &mut *addr_of_mut!(USB_MSOS_DESC),
-                &mut *addr_of_mut!(USB_CONTROL_BUF),
-            );
-            // 512-byte bulk endpoints: the RUSB1 PHY negotiates high speed, where
-            // USB 2.0 requires HS bulk wMaxPacketSize 512.
-            let cdc = CdcAcmClass::new(&mut builder, &mut *addr_of_mut!(CDC_ACM_STATE), 512);
-            (builder.build(), cdc)
-        };
-        let (tx, rx) = cdc.split();
+        let serial = dlg.usb_serial(UsbIdentity {
+            vid: 0x1209,
+            pid: 0x5741,
+            manufacturer: "skyline",
+            product: "wren: deluge",
+            serial_number: "deluge-wren",
+        });
         info!("USB: CDC-ACM device built (1209:5741)");
-        spawner.spawn(usb_task(device).unwrap());
-        spawner.spawn(cdc_tx_task(tx).unwrap());
-        spawner.spawn(cdc_rx_task(rx).unwrap());
+        spawner.spawn(cdc_tx_task(serial.tx).unwrap());
+        spawner.spawn(cdc_rx_task(serial.rx).unwrap());
     }
     #[cfg(not(target_os = "none"))]
     {
@@ -505,13 +461,7 @@ async fn main(dlg: Deluge) {
 
 #[cfg(target_os = "none")]
 #[embassy_executor::task]
-async fn usb_task(mut device: UsbDevice<'static, Rusb1Driver>) {
-    device.run().await;
-}
-
-#[cfg(target_os = "none")]
-#[embassy_executor::task]
-async fn cdc_rx_task(mut rx: Receiver<'static, Rusb1Driver>) {
+async fn cdc_rx_task(mut rx: Receiver<'static, Driver>) {
     let mut buf = [0u8; 512];
     loop {
         match rx.read_packet(&mut buf).await {
@@ -526,7 +476,7 @@ async fn cdc_rx_task(mut rx: Receiver<'static, Rusb1Driver>) {
 
 #[cfg(target_os = "none")]
 #[embassy_executor::task]
-async fn cdc_tx_task(mut tx: Sender<'static, Rusb1Driver>) {
+async fn cdc_tx_task(mut tx: Sender<'static, Driver>) {
     let mut buf = [0u8; 64];
     loop {
         tx.wait_connection().await;
