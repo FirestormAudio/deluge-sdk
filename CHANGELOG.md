@@ -21,5 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SD (RZ/A1L): High-Speed mode support — cards that accept the CMD6 switch now
   run at 33.3 MHz SD_CLK (P1/2) instead of 16.7 MHz, ~2× sequential throughput;
   automatic fallback to 16.7 MHz for cards without CMD6.
+- `deluge::oled::{FrameBuffer, draw_str}` for apps that render into their own
+  frame buffer, and the `usb-serial` feature's `Deluge::usb_serial` — take USB0
+  as a CDC-ACM port under your own VID/PID, no `unsafe`.
 
 [Unreleased]: https://github.com/FirestormAudio/deluge-sdk

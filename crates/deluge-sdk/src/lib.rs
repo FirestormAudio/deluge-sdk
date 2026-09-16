@@ -91,6 +91,9 @@ mod sd;
 mod sync_led;
 #[cfg(feature = "usb-log")]
 mod usb_debug;
+/// USB CDC-ACM serial capability; see [`Deluge::usb_serial`].
+#[cfg(all(target_os = "none", feature = "usb-serial"))]
+pub mod usb_serial;
 
 /// Host (desktop-simulator) backend, active when built for the host triple.
 #[cfg(all(not(target_os = "none"), feature = "sim"))]
@@ -363,6 +366,25 @@ impl Deluge {
         Gate::new()
     }
 
+    /// Take USB0 as a CDC-ACM (virtual serial) device identified as `id` — a
+    /// `/dev/ttyACM*` port on the host. Starts the USB device task; read and
+    /// write through the returned [`UsbSerial`](usb_serial::UsbSerial) halves.
+    ///
+    /// Device-only, behind the `usb-serial` feature. Takeable once: a second
+    /// call panics, as does calling it while `usb-log` (which owns USB0) is on.
+    #[cfg(all(target_os = "none", feature = "usb-serial"))]
+    pub fn usb_serial(&self, id: usb_serial::UsbIdentity) -> usb_serial::UsbSerial {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static TAKEN: AtomicBool = AtomicBool::new(false);
+        if TAKEN.swap(true, Ordering::Relaxed) {
+            panic!("Deluge::usb_serial() called more than once");
+        }
+        if cfg!(feature = "usb-log") {
+            panic!("Deluge::usb_serial(): USB0 is already owned by the `usb-log` feature");
+        }
+        usb_serial::start(self.spawner, id)
+    }
+
     /// Take the analog trigger-clock **input** jack. Takeable once.
     ///
     /// ```ignore
@@ -598,6 +620,11 @@ pub mod __rt {
             init_logging();
 
             unsafe { init_platform() };
+
+            // `usb-serial`: register the USB0 device ISR while IRQs are still
+            // masked (the GIC contract); `Deluge::usb_serial` builds the device.
+            #[cfg(feature = "usb-serial")]
+            unsafe { crate::usb_serial::register_irq() };
 
             // App's synchronous, interrupts-masked initialisation.
             setup();

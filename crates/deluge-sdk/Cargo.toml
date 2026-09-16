@@ -36,7 +36,15 @@ embedded-hal = "1"
 embedded-graphics-core = "0.4"
 rtt-target = { workspace = true, optional = true }
 embassy-sync = { workspace = true }
-embassy-usb = { workspace = true, optional = true }
+# `default-features = false`: embassy-usb's default `usbd-hid` feature pulls in
+# `ssmarshal` (built without its own `std` feature, since embassy-usb's own
+# `ssmarshal` dep has `default-features = false`). Neither `usb-log`'s nor
+# `usb-serial`'s CDC-ACM device uses the HID class, and on the host target
+# `ssmarshal`'s no-std `serde::de::Error` impl fails to satisfy the current
+# serde's `StdError` supertrait bound, breaking `cargo test --features
+# sim,usb-log`/`sim,usb-serial`. Dropping the unused default avoids pulling it
+# in at all.
+embassy-usb = { workspace = true, optional = true, default-features = false }
 # The time-driver `_embassy_time_now` impl is target-specific (see below): the
 # device's `rza1l-hal` OSTM driver, or embassy-time's own `std` wall-clock driver
 # on host. Here we only fix the tick rate, which is identical on both targets.
@@ -104,6 +112,10 @@ alloc = []
 ## Only one global logger may be registered, so `usb-log` takes precedence over
 ## the `rtt` feature when both are enabled.
 usb-log = ["dep:embassy-usb"]
+## Let the app take USB0 as a CDC-ACM (virtual serial) device with its own
+## VID/PID/strings via `Deluge::usb_serial` — e.g. a REPL transport. Device-only.
+## Mutually exclusive with `usb-log` at runtime (both own USB0).
+usb-serial = ["dep:embassy-usb"]
 ## Use the per-block RX DMA interrupt clock for `dlg.audio()` (drift-free, lower
 ## latency) instead of the default poll loop. Same `process()` API.
 audio-irq = ["deluge-bsp/audio-irq"]
