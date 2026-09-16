@@ -1,6 +1,18 @@
 //! The Deluge OLED display (128 × 48, 1-bit).
 
-use deluge_bsp::oled::{self, FrameBuffer};
+use deluge_bsp::oled;
+/// The raw 128 × 48, 1-bit OLED frame buffer — what [`Oled`] draws into. Apps
+/// that render off-task (e.g. a scripting VM) can own one and copy it into
+/// [`Oled::frame`] before [`Oled::flush`].
+pub use deluge_bsp::oled::FrameBuffer;
+
+/// Draw an ASCII string into `fb` at pixel (`x`, `y`) with the built-in 5×7
+/// font — [`Oled::text`] for a [`FrameBuffer`] the app owns itself.
+#[inline]
+pub fn draw_str(fb: &mut FrameBuffer, x: usize, y: usize, s: &[u8]) {
+    oled::text::draw_str(fb, x, y, s);
+}
+
 use embedded_graphics_core::Pixel;
 
 /// Run the panel init sequence (device: SSD1309 bring-up; sim/linux: no-op).
@@ -63,7 +75,7 @@ impl Oled {
     /// instead.
     #[inline]
     pub fn text(&mut self, x: usize, y: usize, s: &str) {
-        oled::text::draw_str(&mut self.fb, x, y, s.as_bytes());
+        draw_str(&mut self.fb, x, y, s.as_bytes());
     }
 
     /// Push the current buffer to the panel.
@@ -107,5 +119,21 @@ impl DrawTarget for Oled {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FrameBuffer, draw_str};
+
+    /// `draw_str` is the facade over the BSP's 5×7 text renderer: same pixels.
+    #[test]
+    fn draw_str_matches_bsp_text() {
+        let mut ours = FrameBuffer::new();
+        draw_str(&mut ours, 3, 10, b"Wren");
+        let mut bsp = FrameBuffer::new();
+        deluge_bsp::oled::text::draw_str(&mut bsp, 3, 10, b"Wren");
+        assert_eq!(ours.as_bytes(), bsp.as_bytes());
+        assert!(ours.as_bytes().iter().any(|&b| b != 0), "nothing was drawn");
     }
 }

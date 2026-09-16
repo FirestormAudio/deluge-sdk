@@ -83,7 +83,7 @@ mod input;
 mod jacks;
 mod leds;
 mod midi;
-mod oled;
+pub mod oled;
 mod pads;
 mod pic_service;
 mod plat;
