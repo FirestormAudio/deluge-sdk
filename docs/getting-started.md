@@ -195,9 +195,9 @@ Some accessors are `async` because they bring up and wait on shared services
 ## 5. Capability tour
 
 Each subsection is drawn from a runnable example under
-[`examples/`](../examples/) — read the full example for context.
+[`examples/`](../examples/baremetal/) — read the full example for context.
 
-### SYNC LED — [`examples/blinky`](../examples/blinky)
+### SYNC LED — [`examples/baremetal/blinky`](../examples/baremetal/blinky)
 
 ```rust
 let mut led = dlg.sync_led();
@@ -206,7 +206,7 @@ led.toggle();           // also: on(), off(), set(bool)
 
 `SyncLed` implements the `embedded-hal` `OutputPin`/`StatefulOutputPin` traits.
 
-### OLED display — [`examples/oled_hello`](../examples/oled_hello)
+### OLED display — [`examples/baremetal/oled_hello`](../examples/baremetal/oled_hello)
 
 `dlg.oled().await` brings up the PIC service, runs the panel init, and returns an
 `Oled` that is an `embedded-graphics` `DrawTarget` over `BinaryColor` — so the
@@ -232,7 +232,7 @@ For quick text without pulling in embedded-graphics, `Oled` also has a built-in
 font: `oled.text(x, y, "BPM 120")`. Note the panel's top rows sit behind the
 faceplate — `Oled::VISIBLE_TOP` / `Oled::VISIBLE_HEIGHT` give the visible window.
 
-### Input stream — [`examples/input_demo`](../examples/input_demo)
+### Input stream — [`examples/baremetal/input_demo`](../examples/baremetal/input_demo)
 
 `dlg.input()` merges pads, buttons, and encoders into one async event queue:
 
@@ -251,7 +251,7 @@ loop {
 Use `input.try_next()` for a non-blocking poll. Named control ids live in
 `controls::{button, encoder, encoder_button}`.
 
-### RGB pads — [`examples/pad_paint`](../examples/pad_paint)
+### RGB pads — [`examples/baremetal/pad_paint`](../examples/baremetal/pad_paint)
 
 ```rust
 let mut pads = dlg.pads().await;          // 18 × 8 grid (Pads::COLS / Pads::ROWS)
@@ -262,7 +262,7 @@ pads.flush().await;                        // sends only changed columns
 `Color` has named constants (`RED`, `GREEN`, `BLACK`, …). `pads.fill(color)` and
 `pads.clear()` cover the whole grid; pad coordinates match `Event::Pad`.
 
-### Button LEDs + gold knobs — [`examples/button_leds`](../examples/button_leds)
+### Button LEDs + gold knobs — [`examples/baremetal/button_leds`](../examples/baremetal/button_leds)
 
 ```rust
 let mut leds = dlg.leds().await;
@@ -270,7 +270,7 @@ leds.set(id, pressed).await;          // also on(id)/off(id)/clear(); id 0..36
 leds.gold_knob(0, [255; 4]).await;    // knob 0..2, 4 LEDs bottom→top, 0..256
 ```
 
-### Audio DSP — [`examples/audio_passthru`](../examples/audio_passthru)
+### Audio DSP — [`examples/baremetal/audio_passthru`](../examples/baremetal/audio_passthru)
 
 `dlg.audio().process(...)` runs a per-block callback over the codec forever; each
 block arrives pre-loaded with line-in and is written back to line-out:
@@ -289,9 +289,9 @@ dlg.audio()
 A clean passthrough is `.process(|_| {})`. Acquire `audio()` before your main
 loop (its one-time bring-up blocks briefly), and don't also run a USB-audio
 stack. For a drift-free, lower-latency clock, enable the **`audio-irq`** feature
-(same `process()` API) — see [`examples/audio_passthru_irq`](../examples/audio_passthru_irq).
+(same `process()` API) — see [`examples/baremetal/audio_passthru_irq`](../examples/baremetal/audio_passthru_irq).
 
-### CV / gate and MIDI — [`examples/midi_cv`](../examples/midi_cv)
+### CV / gate and MIDI — [`examples/baremetal/midi_cv`](../examples/baremetal/midi_cv)
 
 ```rust
 let midi = dlg.midi();      // DIN MIDI
@@ -303,7 +303,7 @@ cv.set_volts(0, 1.0).await;         // also set(ch, code: u16)
 gate.set(0, true);
 ```
 
-### Clock I/O and jacks — [`examples/clock_jacks`](../examples/clock_jacks)
+### Clock I/O and jacks — [`examples/baremetal/clock_jacks`](../examples/baremetal/clock_jacks)
 
 ```rust
 let mut clk_in = dlg.clock_in();
@@ -320,7 +320,7 @@ jacks.apply_speaker_mute();   // stock policy: amp off when HP/line-out present
 > `clock_out(ch)` pulses a V-trig gate output — don't also drive that channel
 > through `gate()`.
 
-### SD card — [`examples/sd_demo`](../examples/sd_demo)
+### SD card — [`examples/baremetal/sd_demo`](../examples/baremetal/sd_demo)
 
 `dlg.sd().await` initialises the card and returns a root-directory file handle
 (`Err` if no card). Each call mounts FAT, does the I/O, and unmounts:
@@ -344,8 +344,8 @@ instructions).
 
 For richer screens, the **`deluge-ui-toolkit`** crate provides immediate-mode
 menus: a vertical `Menu` (settings form) and a horizontal `HMenu` (parameter
-columns / performance view). See [`examples/oled_menu`](../examples/oled_menu)
-and [`examples/oled_hmenu`](../examples/oled_hmenu).
+columns / performance view). See [`examples/baremetal/oled_menu`](../examples/baremetal/oled_menu)
+and [`examples/baremetal/oled_hmenu`](../examples/baremetal/oled_hmenu).
 
 The toolkit needs a global allocator, so an app that uses it must:
 
@@ -366,7 +366,7 @@ They need a sink, chosen by feature flag. **Only one global logger exists**, and
 - **`usb-log` (recommended, no probe)** — routes `log` output to a USB CDC serial
   port. Build with the feature, plug in USB, and open the serial port (e.g.
   `/dev/ttyACM0`). The runtime registers the logger automatically. See
-  [`examples/usb_log`](../examples/usb_log).
+  [`examples/baremetal/usb_log`](../examples/baremetal/usb_log).
 - **`rtt` (J-Link / probe)** — SEGGER RTT logging; reserves SRAM only when
   enabled. See the [root README's Debugging section](../README.md#debugging) for
   J-Link and probe-rs details.
@@ -444,17 +444,17 @@ App and runtime issues are below; for setup/flashing problems (no boot menu,
 
   | Example | Shows |
   |---------|-------|
-  | [`blinky`](../examples/blinky) | Minimal app; SYNC LED |
-  | [`oled_hello`](../examples/oled_hello) | OLED text via embedded-graphics |
-  | [`input_demo`](../examples/input_demo) | Unified pad/button/encoder stream |
-  | [`pad_paint`](../examples/pad_paint) | RGB pads + input |
-  | [`button_leds`](../examples/button_leds) | Indicator LEDs + gold knobs |
-  | [`audio_passthru`](../examples/audio_passthru) / [`audio_passthru_irq`](../examples/audio_passthru_irq) | Per-block audio DSP (poll / DMA-IRQ) |
-  | [`midi_cv`](../examples/midi_cv) | MIDI → CV/gate |
-  | [`clock_jacks`](../examples/clock_jacks) | Clock I/O + jack detection |
-  | [`sd_demo`](../examples/sd_demo) | SD-card read/write |
-  | [`oled_menu`](../examples/oled_menu) / [`oled_hmenu`](../examples/oled_hmenu) | OLED UI toolkit menus (GPL, `alloc`) |
-  | [`usb_log`](../examples/usb_log) | Probe-free logging over USB CDC |
+  | [`blinky`](../examples/baremetal/blinky) | Minimal app; SYNC LED |
+  | [`oled_hello`](../examples/baremetal/oled_hello) | OLED text via embedded-graphics |
+  | [`input_demo`](../examples/baremetal/input_demo) | Unified pad/button/encoder stream |
+  | [`pad_paint`](../examples/baremetal/pad_paint) | RGB pads + input |
+  | [`button_leds`](../examples/baremetal/button_leds) | Indicator LEDs + gold knobs |
+  | [`audio_passthru`](../examples/baremetal/audio_passthru) / [`audio_passthru_irq`](../examples/baremetal/audio_passthru_irq) | Per-block audio DSP (poll / DMA-IRQ) |
+  | [`midi_cv`](../examples/baremetal/midi_cv) | MIDI → CV/gate |
+  | [`clock_jacks`](../examples/baremetal/clock_jacks) | Clock I/O + jack detection |
+  | [`sd_demo`](../examples/baremetal/sd_demo) | SD-card read/write |
+  | [`oled_menu`](../examples/baremetal/oled_menu) / [`oled_hmenu`](../examples/baremetal/oled_hmenu) | OLED UI toolkit menus (GPL, `alloc`) |
+  | [`usb_log`](../examples/baremetal/usb_log) | Probe-free logging over USB CDC |
 
 - **Going deeper** — the [Advanced developer guide](advanced-guide.md) covers
   Embassy tasks, interrupts/GIC, SDRAM allocation, dropping to the HAL/BSP, audio

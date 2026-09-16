@@ -1,0 +1,21 @@
+[package]
+publish = false  # binary crate — not for crates.io
+name = "clock_jacks"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Deluge SDK example: clock-in/out + jack detection."
+
+[[bin]]
+name = "clock_jacks"
+test = false
+
+[dependencies]
+deluge = { path = "../../../crates/deluge-sdk", package = "deluge-sdk" }
+embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
+embassy-futures = { workspace = true }
+
+[features]
+default = []
+## Opt-in RTT (SEGGER) logging over a debug probe.
+rtt = ["deluge/rtt"]

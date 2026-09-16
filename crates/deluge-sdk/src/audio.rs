@@ -51,7 +51,7 @@ const _: () = {
 /// `#[cfg(target_os = "none")]` (this module also compiles hosted, for `feature =
 /// "linux"`), and the latter is gated behind the `sim` feature, not `linux`. This
 /// is the SDK-side source of truth apps size fixed-length buffers against on the
-/// Linux backend (e.g. `examples/additive_osc`'s `MAX_BLOCK`); keep it in sync
+/// Linux backend (e.g. `examples/baremetal/additive_osc`'s `MAX_BLOCK`); keep it in sync
 /// with the other two by hand if the period ever changes.
 #[cfg(any(feature = "linux", test))]
 pub(crate) const EXPECTED_BLOCK_FRAMES: usize = 128;

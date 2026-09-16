@@ -82,7 +82,7 @@ critical-section = { version = "1", features = ["std"] }
 env_logger = "0.11"
 deluge-sim-link = { path = "../deluge-sim-link", optional = true }
 deluge-simulator = { path = "../deluge-simulator", optional = true }
-deluge-hal-linux = { path = "../deluge-hal-linux", optional = true }
+deluge-hal-linux = { path = "../../linux/deluge-hal-linux", optional = true }
 # `sched_getscheduler`, to confirm libdeluge's audio thread actually got
 # SCHED_FIFO (it degrades to a stderr warning we never see). Linux backend only;
 # already in the tree transitively via deluge-sys.

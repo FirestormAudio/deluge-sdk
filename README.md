@@ -137,20 +137,20 @@ compile-proves all of them on the firmware target).
 
 | Example | Shows |
 |---------|-------|
-| [`blinky`](examples/blinky/) | the minimal app — one `async` loop, no `unsafe` |
-| [`oled_hello`](examples/oled_hello/) | draw to the OLED with `embedded-graphics` |
-| [`oled_menu`](examples/oled_menu/) | immediate-mode settings menu (UI toolkit) |
-| [`oled_hmenu`](examples/oled_hmenu/) | horizontal param-column menu (UI toolkit) |
-| [`input_demo`](examples/input_demo/) | react to the unified input event stream |
-| [`pad_paint`](examples/pad_paint/) | press pads to paint the RGB grid |
-| [`button_leds`](examples/button_leds/) | light each button's LED while held |
-| [`midi_cv`](examples/midi_cv/) | DIN MIDI → CV/gate converter |
-| [`clock_jacks`](examples/clock_jacks/) | clock I/O + jack detection |
-| [`audio_passthru`](examples/audio_passthru/) | a line-in audio effect |
-| [`audio_passthru_irq`](examples/audio_passthru_irq/) | the same, on the per-block IRQ clock |
-| [`additive_osc`](examples/additive_osc/) | additive synth with a C++/[Argon](https://github.com/stellar-aria/argon) (NEON SIMD) DSP core over FFI — needs `ARGON_SRC` (see its README) |
-| [`sd_demo`](examples/sd_demo/) | SD-card write/read round-trip |
-| [`usb_log`](examples/usb_log/) | stream `log` output over USB — no probe |
+| [`blinky`](examples/baremetal/blinky/) | the minimal app — one `async` loop, no `unsafe` |
+| [`oled_hello`](examples/baremetal/oled_hello/) | draw to the OLED with `embedded-graphics` |
+| [`oled_menu`](examples/baremetal/oled_menu/) | immediate-mode settings menu (UI toolkit) |
+| [`oled_hmenu`](examples/baremetal/oled_hmenu/) | horizontal param-column menu (UI toolkit) |
+| [`input_demo`](examples/baremetal/input_demo/) | react to the unified input event stream |
+| [`pad_paint`](examples/baremetal/pad_paint/) | press pads to paint the RGB grid |
+| [`button_leds`](examples/baremetal/button_leds/) | light each button's LED while held |
+| [`midi_cv`](examples/baremetal/midi_cv/) | DIN MIDI → CV/gate converter |
+| [`clock_jacks`](examples/baremetal/clock_jacks/) | clock I/O + jack detection |
+| [`audio_passthru`](examples/baremetal/audio_passthru/) | a line-in audio effect |
+| [`audio_passthru_irq`](examples/baremetal/audio_passthru_irq/) | the same, on the per-block IRQ clock |
+| [`additive_osc`](examples/baremetal/additive_osc/) | additive synth with a C++/[Argon](https://github.com/stellar-aria/argon) (NEON SIMD) DSP core over FFI — needs `ARGON_SRC` (see its README) |
+| [`sd_demo`](examples/baremetal/sd_demo/) | SD-card write/read round-trip |
+| [`usb_log`](examples/baremetal/usb_log/) | stream `log` output over USB — no probe |
 
 ---
 
@@ -175,12 +175,15 @@ compile-proves all of them on the firmware target).
 | `crates/deluge-sdk-macros` | `deluge-sdk-macros` | the `#[deluge::app]` proc-macro |
 | `crates/deluge-bsp` | `deluge-bsp` | board support: peripherals, PIC, OLED, SD, … |
 | `crates/rza1l-hal` | `rza1l-hal` | RZ/A1L hardware abstraction layer |
-| `crates/deluge-ui-toolkit` | `deluge-ui-toolkit` | OLED menu/text UI toolkit (GPL) |
+| `crates/deluge-fixedpoint` (imported as `fixedpoint`), `crates/armv7-dsp-intrinsics` | | fixed-point DSP math + ARMv7 intrinsics |
+| `crates/deluge-simulator`, `crates/deluge-sim-link`, `crates/deluge-protocol` | | the desktop simulator and its link/wire protocol |
+| `crates/deluge-ui-toolkit`, `crates/deluge-grid-toolkit` | | OLED menu/text and pad-grid UI toolkits (GPL) |
 | `crates/deluge-fonts` | `deluge-fonts` | bitmap fonts for the toolkit (GPL) |
-| `crates/deluge-fft`, `crates/deluge-fixedpoint` (imported as `fixedpoint`), `crates/armv7-dsp-intrinsics` | | fixed-point DSP math + ARMv7 intrinsics |
-| `app-loader/` | | the second-stage bootloader / app menu flashed to the device |
-| `firmwares/` | | standalone firmware images (demo, controller, MSC, recovery tools) |
-| `examples/` | | SDK example apps |
+| `linux/` | | the native Linux backend: `deluge-sys` (libdeluge FFI), `deluge-hal-linux`, `deluge-linux-ui` |
+| `wren/` | | the Wren scripting subsystem: VM (`wren-sys`), bindings (`deluge-wren-core`), `wren-firmware`, and the web editor/debugger |
+| `firmwares/` | | standalone firmware images: the app-loader (second-stage bootloader), demo, controller, MSC |
+| `hw-tests/` | | single-purpose hardware bring-up / validation probes |
+| `examples/baremetal/`, `examples/linux/` | | SDK example apps for each backend |
 | `tools/cargo-deluge/` | | the `cargo deluge` host subcommand |
 
 The `deluge` SDK facade depends only on the BSP and HAL — it does **not** pull

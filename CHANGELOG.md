@@ -25,4 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   frame buffer, and the `usb-serial` feature's `Deluge::usb_serial` — take USB0
   as a CDC-ACM port under your own VID/PID, no `unsafe`.
 
+### Changed
+
+- Repository layout: the Wren subsystem now lives under `wren/`, the Linux
+  backend crates under `linux/`, the app-loader under `firmwares/`, hardware
+  probes under `hw-tests/`, the desktop simulator under `crates/`, and examples
+  under `examples/baremetal/` and `examples/linux/`. Package names are unchanged.
+
 [Unreleased]: https://github.com/FirestormAudio/deluge-sdk

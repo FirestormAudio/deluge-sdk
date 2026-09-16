@@ -7,9 +7,9 @@ use crate::util::write;
 
 // Canonical project files, baked in from the repo so generated apps can't drift
 // from the SDK's own build setup.
-const TPL_BUILD_RS: &str = include_str!("../../../examples/blinky/build.rs");
-const TPL_MEMORY_X: &str = include_str!("../../../examples/blinky/memory.x");
-const TPL_MEMORY_RTT_X: &str = include_str!("../../../examples/blinky/memory_rtt.x");
+const TPL_BUILD_RS: &str = include_str!("../../../examples/baremetal/blinky/build.rs");
+const TPL_MEMORY_X: &str = include_str!("../../../examples/baremetal/blinky/memory.x");
+const TPL_MEMORY_RTT_X: &str = include_str!("../../../examples/baremetal/blinky/memory_rtt.x");
 const TPL_TOOLCHAIN: &str = include_str!("../../../rust-toolchain.toml");
 // J-Link bring-up script reused from the SDK root (referenced by launch.json).
 const TPL_JLINK: &str = include_str!("../../../rza1_debug.JLinkScript");

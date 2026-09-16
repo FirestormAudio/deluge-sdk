@@ -1,8 +1,0 @@
-[package]
-name = "rust-app"
-version = "0.1.0"
-edition = "2021"
-publish = false
-
-[dependencies]
-deluge-hal-linux = { path = "../../crates/deluge-hal-linux" }

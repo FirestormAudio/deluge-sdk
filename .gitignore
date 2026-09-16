@@ -30,7 +30,7 @@ vendor/
 
 # The excluded libdeluge crates + linux examples are built ad-hoc against a
 # bundle (not workspace members); their Cargo.lock files are build artifacts.
-/crates/deluge-sys/Cargo.lock
-/crates/deluge-hal-linux/Cargo.lock
-/crates/deluge-linux-ui/Cargo.lock
-examples-linux/*/Cargo.lock
+/linux/deluge-sys/Cargo.lock
+/linux/deluge-hal-linux/Cargo.lock
+/linux/deluge-linux-ui/Cargo.lock
+examples/linux/*/Cargo.lock

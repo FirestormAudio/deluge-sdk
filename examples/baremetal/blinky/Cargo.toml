@@ -1,0 +1,20 @@
+[package]
+publish = false  # binary crate — not for crates.io
+name = "blinky"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Minimal Deluge SDK example: blink the heartbeat LED."
+
+[[bin]]
+name = "blinky"
+test = false
+
+[dependencies]
+deluge = { path = "../../../crates/deluge-sdk", package = "deluge-sdk" }
+embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
+
+[features]
+default = []
+## Opt-in RTT (SEGGER) logging over a debug probe.
+rtt = ["deluge/rtt"]

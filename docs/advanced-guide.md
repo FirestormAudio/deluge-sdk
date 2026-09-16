@@ -422,7 +422,7 @@ Two clocking modes, same `process()` API:
 - **Default** — a `Ticker`-paced poll loop. Simple, robust.
 - **`audio-irq` feature** — a per-block RX-DMA interrupt clock (16-descriptor ring
   tiling with a re-arm handler in the DMAC driver). Drift-free and lower-latency; the
-  write-ahead cushion shrinks accordingly. See `examples/audio_passthru_irq`.
+  write-ahead cushion shrinks accordingly. See `examples/baremetal/audio_passthru_irq`.
 
 For DSP math inside the callback, `deluge::fixed` (the `fixedpoint` crate) gives
 type-safe `Q31`/`Q16` arithmetic that lowers to the Cortex-A9's hardware DSP/NEON

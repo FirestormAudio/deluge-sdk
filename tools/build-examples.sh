@@ -23,7 +23,7 @@ is_alloc() {
     return 1
 }
 
-for dir in examples/*/; do
+for dir in examples/baremetal/*/; do
     name="$(basename "$dir")"
     if is_alloc "$name"; then
         echo "==> build-fw-alloc -p $name"
