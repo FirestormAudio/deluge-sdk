@@ -284,5 +284,5 @@ The loader is designed so you can always get back to a working state:
 - [Getting started guide](getting-started.md) — toolchain, `cargo deluge`, and
   your first app.
 - [Device setup guide](device-setup.md) — installing the app loader onto a unit.
-- [`app-loader/README.md`](../app-loader/README.md) — module-by-module source
+- [`firmwares/app-loader/README.md`](../firmwares/app-loader/README.md) — module-by-module source
   reference.

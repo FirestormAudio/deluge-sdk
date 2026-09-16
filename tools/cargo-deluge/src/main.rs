@@ -49,7 +49,7 @@ pub(crate) const TARGET: &str = "armv7a-none-eabihf";
 pub(crate) const CHIP: &str = "R7S721020";
 
 /// USB VID/PID the Deluge presents in every device mode (shared with the
-/// app-loader / firmware — see `app-loader/src/devupload.rs`).
+/// app-loader / firmware — see `firmwares/app-loader/src/devupload.rs`).
 pub(crate) const DELUGE_VID: u16 = 0x16D0;
 pub(crate) const DELUGE_PID: u16 = 0x0EDA;
 /// Product string the dev-upload CDC listener advertises.

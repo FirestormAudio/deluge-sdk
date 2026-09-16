@@ -93,8 +93,8 @@ Run from the workspace root (aliases in `.cargo/config.toml` supply the required
 | `cargo build-app-loader` | `target/armv7a-none-eabihf/debug/app-loader` (debug ELF) |
 | `cargo build-app-loader-bin` | `target/armv7a-none-eabihf/release/app-loader.bin` (raw image — flash as the device firmware) |
 
-Install `app-loader.bin` onto a unit with the [Device setup guide](../docs/device-setup.md);
-see the [workspace README](../README.md) for probe-based flashing and debugging.
+Install `app-loader.bin` onto a unit with the [Device setup guide](../../docs/device-setup.md);
+see the [workspace README](../../README.md) for probe-based flashing and debugging.
 
 SD `/APPS` images are ordinary RAM-linked firmware ELFs (the same ones the
 `firmwares/` builds and `cargo deluge` produce).

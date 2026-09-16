@@ -43,7 +43,7 @@ checklist you need here:
   `cargo install --path tools/cargo-deluge`.
 - **A Deluge running the app-loader** — the on-device menu that launches your
   app ELFs. Flashing it is the one-time [Device setup](device-setup.md) step
-  (see [`app-loader/README.md`](../app-loader/README.md) for its internals).
+  (see [`firmwares/app-loader/README.md`](../firmwares/app-loader/README.md) for its internals).
 - **DEV MODE: ON** — required for `cargo deluge run`'s USB upload. On the boot
   menu, select **`SETTINGS`**, then press SELECT on **`DEV MODE: OFF`** to flip it
   to **`DEV MODE: ON`**, and choose **`BACK`** to save (persistent,
