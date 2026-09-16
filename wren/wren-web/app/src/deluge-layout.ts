@@ -1,6 +1,6 @@
 // Physical Deluge faceplate layout — control positions in the Deluge.svg
 // coordinate space (viewBox 2178 x 1482), transcribed from the native simulator
-// (tools/deluge-simulator/src/renderer.rs BUTTON_POSITIONS/ENCODER_POSITIONS +
+// (crates/deluge-simulator/src/renderer.rs BUTTON_POSITIONS/ENCODER_POSITIONS +
 // pad geometry) and bridged to the wren id space via link.rs:
 //   raw button id = button_to_id() - 144   (Led index == raw button id)
 //   encoder index = encoder_to_id()         (Enc.onTurn index 0..5)

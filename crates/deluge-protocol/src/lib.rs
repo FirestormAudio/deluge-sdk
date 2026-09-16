@@ -6,7 +6,7 @@
 //! wire contract, shared by every implementation of either side:
 //!
 //! - the **device** side — deluge-sdk's `controller-firmware` over USB-CDC;
-//! - the **host/panel** side — the desktop simulator (`tools/deluge-simulator`);
+//! - the **host/panel** side — the desktop simulator (`crates/deluge-simulator`);
 //! - the DelugeFirmware C build's `host_link` bridge (which speaks the same bytes
 //!   over a Unix socket so the simulator can drive the real firmware natively).
 //!

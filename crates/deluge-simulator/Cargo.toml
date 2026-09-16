@@ -26,9 +26,9 @@ rack = []
 
 [dependencies]
 # The shared host↔device wire contract (panel role).
-deluge-protocol = { path = "../../crates/deluge-protocol", features = ["std"] }
+deluge-protocol = { path = "../deluge-protocol", features = ["std"] }
 # The in-process panel/brain link (for `cargo deluge sim`).
-deluge-sim-link = { path = "../../crates/deluge-sim-link" }
+deluge-sim-link = { path = "../deluge-sim-link" }
 # Host audio I/O for the in-process link.
 cpal = "0.18"
 # Host MIDI I/O bridge (virtual ports to/from the in-process panel).

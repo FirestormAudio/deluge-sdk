@@ -52,7 +52,7 @@ makes sound through Web Audio — all client-side, no backend.
 **Non-goals**
 
 - Emulating the full Deluge / DelugeFirmware (that's the separate native
-  `tools/deluge-simulator`, which drives a real firmware "brain" over
+  `crates/deluge-simulator`, which drives a real firmware "brain" over
   `deluge-protocol`).
 - Cycle-accurate timing or USB/SD emulation.
 - An online compile/build service. Everything runs in the client.
@@ -285,7 +285,7 @@ VM is the final word.
   - MIDI monitor + on-screen keyboard; optional real **Web MIDI** input.
   - 6 encoders (drag/scroll) + buttons + LED indicators.
   - Audio waveform/spectrum scope on the worklet output.
-- **Asset reuse:** `tools/deluge-simulator/assets/Deluge.svg` for faceplate
+- **Asset reuse:** `crates/deluge-simulator/assets/Deluge.svg` for faceplate
   layout; mine that simulator's pad-grid / OLED / scope rendering logic for ideas
   (it's `iced`, so not a direct port, but the geometry and palettes transfer).
 - **Examples & sharing:** load `wren-firmware/examples/*.wren` as starter scripts;
@@ -414,7 +414,7 @@ External source reused (not vendored): `~/GitHub/wren-rs` — `wren-analyzer`,
 language-configuration JSON.
 
 > The two wasm crates live under `tools/` (host-side tooling, excluded from the
-> no_std cross-compiled workspace, like `tools/deluge-simulator` already is).
+> no_std cross-compiled workspace, like `crates/deluge-simulator` already is).
 
 ## 12. Open decisions
 
@@ -428,5 +428,5 @@ language-configuration JSON.
 - **Hosting** — must serve COOP/COEP. GitHub Pages can't set those headers
   directly; needs Cloudflare Pages / Netlify / a `_headers` file equivalent, or a
   service-worker COEP shim.
-- **Relationship to `tools/deluge-simulator`** — keep separate (this is Wren-only;
+- **Relationship to `crates/deluge-simulator`** — keep separate (this is Wren-only;
   that is full-firmware). Revisit only if a unified emulator is ever wanted.

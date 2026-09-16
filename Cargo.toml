@@ -50,7 +50,7 @@ members = [
 # also built for the host triple, not the device triple, so it is excluded too.
 exclude = [
   "tools/cargo-deluge",
-  "tools/deluge-simulator",
+  "crates/deluge-simulator",
   "wren/wren-web",
   "wren/wren-web-debug",
   "wren/wren-analyzer-wasm",
