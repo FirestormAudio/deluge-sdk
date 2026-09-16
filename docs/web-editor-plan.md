@@ -413,7 +413,7 @@ External source reused (not vendored): `~/GitHub/wren-rs` — `wren-analyzer`,
 `wren-syntax`, `wren-lsp` (feature lib), and the VSCode extension's grammar +
 language-configuration JSON.
 
-> The two wasm crates live under `tools/` (host-side tooling, excluded from the
+> The two wasm crates live under `wren/` (host-side tooling, excluded from the
 > no_std cross-compiled workspace, like `crates/deluge-simulator` already is).
 
 ## 12. Open decisions

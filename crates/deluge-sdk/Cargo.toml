@@ -43,7 +43,10 @@ embassy-sync = { workspace = true }
 # `ssmarshal`'s no-std `serde::de::Error` impl fails to satisfy the current
 # serde's `StdError` supertrait bound, breaking `cargo test --features
 # sim,usb-log`/`sim,usb-serial`. Dropping the unused default avoids pulling it
-# in at all.
+# in at all. Device builds get the default features back anyway: deluge-bsp's
+# own device-target `embassy-usb` dependency (in its Cargo.toml) doesn't drop
+# them, and Cargo unifies features across the dependency graph — so this
+# `default-features = false` only actually narrows the host `sim` build.
 embassy-usb = { workspace = true, optional = true, default-features = false }
 # The time-driver `_embassy_time_now` impl is target-specific (see below): the
 # device's `rza1l-hal` OSTM driver, or embassy-time's own `std` wall-clock driver
@@ -114,7 +117,11 @@ alloc = []
 usb-log = ["dep:embassy-usb"]
 ## Let the app take USB0 as a CDC-ACM (virtual serial) device with its own
 ## VID/PID/strings via `Deluge::usb_serial` — e.g. a REPL transport. Device-only.
-## Mutually exclusive with `usb-log` at runtime (both own USB0).
+## Mutually exclusive with `usb-log` at runtime (both own USB0); enabling both
+## in the same build is only caught at runtime, when `Deluge::usb_serial`
+## panics — build firmware crate-by-crate with `-p`, not a combined workspace
+## build, so a stray `usb-log` from another crate's feature unification can't
+## slip in.
 usb-serial = ["dep:embassy-usb"]
 ## Use the per-block RX DMA interrupt clock for `dlg.audio()` (drift-free, lower
 ## latency) instead of the default poll loop. Same `process()` API.

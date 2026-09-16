@@ -1,10 +1,11 @@
 //! USB CDC-ACM serial port on USB0 (the `usb-serial` feature).
 //!
-//! [`Deluge::usb_serial`](crate::Deluge::usb_serial) brings up a USB device with
-//! one CDC-ACM interface under the app's own [`UsbIdentity`], spawns the device
-//! task, and hands back the IN/OUT halves. The USB0 ISR is registered by the
-//! runtime before interrupts are enabled (the GIC contract), so the app needs no
-//! `unsafe` and no `setup` hook.
+//! The USB0 ISR is registered by the runtime before interrupts are enabled (the
+//! GIC contract), so the app needs no `unsafe` and no `setup` hook. The device
+//! itself — one CDC-ACM interface under the app's own [`UsbIdentity`] — is only
+//! built, and its task spawned, when the app calls
+//! [`Deluge::usb_serial`](crate::Deluge::usb_serial), which happens later, after
+//! interrupts are enabled; that call also hands back the IN/OUT halves.
 
 use core::ptr::addr_of_mut;
 
@@ -20,10 +21,16 @@ pub type Driver = Rusb1Driver;
 /// How the serial device identifies itself to the host.
 #[derive(Clone, Copy, Debug)]
 pub struct UsbIdentity {
+    /// USB vendor ID — e.g. an allocation from [pid.codes](https://pid.codes)
+    /// for open-source hardware.
     pub vid: u16,
+    /// USB product ID.
     pub pid: u16,
+    /// Manufacturer string descriptor, shown by the host.
     pub manufacturer: &'static str,
+    /// Product string descriptor, shown by the host.
     pub product: &'static str,
+    /// Serial-number string descriptor, shown by the host.
     pub serial_number: &'static str,
 }
 

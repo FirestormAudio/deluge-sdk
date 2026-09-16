@@ -1,5 +1,5 @@
 //! Render game state to the OLED: canonical `Title` + score, and a game-over
-//! screen. Mirrors `examples/launcher/src/ui.rs`.
+//! screen. Mirrors `examples/linux/launcher/src/ui.rs`.
 
 use crate::game::{Game, State};
 use deluge_linux_ui::OledTarget;

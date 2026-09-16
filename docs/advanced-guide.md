@@ -76,6 +76,7 @@ this sequence:
    - `rza1l_hal::allocator::SRAM.init(...)` from the linker symbols `__sram_heap_start` / `__sram_heap_end`.
    - `deluge_bsp::system::init_clocks()` — CPG/PLL, MMU, L1+L2 caches, SDRAM controller, GIC, and the OSTM embassy-time driver.
    - `rza1l_hal::allocator::SDRAM.init(0x0C00_0000, 64 MiB)`.
+   - With `usb-serial` enabled: register the USB0 device ISR, still masked, before `setup()` runs (the device itself is built later, when the app calls `Deluge::usb_serial`).
 3. **`setup()`** — your optional `#[deluge::app(setup = …)]` hook, still with **IRQs masked** (see [§5](#the-setup-window)).
 4. **USB-debug bring-up** (only with `usb-log`): register the USB0 ISR and start the controller while IRQs are still masked, mirroring the proven controller-firmware ordering.
 5. **`cortex_ar::interrupt::enable()`** — unmask IRQs so the time driver and peripheral ISRs fire.

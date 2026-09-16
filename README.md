@@ -107,6 +107,7 @@ macros (`info!`, `warn!`, …) into scope. Fixed-point DSP types live under
 |---------|--------|
 | `rtt` | route `log` to RTT (SEGGER Real-Time Transfer), needs a debug probe |
 | `usb-log` | route `log` to a USB CDC serial port — visible over the cable, **no probe** |
+| `usb-serial` | take USB0 as a CDC-ACM serial port under your own VID/PID via `Deluge::usb_serial` — device-only, mutually exclusive with `usb-log` |
 | `alloc` | register the on-chip SRAM heap as the global allocator (needed for the UI toolkit; requires `-Zbuild-std=core,alloc`) |
 | `audio-irq` | drive `dlg.audio()` from the per-block RX-DMA interrupt (drift-free, lower latency) |
 

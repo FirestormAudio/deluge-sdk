@@ -15,8 +15,14 @@ WREN_DIRS=(wren)
 code_hits="$(grep -rnE --include='*.rs' --exclude-dir=target --exclude-dir=node_modules \
   '\b(deluge_bsp|rza1l_hal)\b' "${WREN_DIRS[@]}" \
   | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)"
+
+# Matches every manifest form that can pull in the BSP/HAL: plain `key = …`,
+# dotted keys (`deluge-bsp.workspace = true`), table headers
+# (`[dependencies.deluge-bsp]` / `[target.'cfg(...)'.dependencies.rza1l-hal]`),
+# and renamed deps (`package = "deluge-bsp"`).
 dep_hits="$(grep -rnE --include='Cargo.toml' --exclude-dir=target --exclude-dir=node_modules \
-  '^[[:space:]]*(deluge-bsp|rza1l-hal)[[:space:]]*=' "${WREN_DIRS[@]}" || true)"
+  '(^[[:space:]]*(deluge-bsp|rza1l-hal)[[:space:]]*[.=])|(\.(deluge-bsp|rza1l-hal)\])|(package[[:space:]]*=[[:space:]]*"(deluge-bsp|rza1l-hal)")' \
+  "${WREN_DIRS[@]}" || true)"
 
 if [ -n "$code_hits$dep_hits" ]; then
   printf '%s\n' "$code_hits" "$dep_hits" | sed '/^$/d'

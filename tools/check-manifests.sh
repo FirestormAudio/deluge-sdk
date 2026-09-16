@@ -5,6 +5,10 @@
 # membership fails fast. Resolves only; builds nothing (the excluded crates need
 # wasm / musl-bundle toolchains a plain checkout may lack).
 #
+# A run-after-moving-directories tool, not part of `tools/test.sh` (or CI): it
+# re-resolves the whole workspace once per member manifest, which is too slow
+# to run on every test invocation.
+#
 # Usage: tools/check-manifests.sh
 set -euo pipefail
 
