@@ -106,8 +106,8 @@ pub use device::{
 pub use device::{DelugeBlockDevice, DelugeTimeSource, PartitionShim};
 #[cfg(not(target_os = "none"))]
 pub use host::{
-    init, invalidate, is_inserted, is_ready, is_write_protected, read_sectors,
-    take_card_detect_events, total_sectors, write_sectors,
+    MemoryDiskError, dump_memory_disk, init, invalidate, is_inserted, is_ready, is_write_protected,
+    read_sectors, take_card_detect_events, total_sectors, use_memory_disk, write_sectors,
 };
 
 // ---------------------------------------------------------------------------
@@ -1132,14 +1132,16 @@ mod device {
 }
 
 // ---------------------------------------------------------------------------
-// Host: file-backed disk image standing in for the SD card
+// Host: a disk image standing in for the SD card -- a file, or a sparse
+// in-memory disk the embedding binary asks for with `use_memory_disk`
 // ---------------------------------------------------------------------------
 
 #[cfg(not(target_os = "none"))]
 mod host {
+    use std::collections::HashMap;
     use std::fs::{File, OpenOptions};
     use std::io::{Read, Seek, SeekFrom, Write};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Mutex, OnceLock};
 
@@ -1147,12 +1149,135 @@ mod host {
 
     const SECTOR_SIZE: usize = 512;
 
+    /// A disk held in memory, keeping only the sectors written to it. A
+    /// sector never written reads as zeroes, as a freshly formatted file's
+    /// holes do, so a multi-gigabyte volume costs what was actually written.
+    pub(super) struct SparseDisk {
+        sectors: u32,
+        written: HashMap<u32, Box<[u8; SECTOR_SIZE]>>,
+    }
+
+    impl SparseDisk {
+        pub(super) fn new(sectors: u32) -> Self {
+            Self {
+                sectors,
+                written: HashMap::new(),
+            }
+        }
+
+        fn in_range(&self, lba: u32, count: u32) -> Result<(), SdError> {
+            match lba.checked_add(count) {
+                Some(end) if end <= self.sectors => Ok(()),
+                _ => Err(SdError::Protocol),
+            }
+        }
+
+        pub(super) fn read(&self, lba: u32, count: u32, buf: &mut [u8]) -> Result<(), SdError> {
+            self.in_range(lba, count)?;
+            for (i, out) in buf
+                .as_chunks_mut::<SECTOR_SIZE>()
+                .0
+                .iter_mut()
+                .take(count as usize)
+                .enumerate()
+            {
+                match self.written.get(&(lba + i as u32)) {
+                    Some(sector) => out.copy_from_slice(&sector[..]),
+                    None => out.fill(0),
+                }
+            }
+            Ok(())
+        }
+
+        pub(super) fn write(&mut self, lba: u32, count: u32, buf: &[u8]) -> Result<(), SdError> {
+            self.in_range(lba, count)?;
+            for (i, data) in buf
+                .as_chunks::<SECTOR_SIZE>()
+                .0
+                .iter()
+                .take(count as usize)
+                .enumerate()
+            {
+                let sector = self
+                    .written
+                    .entry(lba + i as u32)
+                    .or_insert_with(|| Box::new([0u8; SECTOR_SIZE]));
+                sector.copy_from_slice(data);
+            }
+            Ok(())
+        }
+
+        /// Write the disk out as a sparse file of its full size: only the
+        /// sectors held are written, the rest stay holes.
+        pub(super) fn dump(&self, path: &Path) -> std::io::Result<()> {
+            let mut file = File::create(path)?;
+            file.set_len(self.sectors as u64 * SECTOR_SIZE as u64)?;
+            let mut lbas: Vec<u32> = self.written.keys().copied().collect();
+            lbas.sort_unstable();
+            for lba in lbas {
+                file.seek(SeekFrom::Start(lba as u64 * SECTOR_SIZE as u64))?;
+                file.write_all(&self.written[&lba][..])?;
+            }
+            Ok(())
+        }
+    }
+
+    enum Backing {
+        File(File),
+        Memory(SparseDisk),
+    }
+
+    /// Why [`use_memory_disk`] refused.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum MemoryDiskError {
+        /// The disk was already opened -- as the backing file, or as a memory
+        /// disk of a different size. The choice has to come first.
+        AlreadyOpen,
+    }
+
+    /// The memory disk's size in sectors, when one was asked for.
+    static MEMORY_SECTORS: OnceLock<u32> = OnceLock::new();
+
+    /// Stand the card in with a sparse in-memory disk of `sectors` sectors
+    /// instead of the backing file. Must come before anything opens the disk
+    /// (`init`, a read or a write); a second call with the same size is a
+    /// no-op. Nothing touches the file system: the disk starts unformatted
+    /// and all zeroes.
+    pub fn use_memory_disk(sectors: u32) -> Result<(), MemoryDiskError> {
+        let chosen = *MEMORY_SECTORS.get_or_init(|| sectors);
+        if chosen != sectors {
+            return Err(MemoryDiskError::AlreadyOpen);
+        }
+        match DISK.get() {
+            Some(disk) if !matches!(disk.lock().unwrap().backing, Backing::Memory(_)) => {
+                Err(MemoryDiskError::AlreadyOpen)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Write the memory disk out to `path` as a sparse file of its full size,
+    /// for inspecting what a run left on the card. An error when the card is
+    /// the backing file, or has not been opened.
+    pub fn dump_memory_disk(path: &Path) -> std::io::Result<()> {
+        let disk = DISK.get().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "the disk was never opened")
+        })?;
+        match &disk.lock().unwrap().backing {
+            Backing::Memory(memory) => memory.dump(path),
+            Backing::File(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "the card is the backing file, not a memory disk",
+            )),
+        }
+    }
+
     /// Default image size: enough for host bring-up/round-trip checks, cheap to
     /// allocate (sparse on any filesystem that supports holes).
     const DEFAULT_SECTORS: u64 = 16 * 1024; // 8 MiB
 
     struct Disk {
-        file: File,
+        backing: Backing,
         sectors: u32,
     }
 
@@ -1170,6 +1295,13 @@ mod host {
 
     fn disk() -> &'static Mutex<Disk> {
         DISK.get_or_init(|| {
+            if let Some(&sectors) = MEMORY_SECTORS.get() {
+                log::info!("sd(host): memory disk ({sectors} sectors)");
+                return Mutex::new(Disk {
+                    backing: Backing::Memory(SparseDisk::new(sectors)),
+                    sectors,
+                });
+            }
             let path = image_path();
             let file = OpenOptions::new()
                 .read(true)
@@ -1195,7 +1327,10 @@ mod host {
                 "sd(host): backing file {} ({sectors} sectors)",
                 path.display()
             );
-            Mutex::new(Disk { file, sectors })
+            Mutex::new(Disk {
+                backing: Backing::File(file),
+                sectors,
+            })
         })
     }
 
@@ -1244,14 +1379,14 @@ mod host {
         (false, false)
     }
 
-    /// Host stand-in for [`total_sectors`](super::total_sectors): the backing
-    /// file's sector count (fixed at creation time).
+    /// Host stand-in for [`total_sectors`](super::total_sectors): the memory
+    /// disk's size, or the backing file's sector count (fixed at creation time).
     pub fn total_sectors() -> u32 {
         disk().lock().unwrap().sectors
     }
 
-    /// Host stand-in for [`read_sectors`](super::read_sectors): seek + read
-    /// `count` sectors from the backing file. Resolves without ever suspending.
+    /// Host stand-in for [`read_sectors`](super::read_sectors): `count` sectors
+    /// from the memory disk or the backing file. Resolves without ever suspending.
     pub async fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> Result<(), SdError> {
         if buf.len() < (count as usize) * SECTOR_SIZE {
             return Err(SdError::Protocol);
@@ -1260,16 +1395,19 @@ mod host {
             return Ok(());
         }
         let mut d = disk().lock().unwrap();
-        d.file
-            .seek(SeekFrom::Start(lba as u64 * SECTOR_SIZE as u64))
-            .map_err(|e| SdError::HostIo(e.kind()))?;
-        d.file
-            .read_exact(&mut buf[..(count as usize) * SECTOR_SIZE])
-            .map_err(|e| SdError::HostIo(e.kind()))
+        match &mut d.backing {
+            Backing::Memory(memory) => memory.read(lba, count, buf),
+            Backing::File(file) => {
+                file.seek(SeekFrom::Start(lba as u64 * SECTOR_SIZE as u64))
+                    .map_err(|e| SdError::HostIo(e.kind()))?;
+                file.read_exact(&mut buf[..(count as usize) * SECTOR_SIZE])
+                    .map_err(|e| SdError::HostIo(e.kind()))
+            }
+        }
     }
 
-    /// Host stand-in for [`write_sectors`](super::write_sectors): seek + write
-    /// `count` sectors to the backing file. Resolves without ever suspending.
+    /// Host stand-in for [`write_sectors`](super::write_sectors): `count` sectors
+    /// to the memory disk or the backing file. Resolves without ever suspending.
     pub async fn write_sectors(lba: u32, count: u32, buf: &[u8]) -> Result<(), SdError> {
         if buf.len() < (count as usize) * SECTOR_SIZE {
             return Err(SdError::Protocol);
@@ -1278,12 +1416,15 @@ mod host {
             return Ok(());
         }
         let mut d = disk().lock().unwrap();
-        d.file
-            .seek(SeekFrom::Start(lba as u64 * SECTOR_SIZE as u64))
-            .map_err(|e| SdError::HostIo(e.kind()))?;
-        d.file
-            .write_all(&buf[..(count as usize) * SECTOR_SIZE])
-            .map_err(|e| SdError::HostIo(e.kind()))
+        match &mut d.backing {
+            Backing::Memory(memory) => memory.write(lba, count, buf),
+            Backing::File(file) => {
+                file.seek(SeekFrom::Start(lba as u64 * SECTOR_SIZE as u64))
+                    .map_err(|e| SdError::HostIo(e.kind()))?;
+                file.write_all(&buf[..(count as usize) * SECTOR_SIZE])
+                    .map_err(|e| SdError::HostIo(e.kind()))
+            }
+        }
     }
 }
 
@@ -1320,6 +1461,49 @@ mod tests {
     fn total_sectors_matches_default_image_size() {
         embassy_futures::block_on(init()).expect("host init never fails");
         assert_eq!(total_sectors(), 16 * 1024);
+    }
+
+    // The sparse memory disk, tested as a value: the module's own disk is one
+    // process-wide static the tests above share as a file.
+
+    #[test]
+    fn sparse_disk_reads_zeroes_where_nothing_was_written() {
+        let disk = host::SparseDisk::new(64);
+        let mut buf = [0xAAu8; 1024];
+        disk.read(10, 2, &mut buf).expect("in range");
+        assert!(buf.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn sparse_disk_round_trips_and_keeps_only_what_was_written() {
+        let mut disk = host::SparseDisk::new(64);
+        let data: Vec<u8> = (0..1024).map(|i| (i % 251) as u8).collect();
+        disk.write(7, 2, &data).expect("in range");
+        let mut back = [0u8; 1536];
+        disk.read(6, 3, &mut back).expect("in range");
+        assert!(back[..512].iter().all(|&b| b == 0));
+        assert_eq!(&back[512..], &data[..]);
+    }
+
+    #[test]
+    fn sparse_disk_refuses_out_of_range() {
+        let mut disk = host::SparseDisk::new(8);
+        let mut buf = [0u8; 1024];
+        assert!(disk.read(7, 2, &mut buf).is_err());
+        assert!(disk.write(u32::MAX, 1, &buf).is_err());
+    }
+
+    #[test]
+    fn sparse_disk_dumps_a_full_size_file_with_its_sectors_in_place() {
+        let mut disk = host::SparseDisk::new(32);
+        disk.write(20, 1, &[0x5Au8; 512]).expect("in range");
+        let path = std::env::temp_dir().join(format!("sparse-dump-{}.img", std::process::id()));
+        disk.dump(&path).expect("dump");
+        let bytes = std::fs::read(&path).expect("read back");
+        std::fs::remove_file(&path).ok();
+        assert_eq!(bytes.len(), 32 * 512);
+        assert!(bytes[20 * 512..21 * 512].iter().all(|&b| b == 0x5A));
+        assert!(bytes[..20 * 512].iter().all(|&b| b == 0));
     }
 
     /// Round-trip a sector of non-trivial data through the host disk image.
