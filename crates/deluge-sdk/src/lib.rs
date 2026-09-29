@@ -752,38 +752,22 @@ pub mod __rt {
             // RTT/USB logger so `info!`/`warn!` from app code are visible.
             let _ = env_logger::try_init();
 
-            // Create the shared panel + the audio bridge, splitting the audio
-            // endpoints between the brain (app) and the GUI.
-            let panel = deluge_sim_link::SharedPanel::new();
-            let (brain_audio, gui_audio) = deluge_sim_link::audio::new_bridge();
-            crate::host::init(panel.clone(), brain_audio);
-
-            // Brain: run the app on a std executor on a worker thread. The
-            // executor (and thus the app) lives for the process lifetime.
-            let gui_panel = panel.clone();
-            std::thread::Builder::new()
-                .name("deluge-brain".into())
-                .spawn(move || {
-                    setup();
-                    let executor: &'static mut Executor = Box::leak(Box::new(Executor::new()));
-                    executor.run(move |spawner| {
-                        // Bridge GUI input → the SDK event queue.
-                        crate::plat::input_start_pump(spawner);
-                        spawn(spawner);
-                    });
-                })
-                .expect("spawning the deluge brain thread");
-
-            // Panel: the simulator owns the main thread and blocks until done,
-            // after which the whole process exits. `DELUGE_HEADLESS` (set by
-            // `cargo deluge sim --headless`) runs a scripted, GUI-less driver for
-            // CI / golden-frame testing instead of the iced window.
-            if std::env::var_os("DELUGE_HEADLESS").is_some() {
-                deluge_simulator::run_headless(gui_panel, gui_audio);
-            } else {
-                deluge_simulator::run_in_process(gui_panel, gui_audio);
-            }
-            std::process::exit(0);
+            // The simulator creates the shared panel and the audio bridge and owns
+            // the main thread (or its headless driver, `cargo deluge sim
+            // --headless`); the app is the brain it runs on a worker thread, on a
+            // std executor that lives for the process lifetime. The panel and
+            // audio ends go to deluge-bsp's simulator link, which the SDK's host
+            // backend reads them from.
+            deluge_simulator::run_brain(move |panel, brain_audio| {
+                deluge_bsp::sim::install(panel, brain_audio);
+                setup();
+                let executor: &'static mut Executor = Box::leak(Box::new(Executor::new()));
+                executor.run(move |spawner| {
+                    // Bridge GUI input → the SDK event queue.
+                    crate::plat::input_start_pump(spawner);
+                    spawn(spawner);
+                });
+            })
         }
     }
 

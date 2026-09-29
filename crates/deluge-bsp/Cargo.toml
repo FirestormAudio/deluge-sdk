@@ -45,6 +45,9 @@ embedded-graphics = ["dep:embedded-graphics-core"]
 ## UAC/MIDI). Opt-in — only host-role firmwares need it; gating it keeps
 ## `embassy-usb-host` (and its `ssmarshal` dep) out of every other build.
 usb-host = ["dep:embassy-usb-host"]
+## Drive the desktop simulator's panel from the host arms (the `sim` module): PIC commands and OLED frames land
+## on a `deluge-sim-link` panel instead of being dropped. Host builds only; a simulator installs the panel.
+sim-link = ["dep:deluge-sim-link"]
 
 [dependencies]
 rza1l-hal = { path = "../rza1l-hal", version = "0.1.0" }
@@ -71,6 +74,10 @@ embassy-usb = { workspace = true }
 # per-device tasks. No executor features needed here — the firmware selects the
 # platform/executor backend.
 embassy-executor = { workspace = true }
+
+[target.'cfg(not(target_os = "none"))'.dependencies]
+# The desktop simulator's panel (the `sim-link` feature). std-only, like the simulator itself.
+deluge-sim-link = { path = "../deluge-sim-link", optional = true }
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
 critical-section = { workspace = true, features = ["std"] }

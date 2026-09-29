@@ -141,6 +141,30 @@ pub fn run_in_process(panel: SharedPanel, gui_audio: GuiEnds) {
     }
 }
 
+/// Run a program (the "brain") against the simulator panel in this process: create the panel and the audio
+/// bridge, start `brain` on its own thread with the program's ends of both, and hand the main thread to the
+/// window. `DELUGE_HEADLESS` runs the scripted, window-less driver instead (CI, golden frames). Exits the process
+/// when the window closes.
+///
+/// `brain` owns everything else: its executors, its threads, and binding the ends to its peripherals (a
+/// `deluge_bsp` program passes them to `deluge_bsp::sim::install`). The SDK's host runtime is one such brain; a
+/// program built on the BSP directly is another.
+pub fn run_brain(brain: impl FnOnce(SharedPanel, deluge_sim_link::audio::BrainEnds) + Send + 'static) -> ! {
+    let panel = SharedPanel::new();
+    let (brain_audio, gui_audio) = deluge_sim_link::audio::new_bridge();
+    let brain_panel = panel.clone();
+    std::thread::Builder::new()
+        .name("deluge-brain".into())
+        .spawn(move || brain(brain_panel, brain_audio))
+        .expect("spawning the deluge brain thread");
+    if std::env::var_os("DELUGE_HEADLESS").is_some() {
+        run_headless(panel, gui_audio);
+    } else {
+        run_in_process(panel, gui_audio);
+    }
+    std::process::exit(0);
+}
+
 /// Build the optional hardware control-surface mirror from `DELUGE_SIM_HARDWARE`.
 /// Returns `None` (and warns) when unset or when the device can't be opened.
 fn connect_hardware(panel: SharedPanel) -> Option<HardwareMirror> {

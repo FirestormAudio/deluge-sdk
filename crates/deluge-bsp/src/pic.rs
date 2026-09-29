@@ -74,8 +74,8 @@ const PIC_CLK_HZ: u32 = 4_000_000;
 
 const CMD_SET_DEBOUNCE_TIME: u8 = 18;
 const CMD_SET_REFRESH_TIME: u8 = 19;
-const CMD_SET_GOLD_KNOB_0_INDICATORS: u8 = 20;
-const CMD_SET_GOLD_KNOB_1_INDICATORS: u8 = 21;
+pub(crate) const CMD_SET_GOLD_KNOB_0_INDICATORS: u8 = 20;
+pub(crate) const CMD_SET_GOLD_KNOB_1_INDICATORS: u8 = 21;
 const CMD_RESEND_BUTTON_STATES: u8 = 22;
 const CMD_SET_FLASH_LENGTH: u8 = 23;
 const CMD_SET_UART_SPEED: u8 = 225;
@@ -88,14 +88,14 @@ const CMD_SET_DC_LOW: u8 = 250;
 const CMD_SET_DC_HIGH: u8 = 251;
 
 /// Base command byte for indicator LED off: `CMD_LED_OFF_BASE + id` (id 0–35).
-const CMD_LED_OFF_BASE: u8 = 152;
+pub(crate) const CMD_LED_OFF_BASE: u8 = 152;
 /// Base command byte for indicator LED on: `CMD_LED_ON_BASE + id` (id 0–35).
-const CMD_LED_ON_BASE: u8 = 188;
+pub(crate) const CMD_LED_ON_BASE: u8 = 188;
 /// Base command byte for setting two-column RGB data: `CMD_SET_COLOUR_FOR_COLS_BASE + pair`
 /// where pair is 0–8.
-const CMD_SET_COLOUR_FOR_COLS_BASE: u8 = 1;
+pub(crate) const CMD_SET_COLOUR_FOR_COLS_BASE: u8 = 1;
 /// Sent after all column-pair data to trigger the PIC display refresh.
-const CMD_DONE_SENDING_ROWS: u8 = 240;
+pub(crate) const CMD_DONE_SENDING_ROWS: u8 = 240;
 
 /// Smooth-scroll animation opcodes. The PIC keeps its own off-screen framebuffer and smears it to
 /// animate a scroll, so the app sends one colour per row per tick instead of resending the grid —
@@ -103,7 +103,7 @@ const CMD_DONE_SENDING_ROWS: u8 = 240;
 /// [`set_column_pair_rgb`].
 ///
 /// `SET_SCROLL_ROW` is a base: the row index is ADDED to it (228..=235 for the 8 rows).
-const CMD_SET_SCROLL_ROW_BASE: u8 = 228;
+pub(crate) const CMD_SET_SCROLL_ROW_BASE: u8 = 228;
 /// Horizontal-scroll setup is also a base with the app's flag bits ADDED: bit 0 = scrolling
 /// right/positive, bit 1 = the scrolled area includes the sidebar (18 columns rather than 16).
 ///
@@ -112,9 +112,9 @@ const CMD_SET_SCROLL_ROW_BASE: u8 = 228;
 /// `SET_SCROLL_RIGHT_FULL`/`SET_SCROLL_LEFT_FULL`, which are transposed with respect to that flag
 /// encoding. The PIC's interpretation of `base + flags` is authoritative, so reproduce the
 /// arithmetic and leave the naming alone.
-const CMD_SET_SCROLL_HORIZONTAL_BASE: u8 = 236;
-const CMD_SET_SCROLL_UP: u8 = 241;
-const CMD_SET_SCROLL_DOWN: u8 = 242;
+pub(crate) const CMD_SET_SCROLL_HORIZONTAL_BASE: u8 = 236;
+pub(crate) const CMD_SET_SCROLL_UP: u8 = 241;
+pub(crate) const CMD_SET_SCROLL_DOWN: u8 = 242;
 
 // ── Response byte sentinels ───────────────────────────────────────────────────
 
@@ -339,12 +339,14 @@ async fn tx(bytes: &[u8]) {
     uart::write_bytes(UART_CH, bytes).await;
 }
 
-/// Host/QEMU stand-in for [`tx`]: no PIC UART to drive off-target, so every
-/// outbound helper (which all funnel through here) logs and drops its bytes.
-/// Resolves without ever suspending.
+/// Host/QEMU stand-in for [`tx`]: no PIC UART to drive off-target. With a simulator panel (`sim-link`), the
+/// command is applied to it as the PIC would apply it; otherwise it is logged and dropped. Every outbound helper
+/// funnels through here, one whole command per call. Resolves without ever suspending.
 #[cfg(not(target_os = "none"))]
 async fn tx(bytes: &[u8]) {
-    log::debug!("pic(host): tx {:?} (dropped, no PIC UART)", bytes);
+    #[cfg(feature = "sim-link")]
+    crate::sim::pic_command(bytes);
+    log::debug!("pic(host): tx {:?}", bytes);
 }
 
 /// Await one decoded byte from the PIC co-processor's SCIF1 UART (DMA RX ring).
