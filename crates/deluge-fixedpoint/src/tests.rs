@@ -5,8 +5,7 @@ use super::*;
 #[test]
 fn test_from_float() {
     let fp = Q31::from_float(0.5);
-    // For Q31, 0.5 should be approximately 0x3FFFFFFF (half of 0x7FFFFFFF)
-    // The actual value is (0.5 * 2^31) = 1073741824 = 0x40000000
+    // 0.5 in Q31 is 0.5 * 2^31 = 0x40000000.
     assert!((fp.to_float() - 0.5).abs() < 0.0001);
 
     let fp = Q31::from_float(1.0);
@@ -285,11 +284,9 @@ fn test_conversion_precision_loss() {
     let q31 = Q31::from_float(0.123_456_79);
     let q16: Q16 = q31.convert();
 
-    // Q16 has less precision, so the result should be close but not exact
+    // Q16 has less precision, so the result is only close.
     let error = (q16.to_float() - 0.123_456_79).abs();
     assert!(error < 0.01, "Error too large: {}", error);
-    // Note: Q16 actually has enough precision for this value,
-    // so we just verify it's reasonably close
 }
 
 #[test]

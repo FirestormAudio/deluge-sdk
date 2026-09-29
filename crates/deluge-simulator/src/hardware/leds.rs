@@ -122,7 +122,7 @@ impl HardwareLED {
         let green_yellow = (0.6, 1.0, 0.0);
         let amber = (1.0, 0.6, 0.0);
         match self {
-            // Encoder indicators - Red
+            // Gold-knob indicators and SYNC - amber
             Self::UpperGoldIndicator1
             | Self::UpperGoldIndicator2
             | Self::UpperGoldIndicator3
@@ -149,9 +149,9 @@ impl HardwareLED {
             Self::TapTempo => green_yellow,
             Self::Fill => blue,
 
-            // Function buttons - amber (standard)
             Self::Back | Self::Load | Self::Save => red,
 
+            // Scope and encoder function buttons - amber
             Self::Scope
             | Self::EncoderFunction1
             | Self::EncoderFunction2

@@ -1,17 +1,14 @@
-//! Cross-crate DSP-pipeline integration test (testing plan §5.5).
+//! Cross-crate DSP-pipeline integration test.
 //!
-//! Runs a representative audio-block transform through all three DSP crates
+//! Runs a representative audio-block transform through three DSP crates
 //! together — `fixedpoint` (quantise), `armv7-dsp-intrinsics` (the fixed-point
-//! multiply backing the gain), and `deluge-fft` (analysis) — and asserts the
-//! result stays within numerical bounds. Runs in the QEMU ARM bucket so the
-//! real DSP instructions (SMMUL etc.) are exercised, not just the portable
+//! multiply backing the gain), and `flare-fft` (analysis) — and asserts the
+//! result stays within numerical bounds. Run it under the QEMU ARM runner to
+//! exercise the real DSP instructions (SMMUL etc.), not just the portable
 //! fallback.
 //!
-//! Lives here rather than in `deluge-fft` because that crate is destined to
-//! become `flare-fft` in a separate repo, where a dev-dependency on
-//! `fixedpoint` and `armv7-dsp-intrinsics` would point back at the SDK — the
-//! one thing the flare seam forbids. Both halves of this pipeline are
-//! reachable from here, so nothing is lost by testing it from this side.
+//! Lives here rather than in `flare-fft` because the flare repo must not
+//! depend on SDK crates, even as dev-dependencies.
 
 use armv7_dsp_intrinsics::smmul;
 use flare_fft::{Complex, Fft};

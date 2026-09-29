@@ -10,9 +10,6 @@
 //! the runtime before interrupts are enabled) constructs the [`UsbDevice`] +
 //! [`Sender`]; [`spawn`] launches the device task plus a drain task that streams
 //! the pipe out the CDC IN endpoint once a host connects.
-//!
-//! This module is written so a second CDC interface (a future GDB stub, M8) can
-//! be added to the same device without restructuring.
 
 use core::fmt::Write;
 
@@ -113,8 +110,8 @@ impl Write for FmtBuf {
 ///
 /// Must be called from the runtime **before** `cortex_ar::interrupt::enable()`:
 /// it registers the USB0 ISR and then `builder.build()` calls `driver.start()`,
-/// which enables the USB interrupt source — mirroring the controller firmware's
-/// proven ordering.
+/// which enables the USB interrupt source (the same ordering the controller
+/// firmware uses).
 ///
 /// # Safety
 /// Call exactly once, after platform/clock init and before interrupts are

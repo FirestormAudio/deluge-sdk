@@ -3,14 +3,13 @@
 //! Implemented: audio, OLED, pads, indicator/gold/sync LEDs, pad brightness,
 //! input, jacks, CV/gate, DIN MIDI, trigger-clock input.
 //!
-//! Still `unimplemented!()`: `sd_*`. Not an oversight — the SDK's `Sd` is a
-//! sector-backed FAT abstraction, while on this backend the kernel has already
-//! mounted the card (the appliance's `/init` does `mount -t vfat` on `/sd`), so
-//! raw sector access would mean fighting the VFS for a device it owns. What the
-//! Linux backend should expose instead is an open design question, not a
-//! missing function.
+//! Not implemented (`unimplemented!()`): `sd_*`. The SDK's `Sd` is a
+//! sector-backed FAT abstraction, but on this backend the kernel has already
+//! mounted the card (`/init` mounts it as vfat on `/sd`), so raw sector access
+//! would contend with the VFS. What this backend should expose instead is an
+//! open design question.
 //!
-//! Two recurring shapes worth knowing before adding to this file:
+//! Two conventions apply throughout this file:
 //!
 //! - **Coordinate origins differ.** libdeluge/the kernel are top-origin for the
 //!   pad grid; the SDK is bottom-origin (set by the device backend). Anything
@@ -41,25 +40,18 @@ pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame]) + Send 
     let mut rt_checked = false;
 
     let shim = move |inp: &[[f32; 2]], out: &mut [[f32; 2]]| {
-        // libdeluge's audio thread self-elevates to SCHED_FIFO (audio.c), but
-        // that fails *soft* to a stderr warning the appliance never shows. At
-        // 128-frame periods a non-RT thread will xrun under load, so confirm it
-        // once from inside the callback — this is that thread. `shim` is `move`
-        // and invoked by exactly one thread (libdeluge's audio thread), so a
-        // captured local latches this without needing an atomic — and unlike a
-        // `static` inside this generic fn, it's correctly per-instantiation
-        // (a `static` here would NOT be monomorphized per `F`, so every `F`
-        // would share one latch).
+        // libdeluge's audio thread elevates itself to SCHED_FIFO, but a failure
+        // only prints a stderr warning nobody sees, and at 128-frame periods a
+        // non-RT thread xruns under load. So check once, from inside the
+        // callback (which runs on that thread). `shim` is only ever called from
+        // that one thread, so a captured local is enough for the once-latch; a
+        // `static` in this generic fn would be shared across every `F`.
         if !core::mem::replace(&mut rt_checked, true) {
-            // Hard, not `debug_assert!`: `cargo deluge linux` builds `--release`,
-            // so a debug assert here would compile out and this becomes a length
-            // trusted from C with no check at all. If libdeluge's period
-            // (`DELUGE_PERIOD`) is ever raised, SDK apps that size fixed-length
-            // scratch buffers off `EXPECTED_BLOCK_FRAMES` (e.g. `additive_osc`'s
-            // `MAX_BLOCK`, checked only by a `debug_assert!` of its own) would
-            // silently overflow those buffers on this thread instead. Checked
-            // once, on the first callback, via the same latch as the RT check
-            // above — costs nothing per period after that.
+            // A hard assert, not `debug_assert!` (`cargo deluge linux` builds
+            // `--release`): apps size fixed scratch buffers off
+            // `EXPECTED_BLOCK_FRAMES`, so a different libdeluge period
+            // (`DELUGE_PERIOD`) would overflow them. Checked once, on the first
+            // callback.
             assert_eq!(
                 inp.len(),
                 crate::audio::EXPECTED_BLOCK_FRAMES,
@@ -152,15 +144,12 @@ const _: () = assert!(PAD_FRAME_BYTES == 432);
 ///   driver re-flips it (`led_index = (PAD_H-1) - row`) — so fb row 0 is the
 ///   **top** row.
 ///
-/// Writing `y` straight through renders every app vertically mirrored versus
-/// device: caught on hardware because `additive_osc`'s highest pitch appeared
-/// bottom-right instead of top-right. Nothing in the type system or the frame
-/// length catches this — a mirrored frame is exactly as valid as a correct one.
+/// Nothing type-checks this: a mirrored frame is as valid as a correct one.
 ///
 /// Blits the whole frame every call, ignoring `PadLeds`' `last_sent` /
 /// `dirty_all` cache. That cache exists to skip unchanged column-pairs on the
 /// device's slow 31250-baud PIC link; here the whole frame is a 432-byte write
-/// to a memory-mapped fb, so tracking dirtiness would cost more than it saves.
+/// to a memory-mapped fb.
 pub(crate) async fn pads_flush(leds: &mut PadLeds) {
     use deluge_bsp::rgb::{COLS, ROWS};
     let mut out = [0u8; PAD_FRAME_BYTES];
@@ -181,20 +170,15 @@ pub(crate) async fn pads_flush(leds: &mut PadLeds) {
 
 /// Linux: set the PIC's pad-LED refresh interval, matching the device backend.
 ///
-/// Goes to the same place as `plat::device`'s `pic::set_refresh_time`: PIC
-/// command 19, interval in ms, **lower is brighter** (it is the refresh period,
-/// so a shorter period is a higher duty cycle). Here it travels via libdeluge to
-/// the `deluge-pic` driver's `refresh_time` sysfs attribute rather than over the
-/// SDK's own PIC transport, but it is the identical command and range.
+/// The same PIC command as `plat::device`'s `pic::set_refresh_time` (command
+/// 19, interval in ms, **lower is brighter**: a shorter refresh period is a
+/// higher duty cycle), sent via libdeluge to the `deluge-pic` driver's
+/// `refresh_time` sysfs attribute.
 ///
-/// Deliberately NOT wired to `deluge-pad`'s `fb_deferred_io` delay, which is the
-/// other plausible reading of "refresh": that controls how often Linux flushes a
-/// frame, a different knob with a different audible/visible effect. Wiring it
-/// there would appear to work while silently diverging from the device backend.
+/// Not to be confused with `deluge-pad`'s `fb_deferred_io` delay, which controls
+/// how often Linux flushes a frame — a different knob.
 ///
-/// The kernel rejects values above 25; the SDK's `interval` is a `u8`, so clamp
-/// rather than pass a value that would be refused — matching the device backend,
-/// which likewise cannot express an out-of-range interval.
+/// The kernel rejects values above 25, so the interval is clamped.
 pub(crate) async fn pads_set_brightness_interval(interval: u8) {
     let clamped = interval.min(25);
     if let Err(e) = crate::linux::dev().pads_set_refresh(clamped as i32) {
@@ -310,11 +294,9 @@ pub(crate) fn midi_init() {
     }
     let cb = |bytes: &[u8]| {
         let mut q = MIDI_RX.lock().unwrap_or_else(|e| e.into_inner());
-        // Bound the queue: a device sending MIDI that no task ever reads must
-        // not grow this without limit. Dropping the OLDEST keeps the newest
-        // (most relevant) bytes, and a MIDI stream that far behind is already
-        // unrecoverable — but say so, because silently dropping MIDI is exactly
-        // the kind of fault that gets blamed on the hardware.
+        // Bound the queue so MIDI no task reads cannot grow it without limit.
+        // Drop the oldest bytes (a stream that far behind is unrecoverable
+        // anyway), and log it so the loss is visible.
         const MAX_QUEUED: usize = 4096;
         if q.len() + bytes.len() > MAX_QUEUED {
             let drop_n = (q.len() + bytes.len()) - MAX_QUEUED;
@@ -496,19 +478,14 @@ pub(crate) fn jacks_line_out_right() -> bool {
 }
 /// Linux: request the on-board speaker amplifier on/off.
 ///
-/// **Advisory here, authoritative on device — the one place the two backends
-/// genuinely differ.** On device the SDK drives the amp GPIO directly, so
-/// `set_speaker(true)` energises it unconditionally. On Linux the kernel owns
-/// the policy (`deluge-audio.c`: amp on = this request AND no *output* jack
-/// inserted, re-evaluated by a poll), and this sets only the user-intent half
-/// via the card's "Speaker Playback Switch". So with headphones plugged in,
-/// `set_speaker(true)` leaves the speaker muted.
-///
-/// That divergence is deliberate rather than an oversight: the kernel already
-/// implements this policy for its own ALSA users, and having the SDK bypass it
-/// would let an app drive the speaker while headphones are inserted. Apps that
-/// need the true state should read the jacks and decide, which works on both
-/// backends.
+/// **Advisory here, authoritative on device.** On device the SDK drives the
+/// amp GPIO directly, so `set_speaker(true)` energises it unconditionally. On
+/// Linux the kernel owns the policy (`deluge-audio.c`: amp on = this request AND
+/// no *output* jack inserted, re-evaluated by a poll), and this sets only the
+/// request, via the card's "Speaker Playback Switch" — so with headphones
+/// plugged in, `set_speaker(true)` leaves the speaker muted. The SDK does not
+/// bypass the kernel's policy, which its other ALSA users rely on. Apps that
+/// need the true state should read the jacks, which works on both backends.
 pub(crate) fn jacks_set_speaker(on: bool) {
     if let Err(e) = crate::linux::dev().jacks_set_speaker(on) {
         log::warn!("jacks_set_speaker({on}) failed: {e}");
@@ -549,17 +526,10 @@ pub(crate) fn input_start_pump(_spawner: Spawner) {
         let mapped = match ev.kind {
             0 => crate::input::Event::Pad {
                 x: ev.x as u8,
-                // Flip the row axis, exactly as `pads_flush` does and for the
-                // same reason: libdeluge reports pads **top-origin** (the
-                // kernel's `pad_id_to_coord` documents "PIC rows run bottom-up;
-                // report top-left"), while the SDK's convention — fixed by the
-                // device backend, where `pack_pair` feeds the PIC's bottom-up
-                // rows straight through — is y=0 at the **bottom**.
-                //
-                // Flipping only one of the two paths is worse than flipping
-                // neither: input and output then disagree by a mirror, so a
-                // pressed pad lights up its reflection. That is how this was
-                // found on hardware, after `pads_flush` was fixed alone.
+                // Flip the row axis, as `pads_flush` does: libdeluge reports
+                // pads top-origin (the kernel's `pad_id_to_coord`), while the
+                // SDK's y=0 is the bottom row. Input and output must flip
+                // together, or a pressed pad lights up its mirror image.
                 y: (deluge_bsp::rgb::ROWS as isize - 1 - ev.y as isize)
                     .clamp(0, deluge_bsp::rgb::ROWS as isize - 1) as u8,
                 pressed: ev.value != 0,

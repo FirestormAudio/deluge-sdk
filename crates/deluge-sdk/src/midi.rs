@@ -12,9 +12,8 @@ fn ensure_init() {
 
 /// The DIN MIDI port (SCIF0), taken once from [`Deluge::midi`](crate::Deluge::midi).
 ///
-/// A raw byte stream in both directions — bring your own parser (a typed message
-/// API may come later). RX is DMA-backed, so bytes are captured even while the
-/// app is busy.
+/// A raw byte stream in both directions — bring your own parser. RX is
+/// DMA-backed, so bytes are captured even while the app is busy.
 pub struct Midi {
     _not_send: crate::NotSend,
 }

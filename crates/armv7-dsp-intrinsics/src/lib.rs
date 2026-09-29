@@ -2,7 +2,7 @@
 //!
 //! This crate provides safe wrappers around ARMv7 DSP instructions for efficient
 //! fixed-point arithmetic. These instructions are available on ARMv7-A processors
-//! with the DSP extension (like ARM Cortex-A7 used in Deluge).
+//! with the DSP extension (such as the Deluge's Cortex-A9).
 //!
 //! ## Available Instructions
 //!
@@ -38,16 +38,15 @@
 
 #![no_std]
 // `core::arch::arm` DSP intrinsics (`__qadd`, `__smmul`, …) are gated behind
-// both unstable features in current nightlies — the DSP intrinsics were folded
-// in under the same gate as the NEON ones. Both are needed for the `nightly`
-// (intrinsic) path; the default path uses inline asm and needs neither.
+// both of these unstable features (the same gate as the NEON intrinsics). They
+// are needed only for the `nightly` (intrinsic) path; the default path uses
+// inline asm.
 //
 // Also gate on `target_arch = "arm"`: these compiler features only exist for
 // ARM, so enabling them when the `nightly` feature is selected on a non-ARM host
-// (e.g. building this crate's host tests, or a host build of a dependent like
-// `deluge-fft` whose dev-dep turns `nightly` on) is a hard error. The intrinsic
-// path is itself `cfg(all(target_arch = "arm", …))`, so off-ARM the features are
-// unused anyway and the portable fallback compiles cleanly.
+// (e.g. this crate's host tests, or a host build of a dependent that turns
+// `nightly` on) is a hard error. Off-ARM the intrinsic path is compiled out and
+// the portable fallback is used.
 #![cfg_attr(
     all(feature = "nightly", target_arch = "arm"),
     feature(stdarch_arm_dsp, stdarch_arm_neon_intrinsics)
@@ -158,8 +157,7 @@ pub fn saturating_double_sub(a: i32, b: i32) -> i32 {
 /// Multiplies two 32-bit signed integers and returns the high 32 bits of the result.
 /// Equivalent to: (a * b) >> 32
 ///
-/// This is ideal for Q31 fixed-point multiplication where you want the result
-/// in the same Q31 format.
+/// For two Q31 operands the result is Q30; shift left by one to return to Q31.
 #[inline]
 pub fn smmul(a: i32, b: i32) -> i32 {
     #[cfg(all(target_arch = "arm", target_feature = "dsp"))]
@@ -189,7 +187,7 @@ pub fn smmul(a: i32, b: i32) -> i32 {
 /// and returns the high 32 bits.
 /// Equivalent to: ((a * b) + 0x80000000) >> 32
 ///
-/// This provides Q31 multiplication with rounding to nearest.
+/// For two Q31 operands this is a round-to-nearest Q30 product.
 #[inline]
 pub fn smmulr(a: i32, b: i32) -> i32 {
     #[cfg(all(target_arch = "arm", target_feature = "dsp"))]
@@ -341,7 +339,7 @@ pub fn mul_subtract_high_round(acc: i32, a: i32, b: i32) -> i32 {
 /// Signed saturate to bit position (SSAT instruction)
 ///
 /// Saturates a signed 32-bit value to a signed N-bit value.
-/// N must be between 1 and 32 (exclusive of 32).
+/// `BITS` must be in `1..32`.
 ///
 /// # Examples
 /// ```
@@ -380,7 +378,7 @@ pub fn ssat<const BITS: u32>(val: i32) -> i32 {
 /// Unsigned saturate to bit position (USAT instruction)
 ///
 /// Saturates a signed 32-bit value to an unsigned N-bit value.
-/// N must be between 0 and 32 (inclusive).
+/// `BITS` must be in `0..=32`.
 ///
 /// # Examples
 /// ```
@@ -599,8 +597,6 @@ pub fn vcvt_f32_to_fixed<const FRAC_BITS: u32>(value: f32) -> i32 {
 
     #[cfg(all(target_arch = "arm", target_feature = "vfp2"))]
     {
-        // Use VCVT.S32.F32 instruction
-        // This requires VFP (Vector Floating Point) which includes VCVT
         // The fixed-point form of VCVT operates in place: source and destination
         // must be the *same* S register (`vcvt.s32.f32 Sd, Sd, #n`). Inline-asm
         // `inout` needs one type for that shared operand, so keep it `f32` and
@@ -770,13 +766,11 @@ mod tests {
 
     #[test]
     fn test_smmul() {
-        // Q31 multiplication: 0.5 * 0.5 = 0.25
-        // In Q31: 0.5 = 0x40000000, 0.25 = 0x20000000
+        // 0.5 * 0.5 in Q31 (0.5 = 0x40000000). SMMUL keeps the high word of
+        // the 64-bit product: 0x1000_0000_0000_0000 → 0x10000000, which is
+        // 0.25 in Q30.
         let half_q31 = 0x40000000i32;
         let result = smmul(half_q31, half_q31);
-        // SMMUL returns high 32 bits of 64-bit product
-        // 0x40000000 * 0x40000000 = 0x1000_0000_0000_0000
-        // High 32 bits = 0x10000000
         let expected = 0x10000000i32;
         assert_eq!(result, expected);
     }

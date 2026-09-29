@@ -4,9 +4,8 @@ use deluge_bsp::rgb::PadLeds;
 
 /// An RGB colour (0–255 per channel).
 ///
-/// Re-exported from [`deluge_bsp::rgb`] so the canonical colour type is shared
-/// with the BSP (and the GPL `deluge-grid-toolkit`, which extends it). The public
-/// path `deluge::Color` is unchanged.
+/// Re-exported from [`deluge_bsp::rgb`] so the colour type is shared with the
+/// BSP (and the GPL `deluge-grid-toolkit`, which extends it).
 pub use deluge_bsp::rgb::Color;
 
 /// The RGB pad grid (18 × 8), taken once from [`Deluge::pads`](crate::Deluge::pads).

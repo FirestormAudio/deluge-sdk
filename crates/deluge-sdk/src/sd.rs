@@ -5,13 +5,13 @@ use deluge_bsp::fat::FatError;
 #[cfg(target_os = "none")]
 use deluge_bsp::sd::SdError;
 
-/// Initialise the SD card. On the device this powers up and probes the card; on
-/// the host simulator the "card" is a local directory, so there is nothing to do.
+/// Initialise the SD card. On the device this powers up and probes the card.
 #[cfg(target_os = "none")]
 pub(crate) async fn init_card() -> Result<(), SdError> {
     crate::plat::sd_init_card().await
 }
-/// Host: the simulated card is always available.
+/// Initialise the SD card. In the simulator the "card" is a local directory and
+/// is always available; the Linux backend does not implement SD access.
 #[cfg(not(target_os = "none"))]
 pub(crate) async fn init_card() -> Result<(), SdError> {
     crate::plat::sd_init_card().await
@@ -22,7 +22,7 @@ pub(crate) async fn init_card() -> Result<(), SdError> {
 /// A small convenience API for whole-file reads/writes of files in the card's
 /// **root** directory (the common maker need: a config/preset/sample file). For
 /// directory trees or streaming, drop down to [`deluge_bsp::fat`] /
-/// [`embedded_sdmmc`].
+/// `embedded_sdmmc`.
 ///
 /// Each call mounts the FAT volume, does the operation, and unmounts — so handles
 /// never leak across calls. The card hardware is initialised once when the handle
@@ -30,6 +30,7 @@ pub(crate) async fn init_card() -> Result<(), SdError> {
 ///
 /// On the host simulator the "card root" is a local directory (the
 /// `DELUGE_SIM_SD` env var, default `./sim-sd`), so reads/writes hit real files.
+/// The Linux backend does not implement SD access yet and panics.
 pub struct Sd {
     _not_send: crate::NotSend,
 }
@@ -54,7 +55,7 @@ impl Sd {
     }
 }
 
-// ── Host (desktop simulator) ─────────────────────────────────────────────────
+// ── Hosted backends (simulator, Linux) ───────────────────────────────────────
 
 /// Host SD-card hardware error (mirrors [`deluge_bsp::sd::SdError`]'s role).
 #[cfg(not(target_os = "none"))]

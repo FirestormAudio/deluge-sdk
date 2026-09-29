@@ -1,10 +1,9 @@
 //! # Deluge SDK
 //!
-//! A user-friendly SDK for building apps that run on the Synthstrom Deluge
-//! (Renesas RZ/A1L). It wraps the board support package ([`deluge_bsp`]) and the
-//! HAL ([`rza1l_hal`]) behind a single dependency, and provides the
-//! [`#[deluge::app]`](macro@app) attribute that absorbs all of the platform
-//! bring-up boilerplate.
+//! Build apps for the Synthstrom Deluge (Renesas RZ/A1L, Cortex-A9). This crate
+//! wraps the board support package ([`deluge_bsp`]) and the HAL ([`rza1l_hal`])
+//! behind a single dependency, and provides the [`#[deluge::app]`](macro@app)
+//! attribute that absorbs the platform bring-up boilerplate.
 //!
 //! ```ignore
 //! #![no_std]
@@ -21,6 +20,15 @@
 //!     }
 //! }
 //! ```
+//!
+//! The app receives a [`Deluge`] handle; each peripheral (OLED, pads, input,
+//! LEDs, audio, CV/gate, clock, MIDI, SD, jacks, SYNC LED) is taken from it
+//! once, as an owned capability.
+//!
+//! The same app source builds for three backends: the device itself
+//! (`target_os = "none"`), the desktop simulator (host, `sim` feature, via
+//! `cargo deluge sim`) and native Linux on the Deluge (`linux` feature, over
+//! libdeluge).
 //!
 //! See the [Advanced developer guide](https://github.com/FirestormAudio/deluge-sdk/blob/main/docs/advanced-guide.md)
 //! for the architecture and internals.
@@ -123,12 +131,12 @@ pub use deluge_bsp::fat::FatError;
 /// SD-card hardware error from [`Deluge::sd`].
 #[cfg(target_os = "none")]
 pub use deluge_bsp::sd::SdError;
-/// Filesystem / SD error types (host simulator definitions; see [`Sd`]).
+/// Filesystem / SD error types (hosted-backend definitions; see [`Sd`]).
 #[cfg(not(target_os = "none"))]
 pub use sd::{FatError, SdError};
 
 /// Type-safe fixed-point arithmetic (`Q31`, `Q16`, …), re-exported for DSP code
-/// in [`audio`](crate::audio) callbacks. ARMv7 = the Deluge's Cortex-A9, so its
+/// in [`Audio::process`] callbacks. ARMv7 = the Deluge's Cortex-A9, so its
 /// conversions/multiplies map onto the hardware DSP instructions.
 pub use fixedpoint as fixed;
 
@@ -177,8 +185,8 @@ mod not_send_assertions {
     }
 }
 
-// Re-export the underlying layers so apps can reach lower-level functionality
-// through the single `deluge` dependency while the capability API (M2+) grows.
+// Re-export the underlying layers so apps can reach functionality the
+// capability API does not cover through the single `deluge` dependency.
 // The allocator and HAL are device-only escape hatches (no host equivalent); an
 // app reaching for them directly won't run in the desktop simulator.
 #[cfg(target_os = "none")]
@@ -195,13 +203,11 @@ pub use rza1l_hal;
 /// at a time.
 pub struct Deluge {
     spawner: embassy_executor::Spawner,
-    // Makes `Deluge` itself `!Send` (see [`NotSend`]) — not just its capability
-    // handles. Every capability accessor is `&self`, so a `Send + 'static` DSP
-    // closure that captured `dlg` instead of a specific handle could still reach
-    // every peripheral from libdeluge's audio thread. Today `Spawner` happens to
-    // be `!Send` too (an Embassy implementation detail), so this was only
-    // accidentally enforced; this field makes it a property `Deluge` owns and
-    // proves for itself, in `not_send_assertions`.
+    // Makes `Deluge` itself `!Send` (see [`NotSend`]), not just its capability
+    // handles: every accessor is `&self`, so a `Send + 'static` DSP closure that
+    // captured `dlg` could otherwise reach every peripheral from libdeluge's
+    // audio thread. `Spawner` is also `!Send`, but only as an Embassy
+    // implementation detail; this field does not rely on it.
     _not_send: NotSend,
 }
 
@@ -630,8 +636,8 @@ pub mod __rt {
             setup();
 
             // Bring up the USB-debug device (registers the USB0 ISR and starts the
-            // controller) while interrupts are still masked — matches the proven
-            // controller-firmware ordering. Spawned below once the executor runs.
+            // controller) while interrupts are still masked, the same ordering the
+            // controller firmware uses. Spawned below once the executor runs.
             #[cfg(feature = "usb-log")]
             let usb = unsafe { crate::usb_debug::build() };
 

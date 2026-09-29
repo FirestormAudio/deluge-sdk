@@ -23,20 +23,20 @@
 //!
 //! ## Version 1 → 2
 //!
-//! Version 1 had no `auto_boot` byte: offset 6 was reserved and written as `0`.
-//! Because `0` now *means* "boot instantly, never show the menu", the byte could
-//! not simply be claimed — reinterpreting it would silently delete the boot menu
-//! from every unit already in the field.  So [`decode`] reads both versions (a v1
-//! record yields [`AutoBoot::default`], i.e. today's 5-second countdown) while
-//! [`encode`] only ever writes v2, migrating the record on the next write.
+//! Version 1 had no `auto_boot` byte: offset 6 was reserved and written as `0`,
+//! which in v2 *means* "boot instantly, never show the menu" — so reading it
+//! as-is would remove the boot menu from every unit with a v1 record. [`decode`]
+//! therefore reads both versions (a v1 record yields [`AutoBoot::default`], the
+//! 5-second countdown) while [`encode`] only ever writes v2, migrating the
+//! record on the next write.
 
 use crate::crc::crc32;
 
 /// How long the boot menu waits before launching the default entry.
 ///
 /// The values form a single dial, ordered by how long the unit waits:
-/// `Instant → Secs(1) → … → Secs(20) → Never`.  See [`AutoBoot::step`] (added in
-/// the settings-UI task) for walking it.
+/// `Instant → Secs(1) → … → Secs(20) → Never`.  See [`AutoBoot::step`] for
+/// walking it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AutoBoot {
     /// Launch the default entry immediately — the menu is never drawn.  Only the

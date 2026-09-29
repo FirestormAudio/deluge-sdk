@@ -238,8 +238,7 @@ proptest! {
         assert_eq!(fused.raw(), separate.raw());
     }
 
-    // --- Division (the path the absent `fuzz_division` target was meant to
-    // cover): exhaustively fuzz the operands, including the divide-by-zero edge,
+    // --- Division: fuzz the operands, including the divide-by-zero edge,
     // against an independent reference. ---
 
     #[test]

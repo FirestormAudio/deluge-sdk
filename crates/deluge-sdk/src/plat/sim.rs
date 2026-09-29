@@ -1,5 +1,4 @@
-//! Host-simulator backend ops (the deluge-sim-link SharedPanel). Bodies moved
-//! verbatim from the capability modules' `#[cfg(not(target_os = "none"))]` arms.
+//! Host-simulator backend ops (the deluge-sim-link `SharedPanel`).
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use deluge_bsp::oled::FrameBuffer;
@@ -7,9 +6,11 @@ use deluge_bsp::rgb::{COLS, PadLeds, ROWS};
 use embassy_executor::Spawner;
 use embassy_time::Instant;
 
-/// Host: exchange audio blocks with the simulator through `deluge_bsp::sim`. The simulator's audio device plays
-/// at the device rate, so this loop is paced by real time without a hardware clock: it renders while the output has
-/// room, and waits half a block when it has none.
+/// Host: exchange audio blocks with the simulator through `deluge_bsp::sim`.
+///
+/// The simulator's audio device plays at the device rate, so this loop is paced
+/// by real time without a hardware clock: it renders while the output has room,
+/// and waits half a block when it has none.
 pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame]) + Send + 'static>(
     mut f: F,
 ) -> ! {

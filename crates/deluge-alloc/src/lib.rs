@@ -234,9 +234,7 @@ unsafe impl Allocator for CsHeap {
 /// static HEAP: Spill = Spill::new(&SRAM, &SDRAM);
 /// ```
 ///
-/// Note: there is no budget cap — the primary fills completely before any spill.
-/// A `with_budget` variant could be added if the primary gains other consumers
-/// that need reserved headroom.
+/// There is no budget cap: the primary fills completely before any spill.
 pub struct Spill {
     primary: &'static CsHeap,
     fallback: &'static CsHeap,
@@ -295,9 +293,9 @@ pub static SRAM: CsHeap = CsHeap::empty();
 /// unsafe { SDRAM.init(0x0C00_0000 as *mut u8, 64 * 1024 * 1024) }
 /// ```
 ///
-/// **Calling `allocate` before `init` will return `AllocError`** (which causes
-/// `Box::new_in` / `Vec::try_reserve` to panic). There is no silent UB, but
-/// any allocation attempt before `init` will fail at runtime.
+/// **Calling `allocate` before `init` returns `AllocError`**, so e.g.
+/// `Box::new_in` panics and `Vec::try_reserve_exact` returns an error; it is
+/// never undefined behaviour.
 pub static SDRAM: CsHeap = CsHeap::empty();
 
 #[cfg(all(test, not(target_os = "none")))]

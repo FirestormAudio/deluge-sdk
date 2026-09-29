@@ -8,7 +8,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 pub use deluge_bsp::audio_block::Frame as StereoFrame;
 
 /// One stereo audio frame; samples in `[-1.0, 1.0]`. `l` = left, `r` = right.
-/// Host simulator definition (mirrors `deluge_bsp::audio_block::Frame`).
+/// Hosted (simulator and Linux) definition, mirroring
+/// `deluge_bsp::audio_block::Frame`.
 #[cfg(not(target_os = "none"))]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[repr(C)]
@@ -17,25 +18,11 @@ pub struct StereoFrame {
     pub r: f32,
 }
 
-/// Adapt libdeluge's split input/output buffers to [`Audio::process`]'s in-place
-/// block contract.
-///
-/// libdeluge hands its callback two slices (input, output); the SDK's DSP
-/// closure takes **one** slice pre-loaded with input, whose final contents are
-/// sent to line-out. So seed `out` with the input and hand `out` to `f`.
-///
-/// Pure by design — no `libdeluge`, no hardware, no locks — so the Linux
-/// backend's only interesting logic is unit-testable on the host. See
-/// `plat::linux::audio_run`, its sole caller.
-// `adapt_block` reinterprets `&mut [[f32; 2]]` as `&mut [StereoFrame]`. That is
-// sound only if the two are layout-identical. `StereoFrame` is SDK-local and
-// `#[repr(C)]`, so this cannot drift from under us silently — but it CAN be
-// edited, and these asserts are what turn such an edit into a build error.
-//
-// Note what this does NOT prove: field *types*. `{ l: i32, r: f32 }` would
-// satisfy every assertion below and make the transmute type confusion. The
-// `#[repr(C)] { l: f32, r: f32 }` declaration above is the real contract;
-// these asserts guard its layout consequences.
+// `adapt_block` reinterprets `&mut [[f32; 2]]` as `&mut [StereoFrame]`, which is
+// sound only if the two are layout-identical. These asserts turn an edit to
+// `StereoFrame`'s layout into a build error. They do not check field *types*
+// (`{ l: i32, r: f32 }` would pass); the `#[repr(C)] { l: f32, r: f32 }`
+// declaration above is the real contract.
 #[cfg(any(feature = "linux", test))]
 const _: () = {
     assert!(core::mem::size_of::<StereoFrame>() == core::mem::size_of::<[f32; 2]>());
@@ -45,17 +32,23 @@ const _: () = {
 };
 
 /// The block length (stereo frames per callback) every backend is built
-/// against. Device (`deluge_bsp::audio_block::BLOCK_FRAMES`) and the desktop
-/// simulator (`deluge_sim_link::audio::BLOCK_FRAMES`) each independently hard-code
-/// 128; neither of those constants is reachable from here, though — the former is
-/// `#[cfg(target_os = "none")]` (this module also compiles hosted, for `feature =
-/// "linux"`), and the latter is gated behind the `sim` feature, not `linux`. This
-/// is the SDK-side source of truth apps size fixed-length buffers against on the
-/// Linux backend (e.g. `examples/baremetal/additive_osc`'s `MAX_BLOCK`); keep it in sync
-/// with the other two by hand if the period ever changes.
+/// against, and what apps size fixed-length buffers by on the Linux backend.
+///
+/// Must match `deluge_bsp::audio_block::BLOCK_FRAMES` (device) and
+/// `deluge_sim_link::audio::BLOCK_FRAMES` (simulator), neither of which is
+/// reachable from a `linux` build; keep all three in sync by hand.
 #[cfg(any(feature = "linux", test))]
 pub(crate) const EXPECTED_BLOCK_FRAMES: usize = 128;
 
+/// Adapt libdeluge's split input/output buffers to [`Audio::process`]'s in-place
+/// block contract.
+///
+/// libdeluge hands its callback two slices (input, output); the SDK's DSP
+/// closure takes **one** slice pre-loaded with input, whose final contents are
+/// sent to line-out. So seed `out` with the input and hand `out` to `f`.
+///
+/// Free of libdeluge, hardware and locks, so it is unit-testable on the host.
+/// Called by `plat::linux::audio_run`.
 #[cfg(any(feature = "linux", test))]
 #[inline]
 pub(crate) fn adapt_block<F>(f: &mut F, inp: &[[f32; 2]], out: &mut [[f32; 2]])
@@ -68,8 +61,8 @@ where
     debug_assert_eq!(inp.len(), out.len());
     out.copy_from_slice(inp);
     // SAFETY: `StereoFrame` is `#[repr(C)] { l: f32, r: f32 }`, layout-identical
-    // to `[f32; 2]` — size, alignment, and both field offsets are asserted at
-    // compile time immediately above this function, and again at run time by
+    // to `[f32; 2]` — size, alignment and both field offsets are asserted at
+    // compile time above, and size/alignment again by
     // `stereoframe_is_layout_compatible_with_f32_pair`.
     f(unsafe { core::mem::transmute::<&mut [[f32; 2]], &mut [StereoFrame]>(out) });
 }
@@ -94,7 +87,7 @@ fn ensure_init() {
 /// sent to line-out — so the same API serves insert-effects and synths.
 ///
 /// **Owns the codec path.** Do not also run a USB audio (UAC2) device stack; both
-/// drive the same SSI/SCUX rings.
+/// drive the same codec DMA rings.
 pub struct Audio {
     _private: (),
 }
@@ -130,9 +123,8 @@ impl Audio {
     /// `f` keeps rendering audio blocks forever with no owning task left.
     ///
     /// **`!Send` guarantees no hardware access, not RT-safety.** Nothing stops
-    /// `f` from allocating, taking a lock, logging, or blocking on I/O — all of
-    /// which were merely slow on the app's executor but will xrun the codec
-    /// once `f` runs on libdeluge's `SCHED_FIFO` thread.
+    /// `f` from allocating, taking a lock, logging, or blocking on I/O, any of
+    /// which can xrun the codec on libdeluge's `SCHED_FIFO` thread.
     ///
     /// ```ignore
     /// dlg.audio().process(move |block| {

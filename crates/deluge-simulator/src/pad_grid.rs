@@ -1,9 +1,9 @@
 //! RGB LED pad grid for the Deluge hardware simulator
 //!
-//! The Deluge has a 16x8 grid of RGB LED pads that can display different colors
-//! and respond to touch input.
+//! The Deluge has a 16×8 main grid of RGB LED pads plus two sidebar columns;
+//! each pad can display a colour and respond to touch input.
 
-// Re-export so existing `pad_grid::{RGB, ToIcedColor}` paths keep resolving.
+// Re-exported so the renderer can take the colour types from here.
 pub use crate::rgb::{RGB, ToIcedColor};
 
 /// The 18x8 RGB LED pad grid (16 main + 2 audition/mute columns)
