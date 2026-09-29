@@ -162,6 +162,13 @@ pub fn pad_coords(id: u8) -> (u8, u8) {
     (x, y)
 }
 
+/// Grid coordinate → pad ID: the inverse of [`pad_coords`]. `x` ∈ 0..18, `y` ∈ 0..8.
+#[inline]
+pub fn pad_id(x: u8, y: u8) -> u8 {
+    let y_raw = if x % 2 == 0 { y } else { y + 8 };
+    y_raw * 9 + x / 2
+}
+
 /// Stateful parser for the PIC → CPU byte stream.
 ///
 /// Feed bytes from the UART one at a time via [`Parser::push`]; it returns
@@ -357,11 +364,16 @@ pub async fn read_byte() -> u8 {
     uart::read_byte(UART_CH).await
 }
 
-/// Host: no PIC co-processor, so no bytes ever arrive. Park forever — the pump
-/// task stays alive but quiescent (there is no input on the host). This is a
-/// clean idle, not a hang: nothing downstream is waiting on it to make progress.
+/// Host: no PIC co-processor. With a simulator panel (`sim-link`), the panel's pad and button input arrives as
+/// the bytes the PIC would send (see [`crate::sim`]). Otherwise no bytes ever arrive and this parks forever — the
+/// pump task stays alive but quiescent. That is a clean idle, not a hang: nothing downstream is waiting on it to
+/// make progress.
 #[cfg(not(target_os = "none"))]
 pub async fn read_byte() -> u8 {
+    #[cfg(feature = "sim-link")]
+    if crate::sim::panel().is_some() {
+        return crate::sim::read_byte().await;
+    }
     core::future::pending().await
 }
 

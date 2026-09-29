@@ -7,16 +7,21 @@
 //! - every outbound PIC command ([`crate::pic`]'s `tx`) is applied as the PIC would apply it. Pad colours go into
 //!   a virtual PIC framebuffer, which a refresh (`DONE_SENDING_ROWS`) publishes, and the smooth-scroll commands
 //!   shift that framebuffer as the PIC's own does;
-//! - every OLED frame ([`crate::oled`]'s host capture) is copied to the panel.
+//! - every OLED frame ([`crate::oled`]'s host capture) is copied to the panel;
+//! - the panel's input comes back as the PIC would send it: pad and button events as PIC bytes through
+//!   [`crate::pic::read_byte`], for the program's own PIC parser, and encoder turns as edges in
+//!   [`crate::encoder::ENCODER_DELTAS`], as the encoder interrupt records them.
 //!
 //! So a program on this BSP drives the simulator through the same calls it makes on the device. [`install`] is
 //! called once, by whatever runs the simulator (`deluge_simulator::run_brain`), before the program starts; until
 //! then, and in a host build without a panel, the host arms stay the no-ops they otherwise are.
 
+use std::collections::VecDeque;
+use std::sync::atomic::Ordering;
 use std::sync::{Mutex, OnceLock, PoisonError};
 
-use deluge_sim_link::SharedPanel;
 use deluge_sim_link::audio::BrainEnds;
+use deluge_sim_link::{InputEvent, SharedPanel};
 
 use crate::rgb::{COLS, ROWS};
 
@@ -51,11 +56,11 @@ pub(crate) fn display(frame: &[u8]) {
 // ── The virtual PIC ───────────────────────────────────────────────────────────
 
 use crate::pic::{
-    CMD_DONE_SENDING_ROWS as DONE_SENDING_ROWS, CMD_LED_OFF_BASE as LED_OFF_BASE, CMD_LED_ON_BASE as LED_ON_BASE,
-    CMD_SET_COLOUR_FOR_COLS_BASE as COLS_BASE, CMD_SET_GOLD_KNOB_0_INDICATORS as GOLD_KNOB_0,
-    CMD_SET_GOLD_KNOB_1_INDICATORS as GOLD_KNOB_1, CMD_SET_SCROLL_DOWN as SCROLL_DOWN,
-    CMD_SET_SCROLL_HORIZONTAL_BASE as SCROLL_HORIZONTAL_BASE, CMD_SET_SCROLL_ROW_BASE as SCROLL_ROW_BASE,
-    CMD_SET_SCROLL_UP as SCROLL_UP,
+    CMD_DONE_SENDING_ROWS as DONE_SENDING_ROWS, CMD_LED_OFF_BASE as LED_OFF_BASE,
+    CMD_LED_ON_BASE as LED_ON_BASE, CMD_SET_COLOUR_FOR_COLS_BASE as COLS_BASE,
+    CMD_SET_GOLD_KNOB_0_INDICATORS as GOLD_KNOB_0, CMD_SET_GOLD_KNOB_1_INDICATORS as GOLD_KNOB_1,
+    CMD_SET_SCROLL_DOWN as SCROLL_DOWN, CMD_SET_SCROLL_HORIZONTAL_BASE as SCROLL_HORIZONTAL_BASE,
+    CMD_SET_SCROLL_ROW_BASE as SCROLL_ROW_BASE, CMD_SET_SCROLL_UP as SCROLL_UP,
 };
 
 /// The last byte of each ranged command: a base plus its largest argument.
@@ -129,7 +134,9 @@ pub(crate) fn pic_command(bytes: &[u8]) {
                 } else {
                     pic.grid[col].copy_within(..ROWS - 1, 1);
                 }
-                let incoming = args.get(col * 3..col * 3 + 3).map_or([0; 3], |c| [c[0], c[1], c[2]]);
+                let incoming = args
+                    .get(col * 3..col * 3 + 3)
+                    .map_or([0; 3], |c| [c[0], c[1], c[2]]);
                 pic.grid[col][if up { ROWS - 1 } else { 0 }] = incoming;
             }
             panel.set_all_pads(&all_pads(&pic.grid));
@@ -141,7 +148,13 @@ pub(crate) fn pic_command(bytes: &[u8]) {
 
 /// Shift `row` one square in `direction` across the first `columns` columns, as the app's own image moves
 /// (`pad_leds.cpp`'s `horizontal::renderScroll`), and put `incoming` in the square that opens up.
-fn shift_row(grid: &mut [[[u8; 3]; ROWS]; COLS], row: usize, direction: i8, columns: usize, incoming: [u8; 3]) {
+fn shift_row(
+    grid: &mut [[[u8; 3]; ROWS]; COLS],
+    row: usize,
+    direction: i8,
+    columns: usize,
+    incoming: [u8; 3],
+) {
     if direction > 0 {
         for x in 0..columns - 1 {
             grid[x][row] = grid[x + 1][row];
@@ -167,6 +180,65 @@ fn all_pads(grid: &[[[u8; 3]; ROWS]; COLS]) -> [u8; deluge_sim_link::ALL_PADS_BY
     buf
 }
 
+// ── Input ─────────────────────────────────────────────────────────────────────
+
+/// The PIC's byte before a pad or button id that marks it released (`pic::Parser`'s `RESP_NEXT_PAD_OFF`).
+const NEXT_IS_RELEASE: u8 = 252;
+/// Button ids start here in the PIC's byte stream (`pic::Parser`: 144..=179).
+const BUTTON_BASE: u8 = 144;
+/// How often [`read_byte`] looks for panel input when it has none: short enough to feel immediate.
+const INPUT_POLL_MS: u64 = 1;
+
+/// Panel input already encoded as PIC bytes, waiting to be read.
+static INPUT_BYTES: Mutex<VecDeque<u8>> = Mutex::new(VecDeque::new());
+
+/// The next byte the PIC would send, from the panel's input. Waits for input when there is none.
+pub(crate) async fn read_byte() -> u8 {
+    loop {
+        if let Some(byte) = next_input_byte() {
+            return byte;
+        }
+        embassy_time::Timer::after_millis(INPUT_POLL_MS).await;
+    }
+}
+
+fn next_input_byte() -> Option<u8> {
+    let panel = panel()?;
+    let mut bytes = INPUT_BYTES.lock().unwrap_or_else(PoisonError::into_inner);
+    while bytes.is_empty() {
+        encode_input(panel.pop_event()?, &mut bytes);
+    }
+    bytes.pop_front()
+}
+
+/// Queue `event` as the PIC's bytes. An encoder turn has no PIC bytes (the encoders are wired to the CPU, not the
+/// PIC): it becomes edges on its accumulator instead, two per detent as the hardware produces them, and wakes the
+/// encoder task as the interrupt does.
+fn encode_input(event: InputEvent, bytes: &mut VecDeque<u8>) {
+    match event {
+        InputEvent::Pad { x, y, pressed } => {
+            if !pressed {
+                bytes.push_back(NEXT_IS_RELEASE);
+            }
+            bytes.push_back(crate::pic::pad_id(x, y));
+        }
+        InputEvent::Button { id, pressed } => {
+            if !pressed {
+                bytes.push_back(NEXT_IS_RELEASE);
+            }
+            bytes.push_back(BUTTON_BASE + id);
+        }
+        InputEvent::Encoder { index, delta } => {
+            if let Some(edges) = crate::encoder::ENCODER_DELTAS.get(usize::from(index)) {
+                let _ = edges.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |e| {
+                    Some(e.saturating_add(delta.saturating_mul(2)))
+                });
+                crate::encoder::ENCODER_WAKER.wake();
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,7 +253,73 @@ mod tests {
         assert_eq!(grid[0][2], [1, 0, 0]);
         assert_eq!(grid[14][2], [15, 0, 0]);
         assert_eq!(grid[15][2], [99, 0, 0]);
-        assert_eq!(grid[16][2], [16, 0, 0], "the sidebar is outside a 16-column scroll");
+        assert_eq!(
+            grid[16][2],
+            [16, 0, 0],
+            "the sidebar is outside a 16-column scroll"
+        );
+    }
+
+    /// Encode `event` and decode it with the program's own parser.
+    fn round_trip(event: InputEvent) -> Vec<crate::pic::Event> {
+        let mut bytes = VecDeque::new();
+        encode_input(event, &mut bytes);
+        let mut parser = crate::pic::Parser::new();
+        bytes.into_iter().filter_map(|b| parser.push(b)).collect()
+    }
+
+    #[test]
+    fn every_pad_press_and_release_decodes_to_its_own_coordinates() {
+        use crate::pic::{Event, pad_coords};
+        for x in 0..18u8 {
+            for y in 0..8u8 {
+                for pressed in [true, false] {
+                    let events = round_trip(InputEvent::Pad { x, y, pressed });
+                    let [event] = events[..] else {
+                        panic!("pad ({x},{y}) decoded to {events:?}");
+                    };
+                    let id = match event {
+                        Event::PadPress { id } if pressed => id,
+                        Event::PadRelease { id } if !pressed => id,
+                        other => panic!("pad ({x},{y}) pressed={pressed} decoded to {other:?}"),
+                    };
+                    assert_eq!(pad_coords(id), (x, y));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_button_decodes_to_its_id() {
+        use crate::pic::Event;
+        assert_eq!(
+            round_trip(InputEvent::Button {
+                id: 25,
+                pressed: true
+            }),
+            [Event::ButtonPress { id: 25 }]
+        );
+        assert_eq!(
+            round_trip(InputEvent::Button {
+                id: 35,
+                pressed: false
+            }),
+            [Event::ButtonRelease { id: 35 }]
+        );
+    }
+
+    #[test]
+    fn an_encoder_turn_adds_two_edges_a_detent() {
+        use crate::encoder::ENCODER_DELTAS;
+        ENCODER_DELTAS[3].store(0, Ordering::Relaxed);
+        assert!(
+            round_trip(InputEvent::Encoder {
+                index: 3,
+                delta: -2
+            })
+            .is_empty()
+        );
+        assert_eq!(ENCODER_DELTAS[3].swap(0, Ordering::Relaxed), -4);
     }
 
     #[test]
