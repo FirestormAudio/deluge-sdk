@@ -767,7 +767,9 @@ pub mod __rt {
                     crate::plat::input_start_pump(spawner);
                     spawn(spawner);
                 });
-            })
+            });
+            // The window has closed; the app's executor is still running, so end the process here.
+            std::process::exit(0)
         }
     }
 
