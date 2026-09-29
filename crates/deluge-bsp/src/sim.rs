@@ -41,9 +41,33 @@ pub fn panel() -> Option<&'static SharedPanel> {
     PANEL.get()
 }
 
-/// Take the program's ends of the audio bridge (once).
-pub fn take_audio() -> Option<BrainEnds> {
-    AUDIO.lock().unwrap_or_else(PoisonError::into_inner).take()
+pub use deluge_sim_link::audio::{BLOCK_FRAMES, SAMPLE_RATE_HZ, Sample};
+
+/// Exchange one block with the simulator's audio device, if its output has room for the block: `render` is handed
+/// the block's input (the frames the input device captured, silence where it has fallen behind) and replaces it with
+/// the block's output. Returns whether it rendered.
+///
+/// The simulator's output device plays at the codec's rate, so a full output is the program's clock: call this
+/// until it returns `false`, then wait, as the device's audio drive renders only as far as the DMA play head has
+/// moved. Always `false` with no simulator installed.
+pub fn render_block(render: impl FnOnce(&mut [Sample; BLOCK_FRAMES])) -> bool {
+    let mut audio = AUDIO.lock().unwrap_or_else(PoisonError::into_inner);
+    audio.as_mut().is_some_and(|ends| exchange(ends, render))
+}
+
+fn exchange(ends: &mut BrainEnds, render: impl FnOnce(&mut [Sample; BLOCK_FRAMES])) -> bool {
+    use deluge_sim_link::audio::{Consumer, Observer, Producer};
+
+    if ends.out.vacant_len() < BLOCK_FRAMES {
+        return false;
+    }
+    let mut block = [[0.0; 2]; BLOCK_FRAMES];
+    for frame in &mut block {
+        *frame = ends.in_.try_pop().unwrap_or([0.0, 0.0]);
+    }
+    render(&mut block);
+    ends.out.push_slice(&block);
+    true
 }
 
 /// The OLED's frame, 768 bytes page-major, as [`crate::oled::FrameBuffer::as_bytes`] lays it out.
@@ -332,5 +356,30 @@ mod tests {
         assert_eq!(grid[0][0], [77, 0, 0]);
         assert_eq!(grid[1][0], [0, 0, 0]);
         assert_eq!(grid[17][0], [16, 0, 0]);
+    }
+
+    #[test]
+    fn a_block_renders_its_input_into_the_output_while_the_output_has_room() {
+        use deluge_sim_link::audio::{Consumer, Observer, Producer};
+
+        let (mut brain, mut gui) = deluge_sim_link::audio::new_bridge();
+        // Half a block of input: the rest of the block reads as silence.
+        for n in 0..BLOCK_FRAMES / 2 {
+            gui.in_.try_push([n as f32, -(n as f32)]).unwrap();
+        }
+        assert!(exchange(&mut brain, |block| {
+            for s in block.iter_mut() {
+                *s = [s[0] * 2.0, s[1] * 2.0];
+            }
+        }));
+        let out: Vec<Sample> = gui.out.pop_iter().collect();
+        assert_eq!(out.len(), BLOCK_FRAMES);
+        assert_eq!(out[3], [6.0, -6.0]);
+        assert_eq!(out[BLOCK_FRAMES - 1], [0.0, 0.0]);
+
+        // Fill the output: the next block has no room, and is not rendered.
+        while exchange(&mut brain, |_| {}) {}
+        assert!(brain.out.vacant_len() < BLOCK_FRAMES);
+        assert!(!exchange(&mut brain, |_| panic!("rendered into a full output")));
     }
 }

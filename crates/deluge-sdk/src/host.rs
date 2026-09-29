@@ -8,14 +8,8 @@
 //! code runs, so the SDK and a program on the BSP directly share one copy.
 
 use deluge_sim_link::SharedPanel;
-use deluge_sim_link::audio::BrainEnds;
 
 /// The process-wide shared panel. Panics if called before the host runtime installs it.
 pub(crate) fn panel() -> &'static SharedPanel {
     deluge_bsp::sim::panel().expect("host panel not initialised (run via `cargo deluge sim`)")
-}
-
-/// Take the app-side audio endpoints (once, by `Audio::process`).
-pub(crate) fn take_audio() -> Option<BrainEnds> {
-    deluge_bsp::sim::take_audio()
 }

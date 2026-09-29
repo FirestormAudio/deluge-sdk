@@ -4,8 +4,11 @@
 //! Selected by the `DELUGE_HEADLESS` env var (set by `cargo deluge sim
 //! --headless`). The SDK host runtime hands us the same `SharedPanel` + audio
 //! bridge it would give the GUI; we run a tiny driver instead of `iced`:
-//!   - a **null audio pacer** keeps an audio app's DSP loop running without a
-//!     real device (drains output, feeds silence);
+//!   - an **audio clock** stands in for the output device: it drains the app's
+//!     output at the codec rate in wall time and feeds silence as input, so the
+//!     app renders in real time. `DELUGE_SIM_AUDIO_OUT` records what it drains
+//!     to a WAV, and the frames the app did not deliver in time are reported at
+//!     exit;
 //!   - a **script** (`DELUGE_SIM_SCRIPT`) of timed input events + snapshots is
 //!     replayed against the panel;
 //!   - **snapshots** write the OLED to a PNG and the pad/LED/CV/gate state to a
@@ -22,16 +25,20 @@
 //! ```
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use deluge_sim_link::audio::{Consumer, GuiEnds, Producer};
+use deluge_sim_link::audio::{Consumer, GuiEnds, Producer, SAMPLE_RATE_HZ};
 use deluge_sim_link::{DISPLAY_BYTES, InputEvent, LED_COUNT, PAD_COLS, PAD_ROWS, SharedPanel};
 
 /// Run the app headlessly: replay the script, dump snapshots, then return (the
 /// SDK host runtime exits the process afterwards). The app is already running on
 /// the brain thread by the time this is called.
 pub fn run_headless(panel: SharedPanel, gui_audio: GuiEnds) {
-    start_null_pacer(gui_audio);
+    // Dropped on return, which stops the clock and finishes the recording.
+    let _audio = AudioClock::start(gui_audio, std::env::var_os("DELUGE_SIM_AUDIO_OUT").map(PathBuf::from));
 
     let out_dir = std::env::var_os("DELUGE_SIM_OUT")
         .map(PathBuf::from)
@@ -76,20 +83,85 @@ pub fn run_headless(panel: SharedPanel, gui_audio: GuiEnds) {
     }
 }
 
-/// Drain the app's audio output and feed it silence at a steady cadence, so an
-/// audio app's `process` loop keeps running without a real output device.
-fn start_null_pacer(gui_audio: GuiEnds) {
-    let GuiEnds { mut out, mut in_ } = gui_audio;
-    std::thread::Builder::new()
-        .name("deluge-null-audio".into())
-        .spawn(move || {
-            loop {
-                while out.try_pop().is_some() {}
-                while in_.try_push([0.0, 0.0]).is_ok() {}
-                std::thread::sleep(Duration::from_millis(3));
-            }
-        })
-        .ok();
+/// The output device's stand-in: drains the app's output at the codec rate in wall time, so the app renders in real
+/// time as it does against a real device, and feeds it silence as input.
+struct AudioClock {
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+/// How often the clock drains what has come due.
+const CLOCK_TICK: Duration = Duration::from_millis(2);
+
+impl AudioClock {
+    fn start(gui_audio: GuiEnds, record: Option<PathBuf>) -> Self {
+        let GuiEnds { mut out, mut in_ } = gui_audio;
+        let mut writer = record.and_then(|path| {
+            let spec = hound::WavSpec {
+                channels: 2,
+                sample_rate: SAMPLE_RATE_HZ,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            };
+            hound::WavWriter::create(&path, spec)
+                .map_err(|e| eprintln!("deluge-sim headless: recording to {path:?}: {e}"))
+                .ok()
+                .map(|w| (w, path))
+        });
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopping = stop.clone();
+        let handle = std::thread::Builder::new()
+            .name("deluge-audio-clock".into())
+            .spawn(move || {
+                let start = Instant::now();
+                let mut drained: u64 = 0;
+                // Frames that came due with nothing in the output, counted from the app's first frame: before it,
+                // the app is still booting.
+                let mut late: u64 = 0;
+                let mut started = false;
+                while !stopping.load(Ordering::Acquire) {
+                    let due = (start.elapsed().as_micros() as u64 * SAMPLE_RATE_HZ as u64 / 1_000_000)
+                        .saturating_sub(drained);
+                    for _ in 0..due {
+                        let frame = out.try_pop();
+                        started |= frame.is_some();
+                        if frame.is_none() && started {
+                            late += 1;
+                        }
+                        if let (Some(frame), Some((w, _))) = (frame, writer.as_mut()) {
+                            let _ = w.write_sample(frame[0]);
+                            let _ = w.write_sample(frame[1]);
+                        }
+                        let _ = in_.try_push([0.0, 0.0]);
+                    }
+                    drained += due;
+                    std::thread::sleep(CLOCK_TICK);
+                }
+                if late > 0 {
+                    eprintln!(
+                        "deluge-sim headless: the app delivered {late} frames late ({:.1} ms of silence)",
+                        late as f64 * 1000.0 / SAMPLE_RATE_HZ as f64
+                    );
+                }
+                if let Some((w, path)) = writer {
+                    match w.finalize() {
+                        Ok(()) => eprintln!("deluge-sim headless: recorded the output to {path:?}"),
+                        Err(e) => eprintln!("deluge-sim headless: finishing {path:?}: {e}"),
+                    }
+                }
+            })
+            .ok();
+        Self { stop, handle }
+    }
+}
+
+impl Drop for AudioClock {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
 }
 
 struct Step {
