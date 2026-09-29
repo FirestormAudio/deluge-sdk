@@ -37,18 +37,16 @@ pub(crate) fn cmd_new(args: &[String]) -> Result<(), String> {
         return Err(format!("`{}` already exists", dir.display()));
     }
 
-    // Point the new app at the SDK's `deluge` crate if we can find it (in-repo
-    // use); otherwise fall back to a crates.io version requirement.
-    let deluge_dep = match find_sdk_deluge() {
-        Some(p) => format!("deluge = {{ path = {:?} }}", p.display().to_string()),
-        None => {
-            eprintln!(
-                "note: couldn't locate the SDK's `deluge` crate; using a version \
-                 requirement. Edit Cargo.toml to point at your SDK checkout if needed."
-            );
-            "deluge = \"0.1\"".to_string()
-        }
-    };
+    // Point the new app at the SDK checkout it was created in, if any;
+    // otherwise at the published crate.
+    let sdk = env::current_dir().ok().and_then(|d| find_sdk_deluge_from(&d));
+    if sdk.is_none() {
+        eprintln!(
+            "note: not inside an SDK checkout; depending on the published \
+             `deluge-sdk`. Edit Cargo.toml to point at a local checkout if needed."
+        );
+    }
+    let deluge_dep = deluge_dep(sdk.as_deref());
 
     scaffold(&dir, name, &deluge_dep)?;
 
@@ -102,16 +100,29 @@ fn scaffold(dir: &Path, name: &str, deluge_dep: &str) -> Result<(), String> {
 }
 
 /// Walk up from the current directory looking for the SDK's `deluge` crate.
-fn find_sdk_deluge() -> Option<PathBuf> {
-    let mut dir = env::current_dir().ok()?;
+fn find_sdk_deluge_from(start: &Path) -> Option<PathBuf> {
+    let mut dir = start.to_path_buf();
     loop {
-        let candidate = dir.join("deluge");
+        let candidate = dir.join("crates/deluge-sdk");
         if candidate.join("Cargo.toml").is_file() {
             return Some(candidate.canonicalize().unwrap_or(candidate));
         }
         if !dir.pop() {
             return None;
         }
+    }
+}
+
+/// The app's `deluge` dependency: the SDK crate at `sdk` if given, else the
+/// published one. Either way it is the `deluge-sdk` package, imported as
+/// `deluge`.
+fn deluge_dep(sdk: Option<&Path>) -> String {
+    match sdk {
+        Some(p) => format!(
+            "deluge = {{ package = \"deluge-sdk\", path = {:?} }}",
+            p.display().to_string()
+        ),
+        None => "deluge = { package = \"deluge-sdk\", version = \"0.1\" }".to_string(),
     }
 }
 
@@ -142,6 +153,8 @@ embassy-time = {{ version = "0.5", features = ["tick-hz-1_000_000"] }}
 default = []
 ## Opt-in RTT (SEGGER) logging over a debug probe; off by default (reserves no RAM).
 rtt = ["deluge/rtt"]
+## Desktop simulator backend; `cargo deluge sim` enables it.
+sim = ["deluge/sim"]
 
 [profile.release]
 opt-level = "s"
@@ -286,5 +299,37 @@ mod tests {
         let launch = fs::read_to_string(app.join(".vscode/launch.json")).unwrap();
         assert!(launch.contains("debug/my-app"), "app name not substituted: {launch}");
         assert!(!launch.contains("__APP_NAME__"), "placeholder left in launch.json");
+    }
+
+    #[test]
+    fn finds_the_sdk_crate_from_anywhere_inside_the_repo() {
+        let root = tmpdir();
+        let sdk = root.0.join("crates/deluge-sdk");
+        fs::create_dir_all(&sdk).unwrap();
+        fs::write(sdk.join("Cargo.toml"), "[package]\nname = \"deluge-sdk\"\n").unwrap();
+        let deep = root.0.join("examples/baremetal/new_app");
+        fs::create_dir_all(&deep).unwrap();
+        let found = find_sdk_deluge_from(&deep).expect("SDK not found");
+        assert_eq!(found, sdk.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn the_deluge_dependency_names_the_published_package() {
+        // The crate is published as `deluge-sdk`; `deluge` on crates.io is an
+        // unrelated library. Both forms must import it as `deluge`.
+        let local = deluge_dep(Some(Path::new("/sdk/crates/deluge-sdk")));
+        assert!(local.starts_with("deluge = {"), "{local}");
+        assert!(local.contains("package = \"deluge-sdk\""), "{local}");
+        assert!(local.contains("path = \"/sdk/crates/deluge-sdk\""), "{local}");
+        let published = deluge_dep(None);
+        assert!(published.contains("package = \"deluge-sdk\""), "{published}");
+        assert!(published.contains("version = \"0.1\""), "{published}");
+    }
+
+    #[test]
+    fn cargo_toml_template_declares_the_sim_feature() {
+        // `cargo deluge sim` enables it; without it the SDK has no host runtime.
+        let t = cargo_toml("app", "deluge = \"0.1\"");
+        assert!(t.contains("sim = [\"deluge/sim\"]"), "{t}");
     }
 }
