@@ -236,7 +236,10 @@ fn parse_script(path: &Path) -> Result<Vec<Step>, String> {
             }),
             "midi" => {
                 let bytes = t
-                    .map(|b| u8::from_str_radix(b, 16).map_err(|_| format!("line {n}: {b:?} is not a hex byte")))
+                    .map(|b| {
+                        u8::from_str_radix(b, 16)
+                            .map_err(|_| format!("line {n}: {b:?} is not a hex byte"))
+                    })
                     .collect::<Result<Vec<u8>, String>>()?;
                 if bytes.is_empty() {
                     return Err(format!("line {n}: midi needs at least one byte"));

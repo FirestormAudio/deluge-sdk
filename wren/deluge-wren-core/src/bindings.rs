@@ -191,7 +191,9 @@ fn fire_metro<S: SlotApi>(vm: &S, cb: Handle, stage: i64) {
 // ── Foreign object structs ───────────────────────────────────────────────────
 
 #[derive(Clone, Copy)]
+#[repr(C)]
 struct OutputObj {
+    tag: u8,
     ch: u32,
 }
 impl WrenForeign for OutputObj {
@@ -204,7 +206,9 @@ impl WrenForeign for OutputObj {
 }
 
 #[derive(Clone, Copy)]
+#[repr(C)]
 struct GateObj {
+    tag: u8,
     ch: u32,
 }
 impl WrenForeign for GateObj {
@@ -217,7 +221,9 @@ impl WrenForeign for GateObj {
 }
 
 #[derive(Clone, Copy)]
+#[repr(C)]
 struct MetroObj {
+    tag: u8,
     idx: u32,
 }
 impl WrenForeign for MetroObj {
@@ -233,7 +239,12 @@ impl WrenForeign for MetroObj {
 
 pub(crate) fn output_alloc_impl<S: SlotApi>(vm: &S) {
     let ch = vm.get_f(1) as u32;
-    unsafe { vm.alloc_foreign(OutputObj { ch }) };
+    unsafe {
+        vm.alloc_foreign(OutputObj {
+            tag: crate::bindings_audio::TAG_OUTPUT,
+            ch,
+        })
+    };
 }
 #[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn output_alloc(raw: *mut WrenVM) {
@@ -295,7 +306,12 @@ unsafe extern "C" fn output_slew_set(raw: *mut WrenVM) {
 
 pub(crate) fn gate_alloc_impl<S: SlotApi>(vm: &S) {
     let ch = vm.get_f(1) as u32;
-    unsafe { vm.alloc_foreign(GateObj { ch }) };
+    unsafe {
+        vm.alloc_foreign(GateObj {
+            tag: crate::bindings_audio::TAG_GATE,
+            ch,
+        })
+    };
 }
 #[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn gate_alloc(raw: *mut WrenVM) {
@@ -331,7 +347,12 @@ pub(crate) fn metro_alloc_impl<S: SlotApi>(vm: &S) {
             break;
         }
     }
-    unsafe { vm.alloc_foreign(MetroObj { idx }) };
+    unsafe {
+        vm.alloc_foreign(MetroObj {
+            tag: crate::bindings_audio::TAG_METRO,
+            idx,
+        })
+    };
 }
 #[cfg(feature = "wren-sys-backend")]
 unsafe extern "C" fn metro_alloc(raw: *mut WrenVM) {

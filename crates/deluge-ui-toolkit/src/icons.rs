@@ -52,11 +52,11 @@ impl IconData {
 }
 
 /// Whether pixel `(x, y)` of a 1-bit BMP icon is lit. Returns `false` for
-/// non-BMP icons or if the pixel's byte lies past the end of the data;
-/// `y` must be less than the icon height.
+/// non-BMP icons, for a row outside the icon, or if the pixel's byte lies past
+/// the end of the data.
 ///
-/// Assumes bottom-up row order and a 62-byte header (file header + 40-byte
-/// info header + 2-entry palette).
+/// Handles both bottom-up and top-down (negative height) BMPs. Assumes a
+/// 62-byte header (file header + 40-byte info header + 2-entry palette).
 pub fn get_bmp_pixel(icon: &IconData, x: u8, y: u8) -> bool {
     if icon.format != IconFormat::Bmp {
         return false;
@@ -70,8 +70,12 @@ pub fn get_bmp_pixel(icon: &IconData, x: u8, y: u8) -> bool {
 
     let pixel_data_offset = 62;
 
-    let row_from_bottom = (icon.height - 1 - y) as usize;
-    let row_offset = pixel_data_offset + row_from_bottom * row_size_padded;
+    if y >= icon.height || bmp_data.len() < 26 {
+        return false;
+    }
+    let top_down = i32::from_le_bytes([bmp_data[22], bmp_data[23], bmp_data[24], bmp_data[25]]) < 0;
+    let stored_row = if top_down { y } else { icon.height - 1 - y } as usize;
+    let row_offset = pixel_data_offset + stored_row * row_size_padded;
 
     let byte_idx = x as usize / 8;
     let bit_idx = 7 - (x as usize % 8); // MSB first in BMP
@@ -133,5 +137,41 @@ mod tests {
         // 16-pixel tall icons are 126 bytes (14 byte header + 40 byte info + 8 byte palette + 64 pixel data)
         assert_eq!(SINE.data.len(), 126);
         assert_eq!(SQUARE.data.len(), 126);
+    }
+
+    extern crate std;
+
+    /// An 8×2 1-bit BMP whose only lit pixel is the top-left one, stored
+    /// bottom-up (positive height) or top-down (negative height).
+    fn top_left_bmp(top_down: bool) -> IconData {
+        let mut b = std::vec![0u8; 62 + 2 * 4];
+        b[18] = 8; // width
+        let h: i32 = if top_down { -2 } else { 2 };
+        b[22..26].copy_from_slice(&h.to_le_bytes());
+        // Rows are 4 bytes (padded). Top row is first in a top-down file and
+        // last in a bottom-up one.
+        let top_row = if top_down { 62 } else { 62 + 4 };
+        b[top_row] = 0x80;
+        IconData::from_bmp(std::boxed::Box::leak(b.into_boxed_slice()))
+    }
+
+    #[test]
+    fn bottom_up_bmp_reads_the_right_way_up() {
+        let icon = top_left_bmp(false);
+        assert!(get_bmp_pixel(&icon, 0, 0));
+        assert!(!get_bmp_pixel(&icon, 0, 1));
+    }
+
+    #[test]
+    fn top_down_bmp_reads_the_right_way_up() {
+        let icon = top_left_bmp(true);
+        assert_eq!(icon.height, 2);
+        assert!(get_bmp_pixel(&icon, 0, 0));
+        assert!(!get_bmp_pixel(&icon, 0, 1));
+    }
+
+    #[test]
+    fn a_row_past_the_icon_is_unlit_not_a_panic() {
+        assert!(!get_bmp_pixel(&top_left_bmp(false), 0, 2));
     }
 }

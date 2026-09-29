@@ -396,20 +396,7 @@ pub fn build<'d, D: Driver<'d>>(
 // UMP helpers
 // ============================================================================
 
-/// Return the number of 32-bit words in a UMP message.
-///
-/// Based on UMP spec (M2-104-UM) Table 2-1 — Message Type (bits 31–28).
-#[inline]
-pub fn ump_word_count(first_word: u32) -> usize {
-    match (first_word >> 28) as u8 {
-        // 32-bit (1 word): Utility, SysRT/SysCommon, MIDI 1.0 CV, reserved 6/7
-        0x0..=0x2 | 0x6 | 0x7 => 1,
-        // 64-bit (2 words): Sysex7, MIDI 2.0 CV, reserved 8–C
-        0x3 | 0x4 | 0x8..=0xC => 2,
-        // 128-bit (4 words): Sysex8/MixedData, FlexData, reserved E, UMP Stream
-        _ => 4,
-    }
-}
+pub use crate::midi_stream::ump_word_count;
 
 // ============================================================================
 // USB MIDI 1.0 packet helpers

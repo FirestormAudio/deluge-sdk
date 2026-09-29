@@ -71,6 +71,9 @@ pub enum SimulatorMessage {
     /// Collapse/expand the rack strip's contents (the window size is fixed).
     #[cfg(feature = "rack")]
     ToggleRackCollapsed,
+    /// Turn the rack strip's BOOST knob by this many detents.
+    #[cfg(feature = "rack")]
+    BoostRotated(i32),
 }
 
 pub struct DelugeSimulator {
@@ -93,10 +96,16 @@ pub struct DelugeSimulator {
     audio_monitor: Option<HeapCons<[f32; 2]>>,
     /// Master output volume, driven by the faceplate Volume knob (0.0–1.0).
     volume: crate::audio::Volume,
+    /// Monitor gain on top of the volume, driven by the rack strip's BOOST knob.
+    #[cfg(feature = "rack")]
+    boost: crate::audio::Boost,
 }
 
 /// Percentage points the Volume knob moves per scroll detent.
 const VOLUME_STEP: i32 = 4;
+/// dB the BOOST knob moves per scroll detent.
+#[cfg(feature = "rack")]
+const BOOST_STEP_DB: f32 = 1.0;
 
 // Top-panel (rack) integration seam. The CV/gate/audio "top panel" is an
 // optional `rack` feature: when enabled these forward to the [`InstrumentRack`];
@@ -152,12 +161,13 @@ impl DelugeSimulator {
         svg_background: Option<image::Handle>,
         audio_monitor: Option<HeapCons<[f32; 2]>>,
         volume: crate::audio::Volume,
+        boost: crate::audio::Boost,
         hardware: Option<HardwareMirror>,
     ) -> Self {
         // With the `rack` feature off there is no top panel to feed, so the
-        // output-audio tap is unused.
+        // output-audio tap is unused, and there is no BOOST knob to set the boost.
         #[cfg(not(feature = "rack"))]
-        let _ = audio_monitor;
+        let _ = (audio_monitor, boost);
         let mut renderer = DynamicElementsRenderer::new(
             SimulatorDisplay::new(),
             PadGrid::new(),
@@ -178,6 +188,8 @@ impl DelugeSimulator {
             #[cfg(feature = "rack")]
             audio_monitor,
             volume,
+            #[cfg(feature = "rack")]
+            boost,
         }
     }
 
@@ -275,6 +287,14 @@ impl DelugeSimulator {
             // tiling compositor would tile the window if it were made resizable.
             #[cfg(feature = "rack")]
             SimulatorMessage::ToggleRackCollapsed => self.rack.toggle_collapsed(),
+            #[cfg(feature = "rack")]
+            SimulatorMessage::BoostRotated(detents) => {
+                let db = (crate::audio::boost_db(&self.boost) + detents as f32 * BOOST_STEP_DB)
+                    .clamp(0.0, crate::audio::MAX_BOOST_DB);
+                self.boost
+                    .store(db.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                self.rack.set_boost_db(db);
+            }
         }
         Task::none()
     }

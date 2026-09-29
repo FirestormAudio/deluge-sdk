@@ -530,9 +530,9 @@ mod device {
             // CMD6 is a *transfer-mode* command: it must not run at the 130 kHz
             // identification clock.  Some cards never deliver its 64-byte data
             // block there (observed on hardware: the controller then sits in
-            // the data-phase wait until the SD_OPTION timeout — 2^27 SD_CLK
-            // cycles ≈ 17 minutes at 130 kHz).  16.7 MHz is legal for every
-            // card in Transfer state, and puts that timeout at ~8 s.
+            // the data-phase wait until the SD_OPTION timeout — 2^24 SD_CLK
+            // cycles ≈ 2 minutes at 130 kHz).  16.7 MHz is legal for every
+            // card in Transfer state, and puts that timeout at ~1 s.
             sdhi::set_clock_fast(SD_PORT);
 
             // ---- Try CMD6 High-Speed (33.3 MHz), else stay at 16.7 MHz ----

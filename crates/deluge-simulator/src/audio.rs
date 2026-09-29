@@ -52,6 +52,38 @@ pub fn new_volume() -> Volume {
     Arc::new(AtomicU32::new(1.0f32.to_bits()))
 }
 
+/// Monitor gain in dB on top of the Volume knob, stored as `f32` bits like [`Volume`]. The Deluge leaves a single
+/// voice well below full scale so a whole mix fits, and on the device its analogue output stage adds the gain a
+/// listener hears; this stands in for it. Speakers only: the recording and the scopes take the output before it.
+pub type Boost = Arc<AtomicU32>;
+
+/// The most [`Boost`] can add.
+pub const MAX_BOOST_DB: f32 = 24.0;
+
+/// A fresh boost of 0 dB.
+pub fn new_boost() -> Boost {
+    Arc::new(AtomicU32::new(0.0f32.to_bits()))
+}
+
+/// A [`Boost`]'s dB setting.
+pub fn boost_db(b: &Boost) -> f32 {
+    f32::from_bits(b.load(Ordering::Relaxed))
+}
+
+/// Where [`soft_clip`] starts to bend.
+const KNEE: f32 = 0.9;
+
+/// Linear below [`KNEE`], then bending smoothly towards ±1, so a boosted mix that passes full scale rounds off rather
+/// than wrapping or cracking.
+fn soft_clip(x: f32) -> f32 {
+    let a = x.abs();
+    if a <= KNEE {
+        return x;
+    }
+    let bent = KNEE + (1.0 - KNEE) * ((a - KNEE) / (1.0 - KNEE)).tanh();
+    bent.copysign(x)
+}
+
 /// Depth (stereo frames) of the scope-monitor ring. A few output callbacks'
 /// worth of headroom so the GUI can drain it once per frame without overflow.
 const MONITOR_CAP: usize = 8192;
@@ -73,7 +105,12 @@ pub struct AudioStreams {
 /// Returns the live streams plus a **scope-monitor** consumer: a stereo copy of
 /// the output going to the speakers, which the GUI drains into the rack's audio
 /// oscilloscopes (one per channel).
-pub fn start(gui: GuiEnds, volume: Volume, cfg: AudioConfig) -> (AudioStreams, HeapCons<[f32; 2]>) {
+pub fn start(
+    gui: GuiEnds,
+    volume: Volume,
+    boost: Boost,
+    cfg: AudioConfig,
+) -> (AudioStreams, HeapCons<[f32; 2]>) {
     let GuiEnds { out, in_ } = gui;
     let host = cpal::default_host();
 
@@ -91,7 +128,7 @@ pub fn start(gui: GuiEnds, volume: Volume, cfg: AudioConfig) -> (AudioStreams, H
         None => (None, None),
     };
 
-    let output = match start_output(&host, out, mon_prod, volume, rec_prod) {
+    let output = match start_output(&host, out, mon_prod, volume, boost, rec_prod) {
         Ok(s) => Some(s),
         Err(e) => {
             log::warn!("simulator audio: no output ({e}); running silent");
@@ -279,6 +316,7 @@ fn start_output(
     out: HeapCons<[f32; 2]>,
     mon: HeapProd<[f32; 2]>,
     volume: Volume,
+    boost: Boost,
     rec: Option<HeapProd<[f32; 2]>>,
 ) -> Result<cpal::Stream, String> {
     let dev = host
@@ -290,9 +328,9 @@ fn start_output(
     let fmt = cfg.sample_format();
     let config: cpal::StreamConfig = cfg.into();
     let stream = match fmt {
-        cpal::SampleFormat::F32 => build_output::<f32>(&dev, &config, out, mon, volume, rec),
-        cpal::SampleFormat::I16 => build_output::<i16>(&dev, &config, out, mon, volume, rec),
-        cpal::SampleFormat::U16 => build_output::<u16>(&dev, &config, out, mon, volume, rec),
+        cpal::SampleFormat::F32 => build_output::<f32>(&dev, &config, out, mon, volume, boost, rec),
+        cpal::SampleFormat::I16 => build_output::<i16>(&dev, &config, out, mon, volume, boost, rec),
+        cpal::SampleFormat::U16 => build_output::<u16>(&dev, &config, out, mon, volume, boost, rec),
         other => return Err(format!("unsupported output sample format {other:?}")),
     }
     .map_err(|e| format!("build output stream: {e}"))?;
@@ -306,6 +344,7 @@ fn build_output<T>(
     mut out: HeapCons<[f32; 2]>,
     mut mon: HeapProd<[f32; 2]>,
     volume: Volume,
+    boost: Boost,
     mut rec: Option<HeapProd<[f32; 2]>>,
 ) -> Result<cpal::Stream, cpal::Error>
 where
@@ -315,7 +354,10 @@ where
     dev.build_output_stream(
         config.clone(),
         move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
-            let gain = volume_gain(&volume);
+            let boost_db = boost_db(&boost);
+            let gain = volume_gain(&volume) * 10f32.powf(boost_db / 20.0);
+            // At 0 dB the speakers get the app's output exactly, as the device's DAC does.
+            let shape = |v: f32| if boost_db > 0.0 { soft_clip(v) } else { v };
             for frame in data.chunks_mut(channels.max(1)) {
                 let s = out.try_pop().unwrap_or([0.0, 0.0]);
                 // Tee the *pre-volume* stereo frame to the scope monitor (and the
@@ -331,7 +373,7 @@ where
                         1 => s[1],
                         _ => 0.0,
                     };
-                    *ch = T::from_sample(v * gain);
+                    *ch = T::from_sample(shape(v * gain));
                 }
             }
         },
@@ -386,4 +428,23 @@ where
         |e| log::warn!("simulator audio input error: {e}"),
         None,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_soft_clip_is_linear_below_the_knee_and_stays_within_full_scale() {
+        for x in [0.0, 0.25, -0.5, KNEE, -KNEE] {
+            assert_eq!(soft_clip(x), x);
+        }
+        let mut last = KNEE;
+        for i in 1..=100 {
+            let y = soft_clip(KNEE + i as f32 * 0.05);
+            assert!(y >= last && y <= 1.0, "{y} after {last}");
+            last = y;
+        }
+        assert_eq!(soft_clip(-4.0), -soft_clip(4.0));
+    }
 }

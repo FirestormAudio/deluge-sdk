@@ -65,18 +65,20 @@ fn run_app(
     link: LinkKind,
     audio_monitor: Option<HeapCons<[f32; 2]>>,
     volume: audio::Volume,
+    boost: audio::Boost,
     hardware: Option<HardwareMirror>,
 ) -> iced::Result {
     let svg = render_svg();
     // iced's init closure must be `Fn` (called once); hand the link + svg +
     // monitor + volume + hardware through a Mutex<Option<_>> so the first call can
     // `take()` them.
-    let init = std::sync::Mutex::new(Some((link, svg, audio_monitor, volume, hardware)));
+    let init = std::sync::Mutex::new(Some((link, svg, audio_monitor, volume, boost, hardware)));
     iced::application(
         move || {
-            let (link, svg, mon, vol, hw) = init.lock().unwrap().take().expect("init called once");
+            let (link, svg, mon, vol, boost, hw) =
+                init.lock().unwrap().take().expect("init called once");
             (
-                DelugeSimulator::new(link, svg, mon, vol, hw),
+                DelugeSimulator::new(link, svg, mon, vol, boost, hw),
                 iced::Task::none(),
             )
         },
@@ -112,7 +114,7 @@ pub fn run_connected(target: Option<&str>) -> Result<(), Box<dyn std::error::Err
     // No in-process audio over the protocol link, so no scope monitor; the
     // volume knob is inert (nothing to attenuate). The `--hardware` mirror is
     // in-process only (it re-encodes the shared panel), so none here.
-    run_app(link, None, audio::new_volume(), None)?;
+    run_app(link, None, audio::new_volume(), audio::new_boost(), None)?;
     Ok(())
 }
 
@@ -126,10 +128,17 @@ pub fn run_in_process(panel: SharedPanel, gui_audio: GuiEnds) {
     // Master volume shared between the faceplate Volume knob and the audio
     // output callback.
     let volume = audio::new_volume();
+    // Monitor gain on top of it, set from the rack strip's BOOST knob.
+    let boost = audio::new_boost();
     // Kept alive until the window closes (dropping the streams stops audio and
     // finalises any --audio-out recording). `monitor` is a stereo tap of the
     // output for the rack's audio oscilloscopes.
-    let (_audio, monitor) = audio::start(gui_audio, volume.clone(), audio::AudioConfig::from_env());
+    let (_audio, monitor) = audio::start(
+        gui_audio,
+        volume.clone(),
+        boost.clone(),
+        audio::AudioConfig::from_env(),
+    );
     // Host MIDI bridge: virtual ports ⇄ the panel (kept alive for the session).
     let _midi = midi::start(panel.clone());
     // Optional physical Deluge control surface (`cargo deluge sim --hardware`,
@@ -137,7 +146,7 @@ pub fn run_in_process(panel: SharedPanel, gui_audio: GuiEnds) {
     // by USB VID/PID. A connect failure is non-fatal: warn and run GUI-only.
     let hardware = connect_hardware(panel.clone());
     let link = LinkKind::InProcess(InProcessLink::new(panel));
-    if let Err(e) = run_app(link, Some(monitor), volume, hardware) {
+    if let Err(e) = run_app(link, Some(monitor), volume, boost, hardware) {
         eprintln!("deluge-simulator: {e}");
     }
 }
@@ -155,7 +164,9 @@ pub fn run_in_process(panel: SharedPanel, gui_audio: GuiEnds) {
 /// ends to its peripherals (a `deluge_bsp` program passes them to
 /// `deluge_bsp::sim::install`). The SDK's host runtime is one such brain; a
 /// program built on the BSP directly is another.
-pub fn run_brain(brain: impl FnOnce(SharedPanel, deluge_sim_link::audio::BrainEnds) + Send + 'static) {
+pub fn run_brain(
+    brain: impl FnOnce(SharedPanel, deluge_sim_link::audio::BrainEnds) + Send + 'static,
+) {
     let panel = SharedPanel::new();
     let (brain_audio, gui_audio) = deluge_sim_link::audio::new_bridge();
     let brain_panel = panel.clone();

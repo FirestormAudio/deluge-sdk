@@ -181,8 +181,8 @@ pub unsafe fn channel_start(ch: u8) {
 
 /// Stop a DMA channel immediately: clear its enable bit, then software-reset
 /// it so any in-flight (including circular/peripheral-driven) transfer ceases.
-/// Also zeroes the channel's DMARS register, releasing its peripheral-request
-/// route (the whole word is cleared, including the paired channel's selector).
+/// Also clears the channel's half of its DMARS register, releasing its
+/// peripheral-request route; the paired channel's selector is left alone.
 ///
 /// Intended for use before handing the SoC to another program — a circular
 /// channel such as the SCIF RX DMA keeps writing to its buffer forever and is
@@ -200,8 +200,11 @@ pub unsafe fn stop(ch: u8) {
         crate::mmio::write32(chctrl, CHCTRL_SWRST);
         // Release the peripheral request route too: SWRST resets CHCTRL but not
         // DMARS, so a latched route (e.g. SCIF1-RX = 0x66) would keep claiming
-        // its request line and starve the next program's channel.
-        crate::mmio::write32(dmars_reg(ch) as usize, 0);
+        // its request line and starve the next program's channel. Only this
+        // channel's half: the other half routes its pair.
+        let dmars = dmars_reg(ch) as usize;
+        let keep = if ch % 2 == 0 { 0xFFFF_0000 } else { 0x0000_FFFF };
+        crate::mmio::write32(dmars, crate::mmio::read32(dmars) & keep);
     }
 }
 
@@ -714,9 +717,10 @@ mod tests {
     fn stop_clears_chctrl_and_dmars() {
         crate::mmio::test::reset();
         let ch = 5u8;
-        // Seed a live channel-control value and a latched SCIF1-RX route.
+        // Seed a live channel-control value and a latched SCIF1-RX route in
+        // this odd channel's (high) half of DMARS.
         crate::mmio::test::poke32(ch_reg(ch, OFF_CHCTRL) as usize, CHCTRL_SETEN);
-        crate::mmio::test::poke32(dmars_reg(ch) as usize, 0x0000_0066);
+        crate::mmio::test::poke32(dmars_reg(ch) as usize, 0x0066_0000);
         unsafe { stop(ch) };
         // Last CHCTRL write is the software reset; DMARS is released.
         assert_eq!(
@@ -724,5 +728,19 @@ mod tests {
             CHCTRL_SWRST
         );
         assert_eq!(crate::mmio::test::peek32(dmars_reg(ch) as usize), 0);
+    }
+
+    /// Channels share DMARS in pairs; stopping one must leave its partner's
+    /// route in place.
+    #[test]
+    fn stop_keeps_the_paired_channels_route() {
+        crate::mmio::test::reset();
+        let dmars = dmars_reg(4) as usize;
+        crate::mmio::test::poke32(dmars, 0x0062_0066); // ch5 = 0x62, ch4 = 0x66
+        unsafe { stop(4) };
+        assert_eq!(crate::mmio::test::peek32(dmars), 0x0062_0000, "ch5 kept");
+        crate::mmio::test::poke32(dmars, 0x0062_0066);
+        unsafe { stop(5) };
+        assert_eq!(crate::mmio::test::peek32(dmars), 0x0000_0066, "ch4 kept");
     }
 }

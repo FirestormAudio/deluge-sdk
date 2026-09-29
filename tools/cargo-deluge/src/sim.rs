@@ -24,15 +24,10 @@ pub(crate) fn cmd_sim(args: &[String]) -> Result<(), String> {
     let release = args.iter().any(|a| a == "--release");
     let host = host_triple()?;
 
-    // `--target <host>` overrides the workspace's forced `armv7a-none-eabihf`
-    // (`.cargo/config.toml`); building for the host auto-selects the SDK's host
-    // backend via `cfg(not(target_os = "none"))`. Std is prebuilt, so no
-    // `-Zbuild-std` is needed.
+    // Build for the host, overriding the device target default, with the
+    // app's `sim` feature. Std is prebuilt, so no `-Zbuild-std` is needed.
     let mut cmd = Command::new("cargo");
-    cmd.args(["run", "--target", &host]);
-    if release {
-        cmd.arg("--release");
-    }
+    cmd.args(sim_cargo_args(&host, release));
 
     // Audio file bridges: passed to the simulator via env vars (read by
     // `run_in_process`). `--audio-in <wav>` feeds a WAV as the codec input;
@@ -81,6 +76,18 @@ pub(crate) fn cmd_sim(args: &[String]) -> Result<(), String> {
 }
 
 /// The value following `flag` in `args` (`--flag value` or `--flag=value`).
+/// `cargo` arguments for a simulator build: the host target, with the app's
+/// `sim` feature, which turns on the SDK's host runtime.
+fn sim_cargo_args(host: &str, release: bool) -> Vec<String> {
+    let mut args: Vec<String> = ["run", "--target", host, "--features", "sim"]
+        .map(String::from)
+        .into();
+    if release {
+        args.push("--release".into());
+    }
+    args
+}
+
 fn flag_value(args: &[String], flag: &str) -> Option<String> {
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -119,4 +126,19 @@ fn host_triple() -> Result<String, String> {
         .find_map(|l| l.strip_prefix("host: "))
         .map(str::to_string)
         .ok_or_else(|| "could not determine host triple from `rustc -vV`".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sim_builds_for_the_host_with_the_sim_feature() {
+        let args = sim_cargo_args("x86_64-unknown-linux-gnu", false);
+        assert_eq!(args[..3], ["run", "--target", "x86_64-unknown-linux-gnu"]);
+        let i = args.iter().position(|a| a == "--features").expect("no --features");
+        assert_eq!(args[i + 1], "sim");
+        assert!(!args.contains(&"--release".to_string()));
+        assert!(sim_cargo_args("h", true).contains(&"--release".to_string()));
+    }
 }
