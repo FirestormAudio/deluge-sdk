@@ -4,9 +4,9 @@
 //! Selected by the `DELUGE_HEADLESS` env var (set by `cargo deluge sim
 //! --headless`). The SDK host runtime hands us the same `SharedPanel` + audio
 //! bridge it would give the GUI; we run a tiny driver instead of `iced`:
-//!   - an **audio clock** stands in for the output device: it drains the app's
-//!     output at the codec rate in wall time and feeds silence as input, so the
-//!     app renders in real time. `DELUGE_SIM_AUDIO_OUT` records what it drains
+//!   - an **audio clock** stands in for the audio device: it drains the app's
+//!     output at the codec rate in wall time, and feeds `DELUGE_SIM_AUDIO_IN`
+//!     (a WAV, looped) as input, or silence, so the app renders in real time. `DELUGE_SIM_AUDIO_OUT` records what it drains
 //!     to a WAV, and the frames the app did not deliver in time are reported at
 //!     exit;
 //!   - a **script** (`DELUGE_SIM_SCRIPT`) of timed input events + snapshots is
@@ -43,7 +43,25 @@ use deluge_sim_link::{DISPLAY_BYTES, InputEvent, LED_COUNT, PAD_COLS, PAD_ROWS, 
 /// the brain thread by the time this is called.
 pub fn run_headless(panel: SharedPanel, gui_audio: GuiEnds) {
     // Dropped on return, which stops the clock and finishes the recording.
-    let _audio = AudioClock::start(gui_audio, std::env::var_os("DELUGE_SIM_AUDIO_OUT").map(PathBuf::from));
+    let input = match std::env::var_os("DELUGE_SIM_AUDIO_IN").map(PathBuf::from) {
+        Some(path) => match crate::audio::load_wav(&path) {
+            Ok(frames) if !frames.is_empty() => frames,
+            Ok(_) => {
+                eprintln!("deluge-sim headless: {path:?} holds no audio");
+                return;
+            }
+            Err(e) => {
+                eprintln!("deluge-sim headless: {e}");
+                return;
+            }
+        },
+        None => vec![[0.0, 0.0]],
+    };
+    let _audio = AudioClock::start(
+        gui_audio,
+        std::env::var_os("DELUGE_SIM_AUDIO_OUT").map(PathBuf::from),
+        input,
+    );
 
     let out_dir = std::env::var_os("DELUGE_SIM_OUT")
         .map(PathBuf::from)
@@ -89,8 +107,8 @@ pub fn run_headless(panel: SharedPanel, gui_audio: GuiEnds) {
     }
 }
 
-/// The output device's stand-in: drains the app's output at the codec rate in wall time, so the app renders in real
-/// time as it does against a real device, and feeds it silence as input.
+/// The audio device's stand-in: drains the app's output at the codec rate in wall time, so the app renders in real
+/// time as it does against a real device, and feeds it `input`, looped, at the same rate.
 struct AudioClock {
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
@@ -100,7 +118,7 @@ struct AudioClock {
 const CLOCK_TICK: Duration = Duration::from_millis(2);
 
 impl AudioClock {
-    fn start(gui_audio: GuiEnds, record: Option<PathBuf>) -> Self {
+    fn start(gui_audio: GuiEnds, record: Option<PathBuf>, input: Vec<[f32; 2]>) -> Self {
         let GuiEnds { mut out, mut in_ } = gui_audio;
         let mut writer = record.and_then(|path| {
             let spec = hound::WavSpec {
@@ -128,7 +146,7 @@ impl AudioClock {
                 while !stopping.load(Ordering::Acquire) {
                     let due = (start.elapsed().as_micros() as u64 * SAMPLE_RATE_HZ as u64 / 1_000_000)
                         .saturating_sub(drained);
-                    for _ in 0..due {
+                    for n in 0..due {
                         let frame = out.try_pop();
                         started |= frame.is_some();
                         if frame.is_none() && started {
@@ -138,7 +156,7 @@ impl AudioClock {
                             let _ = w.write_sample(frame[0]);
                             let _ = w.write_sample(frame[1]);
                         }
-                        let _ = in_.try_push([0.0, 0.0]);
+                        let _ = in_.try_push(input[(drained + n) as usize % input.len()]);
                     }
                     drained += due;
                     std::thread::sleep(CLOCK_TICK);
