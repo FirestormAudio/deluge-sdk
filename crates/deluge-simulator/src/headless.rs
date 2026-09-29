@@ -20,9 +20,14 @@
 //! 0    button 25 down
 //! 120  encoder 4 +1
 //! 150  pad 3 5 down
+//! 200  midi 90 3c 64
 //! 300  snapshot after-edit
 //! 600  quit
 //! ```
+//!
+//! `midi` takes hex bytes and hands them to the app as if they arrived on its
+//! MIDI input. A snapshot's `.state` lists the MIDI the app sent since the
+//! previous snapshot, as `midi out` lines of hex bytes.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -77,6 +82,7 @@ pub fn run_headless(panel: SharedPanel, gui_audio: GuiEnds) {
         }
         match step.action {
             Action::Input(ev) => panel.push_event(ev),
+            Action::Midi(bytes) => panel.push_midi_in(&bytes),
             Action::Snapshot(name) => dump_snapshot(&panel, &out_dir, &name),
             Action::Quit => break,
         }
@@ -171,6 +177,7 @@ struct Step {
 
 enum Action {
     Input(InputEvent),
+    Midi(Vec<u8>),
     Snapshot(String),
     Quit,
 }
@@ -207,6 +214,15 @@ fn parse_script(path: &Path) -> Result<Vec<Step>, String> {
                 index: int(&mut t, n, "encoder index")? as u8,
                 delta: int(&mut t, n, "encoder delta")? as i8,
             }),
+            "midi" => {
+                let bytes = t
+                    .map(|b| u8::from_str_radix(b, 16).map_err(|_| format!("line {n}: {b:?} is not a hex byte")))
+                    .collect::<Result<Vec<u8>, String>>()?;
+                if bytes.is_empty() {
+                    return Err(format!("line {n}: midi needs at least one byte"));
+                }
+                Action::Midi(bytes)
+            }
             "snapshot" => Action::Snapshot(t.next().unwrap_or("frame").to_string()),
             "quit" => Action::Quit,
             other => return Err(format!("line {n}: unknown command {other:?}")),
@@ -306,6 +322,11 @@ fn state_text(panel: &SharedPanel) -> String {
                 let _ = writeln!(s, "pad {col} {row} {r} {gr} {b}");
             }
         }
+    }
+    let midi_out = panel.drain_midi_out();
+    if !midi_out.is_empty() {
+        let hex: Vec<String> = midi_out.iter().map(|b| format!("{b:02x}")).collect();
+        let _ = writeln!(s, "midi out {}", hex.join(" "));
     }
     s
 }
