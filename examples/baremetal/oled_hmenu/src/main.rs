@@ -30,7 +30,7 @@ async fn main(dlg: Deluge) {
     let mut oled = dlg.oled().await;
 
     let mut nav = MenuState::new();
-    // Push content below the faceplate-hidden top rows (the SDK owns this fact).
+    // Push content below the top rows hidden by the faceplate.
     let style = MenuStyle {
         top_inset: deluge::Oled::VISIBLE_TOP as i32,
         ..MenuStyle::default()

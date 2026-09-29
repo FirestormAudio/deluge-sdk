@@ -1,6 +1,6 @@
 //! USB VBUS-sense probe firmware.
 //!
-//! A throwaway diagnostic image: it brings up the platform + OLED, puts USB0
+//! A diagnostic image: it brings up the platform + OLED, puts USB0
 //! into **host mode** (the same state the UAC host firmware runs in), then
 //! continuously reads the RUSB1 VBUS monitor (`INTSTS0.VBSTS`) and reports
 //! PRESENT / ABSENT on the OLED and over RTT.

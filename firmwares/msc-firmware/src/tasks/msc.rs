@@ -1,7 +1,7 @@
 //! MSC task: exposes the inserted SD card as a USB Mass Storage block device.
 //!
-//! The Bulk-Only Transport / SCSI protocol and the SD-card [`BlockDevice`]
-//! backing both live in [`deluge_bsp::usb::bot`]; this file only initialises the
+//! The Bulk-Only Transport / SCSI protocol and the SD-card
+//! [`BlockDevice`](deluge_bsp::usb::bot::BlockDevice) backing both live in [`deluge_bsp::usb::bot`]; this file only initialises the
 //! card and starts the transport loop.
 //!
 //! Throughput counters for the OLED display are re-exported from the BOT module.

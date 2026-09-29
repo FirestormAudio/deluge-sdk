@@ -1,12 +1,10 @@
 //! Absolute-deadline tick scheduler for the game loop.
 //!
-//! The snake advances one cell per tick. Deriving that tick from a fresh
-//! `recv_timeout(period)` each loop iteration is wrong: every input event
-//! returns early and re-arms the wait from zero, so a stream of encoder events
-//! (turning any knob) keeps starving the timeout and the snake stalls. `Ticker`
-//! instead tracks the next tick as an absolute `Instant`. Events shorten the
-//! [`wait`](Ticker::wait) but never move the deadline, so they cannot delay a
-//! tick.
+//! The snake advances one cell per tick. A fresh `recv_timeout(period)` on
+//! each loop iteration would re-arm the wait from zero on every input event, so
+//! a stream of encoder events would starve the timeout and stall the snake.
+//! `Ticker` instead tracks the next tick as an absolute `Instant`: events
+//! shorten the [`wait`](Ticker::wait) but never move the deadline.
 
 use std::time::{Duration, Instant};
 
@@ -72,9 +70,8 @@ mod tests {
 
     #[test]
     fn a_burst_of_early_events_does_not_delay_the_tick() {
-        // The regression guard for the knob-slows-the-game bug: a flood of early
-        // wake-ups (each an input event) between t0 and the deadline must not
-        // move when the tick fires.
+        // A flood of early wake-ups (each an input event) between t0 and the
+        // deadline must not move when the tick fires.
         let t0 = Instant::now();
         let mut t = Ticker::new(t0, P);
         for i in 0..1000u32 {

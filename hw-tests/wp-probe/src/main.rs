@@ -1,6 +1,6 @@
 //! SD-card write-protect probe firmware.
 //!
-//! A throwaway diagnostic image: it brings up the platform, OLED and SDHI, then
+//! A diagnostic image: it brings up the platform, OLED and SDHI, then
 //! continuously shows how the SD card's write-protect signal reads — both via
 //! the SD host controller's `SD_INFO1` INFO7 bit and as the raw P7_1 pin level.
 //!
@@ -44,8 +44,8 @@ static mut EXECUTOR: MaybeUninit<Executor> = MaybeUninit::uninit();
 
 #[unsafe(no_mangle)]
 pub extern "C" fn main() -> ! {
-    // rtt_init! must always run to define the _SEGGER_RTT control-block symbol
-    // that rtt-target references at link time (also used by rza1 and deluge-bsp).
+    // With the `rtt` feature, log over a 16 KB RTT up-channel in `.rtt_buffer`
+    // (uncached RAM).
     #[cfg(feature = "rtt")]
     {
         let channels = rtt_target::rtt_init! {

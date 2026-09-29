@@ -1,8 +1,9 @@
 //! Enumerates loadable ELF application images from the `/APPS` directory on
 //! the SD card's first FAT volume.
 //!
-//! All non-directory entries in `/APPS` are treated as potential app images;
-//! the ELF parser will reject non-ELF files at load time.
+//! All non-directory entries in `/APPS` except macOS `._*` metadata files are
+//! treated as potential app images; the ELF parser rejects non-ELF files at
+//! load time.
 //!
 //! No heap allocation is used. Up to [`MAX_APPS`] entries are stored in a
 //! fixed-size stack-allocated list.

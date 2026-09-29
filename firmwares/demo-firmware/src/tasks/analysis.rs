@@ -1,7 +1,8 @@
 //! Audio analysis task — FFT magnitude spectrum and waveform snapshot.
 //!
-//! Runs every 50 ms when the SSI RX DMA is active.  Publishes results to the
-//! shared statics below for consumption by `oled_task` and `rgb_task`.
+//! Every 50 ms while USB speaker audio is streaming, analyses the most recent
+//! samples in the SCUX/DVU TX ring and publishes the results to the shared
+//! statics below for `oled_task` and `rgb_task`.
 
 use core::arch::arm::{vcvtq_f32_s32, vhaddq_s32, vld2q_s32, vmulq_n_f32};
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -41,7 +42,7 @@ pub(crate) static mut SPECTRUM: [f32; 257] = [0.0; 257];
 // Constants
 // ---------------------------------------------------------------------------
 
-/// FFT window length in left-channel samples (≈ 11.6 ms at 44.1 kHz).
+/// FFT window length in mid-channel samples (≈ 11.6 ms at 44.1 kHz).
 const FFT_N: usize = 512;
 
 /// SIMD lane width — 4 × f32 maps to a NEON `float32x4_t` on Cortex-A9.
@@ -55,7 +56,7 @@ const WAVE_PTS: usize = 128;
 // ---------------------------------------------------------------------------
 
 /// Extract `FFT_N` mid-channel (L+R average) samples from the interleaved
-/// stereo RX ring buffer into `out`, converting from MSB-aligned `i32` to
+/// stereo ring buffer into `out`, converting from MSB-aligned `i32` to
 /// normalised `f32`.
 ///
 /// Uses `vld2q_s32` (load + deinterleave in one instruction) followed by
@@ -63,7 +64,7 @@ const WAVE_PTS: usize = 128;
 /// float conversion — 64 iterations instead of 512 scalar loads.
 ///
 /// # Safety
-/// - `base` must be the uncached alias of the SSI RX DMA buffer.
+/// - `base` must be the uncached alias of the DMA ring buffer.
 /// - All `FFT_N * 2` slots starting at `start` (wrapping at `buf_len`) must
 ///   have been committed by the DMA before this call.
 /// - `buf_len` and `start` must both be even.
@@ -137,7 +138,7 @@ fn extract_segment(ptr: *const i32, slots: usize, out: &mut [f32]) {
 // Task
 // ---------------------------------------------------------------------------
 
-/// Periodically analyses the SSI RX ring buffer.
+/// Periodically analyses the audio being played from the TX ring buffer.
 ///
 /// Runs only while the host is actively sending USB speaker audio.
 #[embassy_executor::task]
@@ -158,7 +159,7 @@ pub(crate) async fn analysis_task() {
             continue;
         }
 
-        // ── Extract FFT_N left-channel samples ending at cur_ptr ────────────
+        // ── Extract FFT_N mid-channel samples ending at cur_ptr ─────────────
         //
         // The TX ring buffer is interleaved stereo: slot 0=L, 1=R, 2=L, 3=R …
         // cur_ptr is the next slot the DMA will read (already committed data
@@ -173,17 +174,17 @@ pub(crate) async fn analysis_task() {
         // Start index (wraps inside the ring).
         let start = head.wrapping_sub(FFT_N * 2) % buf_len;
 
-        // Stack-allocate the working buffers (~2 kB, down from ~4 kB).
+        // Working buffer on the stack (~2 kB).
         let mut wave_raw = [0.0f32; FFT_N];
 
         // SAFETY: `base` is the uncached SRAM alias; all slots before cur_ptr
-        // have been read by the DMA and were written by uac2_task.  Regular
+        // have been read by the DMA and were written by the ISO OUT hook.  Regular
         // (non-volatile) loads are correct and required for SIMD vectorisation.
         // buf_len and start are both even, so every segment boundary is
         // stereo-pair-aligned.
         unsafe { extract_mid_channel(base, buf_len, start, &mut wave_raw) };
 
-        // Yield between each heavy stage so uac2_task can service USB packets.
+        // Yield between each heavy stage so other tasks keep running.
         yield_now().await;
 
         // ── Waveform snapshot (downsample FFT_N → WAVE_PTS) ─────────────────
@@ -198,17 +199,17 @@ pub(crate) async fn analysis_task() {
 
         // ── FFT → magnitude spectrum ─────────────────────────────────────────
         // Apply Hann window to the real samples, then run a real-input FFT
-        // (internally N/2-point radix-4 complex FFT + post-processing).
-        // ~2× faster than a full N-point complex FFT.  Stack usage also halved.
+        // (internally an N/2-point radix-4 complex FFT + post-processing), about
+        // twice as fast as a full N-point complex FFT.
         apply_hann_window_real(&mut wave_raw);
         yield_now().await;
-        let mut spec_cx = [Complex::ZERO; FFT_N / 2 + 1]; // 257 bins — halved stack
+        let mut spec_cx = [Complex::ZERO; FFT_N / 2 + 1]; // 257 bins
         RealFft::<FFT_N, LANES>::process(&wave_raw, &mut spec_cx);
         yield_now().await;
 
         // Store squared magnitude, normalised so a full-scale sine → peak ≈ 1.0.
-        // Using norm_sq avoids 257 sqrtf calls here; rgb_task takes one sqrt per
-        // column (18 total) after averaging, preserving identical display output.
+        // Squared magnitude avoids 257 sqrtf calls here; rgb_task takes one sqrt
+        // per column (18 total) after averaging.
         let norm = 4.0 / FFT_N as f32;
         let norm_sq = norm * norm;
         unsafe {

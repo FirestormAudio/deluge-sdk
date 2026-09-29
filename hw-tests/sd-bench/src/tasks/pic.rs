@@ -1,4 +1,4 @@
-//! Minimal PIC32 transport task (copied from the MSC firmware).
+//! Minimal PIC32 transport task.
 //!
 //! Performs the PIC baud-rate handshake and relays only the OLED chip-select
 //! echo (`OledSelected` / `OledDeselected`) that [`deluge_bsp::oled`] waits on

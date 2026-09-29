@@ -4,9 +4,9 @@
 //! sourced from USB and with no SD shuffling.
 //!
 //! Unlike [`crate::usbmsc`], this is **not a mode the user enters**: when dev
-//! mode is on, `boot_task` races [`listen`] against the menu selector while the
-//! boot menu is shown.  [`listen`] brings up the CDC device but draws nothing
-//! until a valid upload header arrives; the moment a complete, CRC-checked image
+//! mode is on, `boot_task` races [`Listener::run`] against the menu selector
+//! while the boot menu is shown.  The listener draws nothing until a valid
+//! upload header arrives; the moment a complete, CRC-checked image
 //! is received it performs the launch itself and never returns.  A bad frame is
 //! resynced and listening continues.
 //!
@@ -44,8 +44,7 @@ const VERSION: u8 = 1;
 const HEADER_TAIL: usize = 1 + 1 + 4 + 4;
 
 /// CDC bulk-endpoint max packet size.  The RUSB1 PHY negotiates high speed, and
-/// USB 2.0 requires HS bulk endpoints to advertise 512 (matching the proven
-/// `usb_debug` / MSC paths).
+/// USB 2.0 requires HS bulk endpoints to advertise 512.
 const MAX_PACKET: u16 = 512;
 
 // ── Streaming loader window ───────────────────────────────────────────────────
@@ -77,8 +76,8 @@ static USB_IRQ_REGISTERED: AtomicBool = AtomicBool::new(false);
 /// Created by [`prepare`] **before** the boot menu starts drawing: USB bring-up
 /// reconfigures interrupts/clocks, and doing it while an OLED frame DMA (and its
 /// PIC chip-select handshake) is in flight can wedge the display so the menu
-/// never redraws. The proven [`crate::usbmsc`] path likewise builds USB before
-/// starting its OLED loop. [`run`](Listener::run) then drives it concurrently
+/// never redraws ([`crate::usbmsc`] likewise builds USB before starting its OLED
+/// loop). [`run`](Listener::run) then drives it concurrently
 /// with the menu selector.
 pub struct Listener {
     device: embassy_usb::UsbDevice<'static, Rusb1Driver>,
@@ -107,9 +106,9 @@ impl Listener {
     }
 }
 
-/// Build the USB device in CDC-ACM configuration.  Mirrors
-/// [`crate::usbmsc::build_usb`] but uses a distinct product string so the host
-/// can pick the right `/dev/ttyACM*`.
+/// Build the USB device in CDC-ACM configuration.  Mirrors `usbmsc::build_usb`
+/// but uses a distinct product string so the host can pick the right
+/// `/dev/ttyACM*`.
 ///
 /// # Safety
 /// Mutates the module's `'static` descriptor buffers; one listener at a time.
@@ -316,7 +315,7 @@ async fn receive(rx: Receiver<'static, Rusb1Driver>) -> ! {
 
 /// Final handoff: tear down USB cleanly (so the host re-enumerates the app's own
 /// usb-log CDC) and launch the loaded image. Mirrors the SD ELF path in
-/// `boot_task` (blank OLED, disable interrupts, quiesce, launch). Never returns.
+/// `boot_task` (boot logo, disable interrupts, quiesce, launch). Never returns.
 async fn handoff(result: elf::LoadResult) -> ! {
     ui::show_message(b"LAUNCHING", b"FROM USB").await;
 
@@ -342,8 +341,7 @@ async fn handoff(result: elf::LoadResult) -> ! {
 }
 
 /// Buffered reader over the CDC OUT endpoint: `read_packet` only yields whole
-/// packets, so this re-packetises into byte / fixed-length / bulk reads and
-/// drives the OLED progress bar during the bulk copy.
+/// packets, so this re-packetises into byte / fixed-length / bulk reads.
 struct PacketReader {
     rx: Receiver<'static, Rusb1Driver>,
     buf: [u8; MAX_PACKET as usize],

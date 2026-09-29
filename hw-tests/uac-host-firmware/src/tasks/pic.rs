@@ -4,7 +4,7 @@ use deluge_bsp::pic;
 
 /// Minimal PIC32 transport task.
 ///
-/// The MSC firmware does not use the pads, buttons or encoders, so this task
+/// This firmware does not use the pads, buttons or encoders, so this task
 /// only performs the PIC baud-rate handshake and relays the OLED chip-select
 /// echo (`OledSelected` / `OledDeselected`) that [`deluge_bsp::oled`] waits on
 /// during init and frame writes.  All other PIC events are discarded.

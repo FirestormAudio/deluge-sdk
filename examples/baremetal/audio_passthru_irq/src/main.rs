@@ -1,5 +1,5 @@
-//! Deluge SDK example: a line-in audio effect on the **per-block IRQ clock** (M5
-//! v2). Identical to `audio_passthru` but built with `deluge/audio-irq`, so the
+//! Deluge SDK example: a line-in audio effect on the **per-block IRQ clock**.
+//! Identical to `audio_passthru` but built with `deluge/audio-irq`, so the
 //! processing loop is driven by the RX DMA block interrupt (codec-locked,
 //! drift-free, lower latency) instead of a timer poll. The `process()` API is
 //! the same — only the cadence differs.

@@ -16,8 +16,7 @@
 
 use deluge_bsp::fat::{self, FatError, RawFile};
 // The ELF wire-format constants and the pure load-range / staging math live in
-// the host-testable `deluge-image` crate so there is a single host-tested
-// implementation (see `crates/deluge-image/src/elf.rs`).
+// the host-tested `deluge-image` crate.
 use deluge_bsp::flash;
 use deluge_image::elf::{
     ELF_MAGIC, ELFCLASS32, ELFDATA2LSB, EM_ARM, ET_EXEC, LoadTarget, MAX_PHDRS, PT_LOAD, PlanError,
@@ -29,13 +28,11 @@ use embassy_time::{Duration, Timer};
 /// Chunk size for streamed segment copies (one FAT sector).
 const CHUNK: usize = 512;
 
-/// Descriptor for one SRAM-targeting `PT_LOAD` segment (the trampoline ABI).
-/// Defined in [`deluge_image::elf`] as `SegDesc`; re-exported here under the
-/// loader's historical name so [`crate::launcher`] / [`crate::flashboot`] are
-/// unaffected.
+/// Descriptor for one SRAM-targeting `PT_LOAD` segment (the trampoline ABI);
+/// [`deluge_image::elf::SegDesc`] under a loader-specific name.
 pub use deluge_image::elf::SegDesc as SramSegDesc;
 
-/// Result returned by a successful [`load_from_sd`] call.
+/// Result returned by a successful [`load_from_sd_with_progress`] call.
 pub struct LoadResult {
     /// Application entry point (`e_entry`).
     pub entry: u32,
@@ -108,7 +105,9 @@ fn read_exact(
 
 /// Stream-load an ELF32 file from the SD card.
 ///
-/// Parses program headers and processes all `PT_LOAD` segments.
+/// Parses program headers and processes all `PT_LOAD` segments, calling
+/// `on_progress(done, total)` (in bytes) each time the whole-percent progress
+/// changes.
 ///
 /// - **SDRAM targets** (`0x0C000000–0x0EFFFFFF`): written to their final
 ///   addresses immediately (they cannot overwrite the bootloader).
@@ -445,18 +444,14 @@ where
 
     // Re-base the flat image on the FSB vector table.
     //
-    // The image is currently based at `lo`, the lowest PT_LOAD load address.
-    // For SDK firmware (`rza1l-hal`'s startup) the vector table *is* the lowest
-    // loadable address, so `base_off == 0` and nothing moves. A DelugeFirmware-
-    // style image instead places a leading NOLOAD region (MMU TTB + mode stacks)
-    // at a lower address than the vector table inside the same PT_LOAD, so byte 0
-    // here is that zero-filled region and the metadata/signature the boot path
-    // reads at `+0x20`/`+0x2C` would land deep in the image. Anchor on the
-    // signature and drop the leading region so byte 0 is the vector table again —
-    // the same layout `objcopy -O binary` (section-based) produces, and what the
-    // on-flash boot path (`flashboot`) and `validate_fsb_metadata` expect. If the
-    // image carries no signature, leave it unshifted so the store path's
-    // validation reports the precise `BadSignature` rejection.
+    // For SDK firmware the vector table is the lowest loadable address, so
+    // `base_off == 0`. A DelugeFirmware-style image places a leading NOLOAD
+    // region (MMU TTB + mode stacks) below the vector table in the same PT_LOAD,
+    // which would push the metadata/signature the boot path reads at
+    // `+0x20`/`+0x2C` deep into the image. Anchoring on the signature and
+    // dropping that region makes byte 0 the vector table again, as `objcopy -O
+    // binary` would. With no signature the image is left unshifted so the store
+    // path's validation reports `BadSignature`.
     let staged = unsafe { core::slice::from_raw_parts(stage_base as *const u8, image_len) };
     let base_off = find_fsb_base(staged).unwrap_or(0);
 

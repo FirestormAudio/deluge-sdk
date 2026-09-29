@@ -9,7 +9,8 @@
 //! ```
 //! Minimum: 3 bytes (`len=1`, type, no payload).
 //!
-//! See [`src/controller/usb_serial.h`] for the full message table.
+//! The message-type constants below mirror the C firmware's
+//! `src/controller/usb_serial.h`.
 
 use embassy_futures::select::{Either, select};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
@@ -22,8 +23,8 @@ use rza1l_hal::usb::Rusb1Driver;
 use crate::events::{EVENT_CHANNEL, HardwareEvent};
 use crate::tasks::oled as oled_task;
 
-// Firmware version coordinates — must match the version advertised by the
-// host-side Deluge library (examples/host-demo/src/deluge.rs).
+// Protocol version reported to the host; must match what the host-side library
+// expects.
 const MAJOR: u8 = 1;
 const MINOR: u8 = 0;
 const PATCH: u8 = 0;
@@ -189,7 +190,7 @@ impl RxState {
 
 /// Encode a CDC-from-Deluge message and write it as one USB packet.
 ///
-/// `type_byte + data` must fit in one 64-byte USB FS bulk packet.
+/// The encoded message (3 header bytes + `data`) must fit in 64 bytes.
 async fn send_msg(
     tx: &mut Sender<'static, Rusb1Driver>,
     type_byte: u8,
@@ -316,8 +317,7 @@ async fn handle_message(type_byte: u8, data: &[u8]) {
             }
         }
         MSG_TO_SET_SYNCED_LED => {
-            // Controls the GPIO "synced" LED (P6.7).  Note: this pin is also
-            // toggled by blink_task; the host can override it by calling this.
+            // Controls the GPIO "synced" LED (P6.7).
             if !data.is_empty() {
                 let on = data[0] != 0;
                 unsafe {
@@ -360,15 +360,12 @@ async fn handle_message(type_byte: u8, data: &[u8]) {
 
 // ── Session loop ─────────────────────────────────────────────────────────────
 
-/// Drive the bidirectional event ↔ command session until the host disconnects.
-///
 /// IN side of a session.  Sole owner of the CDC [`Sender`].  Serialises hardware
 /// events ([`EVENT_CHANNEL`]) and protocol replies ([`REPLY_CHANNEL`]) onto the
 /// bulk-IN endpoint.  Returns on the first endpoint error (host disconnect).
 ///
-/// The `select` here is over two **channel receives**, which are cancel-safe:
-/// the loser is merely de-registered, never losing a queued item — unlike the
-/// old loop's `read_packet`, whose cancellation churned endpoint state.
+/// The `select` here is over two channel receives, which are cancel-safe: the
+/// loser is merely de-registered, never losing a queued item.
 async fn tx_loop(tx: &mut Sender<'static, Rusb1Driver>) {
     loop {
         let result = match select(REPLY_CHANNEL.receive(), EVENT_CHANNEL.receive()).await {
@@ -463,10 +460,10 @@ pub(crate) async fn cdc_task(class: CdcAcmClass<'static, Rusb1Driver>) {
         info!("CDC: greeting sent (ok={:?})", r.is_ok());
 
         // Drive IN and OUT as two independent concurrent loops until the host
-        // disconnects.  Unlike the old single `select(receive, read_packet)`
-        // loop, neither side cancels the other's endpoint operation during
-        // normal traffic — cancellation happens only here, at teardown, when one
-        // loop returns on an endpoint error.
+        // disconnects.  Neither side cancels the other's endpoint operation
+        // during normal traffic (cancelling `read_packet` disturbs endpoint
+        // state); cancellation happens only at teardown, when one loop returns
+        // on an endpoint error.
         let _ = select(tx_loop(&mut tx), rx_loop(&mut rx)).await;
 
         // Session ended (host disconnected).  Clear host-set pad colours and the

@@ -15,8 +15,8 @@ pub enum Screen {
     ConfirmShutdown,
 }
 
-/// Settings menu items, index-aligned. Only SHUTDOWN for now; the list is
-/// future-extensible (navigation and rendering both derive from it).
+/// Settings menu items, index-aligned; navigation and rendering both derive
+/// from this list.
 pub const SETTINGS_ITEMS: &[&str] = &["SHUTDOWN"];
 
 pub struct Model {

@@ -1,13 +1,13 @@
-//! OLED file-selector UI for the app loader (second-stage bootloader).
+//! OLED UI for the app loader (second-stage bootloader): the boot menu, the
+//! write-to-flash prompt, the settings screen, and status/progress screens.
 //!
-//! Presents a scrollable list of application names on the 128×48 OLED display.
-//! The user scrolls with the SELECT encoder and confirms by pressing the
-//! SELECT encoder button.
+//! The boot menu is a scrollable list on the 128×48 OLED.  The user scrolls with
+//! the SELECT encoder and confirms by pressing the SELECT encoder button.
 //!
-//! ## Layout (128 × 48 pixel panel, 6 pages of 8 rows)
+//! ## Layout (128 × 48 pixel panel; the top 5 rows are not visible)
 //! ```text
-//! Row  0– 7  : Title bar  "SELECT APP"
-//! Row  8–15  : separator line
+//! Row  5–12  : Title bar  "SELECT APP"
+//! Row 13     : separator line
 //! Row 16–23  : entry 0  (cursor ▶ if selected)
 //! Row 24–31  : entry 1
 //! Row 32–39  : entry 2
@@ -67,7 +67,7 @@ fn countdown_title(buf: &mut [u8; 12], secs: u8) -> &[u8] {
 /// Render a frame showing the selector list.
 ///
 /// * `title`    — title-bar text, shown when no countdown is running
-/// * `entries`  — full sorted list of entry names (full `BASE.EXT` filenames)
+/// * `entries`  — full list of entry labels
 /// * `scroll`   — index of the first visible entry
 /// * `cursor`   — index of the highlighted entry (absolute, not relative)
 /// * `countdown`— `Some(secs_remaining)` shows a boot countdown in the title bar,
@@ -127,8 +127,8 @@ const TRACK_BOTTOM: usize = ENTRY_START_ROW + VISIBLE_ROWS * ENTRY_HEIGHT - 1;
 /// Total track span in pixels (both endpoints inclusive).
 const TRACK_HEIGHT: usize = TRACK_BOTTOM - TRACK_TOP + 1;
 
-/// Draw a proportional scrollbar on the right edge, mirroring the Deluge
-/// firmware's list scrollbar (see `~/GitHub/spark` `list_menu_view::draw_scrollbar`).
+/// Draw a proportional scrollbar on the right edge, matching the Deluge
+/// firmware's list-menu scrollbar.
 ///
 /// The indicator's height is proportional to the visible fraction
 /// (`VISIBLE_ROWS / total`, min 3 px) and its position is proportional to the

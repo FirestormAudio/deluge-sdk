@@ -1,6 +1,5 @@
-//! The Rust analogue of `examples/app` (the C worked example): the smallest
-//! thing that proves the pipeline. Open the device, blink, exit. `Deluge`'s
-//! `Drop` impl calls `deluge_close` for us.
+//! The smallest Deluge Linux app: open the device, blink an indicator LED a few
+//! times, exit. `Deluge`'s `Drop` impl calls `deluge_close` for us.
 
 fn main() {
     let mut d = deluge_hal_linux::Deluge::open().expect("deluge_open failed");

@@ -107,7 +107,8 @@ fn spectrum_colours() -> [[[u8; 3]; 16]; 9] {
 
 /// RGB pad-grid demo task.
 ///
-/// Renders the current pad state to the 18 × 8 RGB LED matrix every 50 ms.
+/// Renders to the 18 × 8 RGB LED matrix every 50 ms: a spectrum analyser while
+/// USB audio is streaming, otherwise the current pad state.
 ///
 /// - **Lit pads** glow with a per-column hue that slowly cycles over time,
 ///   making the whole grid rotate through the rainbow as pads are held.
@@ -120,7 +121,7 @@ pub(crate) async fn rgb_task() {
     pic::wait_ready().await;
 
     let mut hue_offset: u8 = 0;
-    // C: per-pair cache of the colours sent in the last frame.
+    // Per-pair cache of the colours sent in the last frame.
     // Initialised to all-zeros so the first frame detects any lit pads as
     // changed.  Pairs that remain all-black are never re-sent.
     let mut last_sent: [[[u8; 3]; 16]; 9] = [[[0u8; 3]; 16]; 9];
@@ -167,8 +168,7 @@ pub(crate) async fn rgb_task() {
                     last_sent[pair as usize] = colours;
                 }
 
-                // Explicit yield between pairs so uac2_task can service any
-                // USB packets that arrived while we were busy.
+                // Yield between pairs so other tasks keep running.
                 yield_now().await;
             }
         }

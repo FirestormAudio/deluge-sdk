@@ -8,9 +8,8 @@ use deluge_bsp::usb::classes::audio::{USB_BITS_PER_SAMPLE, USB_CAPTURE_BITS_PER_
 
 /// `true` while the host is actively sending UAC2 speaker data.
 ///
-/// This is the UI-facing signal for whether the analyzer views should be
-/// shown. It deliberately tracks actual USB audio traffic, not whether the
-/// SCUX/SSI output path is running with dither.
+/// Tracks actual USB audio traffic, not whether the SCUX/SSI output path is
+/// running with dither.
 ///
 /// Set by the ISO OUT hook ([`iso_out_to_ssi`]) on the first packet of a stream
 /// and cleared by [`uac2_task`] when packet activity stops.
@@ -50,10 +49,10 @@ static PEAK_LEVEL: AtomicU32 = AtomicU32::new(0);
 
 /// Small LFSR dither to prevent codec DC auto-mute.
 ///
-/// The Akiyama codec auto-mutes after ~8192 consecutive identical samples
-/// (≈0.19 s at 44.1 kHz).  We mix a ±16-LSB (of 24-bit) noise signal into
-/// every sample written to the SSI TX buffer to keep the codec awake during
-/// silence.  This matches the behaviour of the original C firmware.
+/// The codec auto-mutes after ~8192 consecutive identical samples (≈0.19 s at
+/// 44.1 kHz), so a ±16-LSB (of 24-bit) noise signal is mixed into every sample
+/// written to the SSI TX buffer to keep it awake during silence, as the C
+/// firmware does.
 #[inline]
 fn dither_sample(lfsr: &mut u32) -> i32 {
     let bit = *lfsr & 1;
@@ -92,7 +91,7 @@ pub(crate) fn fill_tx_with_dither() {
 /// packet outright — TRM §28.4.9 / Table 28.26).
 ///
 /// Packet format: stereo 16- or 24-bit LE PCM.  SSI expects audio in bits
-/// [31:8]; 24-bit shifts left by 8, 16-bit by 16.
+/// `[31:8]`; 24-bit shifts left by 8, 16-bit by 16.
 ///
 /// # Safety
 /// Installed via [`rza1l_hal::usb::pipe::register_iso_out_hook`] and called
@@ -151,12 +150,10 @@ unsafe fn iso_out_to_ssi(pkt: *const u8, len: usize) {
 
                 peak = peak.max(raw.unsigned_abs());
 
-                // Mix in dither with SATURATION, not wraparound.  A near-full-scale
-                // sample (e.g. 24-bit 0x7FFFFF → 0x7FFFFF00, only 255 below i32::MAX)
-                // plus up to +0xF00 of dither would overflow i32 and flip sign with
-                // wrapping_add — a rail-to-rail discontinuity heard as a loud click
-                // on "hot" (0 dBFS) material.  saturating_add clamps instead; the
-                // few clamped LSBs are inaudible.
+                // Mix in dither with saturation: a near-full-scale sample plus
+                // dither can overflow i32, and wrapping would flip the sign — a
+                // rail-to-rail click on 0 dBFS material.  The clamped LSBs are
+                // inaudible.
                 let dith = dither_sample(&mut lfsr);
                 let sample = raw.saturating_add(dith);
                 if sample != raw.wrapping_add(dith) {
@@ -227,7 +224,6 @@ pub(crate) async fn uac2_task(ep_out: rza1l_hal::usb::Rusb1EndpointOut) {
 
         // ── Per-second audio health diagnostics ───────────────────────────────
         // clips  : samples that hit the i32 rail (host sending 0 dBFS material).
-        //          Audible crackle on hot songs almost always shows up here.
         // reanch : underrun re-anchors (write head lost its lead on the DMA) —
         //          a USB/scheduling/clock-drift symptom, distinct from clipping.
         // peak   : loudest sample magnitude vs full scale (0x8000_0000).
@@ -292,15 +288,10 @@ pub(crate) async fn uac2_mic_task(mut ep_in: rza1l_hal::usb::Rusb1EndpointIn) {
     let mut pkt = [0u8; 288];
 
     loop {
-        // Compute how many stereo frames the SSI RX DMA has captured since we
-        // last sent.  This ties the implicit feedback signal directly to the
-        // hardware AUDIO_X1 crystal clock rather than an assumed call rate,
-        // so the host adapts its OUT rate to exactly match the SSI regardless
-        // of async executor scheduling jitter.
-        //
-        // Over any long interval: total IN frames sent = total SSI frames
-        // captured = 44 100 Hz.  Host converges to sending 44 100 frames/sec
-        // OUT, eliminating the systematic rate mismatch that caused underruns.
+        // Send exactly the stereo frames the SSI RX DMA has captured since the
+        // last packet.  This ties the implicit feedback signal to the AUDIO_X1
+        // crystal rather than to executor scheduling, so over any long interval
+        // the host's OUT rate converges on the SSI's true 44.1 kHz.
         let bytes_per_sample = (USB_CAPTURE_BITS_PER_SAMPLE.load(Ordering::Relaxed) / 8) as usize;
         let max_frames = pkt.len() / (2 * bytes_per_sample);
         let rx_hw_off = unsafe { (ssi::rx_current_ptr().offset_from(rx_start) as usize) % rx_len };
