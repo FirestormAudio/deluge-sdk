@@ -13,15 +13,20 @@ use crate::slotapi::{
     SlotApi, WrenForeign, WrenType, checked_list_count, checked_str, checked_tagged_foreign,
 };
 
-// All audio foreign objects lead with a `tag: u8` (offset 0 under `repr(C)`) so
+// Every foreign object leads with a `tag: u8` (offset 0 under `repr(C)`) so
 // `arg_input` can discriminate a Node/Port/Bus argument by reading that byte —
-// no VM class query needed.
+// no VM class query needed. Non-audio objects have tags of their own so they
+// can never be mistaken for (and read as) a larger audio struct.
 pub(crate) const TAG_NODE: u8 = 0;
 pub(crate) const TAG_PORT: u8 = 1;
 pub(crate) const TAG_BUS: u8 = 2;
 pub(crate) const TAG_WT: u8 = 3;
 pub(crate) const TAG_SAMPLE: u8 = 4;
 pub(crate) const TAG_KEYMAP: u8 = 5;
+pub(crate) const TAG_SYNTH: u8 = 6;
+pub(crate) const TAG_OUTPUT: u8 = 7;
+pub(crate) const TAG_GATE: u8 = 8;
+pub(crate) const TAG_METRO: u8 = 9;
 
 /// Ring-buffer length for a `Delay` node: ≈1.09 s @ 44.1 kHz, 1.0 s @ 48 kHz.
 /// The delay `time` (port 1) is clamped to this length inside the kernel.
@@ -135,9 +140,10 @@ impl SynthAlloc {
 
 /// A monophonic-or-polyphonic instrument: owns a `SynthAlloc` (Poly or Mono)
 /// + its VoiceSum output node. Created by `Node.polyEnd_`/`Node.monoEnd_`;
-/// not used as a node input (no shared tag).
+/// not a node input (its tag is `TAG_SYNTH`).
 #[repr(C)]
 pub(crate) struct SynthObj {
+    pub tag: u8,
     pub alloc: SynthAlloc,
     pub out_node: u16,
 }
@@ -2396,6 +2402,7 @@ pub(crate) fn node_poly_end_impl<S: SlotApi>(vm: &S) {
         vm.new_foreign_in(
             0,
             SynthObj {
+                tag: TAG_SYNTH,
                 alloc,
                 out_node: sum,
             },
@@ -2456,6 +2463,7 @@ pub(crate) fn node_mono_end_impl<S: SlotApi>(vm: &S) {
         vm.new_foreign_in(
             0,
             SynthObj {
+                tag: TAG_SYNTH,
                 alloc,
                 out_node: sum,
             },

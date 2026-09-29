@@ -4366,3 +4366,28 @@ Patch.named("c", Fn.new { Out.patch(Osc.tri(220)) })"#,
         "the id freed with scope \"a\" came back for scope \"c\""
     );
 }
+
+/// A non-audio foreign object (here a CV `Output`) passed where an audio input
+/// is expected is inert, not misread through its first byte as a node, port or
+/// bus.
+#[test]
+fn non_audio_foreign_as_audio_input_is_inert() {
+    for ch in [0, 1, 2] {
+        let script = format!("Osc.saw(1)\nvar o = Output.new({ch})\nOsc.saw(o)");
+        let cmds = run_and_capture_cmds(&script);
+        let second = cmds
+            .iter()
+            .filter(|c| matches!(c, Cmd::NewNode { .. }))
+            .nth(1)
+            .unwrap_or_else(|| panic!("ch {ch}: no second node in {cmds:?}"));
+        let Cmd::NewNode { args, .. } = second else {
+            unreachable!()
+        };
+        assert_eq!(
+            args[0],
+            Input::Const(0.0),
+            "Output.new({ch}) read as {:?}",
+            args[0]
+        );
+    }
+}
