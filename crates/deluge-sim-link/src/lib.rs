@@ -11,8 +11,8 @@
 //!   state; the GUI reads it each frame) and *input* (the GUI pushes pad /
 //!   button / encoder events; the app drains them).
 //! - [`audio`] carries the real-time audio block stream over lock-free SPSC rings
-//!   ([`audio::brain_ends`] / [`audio::gui_ends`]); the GUI's audio callback is the
-//!   clock that paces the app's DSP loop.
+//!   ([`audio::new_bridge`]); the GUI's audio callback is the clock that paces
+//!   the app's DSP loop.
 //!
 //! All ids here are **SDK-native** (raw PIC button id 0–35, encoder index 0–5,
 //! raw PIC LED index `x + 9*y`); the GUI is responsible for translating its own
@@ -62,7 +62,7 @@ struct Inner {
     /// Gold-knob ring segment levels: `[lower, upper][segment]`.
     knobs: Mutex<[[u8; 4]; 2]>,
     synced_led: Mutex<bool>,
-    /// CV/gate have no panel rendering yet; stored so reads/logging work.
+    /// CV DAC codes and gate states, per channel.
     cv: Mutex<[u16; 4]>,
     gate: Mutex<[bool; 4]>,
 
@@ -90,8 +90,7 @@ struct Inner {
     midi_in_gen: AtomicU64,
 }
 
-/// Cap on queued input events before the oldest are dropped (mirrors the SDK's
-/// on-device 32-deep event channel).
+/// Cap on queued input events before the oldest are dropped.
 const INPUT_CAP: usize = 64;
 
 impl Default for SharedPanel {

@@ -1,155 +1,89 @@
 # deluge-ui-toolkit
 
-Graphics toolkit for the Synthstrom Audible Deluge 128×48 horizontal monochrome OLED display.
+Graphics and menu toolkit for the Synthstrom Audible Deluge's 128×48 monochrome
+OLED.
 
 ## Features
 
-- **Display Abstraction**: `DelugeDisplay` with frame buffer for 128×48 OLED
-- **Menu System**: Fluent `MenuBuilder` API for parameter presentation
-- **Text Rendering**: Variable-width fonts from Deluge firmware
-- **Graphics Primitives**: Lines, rectangles, icons
-- **Layout Helpers**: Point, Rect, alignment utilities
+- **Menus**: immediate-mode vertical (`Menu`) and parameter-column (`HMenu`)
+  menus sharing one `MenuState` / `MenuStyle` / `MenuInput`
+- **Parameter visualisations**: knobs, sliders, bars, pan, filter and envelope
+  displays, waveforms
+- **Text rendering** with the Deluge firmware fonts (`deluge-fonts`)
+- **Graphics primitives**: lines, polygons, icons, and layout helpers
 
-## Display Specifications
+Everything draws onto any `embedded-graphics`
+`DrawTarget<Color = BinaryColor>`. In the Deluge SDK that target is
+`deluge::Oled`, so no framebuffer wrapper is needed.
 
-- **Resolution**: 128×43 pixels (visible area)
-- **Orientation**: Horizontal
-- **Color**: Monochrome (1-bit)
-- **Buffer**: 688 bytes (column-major format)
+## Display
+
+- **Resolution**: 128×48, of which 128×43 is visible (the faceplate hides the
+  top 5 rows)
+- **Colour**: monochrome (1 bit per pixel)
+
+Set `MenuStyle::top_inset` to `deluge::Oled::VISIBLE_TOP` so content lands in
+the visible area.
 
 ## Usage
 
-### Basic Display
+The toolkit needs a global allocator: enable the `deluge` crate's `alloc`
+feature and build with `-Zbuild-std=core,alloc`.
 
-```rust
-use deluge_ui_toolkit::display::DelugeDisplay;
+### Vertical menu
 
-let mut display = DelugeDisplay::new();
-display.clear();
+```rust,ignore
+use deluge::prelude::*;
+use deluge_ui_toolkit::{Menu, MenuInput, MenuState, MenuStyle};
 
-// Draw using embedded-graphics primitives
-// ...
+let mut oled = dlg.oled().await;
+let mut nav = MenuState::new();
+let style = MenuStyle { top_inset: deluge::Oled::VISIBLE_TOP as i32, ..MenuStyle::default() };
 
-// Get raw buffer for hardware
-let buffer = display.to_buffer(); // 688 bytes
+oled.clear();
+Menu::show(&mut oled, &mut nav, MenuInput::None, &style, |ui| {
+    ui.title("SOUND");
+    ui.int("FREQ", &mut app.freq, 20..=20000);
+    ui.float("RESO", &mut app.reso, 0.0..=1.0);
+    ui.submenu("ADVANCED", |ui| {
+        ui.toggle("MONO", &mut app.mono);
+    });
+});
+oled.flush().await;
 ```
 
-### Menu Building
+### Parameter columns
 
-```rust
-use deluge_ui_toolkit::menu::MenuBuilder;
-
-let mut menu = MenuBuilder::new("SOUND")
-    .add_integer("Volume", 50, 0, 100, 1)
-    .add_enum("Wave", vec!["Sine".into(), "Saw".into()], 0)
-    .add_float("Cutoff", 1000.0, 20.0, 20000.0, 100.0, 1)
-    .add_bool("Filter", true)
-    .build();
-
-// Render to display
-menu.render(display.framebuf())?;
-
-// Navigate
-menu.move_down();
-menu.select(); // Enter edit mode
-menu.move_up(); // Increment value
-menu.select(); // Exit edit mode
+```rust,ignore
+let mut ui = HMenu::begin(&mut oled, &mut nav, input, &style);
+ui.title("FILTER");
+ui.lpf("CUT", &mut s.cutoff, 0.0..=1.0);
+ui.knob("RES", &mut s.res, 0.0..=1.0);
+ui.pan("PAN", &mut s.pan, -1.0..=1.0);
+ui.end();
 ```
 
-### Text Rendering
+### Text and graphics
 
-```rust
-use deluge_ui_toolkit::{
-    text::{draw_text, Font, TextStyle},
-    layout::{Alignment, Point},
-};
-use embedded_graphics::pixelcolor::BinaryColor;
+```rust,ignore
+use deluge_ui_toolkit::{graphics::draw_line, text::draw_text, Font, TextStyle};
+use embedded_graphics::{pixelcolor::BinaryColor, prelude::Point, text::Alignment};
 
-let style = TextStyle::new(Font::MetricBold9px)
-    .with_alignment(Alignment::Center)
-    .with_color(BinaryColor::On);
-
-draw_text(
-    display.framebuf(),
-    "Hello Deluge",
-    Point::new(64, 20),
-    style,
-)?;
+let style = TextStyle::new(Font::MetricBold9px).with_alignment(Alignment::Center);
+draw_text(&mut oled, "Hello Deluge", Point::new(64, 20), style)?;
+draw_line(&mut oled, Point::new(0, 47), Point::new(127, 47), BinaryColor::On)?;
 ```
-
-### Graphics Primitives
-
-```rust
-use deluge_ui_toolkit::{
-    graphics::{draw_line, draw_rect, draw_icon, Icon},
-    layout::{Point, Rect},
-};
-use embedded_graphics::pixelcolor::BinaryColor;
-
-// Draw shapes
-draw_line(
-    display.framebuf(),
-    Point::new(0, 0),
-    Point::new(127, 47),
-    BinaryColor::On,
-)?;
-
-draw_rect(
-    display.framebuf(),
-    Rect::new(10, 10, 50, 20),
-    BinaryColor::On,
-)?;
-
-// Draw icons
-draw_icon(
-    display.framebuf(),
-    Icon::ArrowRight,
-    Point::new(100, 20),
-    BinaryColor::On,
-)?;
-```
-
-## Menu Items
-
-The menu system supports various parameter types:
-
-- **Integer**: `add_integer(label, value, min, max, step)`
-- **Float**: `add_float(label, value, min, max, step, decimals)`
-- **Enum**: `add_enum(label, choices, selected_index)`
-- **Bool**: `add_bool(label, value)`
-- **Submenu**: `add_submenu(label, items)`
-- **Action**: `add_action(label)`
-
-## Available Fonts
-
-From `deluge-fonts`:
-
-- `Font::Font5px` - Original 5px font (very compact)
-- `Font::FontApple` - Apple II 7px font (retro style)
-- `Font::MetricBold9px` - Metric Bold 9px (recommended for menus)
-- `Font::MetricBold13px` - Metric Bold 13px (larger text)
-- `Font::MetricBold20px` - Metric Bold 20px (titles only)
 
 ## Examples
 
-Run the included example:
-
-```bash
-cargo run --package deluge-ui-toolkit --example simple_menu
-```
-
-## Architecture
-
-This toolkit is designed to work with the Spark/Firestorm CLAP plugin architecture:
-
-1. **Core**: CLAP plugins define parameters
-2. **UI Toolkit**: Presents parameters on Deluge OLED
-3. **Extension**: `org.firestorm.hardware-control` bridges hardware and plugins
-
-The menu system automatically presents plugin parameters without hardcoding ranges.
+[`examples/baremetal/oled_menu`](../../examples/baremetal/oled_menu) and
+[`examples/baremetal/oled_hmenu`](../../examples/baremetal/oled_hmenu) are
+complete SDK apps built on this crate.
 
 ## License
 
-GPL-3.0-or-later
+GPL-3.0-or-later. This is a standalone, opt-in crate — the permissive `deluge`
+SDK facade does not depend on it, and an app that uses it becomes GPL.
 
-**Note**: The Metric font family is proprietary and licensed to Synthstrom Audible Limited.
+**Note**: The Metric font family is proprietary and licensed to Synthstrom
+Audible Limited.

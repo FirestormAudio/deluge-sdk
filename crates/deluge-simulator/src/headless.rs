@@ -1,14 +1,15 @@
-//! Headless run mode: drive an SDK app from a script and dump golden-frame
+//! Headless run mode: drive an app from a script and dump golden-frame
 //! snapshots, with no GUI — for CI / `#[test]`-style integration testing.
 //!
 //! Selected by the `DELUGE_HEADLESS` env var (set by `cargo deluge sim
-//! --headless`). The SDK host runtime hands us the same `SharedPanel` + audio
-//! bridge it would give the GUI; we run a tiny driver instead of `iced`:
+//! --headless`). [`run_brain`](crate::run_brain) hands us the same
+//! `SharedPanel` + audio bridge it would give the GUI; we run a tiny driver
+//! instead of `iced`:
 //!   - an **audio clock** stands in for the audio device: it drains the app's
 //!     output at the codec rate in wall time, and feeds `DELUGE_SIM_AUDIO_IN`
-//!     (a WAV, looped) as input, or silence, so the app renders in real time. `DELUGE_SIM_AUDIO_OUT` records what it drains
-//!     to a WAV, and the frames the app did not deliver in time are reported at
-//!     exit;
+//!     (a WAV, looped) as input, or silence, so the app renders in real time.
+//!     `DELUGE_SIM_AUDIO_OUT` records what it drains to a WAV, and the frames
+//!     the app did not deliver in time are reported at exit;
 //!   - a **script** (`DELUGE_SIM_SCRIPT`) of timed input events + snapshots is
 //!     replayed against the panel;
 //!   - **snapshots** write the OLED to a PNG and the pad/LED/CV/gate state to a
@@ -39,7 +40,7 @@ use deluge_sim_link::audio::{Consumer, GuiEnds, Producer, SAMPLE_RATE_HZ};
 use deluge_sim_link::{DISPLAY_BYTES, InputEvent, LED_COUNT, PAD_COLS, PAD_ROWS, SharedPanel};
 
 /// Run the app headlessly: replay the script, dump snapshots, then return (the
-/// SDK host runtime exits the process afterwards). The app is already running on
+/// caller of [`run_brain`](crate::run_brain) exits the process afterwards). The app is already running on
 /// the brain thread by the time this is called.
 pub fn run_headless(panel: SharedPanel, gui_audio: GuiEnds) {
     // Dropped on return, which stops the clock and finishes the recording.
@@ -107,8 +108,9 @@ pub fn run_headless(panel: SharedPanel, gui_audio: GuiEnds) {
     }
 }
 
-/// The audio device's stand-in: drains the app's output at the codec rate in wall time, so the app renders in real
-/// time as it does against a real device, and feeds it `input`, looped, at the same rate.
+/// The audio device's stand-in: drains the app's output at the codec rate in
+/// wall time, so the app renders in real time as it does against a real device,
+/// and feeds it `input`, looped, at the same rate.
 struct AudioClock {
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
@@ -139,8 +141,8 @@ impl AudioClock {
             .spawn(move || {
                 let start = Instant::now();
                 let mut drained: u64 = 0;
-                // Frames that came due with nothing in the output, counted from the app's first frame: before it,
-                // the app is still booting.
+                // Frames that came due with nothing in the output, counted from
+                // the app's first frame (before it, the app is still booting).
                 let mut late: u64 = 0;
                 let mut started = false;
                 while !stopping.load(Ordering::Acquire) {

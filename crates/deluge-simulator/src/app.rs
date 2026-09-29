@@ -1,8 +1,7 @@
 //! The simulator application shell (iced): render the panel from inbound
 //! illumination frames, forward input as [`FromDeluge`]. The Deluge "brain" on the
 //! other end of the [`PanelLink`] owns all UI logic — this is a faithful front panel,
-//! not a reimplementation. (Trimmed from spark's `simulator_app`: the engine /
-//! DelugeUI / settings / remote wiring is gone, replaced by the protocol link.)
+//! not a reimplementation. (Derived from spark's `simulator_app`.)
 
 use crate::display::SimulatorDisplay;
 use crate::hardware::{HardwareButton, HardwareEncoder, HardwareLED};
@@ -69,7 +68,7 @@ pub enum SimulatorMessage {
     /// Toggle the CV/gate rack strip between meters and scope traces.
     #[cfg(feature = "rack")]
     ToggleRackScopes,
-    /// Collapse/expand the rack strip (and resize the window to match).
+    /// Collapse/expand the rack strip's contents (the window size is fixed).
     #[cfg(feature = "rack")]
     ToggleRackCollapsed,
 }
@@ -77,7 +76,7 @@ pub enum SimulatorMessage {
 pub struct DelugeSimulator {
     /// Persistent canvas renderer — owns display, pad grid, and hardware state.
     renderer: DynamicElementsRenderer,
-    /// CV/gate visualiser to the right of the faceplate.
+    /// CV/gate visualiser in the strip above the faceplate.
     #[cfg(feature = "rack")]
     rack: InstrumentRack,
     /// Pre-rasterised SVG faceplate (drawn behind the canvas).
@@ -187,7 +186,7 @@ impl DelugeSimulator {
             SimulatorMessage::Tick => {
                 self.drain_inbound();
                 self.service_hardware();
-                // Drain the audio monitor (mono output tap) into the rack's audio
+                // Drain the audio monitor (stereo output tap) into the rack's audio
                 // scope history before sampling CV/gate for the same frame, then
                 // append a rack history point so the scopes scroll evenly
                 // regardless of how often the app writes CV/gate. Both are no-ops
@@ -574,9 +573,8 @@ impl DelugeSimulator {
             });
 
         // The CV/gate rack is a separate strip above the faceplate (over the
-        // back-panel jacks), not overlapping the deluge graphic. Collapsing
-        // shrinks the strip to its handle bar and resizes the window to match.
-        // With the `rack` feature off the strip is compiled out entirely and the
+        // back-panel jacks), not overlapping the deluge graphic. It keeps a fixed
+        // height; collapsing only hides its contents. With the `rack` feature off the strip is compiled out entirely and the
         // window shows only the faceplate.
         #[cfg(feature = "rack")]
         {

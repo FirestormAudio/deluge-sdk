@@ -6,8 +6,9 @@
 
 use super::MAX_CHANNELS;
 
-/// Ring depth in frames. ~11.6 ms at 44.1 kHz — enough slack for the PI
-/// controller to correct drift without over/underrunning under normal jitter.
+/// Ring depth in frames at [`MAX_CHANNELS`] (fewer channels get proportionally
+/// more). ~11.6 ms at 44.1 kHz — enough slack for the PI controller to correct
+/// drift without over/underrunning under normal jitter.
 pub const RING_FRAMES: usize = 512;
 const RING_SAMPLES: usize = RING_FRAMES * MAX_CHANNELS;
 

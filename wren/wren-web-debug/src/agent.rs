@@ -1,6 +1,6 @@
-//! Task 2.1: drive a deluge script under wren-core's source-level debugger.
+//! Drive a deluge script under wren-core's source-level debugger.
 //!
-//! Mirrors `wren-dap`'s `launch` (`wren-dap/src/session.rs:182-256`): build a
+//! Mirrors `wren-dap`'s `launch`: build a
 //! [`DebugSession`]/`DebugHook` pair from the caller's breakpoints, then
 //! spawn a thread that builds a fresh deluge VM (bindings + prelude, via
 //! [`crate::boot_vm`]) with a no-op [`crate::install_noop_host`] host,
@@ -19,9 +19,8 @@
 //! process at a time. Callers — and especially tests — must not run two
 //! [`debug_run`] (or [`crate::build_vm`]/[`crate::harness::Harness`]) VMs
 //! concurrently in the same process. The test suite serializes on a shared
-//! lock (see `tests/common/mod.rs`'s `VM_TEST_LOCK`); production embedders
-//! of this crate get the same guarantee for free as long as they only ever
-//! drive one debug session at a time, which is the intended usage.
+//! lock (see `tests/common/mod.rs`'s `VM_TEST_LOCK`); embedders must drive
+//! only one debug session at a time.
 
 use std::collections::HashSet;
 
@@ -39,9 +38,8 @@ use crate::slotapi_wrencore::CoreSlots;
 /// `entry` as `main` (with `modules` importable exactly like
 /// [`crate::run_project_capture`]).
 ///
-/// Thin wrapper over [`debug_run_driven`] with no driven events — every
-/// existing caller keeps the top-level-only behaviour. See the module docs
-/// for the single-VM-per-process caveat.
+/// Thin wrapper over [`debug_run_driven`] with no driven events. See the
+/// module docs for the single-VM-per-process caveat.
 pub fn debug_run(entry: &str, modules: Vec<(String, String)>, breakpoints: HashSet<i32>) -> DebugSession {
     debug_run_driven(entry, modules, breakpoints, Vec::new())
 }
@@ -52,8 +50,7 @@ pub fn debug_run(entry: &str, modules: Vec<(String, String)>, breakpoints: HashS
 /// [`crate::drive::dispatch`]. The hook stays attached across the drive, so a
 /// breakpoint *inside* a fired callback (e.g. a `Midi.onNoteOn` handler)
 /// suspends the fiber mid-`vm.call` and parks the VM thread exactly like a
-/// top-level breakpoint. This is Task 5.1's payoff — the first breakpoint that
-/// fires in host-driven callback code rather than in the interpreted entry.
+/// top-level breakpoint.
 ///
 /// The driven `*_impl` calls invoke `vm.call` from the VM thread's top level
 /// (numFrames==0 after `interpret` returns), satisfying `wrenCall`'s

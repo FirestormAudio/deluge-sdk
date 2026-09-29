@@ -2,9 +2,8 @@
 //!
 //! The simulator plays the **panel/device** role of the [`deluge_protocol`] contract: it
 //! receives [`ToDeluge`] illumination frames (OLED, pad LEDs, indicator LEDs) and emits
-//! [`FromDeluge`] input. The brain on the other end is the DelugeFirmware C build's
-//! `deluge_host` (its `host_link` bridge listens on the stream); the same simulator could
-//! later drive real hardware or an SDK app, since all speak this wire.
+//! [`FromDeluge`] input. The brain on the other end is typically the DelugeFirmware C
+//! build's `deluge_host` (its `host_link` bridge listens on the stream).
 //!
 //! The transport is decided from the connect target ([`Target::parse`]): a `host:port`
 //! (or `:port` / `tcp://…`) connects over **TCP loopback**, anything else is treated as a

@@ -16,15 +16,11 @@ pub(crate) fn cmd_build(args: &[String]) -> Result<PathBuf, String> {
         "build",
         "--target",
         TARGET,
-        // `core,alloc`, not just `core`. An app enabling the SDK's `alloc`
-        // feature (the GPL `deluge-ui-toolkit` menu/text apps do) pulls in the
-        // `alloc` crate; with `-Zbuild-std=core` alone, cargo builds `core`
-        // from source but takes `alloc` from the precompiled sysroot, which
-        // references the sysroot's *own* `core` — two `core`s, and the app
-        // dies with `E0152: duplicate lang item`. Building both from source
-        // keeps them consistent. Harmless for apps that never touch `alloc`:
-        // an unreferenced `alloc` is not linked, so no `#[global_allocator]`
-        // is required.
+        // `core,alloc`, not just `core`: with `-Zbuild-std=core` alone, an app
+        // using `alloc` (e.g. via the SDK's `alloc` feature) takes `alloc` from
+        // the precompiled sysroot, which links against the sysroot's own
+        // `core`, and fails with `E0152: duplicate lang item`. Apps that never
+        // use `alloc` don't link it, so they need no `#[global_allocator]`.
         "-Zbuild-std=core,alloc",
         "-Zbuild-std-features=compiler-builtins-mem",
     ]);
@@ -41,10 +37,9 @@ pub(crate) fn cmd_build(args: &[String]) -> Result<PathBuf, String> {
 
     let name = package_name()?;
     let profile = if release { "release" } else { "debug" };
-    // Ask cargo where it actually put the artifacts instead of assuming
-    // `./target`: inside a workspace the output goes to the *workspace-root*
-    // target dir, not the member's directory, so the old `./target` guess
-    // failed for every firmware in this repo's `firmwares/` workspace.
+    // Ask cargo where it put the artifacts instead of assuming `./target`:
+    // inside a workspace the output goes to the *workspace-root* target dir,
+    // not the member's directory.
     let elf = target_dir()?.join(TARGET).join(profile).join(&name);
     if !elf.is_file() {
         return Err(format!("expected ELF not found at {}", elf.display()));

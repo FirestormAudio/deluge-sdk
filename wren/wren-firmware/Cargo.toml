@@ -6,15 +6,9 @@ license.workspace = true
 description = "Deluge on-device Wren scripting firmware (RZ/A1L) via Embassy"
 
 [lib]
-# A thin lib target exists solely so the host-only `stream` module (Sa-3b
-# slice 4's pure `plan_window` planner + `StreamReg`) is unit-testable via
-# `cargo test -p wren-firmware --lib --target x86_64-unknown-linux-gnu`. The
-# device build (`.cargo/config.toml`'s default `armv7a-none-eabihf` target)
-# never runs this test harness, so it's untouched by `[lib] test = false`
-# elsewhere in this workspace (e.g. deluge-alloc, rza1l-hal) — this lib is
-# cfg-trivial (empty) on device, since `stream` is `#![cfg(not(target_os =
-# "none"))]`. All product behavior stays in the `[[bin]]` below; nothing
-# depends on this crate as a library.
+# The lib target exists only so the host-only `stream` module can be unit
+# tested (`cargo test -p wren-firmware --lib --target x86_64-unknown-linux-gnu`);
+# it is empty on the device. The firmware itself is the `[[bin]]` below.
 name = "wren_firmware"
 path = "src/lib.rs"
 
@@ -27,15 +21,13 @@ test = false
 # serial, …); see `tools/check-layering.sh`.
 deluge-sdk = { path = "../../crates/deluge-sdk", default-features = false, features = ["usb-serial"] }
 wren-sys = { path = "../wren-sys" }
-# The portable Wren runtime: bindings + DSP engine + the `Host` trait this
-# firmware implements. Shared with the web simulator so the two never drift.
+# The portable Wren runtime (bindings and the `Host` trait this firmware
+# implements), shared with the web simulator.
 deluge-wren-core = { path = "../deluge-wren-core" }
 # The DSP graph engine backing the audio task. Sized to satisfy
 # deluge_wren_core's binding contract (NODES >= WREN_MAX_NODES, BUSES >= 8).
 flare-graph.workspace = true
-# Named directly (not just transitively, via deluge-audio-graph) so the
-# host-only stream prefetch (`src/stream.rs`) can reach `deluge_dsp_kernels::
-# wav::{parse, decode_i16_le}` to decode a streamed sample's WAV file.
+# For `flare_kernels::wav`, which the stream prefetch uses to decode WAV files.
 flare-kernels.workspace = true
 embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
 embassy-sync.workspace = true
@@ -43,10 +35,8 @@ embassy-futures.workspace = true
 log.workspace = true
 
 # ── Device (the Deluge, armv7a-none-eabihf) ──────────────────────────────────
-# The Cortex-A executor backend and `embassy-usb` (for the CDC-ACM `Sender`/
-# `Receiver` types the REPL tasks take) are device-only. Mirrors
-# crates/deluge-sdk's per-target embassy-executor split so cargo unifies to one
-# executor build.
+# The Cortex-A executor and `embassy-usb` (for the REPL's CDC-ACM types). The
+# executor features match deluge-sdk's so Cargo builds a single executor.
 [target.'cfg(target_os = "none")'.dependencies]
 cortex-ar.workspace = true
 embassy-executor = { workspace = true, features = ["nightly", "platform-cortex-ar", "executor-thread"] }

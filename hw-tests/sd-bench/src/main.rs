@@ -1,6 +1,6 @@
 //! SD High-Speed bench firmware.
 //!
-//! A throwaway diagnostic image: brings up the platform and SD card, logs the
+//! A diagnostic image: brings up the platform and SD card, logs the
 //! CMD6 High-Speed query/switch outcome, measures sequential read throughput
 //! at 16.7 MHz (P1/4) vs 33.3 MHz (P1/2), then runs a CRC soak.  Optional
 //! write soak via [`tasks::bench::WRITE_SOAK`] (dev cards only).
@@ -41,8 +41,8 @@ static mut EXECUTOR: MaybeUninit<Executor> = MaybeUninit::uninit();
 
 #[unsafe(no_mangle)]
 pub extern "C" fn main() -> ! {
-    // rtt_init! must always run to define the _SEGGER_RTT control-block symbol
-    // that rtt-target references at link time (also used by rza1 and deluge-bsp).
+    // With the `rtt` feature, log over a 16 KB RTT up-channel in `.rtt_buffer`
+    // (uncached RAM).
     #[cfg(feature = "rtt")]
     {
         let channels = rtt_target::rtt_init! {
@@ -57,9 +57,8 @@ pub extern "C" fn main() -> ! {
         };
         rtt_target::set_print_channel(channels.up.0);
         // Info, not Debug: the HAL logs one DEBUG line per DMA chunk, which
-        // floods the 16 KiB RTT ring (~90 KB per 64 MiB measurement) and, with
-        // no host draining, blocks the firmware mid-bench. At Info the whole
-        // bench log is ~3 KB and always fits.
+        // overflows the 16 KiB RTT ring and, with no host draining it, blocks
+        // the firmware mid-bench.
         rtt_target::init_logger_with_level(log::LevelFilter::Info);
     }
     info!("Deluge sd-bench firmware starting");

@@ -39,7 +39,7 @@ the resulting waveform getting richer as you add partials.
 
 Unlike the other examples, this one needs the **Argon** C++ headers at build
 time. They are located via the `ARGON_SRC` environment variable, defaulting to a
-sibling checkout at `../../../argon` (i.e. next to the `deluge-sdk` repo):
+checkout next to the `deluge-sdk` repo (`../../../../argon` from this directory):
 
 ```sh
 git clone https://github.com/stellar-aria/argon ../../../../argon   # if not already a sibling
@@ -54,7 +54,5 @@ Argon requires a C++23 compiler (GCC ≥ 14.2 / Clang ≥ 20.1). The firmware bu
 additionally needs `arm-none-eabi-g++`; the host/simulator build needs SIMDe on
 the include path (`/usr/include/simde` by default, overridable via `SIMDE_SRC`).
 
-> **CI note:** the SDK's example compile-proofs build every example on the
-> firmware target. This one additionally needs `arm-none-eabi-g++` **and** an
-> Argon checkout (`ARGON_SRC`) on the runner — wire those into CI (or gate this
-> example) before relying on it there.
+CI installs `arm-none-eabi-g++` and checks out Argon for this example (see
+`.github/workflows/examples.yml`).

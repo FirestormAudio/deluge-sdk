@@ -1,12 +1,11 @@
 //! Block-oriented audio DSP plumbing for the SDK's `dlg.audio()`.
 //!
-//! **Ring-follow tap (v1).** Reads codec input behind the SSI RX DMA write head
-//! and writes processed output ahead of the SCUX TX DMA read head, reusing the
-//! existing free-running rings — no DMA/SCUX reconfiguration, so the
-//! hardware-validated audio path ([`crate::audio`], [`crate::scux_dvu_path`],
-//! [`rza1l_hal::ssi`]) is untouched; this module only *reads* their public
-//! accessors. Mirrors the offset math + anti-auto-mute dither proven in the
-//! firmware's `iso_out_to_ssi`.
+//! **Ring-follow tap.** Reads codec input behind the SSI RX DMA write head and
+//! writes processed output ahead of the SCUX TX DMA read head, reusing the
+//! existing free-running rings. There is no DMA/SCUX reconfiguration: this
+//! module only *reads* the public accessors of the audio path
+//! ([`crate::audio`], [`crate::scux_dvu_path`], [`rza1l_hal::ssi`]). The offset
+//! math and anti-auto-mute dither match the firmware's `iso_out_to_ssi`.
 //!
 //! Board-specific concerns (i32↔f32 format, uncached ring access, wrap, dither)
 //! live here; the SDK's `deluge::audio` owns the cadence and the user callback.
@@ -43,8 +42,7 @@ pub struct Frame {
     pub r: f32,
 }
 
-// Pure format conversion + dither live in `crate::sample_fmt` (host-tested);
-// import them so the call sites below are unchanged.
+// Pure format conversion + dither live in `crate::sample_fmt` (host-tested).
 use crate::sample_fmt::{dither_sample, f32_to_i32, i32_to_f32};
 
 // ── DMA head offsets (slot = one i32; 2 slots per stereo frame) ────────────────
@@ -169,7 +167,7 @@ impl Default for BlockState {
     }
 }
 
-/// Await the next RX block completion interrupt (v2 IRQ clock). Recurring; call
+/// Await the next RX block completion interrupt (the `audio-irq` clock). Call
 /// in a loop. Requires `init_block_irq` + `register_block_irq` (done by
 /// `audio::init` under the `audio-irq` feature).
 #[cfg(feature = "audio-irq")]

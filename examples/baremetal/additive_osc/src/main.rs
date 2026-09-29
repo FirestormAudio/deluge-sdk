@@ -5,10 +5,10 @@
 //! keyboard (one pad right = +1 semitone, one pad up = +5 = a perfect fourth),
 //! with an OLED oscilloscope of its own output — but the per-block DSP is *not*
 //! written in Rust. Every audio block, the active voices are handed to
-//! [`additive_render`], a C++ function in [`csrc/additive.cpp`] that synthesises
+//! [`additive_render`], a C++ function in `csrc/additive.cpp` that synthesises
 //! the sound with [Argon](https://github.com/stellar-aria/argon), a header-only
-//! zero-overhead C++ wrapper over NEON. Each voice is summed from up to 64 sine
-//! partials (additive synthesis), four samples at a time in SIMD.
+//! zero-overhead C++ wrapper over NEON. Each voice is a sum of sine partials
+//! (additive synthesis), computed four samples at a time in SIMD.
 //!
 //! This exercises two things at once:
 //!   - **FFI** — Rust ↔ C++ over a C ABI ([`AdditiveVoice`] is shared
@@ -94,11 +94,8 @@ const SCOPE_CAP: usize = 1024;
 ///
 /// The envelope is a **pair**: `amp_start` is where the block begins and `amp`
 /// where it ends, and the renderer interpolates between them per sample. A
-/// single `amp` held constant for the whole block makes the envelope a
-/// staircase that jumps every 128 frames — inaudible in steady state (where
-/// successive values are equal) but a burst of ~10 audible steps through every
-/// attack and release, which is what "static on note onset and release" turned
-/// out to be on hardware.
+/// single `amp` held for the whole block would turn every attack and release
+/// into an audible staircase of steps, one per block.
 ///
 /// Field order is load-bearing: this is `#[repr(C)]` and must match
 /// `csrc/additive.cpp`'s struct exactly.

@@ -31,7 +31,7 @@
 //! tables are compiled into both instances and are unaffected. Closing that
 //! gap means a data channel, not a codec change.
 //!
-//! `Engine::apply_at` (G7) is not a `Cmd` and so has no encoding; scheduling on
+//! `Engine::apply_at` is not a `Cmd` and so has no encoding; scheduling on
 //! the worklet's own clock would need a companion record carrying the sample
 //! position. The web sim does not schedule.
 

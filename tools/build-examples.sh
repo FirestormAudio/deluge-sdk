@@ -4,7 +4,7 @@
 # (armv7a-none-eabihf). This is the coverage the `deluge` facade + the
 # `#[deluge::app]` macro get — they can't be unit-tested on a host target
 # (embassy-executor ARM bring-up), so building every example exercises the
-# whole capability surface end to end (testing plan §4.7).
+# whole capability surface end to end.
 #
 # Usage: tools/build-examples.sh   (needs the nightly toolchain + rust-src)
 set -euo pipefail

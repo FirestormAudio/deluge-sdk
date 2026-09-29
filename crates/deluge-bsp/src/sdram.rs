@@ -55,7 +55,7 @@ const SDRAM_MODE_CS3: usize = 0x3FFF_E040;
 /// Initialise SDRAM: configure GPIO pin-mux then set up the BSC.
 ///
 /// After this call, the 64 MB SDRAM window at 0x0C00_0000–0x0FFF_FFFF is
-/// accessible. Call [`crate::mmu::init_and_enable`] first so the BSC
+/// accessible. Call [`rza1l_hal::mmu::init_and_enable`] first so the BSC
 /// registers at 0x3FFF_Cxxx are in the strongly-ordered I/O region.
 ///
 /// # Safety
@@ -103,10 +103,9 @@ pub unsafe fn init() {
         wr32(RTCOR, 0xA55A_0080);
 
         // RTCSR: initialisation sequence start, clock = B-phy/4, refresh once.
-        // The BSC SDRAM controller automatically issues the required PRECHARGE ALL
-        // and ≥2 AUTO REFRESH cycles before accepting the Mode Register Set (MRS)
-        // command below.  No explicit CPU delay is needed — the BSC hardware manages
-        // the full JEDEC power-up sequence via its state machine.
+        // The BSC issues the JEDEC power-up PRECHARGE ALL and ≥2 AUTO REFRESH
+        // cycles itself before accepting the Mode Register Set (MRS) command
+        // below, so no CPU delay is needed.
         wr32(RTCSR, 0xA55A_0008);
 
         // SDRAM mode register: burst-length 1, sequential, CAS-latency 2.

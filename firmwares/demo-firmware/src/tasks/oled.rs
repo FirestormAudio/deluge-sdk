@@ -14,7 +14,6 @@ use deluge_bsp::pic;
 // ---------------------------------------------------------------------------
 //
 // 18 pad columns × 8 pad rows — each cell is CELL_W × CELL_H pixels.
-// 18 × 7 = 126 px ≤ 128 (2 px right margin);  8 × 6 = 48 px exactly.
 
 const CELL_W: usize = 7; // px per pad column  (18 × 7 = 126 ≤ 128)
 const CELL_H: usize = 5; // px per pad row      ( 8 × 5 =  40 ≤ 43 visible)
@@ -23,8 +22,6 @@ const FILL_H: usize = 3; // CELL_H − 2px borders
 /// First visible OLED row (rows 0–4 are off-panel, C constant OLED_MAIN_TOPMOST_PIXEL=5).
 const TOPMOST: usize = 5;
 
-/// Render the latest waveform snapshot from `analysis_task` as a dot-scope.
-///
 /// Render the latest waveform snapshot from `analysis_task` as an oscilloscope trace.
 ///
 /// Consecutive columns are joined by a vertical line segment so the trace is
@@ -95,14 +92,13 @@ fn render_pads(fb: &mut oled::FrameBuffer) {
 // Classic perspective-projection starfield: stars have a 3D position (x, y, z)
 // and are projected onto the 2D screen with factor = FOV / z.  z decrements
 // each frame so stars fly toward the viewer; when z ≤ 0 the star is respawned
-// far away at z = MAX_DEPTH.  Brightness = 1 − z/MAX_DEPTH, so dim/distant
-// stars are only rendered once they cross a visibility threshold.
+// far away at z = MAX_DEPTH.  Near stars are drawn larger.
 
 const N_OLED_STARS: usize = 60;
 const MAX_DEPTH: f32 = 32.0;
 /// Depth units consumed per 50 ms frame.
 const Z_STEP: f32 = 0.4;
-/// Field of view (radians) — matches the reference implementation.
+/// Field of view (radians).
 const FOV: f32 = core::f32::consts::PI;
 /// Projected screen centre.
 const CX: f32 = 64.0;
@@ -110,8 +106,8 @@ const CY: f32 = 26.0; // (TOPMOST + HEIGHT) / 2
 
 #[derive(Clone, Copy)]
 struct OledStar {
-    x: f32, // 3D position, range −128 … +128
-    y: f32, // 3D position, range  −43 …  +43
+    x: f32, // 3D position, range −256 … +256
+    y: f32, // 3D position, range −100 … +100
     z: f32, // depth, range 0 … MAX_DEPTH
 }
 
@@ -128,8 +124,8 @@ fn lcg_f32(s: &mut u32) -> f32 {
 }
 
 fn spawn_star(star: &mut OledStar, rng: &mut u32, z: f32) {
-    // Wide 3D range so that at z=MAX_DEPTH (factor≈0.098) stars project across
-    // the full canvas: x=±512 → ±50 px from centre; y=±200 → ±19 px from centre.
+    // At z = MAX_DEPTH (factor ≈ 0.098) this projects to ±25 px × ±10 px around
+    // the centre; stars spread across the full canvas as they approach.
     star.x = lcg_f32(rng) * 512.0 - 256.0; // −256 … +256
     star.y = lcg_f32(rng) * 200.0 - 100.0; // −100 … +100
     star.z = z;
@@ -160,11 +156,10 @@ fn render_starscape(
 
         let factor = FOV / star.z;
         let sx = (star.x * factor + CX) as i32;
-        // Negate y so that positive-y is up on screen, matching the reference.
+        // Negate y so that positive-y is up on screen.
         let sy = (-star.y * factor + CY) as i32;
 
-        // Close stars (z < ~40% of MAX_DEPTH) draw as 2×2 blocks, matching the
-        // reference's radius growth from 0→1.7 as z→0.
+        // Close stars (z < 40% of MAX_DEPTH) draw as 2×2 blocks.
         let size: i32 = if star.z < MAX_DEPTH * 0.4 { 2 } else { 1 };
         for dy in 0..size {
             for dx in 0..size {
@@ -194,7 +189,9 @@ fn render_starscape(
 ///   redrawn by `analysis_task` via [`oled::notify_redraw`].
 /// - **Idle**: starscape screensaver — stars fly outward from the centre via
 ///   perspective projection, animating at 50 ms / frame.
-/// - **Pad state** (any other pad change): pad cell map, redrawn on demand.
+///
+/// The pad cell map is drawn as the first frame, and once more if streaming
+/// stops while a redraw is pending.
 #[embassy_executor::task]
 pub(crate) async fn oled_task() {
     // Wait for pic::init() to complete before issuing any PIC UART commands.

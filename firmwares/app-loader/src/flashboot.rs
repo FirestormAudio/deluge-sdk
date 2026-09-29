@@ -1,8 +1,8 @@
 //! Boot-from-flash support.
 //!
-//! In addition to the SD-card `/APPS/` images, the SSB can launch a firmware
-//! image stored directly in the SPI flash chip — the same chip that holds the
-//! first-stage bootloader and the SSB itself.  This lets a unit boot with no SD
+//! In addition to the SD-card `/APPS/` images, the app loader can launch a
+//! firmware image stored directly in the SPI flash chip — the same chip that
+//! holds the first-stage bootloader and the loader itself.  This lets a unit boot with no SD
 //! card present, like the original Deluge bootloader.
 //!
 //! ## Image format
@@ -127,7 +127,7 @@ impl FlashImage {
 ///
 /// # Safety
 /// Erases and programs the flash app slot; no code may run from flash during the
-/// call. Safe here because the SSB executes from SRAM. Reads the staging window
+/// call (true for the app loader, which executes from SRAM). Reads the staging window
 /// via `stage.ptr` for `stage.len` bytes, which the caller must keep valid.
 pub async unsafe fn store_image_to_slot<F, Fut>(
     stage: &FlashStage,
@@ -140,12 +140,8 @@ where
     let image = unsafe { core::slice::from_raw_parts(stage.ptr, stage.len) };
 
     // Reject anything that would overrun the slot *before* erasing.  The
-    // per-sector/page guards in `spibsc` already refuse writes past the slot, but
-    // they do so silently (a too-large image would erase + program up to the slot
-    // boundary and drop the rest), leaving a truncated, unbootable image with no
-    // error surfaced.  Catch the misfit here so the slot is never touched and the
-    // caller sees a clear failure.  (The SD flatten path also checks this against
-    // the staging buffer; this is the choke point that owns the slot invariant.)
+    // `spibsc` guards silently drop writes past the slot, which would leave a
+    // truncated, unbootable image with no error surfaced.
     if stage.len as u32 > flash::SLOT_LEN {
         return Err(FsbError::TooLargeForSlot);
     }
@@ -153,11 +149,10 @@ where
     // Validate before erasing so a bad image cannot brick the slot.
     let meta = validate_fsb_metadata(image, stage.code_start)?;
 
-    // The flat image (`stage.len`) is normally *shorter* than the span the FSB
-    // copies (`code_end - code_start`, 64 KB-rounded with any BSS tail). `probe`
-    // refuses to boot an image whose copy span overruns the slot, so reject one
-    // here too — otherwise a pathological image with a small body but a huge
-    // `code_end` would flash "OK" yet never appear as BOOT FLASH.
+    // The span the FSB copies (`code_end - code_start`, 64 KB-rounded with any
+    // BSS tail) can exceed the flat image. `probe` refuses to boot an image
+    // whose copy span overruns the slot, so reject it here rather than flash an
+    // image that would never appear as BOOT FLASH.
     if meta.code_end - meta.code_start > flash::SLOT_LEN {
         return Err(FsbError::TooLargeForSlot);
     }
@@ -180,14 +175,11 @@ where
         on_progress(off as u32, len).await;
     }
 
-    // Read the whole image back and compare. The SPIBSC layer recovers from a
-    // rejected erase/program (stuck WIP → Clear-Status) *without surfacing an
-    // error*, so a write that silently dropped part of the image would otherwise
-    // flash "OK" yet store a corrupt, unbootable image. Read through the
-    // **uncached** SPIBSC mirror (`+0x4000_0000`, mapped non-cached): `program`
-    // already flushed the SPIBSC read cache, but the CPU's L1/L2 may still hold
-    // stale lines for the slot from an earlier `probe`, and this is also exactly
-    // the physical flash the boot trampoline copies from.
+    // Read the whole image back and compare: the SPIBSC layer recovers from a
+    // rejected erase/program (stuck WIP → Clear-Status) without surfacing an
+    // error. Read through the **uncached** SPIBSC mirror (`+0x4000_0000`):
+    // `program` flushed the SPIBSC read cache, but L1/L2 may still hold stale
+    // lines for the slot from an earlier `probe`.
     const UNCACHED_MIRROR: u32 = 0x4000_0000;
     for (i, &want) in image.iter().enumerate() {
         let addr = flash::SLOT_ADDR + UNCACHED_MIRROR + i as u32;

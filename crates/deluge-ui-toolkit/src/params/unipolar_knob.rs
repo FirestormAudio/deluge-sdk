@@ -41,11 +41,10 @@ impl Default for UnipolarKnob {
 }
 
 impl UnipolarKnob {
-    /// Create a new knob control
+    /// Create a new knob control at the origin (position it with
+    /// [`Positionable`](crate::Positionable)).
     ///
-    /// # Arguments
-    /// * `point` - Top-left position (knob will be centered from this point)
-    /// * `value` - Normalized value from 0.0 to 1.0
+    /// `value` is normalized to 0.0–1.0 and clamped.
     pub fn new(value: f32) -> Self {
         Self {
             point: Point::new(0, 0),

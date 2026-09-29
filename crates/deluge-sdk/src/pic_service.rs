@@ -2,9 +2,10 @@
 //!
 //! The PIC32 is the Deluge's I/O co-processor: pads, buttons, indicator LEDs,
 //! and the OLED chip-select handshake all flow over its UART. Several
-//! capabilities ([`Oled`](crate::Oled), and later input/pads) depend on it, so
-//! the SDK brings it up once, on demand, and runs a single RX pump that routes
-//! incoming events.
+//! capabilities ([`Oled`](crate::Oled), [`Input`](crate::Input),
+//! [`Pads`](crate::Pads), [`Leds`](crate::Leds)) depend on it, so the SDK
+//! brings it up once, on demand, and runs a single RX pump that routes incoming
+//! events.
 //!
 //! [`ensure_started`] is idempotent: the first capability that needs the PIC
 //! initialises the UART and spawns the RX pump; later callers are no-ops.

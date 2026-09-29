@@ -2,7 +2,7 @@
 
 Procedural macros for the [Deluge SDK](https://crates.io/crates/deluge-sdk).
 
-The only macro today is `#[deluge::app]`, which turns a plain `async fn main`
+It provides one macro, `#[deluge::app]`, which turns a plain `async fn main`
 into a complete firmware entry point — absorbing the platform bring-up (heaps,
 clocks, interrupts, executor) and the panic handler that an app author would
 otherwise hand-write.

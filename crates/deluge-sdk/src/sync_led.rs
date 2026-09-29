@@ -97,9 +97,9 @@ impl StatefulOutputPin for SyncLed {
     }
 }
 
-// ── Host (desktop simulator) ─────────────────────────────────────────────────
+// ── Hosted backends (simulator, Linux) ───────────────────────────────────────
 
-/// The Deluge SYNC LED, backed by the shared panel on the host simulator.
+/// The Deluge SYNC LED, driven through the simulator panel or libdeluge.
 #[cfg(not(target_os = "none"))]
 pub struct SyncLed {
     state: bool,

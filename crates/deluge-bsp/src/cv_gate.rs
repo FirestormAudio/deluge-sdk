@@ -5,11 +5,11 @@
 //! Gate outputs use direct GPIO V-trig lines (high = gate OFF, low = gate ON).
 //!
 //! ## SPI wiring (RSPI0)
-//! | Port.Pin | Mux | Signal     |
-//! |----------|-----|------------|
-//! | P6.0     | 3   | RSPCLK0    |  SCK
-//! | P6.2     | 3   | MOSI0      |  MOSI
-//! | P6.1     | GPIO| SPI_SSL    |  active-low CS (software-driven)
+//! | Port.Pin | Mux  | Signal  | Role                             |
+//! |----------|------|---------|----------------------------------|
+//! | P6.0     | 3    | RSPCLK0 | SCK                              |
+//! | P6.2     | 3    | MOSI0   | MOSI                             |
+//! | P6.1     | GPIO | SPI_SSL | active-low CS (software-driven)  |
 //!
 //! ## MAX5136 32-bit write frame
 //! ```text
@@ -258,10 +258,9 @@ mod tests {
         assert_eq!(GATE_PINS.len(), NUM_GATE_CHANNELS);
     }
 
-    /// Regression test for the latent SIGSEGV: `init()` used to be
-    /// unconditional and called `ostm::delay_ms` (raw MMIO), crashing on
-    /// host. The host stand-in must return without touching hardware, and
-    /// `cv_set_blocking`/`gate_set` (routed through the mmio-shadow
+    /// The host stand-in `init()` must return without touching hardware (the
+    /// device version calls `ostm::delay_ms`, raw MMIO that would crash here),
+    /// and `cv_set_blocking`/`gate_set` (routed through the mmio-shadow
     /// `gpio`/`rspi` seam) must not panic either.
     #[test]
     fn init_and_gate_set_do_not_panic_on_host() {

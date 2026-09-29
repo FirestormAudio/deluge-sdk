@@ -1,8 +1,7 @@
-//! Task 3.2: the threaded-wasm entry module for the debug core.
+//! The threaded-wasm entry module for the debug core.
 //!
 //! # Why a `bin` (not the cdylib)
-//! The spike (`.superpowers/sdd/task-3.2a-spike-report.md`) found that a
-//! `wasm32-wasip1-threads` **cdylib** does not bootstrap the *main thread's*
+//! A `wasm32-wasip1-threads` **cdylib** does not bootstrap the *main thread's*
 //! TLS / thread pointer on its own (rustc emits no callable `_initialize` for
 //! it, and `__wasm_call_ctors` alone is insufficient), so it hangs the first
 //! time it touches `std::thread`. A **command** module has a real `_start`
@@ -14,8 +13,7 @@
 //! the lib, `sab.rs`, and are force-exported by `build-threads.sh`) on the
 //! now-initialized instance.
 //!
-//! The single-threaded Task 3.1 path is untouched: it keeps using the cdylib
-//! (`lib.rs`'s `dbg_boot`).
+//! The single-threaded build still uses the cdylib (`lib.rs`'s `dbg_boot`).
 
 /// `_start`'s body. Empty on purpose: its only job is to let wasi-libc's
 /// `crt1-command` startup run (which initializes the main thread's TLS), after

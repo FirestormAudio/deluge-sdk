@@ -16,7 +16,7 @@
 //! running bootloader.  Writing PT_LOAD segments there directly would corrupt
 //! the bootloader in flight.  The solution is a two-phase approach:
 //!
-//! 1. [`crate::elf::load_from_sd`] stages SRAM-targeting segments in SDRAM
+//! 1. [`crate::elf::load_from_sd_with_progress`] stages SRAM-targeting segments in SDRAM
 //!    (`0x0FD20000+`) and returns per-segment [`SramSegDesc`] descriptors.
 //!
 //! 2. [`launch_via_trampoline`] copies a small PIC trampoline blob +
@@ -189,7 +189,9 @@ pub unsafe fn launch(entry: u32) -> ! {
 /// SRAM address, then branches to `entry`.
 ///
 /// # Safety
-/// - `descs[..n_sram]` must have been filled by [`crate::elf::load_from_sd`].
+/// - Each descriptor in `descs` must name a fully staged source and a valid
+///   SRAM destination (as produced by [`crate::elf::load_from_sd_with_progress`],
+///   the dev-upload path, or [`crate::flashboot`]).
 /// - Nothing in the retention RAM region (`0x20000000–0x2001FFFF`) must be
 ///   live; the first-stage bootloader guarantees this.
 /// - `entry` must be the address of a valid ARM-state function.

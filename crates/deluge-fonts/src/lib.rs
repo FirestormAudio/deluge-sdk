@@ -25,9 +25,9 @@
 //!
 //! ## Font Format
 //!
-//! All fonts are stored in **row-major** format, rotated from the original column-major
-//! OLED format during build time. Each row's pixels are packed into bytes, left-to-right,
-//! making them easier to work with in standard graphics libraries.
+//! All fonts are stored in **row-major** format, rotated from the firmware's column-major
+//! OLED format. Each row's pixels are packed into bytes, left-to-right, so they map
+//! directly onto standard graphics libraries.
 //!
 //! For each glyph:
 //! - `bytes_per_row = (width + 7) / 8` (rounded up to nearest byte)
@@ -194,7 +194,7 @@ impl Font {
     /// Draw text at the specified position with custom color and spacing.
     ///
     /// Returns the total width of the drawn text in pixels.
-    /// Note: Text is automatically converted to uppercase since these fonts only contain uppercase glyphs.
+    /// Lowercase ASCII is drawn as uppercase; characters with no glyph are skipped.
     #[cfg(feature = "embedded-graphics")]
     pub fn draw_text_colored_with_spacing<D>(
         &self,
@@ -211,7 +211,7 @@ impl Font {
         let mut x_offset = 0;
         let mut first = true;
 
-        // Convert to uppercase since the font only has uppercase glyphs
+        // Deluge UI text is uppercase; fold lowercase onto the uppercase glyphs.
         for ch in text.chars() {
             let ch = ch.to_ascii_uppercase();
             let char_index = if (' '..='~').contains(&ch) {
@@ -290,7 +290,7 @@ impl Font {
         let mut width = 0;
         let mut first = true;
 
-        // Convert to uppercase since the font only has uppercase glyphs
+        // Deluge UI text is uppercase; fold lowercase onto the uppercase glyphs.
         for ch in text.chars() {
             let ch = ch.to_ascii_uppercase();
             let char_index = if (' '..='~').contains(&ch) {

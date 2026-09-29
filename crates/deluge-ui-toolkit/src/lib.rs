@@ -3,40 +3,38 @@
 //! Graphics and menu system for the **Synthstrom Audible Deluge 128×48 OLED display**.
 //!
 //! This toolkit provides:
-//! - **Display abstraction** for 128×48 horizontal monochrome OLED
-//! - **Menu building** and navigation
+//! - **Menus**: immediate-mode vertical ([`Menu`]) and param-column ([`HMenu`]) menus
+//! - **Parameter visualizations** (knobs, sliders, bars, filters, envelopes)
 //! - **Text rendering** with Deluge fonts
-//! - **Graphics primitives** (lines, rectangles, icons)
-//! - **Layout helpers** for consistent UI
+//! - **Graphics primitives** (lines, polygons, icons) and layout helpers
 //!
-//! # Display Specs
+//! # Display
 //!
-//! - **Resolution**: 128 pixels wide × 43 pixels tall (visible area)
-//! - **Orientation**: Horizontal
-//! - **Color**: Monochrome (1-bit per pixel)
-//! - **Buffer size**: 688 bytes (128 × 43 / 8)
+//! The panel is 128×48, monochrome (1 bit per pixel); the faceplate hides the
+//! top 5 rows, leaving a visible 128×43 area.
 //!
 //! # Rendering
 //!
 //! Everything here draws onto any `embedded-graphics`
 //! [`DrawTarget<Color = BinaryColor>`](embedded_graphics::draw_target::DrawTarget).
-//! In the Deluge SDK that target is `deluge::Oled` (a 128×48 `DrawTarget`); the
-//! faceplate hides the top 5 rows, so offset toolkit content down by 5 px to land
-//! it in the visible 43-row area, then flush.
+//! In the Deluge SDK that target is `deluge::Oled` (a 128×48 `DrawTarget`); set
+//! [`MenuStyle::top_inset`] to `deluge::Oled::VISIBLE_TOP` so content lands in the
+//! visible area, then flush.
 //!
 //! ```ignore
 //! use deluge::prelude::*;
-//! use deluge_ui_toolkit::{Menu, MenuListBuilder};
-//! use embedded_graphics::prelude::*;
+//! use deluge_ui_toolkit::{Menu, MenuInput, MenuState, MenuStyle};
 //!
 //! let mut oled = dlg.oled().await;       // a DrawTarget<Color = BinaryColor>
-//! let menu = MenuListBuilder::new("SOUND")
-//!     .integer("FREQUENCY", 440, 20, 20000)
-//!     .float("RESONANCE", 0.5, 0.0, 1.0)
-//!     .build();
+//! let mut nav = MenuState::new();
+//! let style = MenuStyle { top_inset: deluge::Oled::VISIBLE_TOP as i32, ..MenuStyle::default() };
 //!
 //! oled.clear();
-//! menu.render(&mut oled.translated(Point::new(0, 5)))?;  // +5 px: skip hidden rows
+//! Menu::show(&mut oled, &mut nav, MenuInput::None, &style, |ui| {
+//!     ui.title("SOUND");
+//!     ui.int("FREQ", &mut app.freq, 20..=20000);
+//!     ui.float("RESO", &mut app.reso, 0.0..=1.0);
+//! });
 //! oled.flush().await;
 //! ```
 // `no_std` for the embedded target; host unit tests link std for the harness.

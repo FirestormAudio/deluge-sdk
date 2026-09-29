@@ -67,11 +67,11 @@ fn panic(info: &PanicInfo) -> ! {
 // USB mode selection
 // ---------------------------------------------------------------------------
 
-/// Set to `true` before calling `main()` (or before the ISR is registered)
-/// to start USB0 in host mode instead of device mode.  Switching at runtime
-/// requires quiescing the port, calling `UsbPort::into_device_mode` /
+/// When `true` at boot, USB0 starts in host mode instead of device mode.  The
+/// ISR dispatcher reads this on every interrupt.  Switching at runtime requires
+/// quiescing the port, calling `UsbPort::into_device_mode` /
 /// `UsbPort::into_host_mode`, and updating this flag under an IRQ-disabled
-/// critical section.  The ISR dispatcher reads this on every interrupt.
+/// critical section.
 static USB0_HOST_MODE: AtomicBool = AtomicBool::new(false);
 
 // ---------------------------------------------------------------------------
@@ -100,11 +100,9 @@ static mut EXECUTOR: MaybeUninit<Executor> = MaybeUninit::uninit();
 
 #[unsafe(no_mangle)]
 pub extern "C" fn main() -> ! {
-    // rtt_init! must always run to define the _SEGGER_RTT control-block symbol
-    // that rtt-target references at link time (also used by rza1 and deluge-bsp).
-    // The 16 KB ring buffer lives in .rtt_buffer (uncached RAM).
-    // In release builds the logger is never registered and all log!() call sites
-    // compile to nothing (release_max_level_off feature on the log crate).
+    // With the `rtt` feature, log over a 16 KB RTT up-channel whose ring buffer
+    // and control block live in `.rtt_buffer` (uncached RAM).  Without it no
+    // logger is registered and `log!` calls are no-ops.
     #[cfg(feature = "rtt")]
     {
         let channels = rtt_target::rtt_init! {
@@ -169,21 +167,14 @@ pub extern "C" fn main() -> ! {
     info!("RSPI0: initialised via cv_gate::init");
 
     // ── USB0 mode selection (host vs device) ──────────────────────────────
-    // Set USB0_HOST_MODE to true *before* this point to start in host mode.
-    // The ISR registered above dispatches to hcd_int_handler or dcd_int_handler
-    // based on the flag, so no ISR re-registration is needed when switching.
+    // The ISR registered below dispatches to hcd_int_handler or dcd_int_handler
+    // based on USB0_HOST_MODE, so no re-registration is needed when switching.
     info!(
         "USB: initialising USB0 (host_mode={})...",
         USB0_HOST_MODE.load(Ordering::Relaxed)
     );
 
-    // Build UsbDevice (device mode) or a Rusb1HostDriver (host mode).  Both
-    // paths call module_clock_enable internally via init_device_mode /
-    // init_host_mode, so the manual call below is no longer needed.
-
-    // Register the USB0 ISR *before* IRQ is globally enabled.  The dispatcher
-    // checks USB0_HOST_MODE on every interrupt to direct the call to either the
-    // device or host interrupt handler without needing to re-register the ISR.
+    // Register the USB0 ISR *before* IRQ is globally enabled.
     unsafe {
         gic::register(rza1l_hal::usb::USB0_IRQ, || {
             if USB0_HOST_MODE.load(Ordering::Relaxed) {

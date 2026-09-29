@@ -8,32 +8,23 @@ description = "Deluge Wren debugger core: runs the shared deluge foreign binding
 [lib]
 crate-type = ["cdylib", "rlib"]
 
-# The threaded-wasm entry bin (Task 3.2). A command module whose `_start`
-# bootstraps the main thread's TLS for `wasm32-wasip1-threads` (see
-# src/bin/dbg_threads.rs). Gated behind the `threads` feature via
-# `required-features` so it is NOT built by the native `cargo test` or the
-# single-threaded `wasm32-wasip1` (Task 3.1) build — where it would fail to
-# link (`crt1-command.o` needs `__wasi_init_tp`, absent off the threads
-# sysroot). build-threads.sh passes `--features threads --bin dbg_threads`.
+# The threaded-wasm entry point for `wasm32-wasip1-threads`. It links only
+# against the threads sysroot, so `required-features` keeps it out of native
+# and single-threaded wasm builds; build-threads.sh enables it.
 [[bin]]
 name = "dbg_threads"
 required-features = ["threads"]
 
 [features]
-# Marker feature that turns on the threaded-wasm bin target. No code depends
-# on it (the SAB code is gated on `target_feature = "atomics"`); it exists so
-# `required-features` can keep the bin out of the default/native/3.1 builds.
+# Enables the threaded-wasm binary; no library code depends on it.
 threads = []
 
 [dependencies]
-# Pinned by rev so this tool builds from a bare clone (no sibling wren-rs
-# checkout needed). To iterate against local wren-rs changes, temporarily flip
-# to `path = "../../../wren-rs/crates/wren-core"` — but don't commit that.
+# Pinned by rev so a fresh clone builds. For local wren-rs work, point it at
+# `path = "../../../wren-rs/crates/wren-core"` without committing that.
 wren-core = { git = "https://github.com/FirestormAudio/wren-rs", rev = "189765a123a3a194f5982b3a4ec6bf08776fbd70", features = ["debug"] }
-# default-features = false is MANDATORY: it disables `wren-sys-backend` so this
-# crate links ONLY wren-core's C VM (no double-VM). We use the backend-agnostic
-# SlotApi trait + generic binding bodies, never deluge-wren-core's Vm surface or
-# its wren-sys-based `test_support`.
+# Must disable default features: this crate supplies wren-core's C VM, and
+# `wren-sys-backend` would link a second one.
 deluge-wren-core = { path = "../deluge-wren-core", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

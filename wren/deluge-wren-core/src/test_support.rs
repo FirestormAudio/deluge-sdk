@@ -1,8 +1,8 @@
 //! Golden-test scaffolding: boot the wren-sys VM the same way a real host does
 //! (mirrors `wren/wren-web/src/lib.rs`'s `sim_boot`/`sim_load`), run a script,
-//! and read back CV state. Used by `tests/golden_sim.rs` to pin behavior across
-//! the [`crate::SlotApi`] refactor; reused by later phases for the same purpose
-//! against the second VM backend.
+//! and read back CV state, captured audio commands, or rendered audio. Used by
+//! `tests/golden_sim.rs` and `tests/audio_bindings.rs` to pin the bindings'
+//! behavior.
 //!
 //! Single-threaded, like the rest of the binding state (see `bindings.rs`'s
 //! module docs) — do not call concurrently from multiple test threads.
@@ -290,7 +290,7 @@ pub fn run_and_capture_cmds(src: &str) -> Vec<crate::Cmd> {
 
 /// Boot a VM and run `src`; then free the VM, open an incremental update, boot
 /// a fresh VM and run the same `src` again, and close the update — the shape of
-/// the web editor's Run button once it stops resetting the graph (GL2).
+/// a live editor's Run that keeps the graph standing.
 ///
 /// Returns `(first_run, second_run)`. The second includes its
 /// `BeginUpdate`/`EndUpdate` bracket, so a caller can assert that what sits
@@ -548,8 +548,7 @@ pub struct EngineHost {
     pub eng: TestEng,
     /// Fed line-in block for [`run_and_render_with_input`] to hand `Engine::render`
     /// as its `input` arg, chunk by chunk. Empty by default, so hosts that never
-    /// call [`EngineHost::set_input`] (i.e. every pre-Task-3 `EngineHost` user)
-    /// keep rendering against silence, byte-unchanged.
+    /// call [`EngineHost::set_input`] render against silence.
     input_block: Vec<StereoFrame>,
 }
 impl EngineHost {

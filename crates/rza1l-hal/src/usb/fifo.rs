@@ -4,21 +4,20 @@
 //! and provides the `sw_to_hw_fifo` / `hw_to_sw_fifo` byte-copy routines
 //! that handle the RUSB1's MBW (memory bus width) switching rules.
 //!
-//! Routing policy (matches `dcd_rusb1.c`):
+//! Routing policy (as in TinyUSB `dcd_rusb1.c`):
 //! - Pipe 0 (DCP / control)         → CFIFO
 //! - Pipes 1–2 (ISO)                → D0FIFO  (dedicated for audio)
 //! - Pipes 3–15 (bulk / interrupt)  → D1FIFO
 //!
 //! ## MBW rules (TRM §28.3.8)
 //! The MBW field in the FIFO SEL register must not change once a FIFO read
-//! has begun.  We set MBW=32 when selecting CURPIPE (the common case for
-//! 4-byte-aligned payloads) and only narrow it for sub-word transfers.
+//! has begun.  MBW=32 is set together with CURPIPE and never narrowed; sub-word
+//! tails use byte-lane stores (write) or unpack one extra word (read).
 //!
-//! ## RZA1 D1FIFO quirk
+//! ## RZ/A1 D1FIFO quirk
 //! Writing D1FIFOSEL re-triggers the FIFO port switching state machine even
-//! if only MBW changes.  Reading immediately after the MBW write returns
-//! `0xFF`.  For payloads shorter than 4 bytes, we keep MBW=32 and unpack
-//! the returned word instead of narrowing.
+//! if only MBW changes, and a read immediately after the MBW write returns
+//! `0xFF`, so MBW is never changed after selection.
 
 use super::regs::{
     FIFOCTR_BCLR, FIFOCTR_BVAL, FIFOCTR_DTLN_MASK, FIFOCTR_FRDY, FIFOSEL_CURPIPE_MASK,
@@ -57,7 +56,7 @@ impl FifoPort {
     /// Construct the D0FIFO port.
     ///
     /// # Safety
-    /// Same as [`cfifo`].
+    /// Same as [`Self::cfifo`].
     pub unsafe fn d0fifo(regs: *mut Rusb1Regs) -> Self {
         unsafe {
             Self {
@@ -71,7 +70,7 @@ impl FifoPort {
     /// Construct the D1FIFO port.
     ///
     /// # Safety
-    /// Same as [`cfifo`].
+    /// Same as [`Self::cfifo`].
     pub unsafe fn d1fifo(regs: *mut Rusb1Regs) -> Self {
         unsafe {
             Self {
@@ -158,11 +157,10 @@ pub unsafe fn fifo_is_ready(fifo: &FifoPort, pipe_num: usize) -> bool {
 /// TRM §28 CURPIPE-change procedure: set CURPIPE to a different value (0 = no
 /// pipe) first, confirm it latched, then select the target pipe.
 ///
-/// This is required to avoid the shared-D1FIFO CDC IN/OUT cross-corruption: an
-/// OUT drain that selects its pipe in a single write can observe the FRDY/data
-/// of the *previously selected* IN pipe (e.g. crow's just-staged TX), reading
-/// its bytes back onto the OUT path. Deselecting first flushes the port state
-/// machine so the subsequent read reflects only the target pipe.
+/// On a shared D1FIFO, an OUT drain that selects its pipe in a single write can
+/// observe the FRDY/data of the *previously selected* IN pipe and read its
+/// staged TX bytes back onto the OUT path.  Deselecting first resets the port
+/// state machine so the subsequent read reflects only the target pipe.
 ///
 /// # Safety
 /// `fifo` must be a valid DnFIFO port; `pipe_num` must be a DnFIFO pipe (≥ 1).
@@ -216,10 +214,8 @@ pub unsafe fn fifo_bval(fifo: &FifoPort) {
 ///
 /// Uses 32-bit FIFO access throughout: the 4-byte body via native `u32` stores
 /// and the 1-3 byte tail via 8-bit lane stores (MBW stays 32 — it is never
-/// narrowed).  This mirrors the proven Linux `renesas_usbhs` PIO push, which is
-/// the ground-truth reference for the RZ/A1L (the TinyUSB `dcd_rusb1.c` this was
-/// originally modeled on was never validated on silicon and got the tail lane
-/// wrong).
+/// narrowed).  This follows the Linux `renesas_usbhs` PIO push; TinyUSB's
+/// `dcd_rusb1.c` uses the wrong tail lane.
 ///
 /// # Safety
 /// - `fifo.data` / `fifo.sel` must be valid.
@@ -230,12 +226,11 @@ pub unsafe fn sw_to_hw_fifo(fifo: &FifoPort, buf: *const u8, len: usize) {
         // 32-bit FIFO access for the body.  With BIGEND=0 (the reset default,
         // never overridden) Table 28.7 maps byte N+0 → bits[7:0], i.e. little
         // endian matching the ARM, so a native `u32` write emits bytes in order
-        // with no swap.  This quarters the MMIO write count vs byte access.
+        // with no swap.
         //
-        // Self-contained: we (re)assert MBW=32 here rather than relying on the
-        // caller's pipe-select width, so every transmit caller (control, bulk,
-        // host) gets 32-bit access.  Callers already select CURPIPE | MBW=32, so
-        // this is a same-value write and does not re-trigger the port switch.
+        // Reassert MBW=32 rather than trusting the caller's select width.
+        // Callers already select CURPIPE | MBW=32, so this is a same-value write
+        // and does not re-trigger the port switch.
         set_mbw(fifo.sel, MBW_32);
         let mut p = buf;
         let mut rem = len;
@@ -252,11 +247,10 @@ pub unsafe fn sw_to_hw_fifo(fifo: &FifoPort, buf: *const u8, len: usize) {
         // Do NOT narrow MBW: leave it at 32 and emit each remaining byte as an
         // 8-bit store to the correct byte lane.  Per TRM Table 28.9 (8-bit
         // access, BIGEND=0) the valid byte for the RZ/A1L sits on bits[31:24],
-        // i.e. CPU byte-address `base + 3`.  Matching the proven Linux
-        // `renesas_usbhs` PIO push (cfifo_byte_addr=0 → `addr + (3 - (i & 3))`),
-        // byte `i` of the tail goes to lane `3 - (i & 3)`.  A prior version set
-        // MBW=8 and did a 32-bit store with the byte in bits[7:0]; the hardware
-        // then latched bits[31:24] (= 0), transmitting the tail as zero bytes.
+        // i.e. CPU byte-address `base + 3`.  As in the Linux `renesas_usbhs` PIO
+        // push (cfifo_byte_addr=0 → `addr + (3 - (i & 3))`), byte `i` of the
+        // tail goes to lane `3 - (i & 3)`.  A byte in bits[7:0] would be
+        // ignored: the hardware latches bits[31:24].
         if rem > 0 {
             let base = fifo.data as *mut u8;
             let mut i = 0usize;
@@ -276,14 +270,14 @@ pub unsafe fn sw_to_hw_fifo(fifo: &FifoPort, buf: *const u8, len: usize) {
 
 /// Copy `len` bytes from the hardware FIFO into `buf`.
 ///
-/// Uses MBW=8 (byte-at-a-time), matching the C reference driver
-/// `pipe_read_packet` which accesses the FIFO as `volatile uint8_t*`.
-/// This is the only safe approach: at MBW=32 the hardware delivers bytes
-/// big-endian in the 32-bit word, which would require an explicit bswap.
+/// Reads 32-bit words at MBW=32; with BIGEND=0 the bytes arrive little-endian,
+/// already in memory order.  A 1-3 byte tail is taken from the low bytes of one
+/// extra word read.
 ///
 /// # Safety
 /// - `fifo.data` / `fifo.sel` must be valid.
-/// - The FIFO must have been selected (CURPIPE written) before calling.
+/// - The FIFO must have been selected with [`fifo_select_pipe`] (CURPIPE +
+///   MBW=32) before calling.
 pub unsafe fn hw_to_sw_fifo(fifo: &FifoPort, buf: *mut u8, len: usize) {
     unsafe {
         if len == 0 {
@@ -295,7 +289,6 @@ pub unsafe fn hw_to_sw_fifo(fifo: &FifoPort, buf: *mut u8, len: usize) {
         // NOT change MBW here — avoiding the documented "first read after an MBW
         // write returns 0xFF" hazard.  BIGEND=0 (Table 28.7) maps byte N+0 →
         // bits[7:0], i.e. little endian, so the word's bytes are already in order.
-        // Quarters the MMIO read count vs the previous byte-at-a-time path.
         let mut p = buf;
         let mut rem = len;
         while rem >= 4 {
@@ -328,8 +321,7 @@ pub unsafe fn hw_to_sw_fifo(fifo: &FifoPort, buf: *mut u8, len: usize) {
 ///
 /// Selects 32-bit FIFO access (MBW=32) for both directions.  `sw_to_hw_fifo` /
 /// `hw_to_sw_fifo` move the data as 32-bit words (BIGEND=0 ⇒ little-endian,
-/// matching the ARM), with a narrowed/extracted tail for non-word-aligned
-/// lengths.  The `fifo_is_ready` poll that follows this call absorbs the FIFO
+/// matching the ARM), handling a non-word-aligned tail without narrowing MBW.  The `fifo_is_ready` poll that follows this call absorbs the FIFO
 /// port-switch settle so the first access does not hit the "0xFF after MBW
 /// write" hazard.
 ///
@@ -346,8 +338,7 @@ pub unsafe fn fifo_select_pipe(fifo: &FifoPort, pipe_num: usize, isel: bool) {
         // flips the FIFO-port DIR, raising a *spurious* BRDY on every IN select
         // (TRM §28.4.2(2): "DIR bit changed 0→1").  That spurious BRDY marks the
         // single-packet IN transfer complete before the host has actually read
-        // it, so `write()` returns early.  The reference driver never sets ISEL
-        // on DnFIFO — only set it for the DCP.
+        // it, so `write()` returns early.  Only set it for the DCP.
         let isel_bit: u16 = if isel && pipe_num == 0 { 0x0020 } else { 0 };
         // 32-bit access for both directions; the copy routines handle any
         // non-word-aligned tail.
@@ -362,8 +353,8 @@ mod tests {
 
     #[test]
     fn sw_to_hw_roundtrip() {
-        // Test the write path using a mock buffer (no actual hardware).
-        // We verify that the unaligned reads in sw_to_hw_fifo don't panic.
+        // Mock FIFO register: checks that the unaligned source reads in
+        // sw_to_hw_fifo don't panic for any length.
         let src = [0x01u8, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
         let mut dest = 0u32;
         let fifo = FifoPort {
@@ -412,7 +403,7 @@ mod tests {
 
     #[test]
     fn hw_to_sw_sub_word() {
-        // Verify sub-word unpack (keep MBW=32, read one word, extract bytes).
+        // Sub-word tail: one word read at MBW=32, low bytes extracted.
         let word: u32 = 0x04030201;
         let fifo = FifoPort {
             data: &word as *const u32 as *mut u32,

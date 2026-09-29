@@ -1,10 +1,9 @@
 //! Renesas Serial Peripheral Interface (RSPI) driver for the RZ/A1L.
 //!
-//! Implements a blocking / interrupt-driven 32-bit SPI master, matching the
-//! `R_RSPI_Create` + `R_RSPI_Start` + `R_RSPI_SendBasic32` sequence from the
-//! C firmware.  Only the 32-bit word path is implemented here because that is
-//! the only frame size used on the Deluge (CV DAC MAX5136, OLED shares the
-//! same channel in 8-bit mode — not implemented in this crate).
+//! Implements a blocking / interrupt-driven SPI master following the
+//! `R_RSPI_Create` + `R_RSPI_Start` + `R_RSPI_SendBasic32/8` sequences from the
+//! C firmware.  The channel runs 32-bit frames for the MAX5136 CV DAC and is
+//! switched to 8-bit frames ([`configure_8bit`]) for the OLED that shares it.
 //!
 //! ## Channel map
 //! | Channel | Base address  | Use on Deluge         |
@@ -19,11 +18,11 @@
 //! RSPI0–4 clocks are enabled in `stb::init()` via STBCR10.
 //!
 //! ## GIC interrupt IDs (RSPI channel n)
-//! | IRQ     | ID            |
-//! |---------|---------------|
-//! | SPEIn   | 270 + 3n      |
-//! | SPRIn   | 271 + 3n      |  ← used for CV-transfer-complete
-//! | SPTIn   | 272 + 3n      |
+//! | IRQ     | ID            | Use                         |
+//! |---------|---------------|-----------------------------|
+//! | SPEIn   | 270 + 3n      |                             |
+//! | SPRIn   | 271 + 3n      | CV transfer complete        |
+//! | SPTIn   | 272 + 3n      |                             |
 //!
 //! ## Register offsets inside `struct st_rspi`
 //! | Register | Offset | Width | Description                     |
@@ -100,11 +99,10 @@ const SPBFCR_RX_RESET: u8 = 1 << 6;
 // TRM §16 SPCMD bit fields: bit[1] = CPOL (0 = RSPCK idle low), bit[0] = CPHA
 // (0 = sample on odd/leading edge).  Reset value = H'070D (CPOL=0, CPHA=1).
 //
-// The Deluge peripherals (MAX5136 CV DAC, SSD1309 OLED) both require SPI
-// Mode 0 (CPOL=0, CPHA=0).  The C firmware incorrectly used CPOL=1 (Mode 2)
-// in SPCMD0 = 0x0302/0x0702; this was a latent bug that happened to work on
-// those peripherals because both tolerate mismatched polarity in practice, but
-// the TRM default and the datasheet-specified polarity are both CPOL=0.
+// The Deluge peripherals (MAX5136 CV DAC, SSD1309 OLED) both specify SPI
+// Mode 0 (CPOL=0, CPHA=0).  The C firmware's SPCMD0 = 0x0302/0x0702 selects
+// CPOL=1 (Mode 2), which both parts tolerate in practice; this driver uses the
+// datasheet polarity.
 
 /// 8-bit Mode 0 (CPOL=0, CPHA=0), SSL0.
 /// SPB[3:0] (bits 11:8) = 0b0111 → 8 bits per frame.
@@ -164,10 +162,11 @@ pub fn irq_spri(ch: u8) -> u16 {
 /// - `bit_rate`: desired SCK frequency in Hz (e.g. `10_000_000` for 10 MHz).
 ///   The actual rate is `⌊P1 / (2 × (SPBR + 1))⌋`.
 /// - Clock phase and polarity are both 0 (SPI mode 0).
-/// - Frame size is fixed at 32 bits to match the CV DAC protocol; the OLED
-///   firmware re-programs SPDCR/SPCMD0 dynamically before each 8-bit transfer.
+/// - Frame size starts at 32 bits for the CV DAC; switch with
+///   [`configure_8bit`] / [`configure_32bit`].
 ///
-/// Mirrors `R_RSPI_Create()` + `R_RSPI_Start()` from the C firmware exactly.
+/// Mirrors `R_RSPI_Create()` + `R_RSPI_Start()` from the C firmware (apart
+/// from the SPI mode; see `SPCMD0_*`).
 ///
 /// # Safety
 /// Writes to memory-mapped RSPI registers; must be called once before any
@@ -178,7 +177,7 @@ pub unsafe fn init(ch: u8, bit_rate: u32) {
         reg8(ch, OFF_SPPCR).write(0);
         let _ = reg8(ch, OFF_SPPCR).read();
 
-        // SPBR: baud rate divisor. P1 = 66.666 MHz → SPBR = ceil(P1/(bitRate×2)) - 1
+        // SPBR: baud rate divisor. SPBR = ceil(P1/(bitRate×2)) - 1
         let spbr = P1_HZ.div_ceil(bit_rate * 2).saturating_sub(1) as u8;
         reg8(ch, OFF_SPBR).write(spbr);
         let _ = reg8(ch, OFF_SPBR).read();
@@ -226,9 +225,9 @@ pub unsafe fn init(ch: u8, bit_rate: u32) {
 
 /// Register the SPRI (receive-complete) GIC interrupt for channel `ch`.
 ///
-/// The ISR closure is called with the GIC interrupt sense when the 32-bit
-/// transfer finishes.  Use this to implement the `cvSPITransferComplete` ISR:
-/// deassert CS, reset the RX buffer, and optionally start the next transfer.
+/// `handler` is called (at GIC priority 5) when the 32-bit transfer finishes.
+/// Use it to implement the `cvSPITransferComplete` ISR: deassert CS, reset the
+/// RX buffer, and optionally start the next transfer.
 ///
 /// # Safety
 /// Must be called after [`crate::gic::init`] and before interrupts are enabled.
@@ -377,8 +376,8 @@ pub unsafe fn reset_rx_buf(ch: u8) {
 
 /// Switch RSPI channel `ch` to 8-bit frame mode for OLED (SSD1309) transfers.
 ///
-/// Sets SPDCR=0x20 (8-bit), SPCMD0=0x0702 (SPB=8), SPBFCR=0x60.
-/// Must be called before [`send8`] / [`send8_blocking`].
+/// Sets SPDCR=0x20 (8-bit), SPCMD0=0x0700 (SPB=8, Mode 0), SPBFCR=0x60.
+/// Must be called before [`send8`].
 ///
 /// After OLED rendering is done, call [`configure_32bit`] to restore the CV
 /// DAC word size.
@@ -409,7 +408,7 @@ pub unsafe fn configure_32bit(ch: u8) {
 ///
 /// Mirrors `R_RSPI_SendBasic8()`:
 /// - Polls SPTEF until the TX buffer has 4 bytes of free space.
-/// - Resets the RX buffer to prevent overflow on a receive-only hardware.
+/// - Resets the RX buffer so unread received bytes cannot overflow it.
 /// - Writes the byte to SPDR (SPDR.BYTE.LL = lowest byte = base + 0x04 on LE ARM).
 ///
 /// Does **not** poll TEND.  After the last byte of a sequence, call [`wait_end`]

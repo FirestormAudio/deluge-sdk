@@ -81,9 +81,9 @@ it represents.
 | **MIDI IN / OUT** | Activity dots that flash on traffic and fade over ~0.3 s. |
 | **OUT L / R** | Two oscilloscopes — the stereo audio output, one trace per channel. |
 
-The oscilloscopes are ported from spark's analyzer scope: a faint centre line, a
-soft glow under the trace, and a rising-edge trigger that holds a periodic signal
-still. Each shows a fixed, scrolling time window.
+Each oscilloscope draws a faint centre line and a soft glow under the trace, and
+uses a rising-edge trigger to hold a periodic signal still over a fixed, scrolling
+time window.
 
 ### Two display modes — click to toggle
 
@@ -193,8 +193,11 @@ cargo deluge sim --headless --script test.txt --out got/
   snapshots once at 500 ms as `frame` and quits).
 - `--out <dir>` is where snapshots land (default `.`).
 
-An audio app's DSP loop still runs (a null pacer drains output / feeds silence),
-so headless works for audio and UI apps alike. Timing is wall-clock.
+An audio app's DSP loop still runs: a headless audio clock drains its output at
+the codec rate and feeds it silence, or the `--audio-in` WAV (looped), as input.
+`--audio-out` records what it drains, and any frames the app failed to deliver in
+time are reported at exit. Headless works for audio and UI apps alike; timing is
+wall-clock.
 
 ### Script format
 
@@ -206,6 +209,7 @@ One step per line: `<at_ms> <command> <args…>`. `#` starts a comment.
 0     button 35 up
 120   encoder 5 +1          # turn SELECT one detent
 150   pad 3 5 down          # press pad (x=3, y=5)
+200   midi 90 3c 64         # note-on C4 into the app's MIDI input
 300   snapshot after-edit   # dump after-edit.png + after-edit.state
 600   quit
 ```
@@ -215,6 +219,7 @@ One step per line: `<at_ms> <command> <args…>`. `#` starts a comment.
 | `button <id> down\|up` | Press/release a button (raw id — see table below). |
 | `pad <x> <y> down\|up` | Press/release a pad. `x` 0–17 (16–17 = sidebar), `y` 0–7. |
 | `encoder <index> <delta>` | Turn an encoder by signed detents (`+1`, `-2`, …). |
+| `midi <hex bytes…>` | Deliver bytes to the app's MIDI input, as if received on DIN. |
 | `snapshot <name>` | Write `<name>.png` (OLED) and `<name>.state`. |
 | `quit` | Stop replaying. |
 
@@ -262,6 +267,7 @@ Each `snapshot <name>` writes two files under `--out`:
   synced 0               # the SYNC LED
   led 47                 # each lit LED, by raw index
   pad 3 5 255 0 0        # each non-black pad: x y r g b
+  midi out 80 3c 00      # MIDI the app sent since the previous snapshot (hex)
   ```
 
 ### Using it in CI
@@ -302,6 +308,7 @@ SDK app and has no in-process audio/MIDI/file bridges.
 | `--release` | Optimised build of the app. |
 | `--audio-in <file.wav>` | Feed a WAV as the codec input (looped). |
 | `--audio-out <file.wav>` | Record the codec output to a WAV. |
+| `--hardware [<port>]` | Also drive the app from a physical Deluge running `controller-firmware` over USB, mirroring LEDs/pads/OLED back to it. Auto-detects the port if omitted. |
 | `--headless` | Run the scripted driver with no window. |
 | `--script <file>` | Headless input/snapshot script. |
 | `--out <dir>` | Headless snapshot output directory. |
@@ -316,6 +323,7 @@ them directly (e.g. when running a host-built app binary yourself).
 | `DELUGE_SIM_SD` | SD-card root directory | `./sim-sd` |
 | `DELUGE_SIM_AUDIO_IN` | Input WAV (looped) | mic |
 | `DELUGE_SIM_AUDIO_OUT` | Output WAV to record | — |
+| `DELUGE_SIM_HARDWARE` | Serial port of a physical control surface, or `auto` | unset (none) |
 | `DELUGE_HEADLESS` | Any value → headless mode | unset (GUI) |
 | `DELUGE_SIM_SCRIPT` | Headless script path | snapshot-once |
 | `DELUGE_SIM_OUT` | Snapshot output dir | `.` |

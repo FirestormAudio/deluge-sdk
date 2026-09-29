@@ -252,7 +252,7 @@ impl canvas::Program<SimulatorMessage> for DynamicElementsRenderer {
                         );
                     }
 
-                    // Check encoder clicks - now pressing the encoder itself
+                    // Check encoder clicks (pressing the encoder itself)
                     if let Some(encoder) =
                         self.get_encoder_at_position(position, scale, offset_x, offset_y)
                     {

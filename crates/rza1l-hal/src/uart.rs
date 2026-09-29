@@ -19,8 +19,9 @@
 //!     // 2. Configure GPIO pins (board-specific)
 //!     gpio::set_pin_mux(6, 15, 5); // TxD0 on Deluge
 //!     gpio::set_pin_mux(6, 14, 5); // RxD0 on Deluge
-//!     // 3. Register GIC IRQs for this channel
-//!     uart::register_irqs_for(0);
+//!     // 3. Register GIC IRQs and start DMA RX for this channel
+//!     uart::register_txi_for(0);
+//!     uart::init_dma_rx(0, 13, 0x62);
 //! }
 //! // In an Embassy task:
 //! uart::write_bytes(0, b"hello").await;
@@ -105,8 +106,8 @@ const DMA_AM_FOR_SCIF: u32 = 0x0200;
 
 /// Ring-buffer size for DMA RX.  Must be a power of two ≤ 256.
 ///
-/// Originally 64, to match `PIC_RX_BUFFER_SIZE` / `MIDI_RX_BUFFER_SIZE` from the
-/// original C firmware (`cpu_specific.h`).
+/// (The C firmware's `PIC_RX_BUFFER_SIZE` / `MIDI_RX_BUFFER_SIZE` in
+/// `cpu_specific.h` are 64.)
 const DMA_RX_BUF_SIZE: usize = 256;
 
 /// Cache-line-aligned ring buffer for one SCIF DMA RX channel.
@@ -262,7 +263,7 @@ fn scbrr(baud: u32) -> u8 {
 /// for the TX/RX pins must be configured separately via
 /// [`crate::gpio::set_pin_mux`] using board-specific port/pin/mux values.
 ///
-/// Must be called before [`register_irqs_for`] and with global IRQ disabled.
+/// Must be called before [`register_txi_for`] and with global IRQ disabled.
 ///
 /// # Safety
 /// Writes to memory-mapped SCIF registers. Caller must ensure `ch` < [`NUM_CHANNELS`].
@@ -340,7 +341,7 @@ pub unsafe fn set_baud(ch: usize, baud_rate: u32) {
         // from e.g. the baud-switch transition window must be cleared explicitly;
         // otherwise the SCIF silently discards all subsequent received bytes.
         let scfsr = rr16(b + SCFSR);
-        wr16(b + SCFSR, scfsr & 0xFF6E); // clear ER/BRK/DR/RDF
+        wr16(b + SCFSR, scfsr & 0xFF6E); // clear ER/BRK/DR
         let sclsr = rr16(b + SCLSR);
         wr16(b + SCLSR, sclsr & !1u16); // clear ORER
         // Re-enable TE/RE, plus the DMA trigger-enable bits that route the SCIF
@@ -389,18 +390,18 @@ pub unsafe fn register_txi_for(ch: usize) {
 // NOTE: SCIF receive-interrupt (RXI) driven RX is intentionally NOT supported.
 // On RZ/A1 the SCIF receive-FIFO-data-full request is wired to the DMAC, not the
 // GIC: with RIE=1 and RDF=1 (data in the FIFO) no GIC line in the SCIF range
-// (220–245) ever goes pending, so an RXI handler never fires. Verified
-// empirically; the stock Renesas/Deluge driver documents the same with
+// (220–245) ever goes pending, so an RXI handler never fires. Verified on
+// hardware; the stock Renesas/Deluge driver documents the same with
 // `SCSCR = 0x00F0; // Enable "interrupt" (which actually triggers DMA)`. All RX
 // therefore goes through [`init_dma_rx`].
 
 /// Set up circular DMA RX for SCIF channel `ch`.
 ///
-/// - `dma_ch`: DMAC channel number (12 for PIC/SCIF1, 13 for MIDI/SCIF0).
-/// - `dmars`:  DMARS resource-selector value (0x026 for SCIF1, 0x022 for SCIF0).
+/// - `dma_ch`: DMAC channel number (12 for PIC/SCIF1, 13 for MIDI/SCIF0 on the Deluge).
+/// - `dmars`:  DMARS resource-selector value (0x66 for SCIF1 RX, 0x62 for SCIF0 RX).
 ///
 /// Builds a self-referential link descriptor so the DMAC loops through the
-/// 64-byte ring buffer indefinitely.  Sets `SCSCR = TIE|RIE|TE|RE` to enable
+/// 256-byte ring buffer indefinitely.  Sets `SCSCR = TIE|RIE|TE|RE` to enable
 /// DMA triggers; the GIC RXI interrupt is intentionally left disabled.
 ///
 /// Call [`register_txi_for`] separately so TX still uses TXI interrupts.
@@ -504,9 +505,8 @@ pub unsafe fn init_dma_tx(ch: usize, dma_ch: u8, dmars: u32) {
         DMA_TX_ACTIVE[ch] = true;
         // Enable the SCIF TX path and the SCIF→DMAC TX request, independently of
         // how RX is set up. TIE drives both the TXI GIC interrupt AND the DREQ to
-        // the DMAC; TE enables transmission. We OR (rather than overwrite) so the
-        // RX side's RE/RIE bits are preserved whether RX is DMA- or IRQ-driven —
-        // previously this relied on init_dma_rx() having written SCSCR first.
+        // the DMAC; TE enables transmission. OR (rather than overwrite) so the
+        // RX side's RE/RIE bits are preserved regardless of init order.
         let b = base(ch);
         let scscr = rr16(b + SCSCR);
         wr16(b + SCSCR, scscr | TIE | TE);
@@ -538,9 +538,7 @@ fn clear_rx_errors(ch: usize) {
         // Write 0 to the genuine receive-error flags (ER, BRK, FER, PER) to clear
         // them; preserve RDF/DR (data) and the TX flags. A status flag is only
         // cleared by writing 0 after it has been read as 1, so the read-modify-
-        // write below is required. NOTE: the previous mask (0xFF6E) used wrong bit
-        // positions and silently left ER/FER/PER set, which would stall RX after
-        // the first real framing error.
+        // write below is required.
         let scfsr = rr16(b + SCFSR);
         wr16(b + SCFSR, scfsr & !(ER | BRK | FER | PER));
         let sclsr = rr16(b + SCLSR);
@@ -828,15 +826,16 @@ use core::convert::Infallible;
 /// `Read` and `Write` traits.
 ///
 /// `CH` is the channel number (0–4).  The underlying free functions
-/// (`read_byte`, `write_bytes`) must be available (i.e., [`init`] and
-/// [`register_irqs_for`] already called for the channel).
+/// (`read_byte`, `write_bytes`) must be available (i.e., [`init`],
+/// [`register_txi_for`] and [`init_dma_rx`] already called for the channel).
 pub struct ScifUart<const CH: usize>;
 
 impl<const CH: usize> ScifUart<CH> {
     /// Create a handle.
     ///
     /// # Safety
-    /// [`init`] and [`register_irqs_for`] must have been called for channel `CH`.
+    /// [`init`], [`register_txi_for`] and [`init_dma_rx`] must have been called
+    /// for channel `CH`.
     #[inline]
     pub unsafe fn new() -> Self {
         ScifUart

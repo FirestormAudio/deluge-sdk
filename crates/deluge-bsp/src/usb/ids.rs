@@ -27,9 +27,9 @@
 //! purchased PID `0x16D0:0x0CE2` (see its `r_usb_pmidi_descriptor.c`, which even
 //! links the MCS shop page).
 //!
-//! The PIDs below currently resolve to [`PID_UNALLOCATED`] (`0x0EDA`) — a value
-//! of **unverified ownership** kept only so this stays behavior-neutral.  Before
-//! shipping, replace each with a PID we are entitled to use:
+//! The PIDs below resolve to [`PID_UNALLOCATED`] (`0x0EDA`), a placeholder of
+//! **unverified ownership**.  Before shipping, replace each with a PID we are
+//! entitled to use:
 //!
 //! - **Preferred:** ask Synthstrom to reserve a PID (or small block) under their
 //!   `0x16D0` allocation, then give each distinct loader face its own value.
@@ -51,9 +51,9 @@ pub const VID: u16 = 0x16D0;
 /// face is the fallback differentiator when distinct PIDs are unavailable.
 pub const BCD_DEVICE: u16 = 0x0010;
 
-/// Placeholder PID of **unverified ownership** that the loader faces currently
-/// resolve to (keeps this behavior-neutral).  TODO(usb-ids): allocate real PIDs
-/// and stop using this — see the module docs.
+/// Placeholder PID of **unverified ownership** that the loader faces resolve
+/// to.  TODO(usb-ids): allocate real PIDs and stop using this — see the module
+/// docs.
 pub const PID_UNALLOCATED: u16 = 0x0EDA;
 
 /// App-loader (second-stage bootloader) CDC-ACM dev-upload listener.

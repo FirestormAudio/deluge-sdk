@@ -43,8 +43,7 @@ pub(crate) async fn oled_task() {
         last_tx = tx;
         last_rx = rx;
 
-        // tenths of MB/s = delta_bytes / (interval_ms * 100)  (see derivation:
-        // bytes/s = delta*1000/interval_ms; MB/s*10 = bytes/s*10/1e6).
+        // tenths of MB/s = delta_bytes / (interval_ms * 100).
         let tx_speed_tenths = dtx / (INTERVAL_MS * 100);
         let rx_speed_tenths = drx / (INTERVAL_MS * 100);
 

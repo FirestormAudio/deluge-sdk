@@ -1,8 +1,8 @@
 //! Multi-Function Timer Pulse Unit 2 (MTU2) driver for the RZ/A1L.
 //!
-//! The RZ/A1L MTU2 has five 16-bit timer channels (0–4), all clocked by P0
-//! (33.333 MHz).  Channels can run as free-running counters or configured for
-//! one-shot compare-match use.
+//! The RZ/A1L MTU2 has five 16-bit timer channels (0–4), all clocked by P0φ
+//! (33.064 MHz on the Deluge; see [`MTU2_P0_HZ`]).  Channels can run as
+//! free-running counters or be configured for one-shot compare-match use.
 //!
 //! ## Register layout peculiarity
 //! The MTU2 register block at `0xFCFF_0000` is non-contiguous: channels 2, 3,
@@ -20,9 +20,9 @@
 //! # use rza1l_hal::mtu2;
 //! unsafe {
 //!     mtu2::enable_write();                   // unlock MTU2 registers
-//!     mtu2::start_free_running(1, 1);         // ch1 @ 33.3 MHz (superfast)
-//!     mtu2::start_free_running(0, 64);        // ch0 @ 520 kHz  (fast)
-//!     mtu2::start_free_running(4, 1024);      // ch4 @ ~32.6 kHz (slow)
+//!     mtu2::start_free_running(1, 1);         // ch1 @ 33.06 MHz
+//!     mtu2::start_free_running(0, 64);        // ch0 @ ~517 kHz
+//!     mtu2::start_free_running(4, 1024);      // ch4 @ ~32.3 kHz
 //!
 //!     let t0 = mtu2::count(0);
 //!     // do work...
@@ -179,8 +179,8 @@ unsafe fn wr16(addr: usize, val: u16) {
 ///
 /// The MTU2 write gate (`TRWER`) is cleared at reset, blocking writes to all
 /// channel registers.  Call this once during startup before any other MTU2
-/// function.  The MTU2 clock must already be running (enabled by
-/// [`rza1::stb::init`], which sets STBCR3 bit 2 = 0).
+/// function.  The MTU2 clock must already be running (STBCR3 bit 2 = 0,
+/// normally set through [`crate::stb::init`]).
 ///
 /// # Safety
 /// Writes to the memory-mapped TRWER register.
@@ -431,7 +431,6 @@ mod tests {
     #[test]
     fn p0_clock_matches_deluge_extal() {
         // 13.2256 MHz EXTAL -> P0phi = 13_225_625 * 30 / 12 = 33_064_062.5 Hz.
-        // (See the deluge-clocks notes: P0phi ~= 33.064 MHz, not 33.33.)
         assert_eq!(MTU2_P0_HZ, 33_064_062);
         assert_eq!(TGIA_IRQ.len(), 5);
     }

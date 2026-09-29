@@ -16,7 +16,7 @@ pub const MASTER_BUS: u16 = 0;
 /// Returned when the pool is exhausted; factories no-op on it (inert node).
 pub const NULL_ID: u16 = u16::MAX;
 
-/// Nesting depth for named identity scopes (GL6). Deeper nesting is not an
+/// Nesting depth for named identity scopes. Deeper nesting is not an
 /// error: the extra levels allocate inside the innermost tracked scope.
 const MAX_SCOPE_DEPTH: usize = 4;
 
@@ -41,7 +41,7 @@ struct Alloc {
     free: [u16; WREN_MAX_NODES], // stack of freed node ids
     free_len: usize,
     next_bus: u16, // bump pointer for bus ids (1.. ; 0 = master)
-    // ── GL6: identity across a re-run ────────────────────────────────────
+    // ── Identity across a re-run ─────────────────────────────────────────
     // Each allocation gets a key from (enclosing scope hash, ordinal within
     // that scope); the map remembers which id that key got, so a re-run of the
     // script hands the same logical node the same id even if the script grew
@@ -150,7 +150,7 @@ impl Alloc {
 
     /// Open a named identity scope. Beyond `MAX_SCOPE_DEPTH` the name is
     /// ignored and allocation continues in the innermost tracked scope —
-    /// identity degrades to positional, which is the pre-GL6 behaviour.
+    /// identity degrades to positional.
     fn scope_begin(&mut self, name: &str) {
         if self.depth + 1 >= MAX_SCOPE_DEPTH {
             return;
@@ -358,7 +358,7 @@ pub fn poly_record_gate(id: u16) {
 /// Record a registered sample-source node as one of the voice's per-lane
 /// trigger targets (bounded push into `triggers`; `trigger_count` still
 /// tracks the true total so a guard can reject builds that exceed
-/// `MAX_TRIGGERS`). Used by Task 6's sample-source registration.
+/// `MAX_TRIGGERS`). Used by poly sample-source registration.
 pub fn poly_record_trigger(id: u16) {
     let p = poly();
     if (p.trigger_count as usize) < MAX_TRIGGERS {
@@ -407,7 +407,7 @@ pub fn mono_end() -> (u16, u16, [u16; MAX_GATES], u8, u16, [u16; MAX_TRIGGERS], 
 pub fn alloc_node_id() -> u16 {
     alloc().alloc_node()
 }
-/// Open a named identity scope (GL6) — see `Patch.named` in the prelude. Node
+/// Open a named identity scope — see `Patch.named` in the prelude. Node
 /// ids allocated inside are keyed by `(name, position within the name)` rather
 /// than by position in the whole script, so an edit elsewhere does not
 /// renumber them.
@@ -437,7 +437,7 @@ pub fn new_node(id: u16, kind: Kind, args: [Input; 3]) {
     });
 }
 /// Create a `Kind::Wavetable` node and bind it to a named static table (the
-/// generated `TABLES` registry, Task 3). Used by `Node.wavetable_(table, freq)`.
+/// generated `TABLES` registry). Used by `Node.wavetable_(table, freq)`.
 pub fn new_wavetable(id: u16, table_id: u16, freq: Input) {
     if id == NULL_ID {
         return;
@@ -610,7 +610,7 @@ pub fn new_sample_player(id: u16, handle: Option<flare_graph::PoolHandle>, len: 
 /// the bind and every zone `SetParam` — same graceful-degrade contract as
 /// [`new_sample_player`]/[`new_polywt_pooled`]; the node keeps
 /// `PolySamplePlayer::new()`'s zero-zone default and renders silence, never
-/// panics. Used by `Node.polysampleplayer_(pitch, source)` (Sa-2 Task 6).
+/// panics. Used by `Node.polysampleplayer_(pitch, source)`.
 pub fn new_poly_sample_player(
     id: u16,
     handle: Option<flare_graph::PoolHandle>,
@@ -657,13 +657,12 @@ pub fn new_poly_sample_player(
 /// `PolyGranular::new()` defaults (root=60, position=0, size=50ms,
 /// density=20/s, spray=0 — see `flare_kernels::granular::PolyGranular`)
 /// are used as-is, and `position=`/`size=`/`density=`/`spray=` retarget them
-/// afterward via the four Wren setters (a granular `root=` setter is
-/// deferred this slice, same as `new_stream_player`'s `root` param above —
-/// no setter, default 60 stands). A bound `handle` emits `NewNode` +
+/// afterward via the four Wren setters (there is no granular `root=` setter,
+/// so the default 60 stands). A bound `handle` emits `NewNode` +
 /// `BindTable{Pooled}`; an unbound one (upload failed / no pool) still
 /// creates the node but skips the bind — same graceful-degrade contract as
 /// [`new_poly_sample_player`]/[`new_polywt_pooled`], never panics. Used by
-/// `Node.granular_(pitch, source)` (Sa-4 Task 3).
+/// `Node.granular_(pitch, source)`.
 pub fn new_poly_granular(id: u16, handle: Option<flare_graph::PoolHandle>, pitch: Input) {
     if id == NULL_ID {
         return;
@@ -855,7 +854,7 @@ pub fn reset() {
     host().audio_cmd(Cmd::Reset);
 }
 
-/// Begin an incremental patch update (GL2): rewind the id allocator exactly as
+/// Begin an incremental patch update: rewind the id allocator exactly as
 /// [`reset`] does, but leave the running graph standing.
 ///
 /// Rewinding is the point. The allocator is deterministic, so a re-run of the

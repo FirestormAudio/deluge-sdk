@@ -8,17 +8,17 @@ use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 
 /// Seven-segment display patterns for digits 0-9
 ///
-/// Bit layout:
+/// Bit layout (bit 7 is the decimal point):
 /// ```text
-///  -1-
+///  -6-
 /// |   |
-/// 6   2
+/// 1   5
 /// |   |
-///  -7-
+///  -0-
 /// |   |
-/// 5   3
+/// 2   4
 /// |   |
-///  -4-  .0
+///  -3-  .7
 /// ```
 pub const NUMBER_SEGMENTS: [u8; 10] = [
     0x7E, // 0
@@ -35,8 +35,8 @@ pub const NUMBER_SEGMENTS: [u8; 10] = [
 
 /// Seven-segment display patterns for letters A-Z (uppercase and lowercase)
 ///
-/// Note: Not all letters display well on 7-segment displays.
-/// Index 0 = 'A', index 25 = 'Z', then some symbols, then lowercase a-z
+/// Not all letters display well on 7-segment displays. Index 0 = 'A',
+/// index 25 = 'Z', then six blank symbol slots (`[` to `` ` ``), then lowercase a-z.
 pub const LETTER_SEGMENTS: [u8; 58] = [
     0x77, // A
     0x1F, // B
@@ -224,10 +224,10 @@ where
 /// # Arguments
 /// * `target` - The display to draw on
 /// * `text` - String to display (e.g., "1234", "LOAD", "P.A.S.S.")
-///   - Supports up to 4 digit positions
+///   - Up to 4 digit positions; further characters are ignored
 ///   - Period (.) adds decimal point to previous digit without taking a position
-/// * `x` - Starting X position (default: 1 for full 128px width display)
-/// * `y` - Starting Y position (default: 0)
+/// * `x` - Starting X position (typically 1 on the full-width 128 px display)
+/// * `y` - Starting Y position
 #[cfg(feature = "embedded-graphics")]
 pub fn render_display<D>(target: &mut D, text: &str, x: i32, y: i32) -> Result<(), D::Error>
 where

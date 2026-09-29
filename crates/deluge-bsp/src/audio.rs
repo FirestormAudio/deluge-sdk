@@ -17,8 +17,9 @@
 //!
 //! The SCUX DVU block sits between the CPU audio buffer and the SSIF0
 //! transmitter, providing hardware volume control and click-free fades.
-//! SSI0 TX DMA (ch 6) is intentionally **not** started; SCUX drives SSIF0 TX
-//! directly via `SSICTRL.SSI012TEN`.  SSI0 RX DMA (ch 7) is started as usual.
+//! On the SCUX path ([`init_with_scux`]) SSI0 TX DMA (ch 6) is intentionally
+//! **not** started; SCUX drives SSIF0 TX directly via `SSICTRL.SSI0TX`.  SSI0 RX
+//! DMA (ch 7) is started as usual.
 
 use crate::scux_dvu_path;
 use rza1l_hal::{gpio, ostm, ssi};
@@ -100,8 +101,8 @@ pub unsafe fn init() {
         // Direct SSI0 TX+RX DMA (ch 6/7) — no SCUX.
         #[cfg(not(feature = "audio-irq"))]
         ssi::init(&crate::system::SSI_CONFIG);
-        // v2: RX as a per-block descriptor ring with a completion IRQ. Register
-        // the block handler before starting the ring DMA.
+        // `audio-irq`: RX runs as a per-block descriptor ring with a completion
+        // IRQ. The block handler must be registered before the ring DMA starts.
         #[cfg(feature = "audio-irq")]
         {
             rza1l_hal::dmac::register_block_irq(crate::system::SSI_CONFIG.rx_dma_ch);

@@ -43,8 +43,8 @@ Apps are **ELF binaries that run from RAM**, loaded by the on-device app-loader
 either straight over USB (dev mode) or from the `/APPS/` folder on the SD card.
 That means:
 
-- **You can't easily brick the device.**: There is no interacting with flash for 
-  applications.
+- **You can't easily brick the device.** Apps never touch flash; power-cycle to
+  recover.
 - **Iteration is push-to-run.** With **dev mode** on, `cargo deluge run` uploads
   the ELF over USB and the loader launches it from RAM — no SD shuffling, no
   debug probe.
@@ -67,9 +67,11 @@ cargo deluge run                     # build + upload over USB, launch from RAM
 ```
 
 `cargo deluge run` needs a Deluge running the **app-loader** with **dev mode**
-on. Flashing the app-loader is a one-time step — see the
-**[Device setup guide](docs/device-setup.md)**. No card-shuffling alternative:
-`cargo deluge deploy` copies the ELF to a mounted SD card's `/APPS/` instead.
+on. Flashing the app-loader is a one-time step — see
+**[Installing the loader](docs/app-loader.md#installing-the-loader)**. Without dev
+mode, `cargo deluge deploy` copies the ELF to a mounted SD card's `/APPS/` instead.
+No hardware at all? `cargo deluge sim` runs the app in the
+[desktop simulator](docs/simulator.md).
 
 ---
 
@@ -110,6 +112,8 @@ macros (`info!`, `warn!`, …) into scope. Fixed-point DSP types live under
 | `usb-serial` | take USB0 as a CDC-ACM serial port under your own VID/PID via `Deluge::usb_serial` — device-only, mutually exclusive with `usb-log` |
 | `alloc` | register the on-chip SRAM heap as the global allocator (needed for the UI toolkit; requires `-Zbuild-std=core,alloc`) |
 | `audio-irq` | drive `dlg.audio()` from the per-block RX-DMA interrupt (drift-free, lower latency) |
+| `sim` | host backend for the desktop simulator (`cargo deluge sim`) |
+| `linux` | backend for the Deluge's Linux userland via `libdeluge` (`cargo deluge linux`) |
 
 ---
 
@@ -125,6 +129,8 @@ embedded target triple by hand:
 | `cargo deluge run [--release] [--port <p>] [--log]` | build, upload over USB, launch from RAM (needs dev mode) |
 | `cargo deluge deploy [--release] [--dest <mount>]` | copy the ELF to a mounted SD card's `/APPS/` |
 | `cargo deluge log [--port <p>]` | stream a running app's USB serial log (`usb-log` feature) |
+| `cargo deluge sim [--release] [--headless …]` | build for the host and run in the [desktop simulator](docs/simulator.md) |
+| `cargo deluge linux [opts]` | build for the Deluge's Linux userland and pack a bootable image (needs `DELUGE_BASE`) |
 | `cargo deluge debug [--release] [-- …]` | build, then `probe-rs run` over J-Link |
 | `cargo deluge trace [--release] [--flow] [-- …]` | build, then `probe-rs read-trace` (`trace-a9` fork) |
 
@@ -149,6 +155,7 @@ compile-proves all of them on the firmware target).
 | [`clock_jacks`](examples/baremetal/clock_jacks/) | clock I/O + jack detection |
 | [`audio_passthru`](examples/baremetal/audio_passthru/) | a line-in audio effect |
 | [`audio_passthru_irq`](examples/baremetal/audio_passthru_irq/) | the same, on the per-block IRQ clock |
+| [`test_osc`](examples/baremetal/test_osc/) | the pad grid as an isomorphic polyphonic synth keyboard |
 | [`additive_osc`](examples/baremetal/additive_osc/) | additive synth with a C++/[Argon](https://github.com/stellar-aria/argon) (NEON SIMD) DSP core over FFI — needs `ARGON_SRC` (see its README) |
 | [`sd_demo`](examples/baremetal/sd_demo/) | SD-card write/read round-trip |
 | [`usb_log`](examples/baremetal/usb_log/) | stream `log` output over USB — no probe |
@@ -157,14 +164,18 @@ compile-proves all of them on the firmware target).
 
 ## Documentation
 
-- **[Device setup](docs/device-setup.md)** — from a clone to running your own
-  apps: build and flash the app-loader, enable dev mode, install apps.
 - **[Getting started](docs/getting-started.md)** — toolchain, `cargo deluge`,
   and a tour of every capability. Read this first.
+- **[App Loader Manual](docs/app-loader.md)** — installing the loader, the boot
+  menu, dev mode, storing apps to flash, and recovery.
 - **[Desktop simulator](docs/simulator.md)** — build and debug apps without
   hardware: the panel, audio/MIDI/SD bridges, and headless golden-frame testing.
 - **[Advanced developer guide](docs/advanced-guide.md)** — Embassy tasks,
   interrupts, the HAL/BSP layers, and Cortex-A9 trace tooling.
+- **[Wren scripting](docs/wren-scripting.md)** — live-code the Deluge in
+  [Wren](https://wren.io) with `wren-firmware`.
+- **[Linux examples](examples/linux/README.md)** — apps for the Deluge's Linux
+  userland.
 
 ---
 
@@ -176,6 +187,8 @@ compile-proves all of them on the firmware target).
 | `crates/deluge-sdk-macros` | `deluge-sdk-macros` | the `#[deluge::app]` proc-macro |
 | `crates/deluge-bsp` | `deluge-bsp` | board support: peripherals, PIC, OLED, SD, … |
 | `crates/rza1l-hal` | `rza1l-hal` | RZ/A1L hardware abstraction layer |
+| `crates/deluge-alloc` | `deluge-alloc` | SRAM / SDRAM heap allocators |
+| `crates/deluge-image` | `deluge-image` | firmware-image format logic shared by the app-loader and `cargo deluge` |
 | `crates/deluge-fixedpoint` (imported as `fixedpoint`), `crates/armv7-dsp-intrinsics` | | fixed-point DSP math + ARMv7 intrinsics |
 | `crates/deluge-simulator`, `crates/deluge-sim-link`, `crates/deluge-protocol` | | the desktop simulator and its link/wire protocol |
 | `crates/deluge-ui-toolkit`, `crates/deluge-grid-toolkit` | | OLED menu/text and pad-grid UI toolkits (GPL) |
@@ -186,6 +199,11 @@ compile-proves all of them on the firmware target).
 | `hw-tests/` | | single-purpose hardware bring-up / validation probes |
 | `examples/baremetal/`, `examples/linux/` | | SDK example apps for each backend |
 | `tools/cargo-deluge/` | | the `cargo deluge` host subcommand |
+| `tools/deluge-web-sim/` | | browser front panel that connects to a simulator core over WebSocket |
+
+The audio engine (`flare`, `flare-graph`, `flare-kernels`, `flare-fft`,
+`flare-mipgen`) lives in the separate `flare` repository and is used through
+path dependencies on a sibling checkout at `../flare`.
 
 The `deluge` SDK facade depends only on the BSP and HAL — it does **not** pull
 in the GPL UI toolkit, so an app stays permissively licensed unless it opts in.
@@ -208,12 +226,11 @@ in the GPL UI toolkit, so an app stays permissively licensed unless it opts in.
 ## Licensing
 
 The SDK and core libraries are **`MIT OR Apache-2.0`**. The OLED UI toolkit
-(`crates/deluge-ui-toolkit`) and its fonts
-(`crates/deluge-fonts`) are
-**`GPL-3.0-or-later`** (see [`LICENSE-GPL`](LICENSE-GPL)). They are standalone
-crates: the permissive `deluge` facade does **not** depend on them, so an app
-stays MIT/Apache unless it opts into the toolkit, in which case that app
-becomes GPL.
+(`crates/deluge-ui-toolkit`), its fonts (`crates/deluge-fonts`) and the pad-grid
+toolkit (`crates/deluge-grid-toolkit`) are **`GPL-3.0-or-later`** (see
+[`LICENSE-GPL`](LICENSE-GPL)). They are standalone crates: the permissive
+`deluge` facade does **not** depend on them, so an app stays MIT/Apache unless
+it opts into the toolkit, in which case that app becomes GPL.
 
 ---
 
@@ -221,6 +238,17 @@ becomes GPL.
 
 The sections below are for hacking on the firmware and SDK internals rather than
 writing apps. App authors can stop at [`cargo deluge`](#cargo-deluge).
+
+### Workspace setup
+
+The workspace resolves the `flare` audio engine from a sibling checkout, so clone
+it next to this repository first:
+
+```text
+<parent>/
+├── deluge-sdk/   # this repository
+└── flare/        # the audio engine
+```
 
 ### Building firmware images
 
@@ -230,14 +258,14 @@ bare `cargo build`:
 
 | Command | Output |
 |---------|--------|
-| `cargo build-fw` | debug ELF, RTT enabled |
-| `cargo build-fw-rel` | release ELF, RTT disabled |
-| `cargo build-fw-bin` | raw `.bin` image to flash as the device firmware |
+| `cargo build-fw -p <crate>` | debug ELF (add `--features rtt` for RTT logging) |
+| `cargo build-fw-rel -p <crate>` | release ELF, default features off |
+| `cargo build-fw-bin` | demo-firmware as a raw `.bin` image to flash as the device firmware |
 
-The app-loader and other firmwares build the same way
+The app-loader and other firmwares have their own aliases
 (`cargo build-app-loader` / `-bin`, `cargo build-controller-bin`,
-`cargo build-msc` / `-bin`); see each crate's README. Every image is a
-RAM-linked ELF (loaded at SRAM `0x20020000`).
+`cargo build-msc` / `-bin`, `cargo build-wren` / `-bin`); see each crate's
+README. Every image is a RAM-linked ELF (loaded at SRAM `0x20020000`).
 
 ### Testing
 
@@ -254,7 +282,7 @@ One-time setup:
 
 ```sh
 rustup target add armv7-unknown-linux-gnueabihf x86_64-unknown-linux-gnu
-# Debian/Ubuntu: sudo apt-get install qemu-user gcc-arm-linux-gnueabihf
+# Debian/Ubuntu: sudo apt-get install qemu-user gcc-arm-linux-gnueabihf libudev-dev
 # Arch:          sudo pacman -S qemu-user-static arm-linux-gnueabihf-gcc
 ```
 

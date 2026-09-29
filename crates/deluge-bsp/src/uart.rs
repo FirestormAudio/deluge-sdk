@@ -82,11 +82,10 @@ pub unsafe fn init_midi(baud_rate: u32) {
 /// DMAC channel [`crate::system::PIC_DMA_TX_CH`].
 ///
 /// **Why DMA and not RXI:** on the RZ/A1 the SCIF "receive-FIFO-data-full"
-/// request is wired to the DMAC, not the GIC — setting RIE never raises a CPU
-/// interrupt (verified: with RIE=1 and RDF=1, no GIC line in the SCIF range
-/// 220–245 ever goes pending while bytes accumulate in the FIFO). The stock
-/// Renesas/Deluge firmware says as much: `SCSCR = 0x00F0; // Enable "interrupt"
-/// (which actually triggers DMA)`. So RX must go through the DMAC.
+/// request is wired to the DMAC, not the GIC — with RIE=1 and RDF=1 no GIC line
+/// in the SCIF range 220–245 goes pending. The stock Renesas/Deluge firmware
+/// notes the same: `SCSCR = 0x00F0; // Enable "interrupt" (which actually
+/// triggers DMA)`. So RX must go through the DMAC.
 ///
 /// DMARS values: RX = 0x66, TX = 0x65 (SCIF1 resource selectors).
 ///

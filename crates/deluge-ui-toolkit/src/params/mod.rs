@@ -51,6 +51,3 @@ pub use sidechain::SidechainDucking;
 pub use slider::Slider;
 pub use unipolar_bar::UnipolarBar;
 pub use unipolar_knob::UnipolarKnob;
-
-// Re-export old function-based API for backward compatibility
-// These will be deprecated in a future version

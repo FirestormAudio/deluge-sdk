@@ -1,4 +1,4 @@
-//! `rza1` — Embassy HAL for the Renesas RZ/A1L (Cortex-A9, R7S721001).
+//! `rza1l-hal` — Embassy HAL for the Renesas RZ/A1L (Cortex-A9, R7S721001).
 //!
 //! Peripheral base addresses are taken from the RZ/A1L Hardware Manual.
 

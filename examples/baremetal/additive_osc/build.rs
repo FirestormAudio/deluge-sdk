@@ -16,7 +16,7 @@
 //!    the firmware's newlib-libc-only runtime (see `csrc/additive.cpp`).
 //!
 //! 2. **Device linker setup** — copy the rtt/non-rtt `memory.x` and select the
-//!    matching `rza1l.x` linker script (verbatim from the stock examples).
+//!    matching `rza1l.x` linker script (the same as the other examples).
 
 use std::env;
 use std::fs;
@@ -28,15 +28,10 @@ fn main() {
     // desktop simulator and the Linux-userland backend both build for hosted
     // triples.
     let embedded = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("none");
-    // `target_arch = "arm"` is not a NEON signal by itself — it also covers
-    // NEON-less targets (armv5te, armv6, thumbv7 with no NEON unit). The
-    // workspace `.cargo/config.toml` sets `-C target-cpu=cortex-a9 -C
-    // target-feature=+neon` for `armv7-unknown-linux-musleabihf` (the sole
-    // hosted-ARM triple `cargo-deluge` builds against — see `LINUX_TARGET` in
-    // `tools/cargo-deluge/src/linux.rs`), matching the device build, so
-    // `CARGO_CFG_TARGET_FEATURE` (which reflects the *effective* target
-    // features, rustflags included) now reports `neon` there and this check
-    // is the principled one rather than a triple string match.
+    // Detect NEON from the effective target features (rustflags included)
+    // rather than `target_arch = "arm"`, which also covers NEON-less cores.
+    // The workspace `.cargo/config.toml` enables `+neon` for the Linux ARM
+    // target (`armv7-unknown-linux-musleabihf`), matching the device build.
     let arm = env::var("CARGO_CFG_TARGET_FEATURE")
         .map(|f| f.split(',').any(|feat| feat == "neon"))
         .unwrap_or(false);
@@ -94,16 +89,13 @@ fn build_dsp_core(manifest_dir: &Path, embedded: bool, arm: bool) {
             .flag("-fno-asynchronous-unwind-tables")
             .flag("-fno-common");
     } else if arm {
-        // Linux-userland backend (`armv7-unknown-linux-musleabihf`): real
-        // hardware NEON via the bundle's cross toolchain (`cc` auto-detects
-        // `arm-linux-g++` from the target triple, same as the rest of the
-        // Linux build — see `cargo-deluge/src/linux.rs`). No SIMDe: adding
-        // `-I /usr/include/simde` (the host sim's flag) trips GCC's "unsafe
-        // header path used in cross-compilation" guard. The toolchain's
-        // *default* FPU for this target is `vfpv3-d16` (VFP only, no NEON —
-        // `__ARM_NEON` stays undefined and Argon can't find a backend), even
-        // though the RZ/A1L's Cortex-A9 has real NEON hardware; override it,
-        // same FPU as the bare-metal branch.
+        // Linux-userland backend (`armv7-unknown-linux-musleabihf`): hardware
+        // NEON via the bundle's cross toolchain, which `cc` finds from the
+        // target triple. No SIMDe here: `-I /usr/include/simde` trips GCC's
+        // "unsafe header path used in cross-compilation" guard. The
+        // toolchain's default FPU for this target is `vfpv3-d16` (no NEON, so
+        // `__ARM_NEON` is undefined and Argon finds no backend); select the
+        // same FPU as the bare-metal branch instead.
         build.flag("-mfpu=neon-vfpv3");
     } else {
         // Host (simulator): no `__ARM_NEON`, so Argon includes SIMDe's
@@ -122,7 +114,7 @@ fn build_dsp_core(manifest_dir: &Path, embedded: bool, arm: bool) {
 }
 
 /// Device-only: place the memory layout and pick the linker script that matches
-/// the `rtt` feature (verbatim from the stock SDK examples).
+/// the `rtt` feature (the same as the other examples).
 fn link_firmware(manifest_dir: &Path) {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 

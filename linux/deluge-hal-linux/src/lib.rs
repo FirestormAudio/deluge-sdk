@@ -236,7 +236,7 @@ impl Deluge {
     /// Stop the input delivery thread and reclaim its boxed callback.
     /// Safe to call multiple times or not at all; `Drop` always stops
     /// (via `deluge_close`) and reclaims regardless. After this returns,
-    /// `input_start` can be called again (unlike before the fix).
+    /// `input_start` can be called again.
     pub fn input_stop(&mut self) {
         let h = unsafe { deluge_sys::deluge_input(self.raw.as_ptr()) };
         if !h.is_null() {
@@ -274,8 +274,8 @@ impl Deluge {
     ///
     /// `cb` runs on libdeluge's MIDI reader thread — hence `Send + 'static` —
     /// and must be short and non-blocking: queue and signal, don't do work.
-    /// Mirrors [`input_start`](Self::input_start); the same leak note applies,
-    /// the closure lives for the process.
+    /// Unlike [`input_start`](Self::input_start), the boxed closure is never
+    /// reclaimed: it is leaked and lives for the rest of the process.
     pub fn midi_start(&mut self, cb: impl FnMut(&[u8]) + Send + 'static) -> Result<(), Error> {
         let m = unsafe { deluge_sys::deluge_midi(self.raw.as_ptr()) };
         if m.is_null() {
@@ -592,7 +592,7 @@ impl Deluge {
     }
 
     /// Read-only probe of the UAC2 gadget card (channels/rate/format). Starts no stream.
-    /// TODO(USB-3b): the streaming path is not implemented — see the C header.
+    /// TODO: USB audio streaming is not implemented yet; see the C header.
     pub fn usb_audio_probe(&mut self) -> Result<UsbAudioInfo, Error> {
         let a = unsafe { deluge_sys::deluge_usb_audio(self.raw.as_ptr()) };
         if a.is_null() {

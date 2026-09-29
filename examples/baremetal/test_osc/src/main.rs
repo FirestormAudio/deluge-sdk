@@ -10,7 +10,7 @@
 //! (LED feedback), [`Audio`] (per-block DSP), and [`Oled`] (an oscilloscope of
 //! the synth's own output). Pad presses set per-voice frequency + gate through a
 //! small lock-free shared state; the audio half reads it and sums up to
-//! [`VOICES`] band-unlimited sine voices with a click-free amplitude envelope,
+//! [`VOICES`] sine voices with a click-free amplitude envelope,
 //! and also snapshots each output block into a scope buffer the OLED half draws.
 //! All halves run concurrently via `join`.
 //!

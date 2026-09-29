@@ -1,14 +1,28 @@
 # Linux example apps
 
 Native `deluge-hal-linux` apps for the Deluge's Linux userland, built with
-`cargo deluge linux` (see the deluge-ndk building-an-app guide for the toolchain).
+`cargo deluge linux`. The build needs an unpacked `deluge-linux` release bundle
+(its musl toolchain, `libdeluge` sysroot and `deluge-mkimage` packer): point
+`DELUGE_BASE` at it.
+
+    export DELUGE_BASE=/path/to/unpacked/bundle
+
+`cargo deluge linux` packs a bootable appliance image (`target/<NAME>.ELF`, for
+the SD card's `/APPS/`); `cargo deluge linux --bare` emits a plain static binary
+(`target/bare/<name>`, for `/LINUX/APPS/`). Run `cargo deluge help` for the
+other options.
+
+## rust-app (minimal)
+
+`examples/linux/rust-app` is the smallest possible app: it opens the device,
+blinks an indicator LED a few times, and exits.
 
 ## The launcher (reference appliance)
 
 The generic `LINUX` image's app is the launcher (`examples/linux/launcher`).
 Build it as `LINUX.ELF` from the `launcher/` directory:
 
-    cargo deluge linux            # -> target/LINUX.ELF for /APPS/
+    cargo deluge linux --out LINUX   # -> target/LINUX.ELF for /APPS/
 
 Copy `LINUX.ELF` to the card's `/APPS/`, and drop bare app binaries
 (built with `cargo deluge linux --bare` from each app's own directory) into
@@ -30,8 +44,8 @@ Deploy `target/LINUX.ELF` to `/APPS/` and one or more bare apps to
   the list, regardless of what the app is doing; a shorter hold does not.
 - A clean-exiting app returns silently; a crashing app shows the
   `… CRASHED (sig)` toast briefly.
-- The OLED image is correct (not mirrored/inverted). If wrong within 8px
-  groups, apply the bit-order fix from Task 2 Step 5.
+- The OLED image is correct (not mirrored/inverted); a mirror within 8-pixel
+  groups points at the OLED bit order.
 
 ## Snake (pad-grid bare app)
 
@@ -76,7 +90,6 @@ Notes:
   shell is reaped if the launcher force-kills the app.
 - The reduced pad keyboard exposes the shell-critical symbols
   (`/ \ | ; : ? < > _ " ! @ # $ % ^ & * ( )`); `~` and `` ` `` are omitted (no
-  free pad — the last slot collides with the SHIFT pad). A future symbols layer
-  could add them.
+  free pad — the last slot collides with the SHIFT pad).
 - Full-screen TUI programs (`vi`, `top`) are out of scope: only a minimal
   VT100 subset (cursor moves + erase) is emulated; colours are ignored (1bpp).

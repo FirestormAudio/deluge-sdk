@@ -1,7 +1,7 @@
 //! Deluge Wren scripting firmware.
 //!
-//! **M1:** a live-coding REPL over USB-CDC-ACM plus SD-card persistence, on top
-//! of the M0 VM bring-up. The upstream wren C VM (compiled stock in `wren-sys`,
+//! A live-coding REPL over USB-CDC-ACM plus SD-card persistence. The upstream
+//! wren C VM (compiled stock in `wren-sys`,
 //! including its on-device compiler) runs in a single Embassy task that owns the
 //! VM; its `System.print`/error output is bridged to the CDC endpoints through
 //! two byte rings (mirroring `crow-firmware`).
@@ -23,9 +23,10 @@
 //! - `cdc_tx_task` — [`TX`] ring → host (bulk-IN packets).
 //! - `vm_task` — owns the VM: drains the REPL, runs the boot script.
 //! - `flash_task` — SD load at boot + persist on `^^w`.
-//!
-//! Later milestones add the `deluge` foreign bindings (CV/gate, MIDI, timing,
-//! pads/encoders/OLED/LEDs) and the native DSP audio engine.
+//! - `midi_task`, `input_task`, `ui_task`, `cv_task` — the hardware side of the
+//!   `deluge` foreign bindings (MIDI, pads/buttons/encoders, OLED/LEDs, CV/gate).
+//! - `audio::audio_task` — renders the `flare_graph` engine the `Node` bindings
+//!   drive.
 
 #![cfg_attr(target_os = "none", no_std)]
 #![cfg_attr(target_os = "none", no_main)]
@@ -443,7 +444,7 @@ async fn main(dlg: Deluge) {
 
     // Host-only WAV prefetch for `Sample.stream`-backed nodes (`Sample.stream`'s
     // `Node.stream_` binding registers with it via `FwHost::stream_register`).
-    // Device streaming (SD-card, no-heap) is Sa-3b slice 5.
+    // There is no device-side streaming prefetch.
     #[cfg(not(target_os = "none"))]
     spawner.spawn(stream::stream_task().unwrap());
 

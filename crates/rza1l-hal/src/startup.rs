@@ -1,3 +1,13 @@
+//! Reset vector, bootloader metadata, exception handlers and the GIC IRQ entry
+//! stub for the RZ/A1L, in ARM-mode assembly.
+//!
+//! The reset handler invalidates caches/TLBs, installs the vector table via
+//! VBAR, parks secondary cores, unlocks retention RAM, enables VFP/NEON, sets
+//! up the per-mode stacks, zeroes BSS and calls `main`.  Fault handlers blink
+//! the P6_7 LED in a repeating pattern (1 = undefined instruction, 2 = SVC,
+//! 3 = prefetch abort, 4 = data abort, 5 = reserved) and, with the `rtt`
+//! feature, first dump the fault registers to RTT channel 0.
+
 use core::arch::global_asm;
 
 global_asm!(
@@ -609,9 +619,9 @@ _undef_rtt:
 "#
 );
 
-// `handle_cpu_fault` is the application's pad-grid crash reporter (see
-// src/deluge/io/debug/fault_pattern.c). Weak so this HAL still links for consumers that
-// don't provide one — the UNDEF handler tests for null before branching.
+// `handle_cpu_fault` is the application's pad-grid crash reporter (the C firmware's
+// is in `src/deluge/io/debug/fault_pattern.c`). Weak so this HAL still links for
+// consumers that don't provide one — the UNDEF handler tests for null before branching.
 #[cfg(feature = "rtt")]
 global_asm!(".weak handle_cpu_fault");
 
@@ -695,8 +705,9 @@ _pabt_rtt:
 //   SPSR_irq = CPSR of interrupted mode
 //
 // Stack layout built by this handler (IRQ stack → SYS stack):
-//   IRQ stack: [SPSR] [LR_irq - 4]      (srsdb / manual push/pop)
+//   IRQ stack: [LR_irq - 4] [SPSR]
 //   SYS stack: r0-r3, r12               (caller-saved AAPCS)
+//              d0-d31, FPSCR (8-byte slot)  (interrupted VFP/NEON state)
 //              alignment pad (0 or 4)
 //              r0(=icciar), r1(=pad), r2, r3, r4, lr_sys   (around bl gic_dispatch)
 

@@ -9,9 +9,9 @@
 //! fault) or only checking address arithmetic.
 //!
 //! ## Using it in a driver
-//! Replace `core::ptr::write_volatile(addr as *mut u32, val)` with
-//! `mmio::write32(addr, val)` (and likewise `read*`). The calls stay `unsafe`
-//! (real MMIO is), so existing `unsafe` blocks are unchanged.
+//! Use `mmio::write32(addr, val)` (and likewise `read*`) instead of
+//! `core::ptr::write_volatile(addr as *mut u32, val)`. The calls are `unsafe`,
+//! as real MMIO is.
 //!
 //! ## Using it in a test (host only)
 //! ```ignore

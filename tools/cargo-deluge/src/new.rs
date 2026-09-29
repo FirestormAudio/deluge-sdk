@@ -183,7 +183,7 @@ mod tests {
         let t = cargo_toml("blinky", "deluge = \"0.1\"");
         assert!(t.contains("name = \"blinky\""));
         assert!(t.contains("deluge = \"0.1\""));
-        // The SDK owns the executor now; apps don't depend on embassy-executor.
+        // The SDK owns the executor; apps don't depend on embassy-executor.
         assert!(!t.contains("embassy-executor"));
         assert!(t.contains("embassy-time"));
         assert!(t.contains("rtt = [\"deluge/rtt\"]"));

@@ -4,7 +4,7 @@
 //! Unlike `wren-rs`'s own build, we compile the **stock** VM *including* its
 //! built-in C compiler (`wren_compiler.c`) and apply **no** source patches, so
 //! Wren source compiles on-device — giving a real crow-style live-coding REPL.
-//! This mirrors the proven `crow-sys` recipe (`arm-none-eabi-gcc`, cortex-a9
+//! This mirrors the `crow-sys` recipe (`arm-none-eabi-gcc`, cortex-a9
 //! hard-float, function/data sections, no unwind tables).
 //!
 //! The wren checkout is located via `WREN_SRC` (default the `ext/wren`

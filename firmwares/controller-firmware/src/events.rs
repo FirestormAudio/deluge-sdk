@@ -27,9 +27,9 @@ pub(crate) enum HardwareEvent {
     EncoderRotated { id: u8, delta: i8 },
 }
 
-/// Channel capacity — must be a power of two.
+/// Channel capacity.
 const CAPACITY: usize = 32;
 
-/// Broadcast channel from hardware tasks → CDC task.
+/// Channel from the hardware input tasks to the CDC task.
 pub(crate) static EVENT_CHANNEL: Channel<CriticalSectionRawMutex, HardwareEvent, CAPACITY> =
     Channel::new();

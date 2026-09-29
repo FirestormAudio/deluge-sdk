@@ -5,9 +5,8 @@
 #![cfg_attr(target_os = "none", feature(impl_trait_in_assoc_type))]
 #![allow(dead_code)]
 
-// Startup lives in rza1l_hal::startup. When rza1 is linked into any binary,
-// startup.rs is included automatically because _start and the vector table
-// are referenced by the linker script.
+// Startup code lives in `rza1l_hal::startup`; the linker script references
+// `_start` and the vector table, so it is linked into every binary.
 
 pub mod audio;
 #[cfg(target_os = "none")]
@@ -61,7 +60,6 @@ pub mod uart;
 // `embassy-usb` are gated individually inside the module.
 pub mod usb;
 
-// RSPI0 arbitration between the OLED DMA path and the CV DAC now lives in
-// [`bus`] as an owned, mutex-guarded resource (replacing the former
-// `RSPI0_DMA_ACTIVE` spin-flag). See the Advanced developer guide
+// RSPI0 is shared by the OLED DMA path and the CV DAC; `bus` arbitrates it as
+// an owned, mutex-guarded resource. See the Advanced developer guide
 // (`docs/advanced-guide.md`, §7 — *Dropping down to the BSP & HAL*).

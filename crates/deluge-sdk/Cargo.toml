@@ -1,7 +1,6 @@
 [package]
-# Published as `deluge-sdk` (plain `deluge` is taken on crates.io by an
-# unrelated stream library); the library/import name stays `deluge` via [lib]
-# below, so dependents and `use deluge::…` are unaffected.
+# Published as `deluge-sdk` (`deluge` is taken on crates.io); imported as
+# `deluge` via [lib] below.
 name = "deluge-sdk"
 version.workspace = true
 edition.workspace = true
@@ -14,9 +13,7 @@ description = "User-friendly SDK for building apps on the Synthstrom Deluge."
 categories = ["embedded", "no-std", "hardware-support"]
 keywords = ["deluge", "synthstrom", "embassy", "rza1", "embedded"]
 
-# docs.rs builds on the x86_64 host by default; this SDK only compiles for the
-# device triple (embassy-executor's platform-cortex-ar, nightly), so build the
-# docs there.
+# The SDK's docs build only for the device target.
 [package.metadata.docs.rs]
 default-target = "armv7a-none-eabihf"
 
@@ -36,21 +33,11 @@ embedded-hal = "1"
 embedded-graphics-core = "0.4"
 rtt-target = { workspace = true, optional = true }
 embassy-sync = { workspace = true }
-# `default-features = false`: embassy-usb's default `usbd-hid` feature pulls in
-# `ssmarshal` (built without its own `std` feature, since embassy-usb's own
-# `ssmarshal` dep has `default-features = false`). Neither `usb-log`'s nor
-# `usb-serial`'s CDC-ACM device uses the HID class, and on the host target
-# `ssmarshal`'s no-std `serde::de::Error` impl fails to satisfy the current
-# serde's `StdError` supertrait bound, breaking `cargo test --features
-# sim,usb-log`/`sim,usb-serial`. Dropping the unused default avoids pulling it
-# in at all. Device builds get the default features back anyway: deluge-bsp's
-# own device-target `embassy-usb` dependency (in its Cargo.toml) doesn't drop
-# them, and Cargo unifies features across the dependency graph — so this
-# `default-features = false` only actually narrows the host `sim` build.
+# No default features: the unused `usbd-hid` default pulls in `ssmarshal`,
+# which fails to build against current serde on the host (the `sim` build).
+# Device builds get the defaults back through deluge-bsp.
 embassy-usb = { workspace = true, optional = true, default-features = false }
-# The time-driver `_embassy_time_now` impl is target-specific (see below): the
-# device's `rza1l-hal` OSTM driver, or embassy-time's own `std` wall-clock driver
-# on host. Here we only fix the tick rate, which is identical on both targets.
+# The time driver is per target (below); the tick rate is the same on both.
 embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
 
 # ── Device (the Deluge, armv7a-none-eabihf) ──────────────────────────────────
@@ -62,18 +49,13 @@ embassy-executor = { workspace = true, features = [
     "platform-cortex-ar",
     "executor-thread",
 ] }
-# `Sd`/`FatError` (and the `plat::device` file ops behind them) are part of the
-# unconditional SDK surface on the device, and they are built on
-# `deluge_bsp::fat` — so the BSP's `fat` feature is required here. Requested only
-# for the device target: the host simulator backs `Sd` with real host files and
-# never touches embedded-sdmmc, so the sim build's dependency graph stays clear of it.
+# `Sd` is built on the BSP's FAT support on the device; the simulator backs it
+# with host files instead.
 deluge-bsp = { path = "../deluge-bsp", version = "0.1.0", features = ["fat"] }
 
 # ── Host (the desktop simulator, `cargo deluge sim`) ─────────────────────────
-# Same source, but the executor is std-backed and the capability modules drive
-# the in-process simulator panel (deluge-sim-link) instead of real peripherals.
-# `platform-std` does NOT bring a time driver, so we enable embassy-time's `std`
-# feature, which provides the wall-clock `_embassy_time_now` impl.
+# A std executor, with the capability modules driving the simulator panel.
+# `platform-std` has no time driver, so embassy-time's `std` provides one.
 [target.'cfg(not(target_os = "none"))'.dependencies]
 embassy-executor = { workspace = true, features = [
     "nightly",
@@ -86,49 +68,36 @@ env_logger = "0.11"
 deluge-sim-link = { path = "../deluge-sim-link", optional = true }
 deluge-simulator = { path = "../deluge-simulator", optional = true }
 deluge-hal-linux = { path = "../../linux/deluge-hal-linux", optional = true }
-# `sched_getscheduler`, to confirm libdeluge's audio thread actually got
-# SCHED_FIFO (it degrades to a stderr warning we never see). Linux backend only;
-# already in the tree transitively via deluge-sys.
+# Linux backend: `sched_getscheduler`, to check the audio thread got SCHED_FIFO.
 libc = { version = "0.2", optional = true }
 
 [features]
-# NOTE: cannot default to "sim" — `cargo build-fw` (device target) does not
-# pass --no-default-features, and the sim backend's deps are only declared
-# under the not-none-only target table, so a default-on sim feature breaks
-# the device build. `cargo deluge sim` must pass `--features sim` explicitly.
+# No default backend: `sim` depends on host-only crates, so enabling it by
+# default would break device builds. `cargo deluge sim` passes it explicitly.
 default = []
 ## Desktop simulator backend (`cargo deluge sim`): drives the in-process
 ## simulator panel (deluge-sim-link) instead of real peripherals.
 sim = ["dep:deluge-sim-link", "dep:deluge-simulator", "deluge-bsp/sim-link"]
-## Linux backend (Phase 1b): drives real hardware via libdeluge/deluge-hal-linux.
+## Linux backend: drives the hardware through libdeluge (deluge-hal-linux).
 linux = ["dep:deluge-hal-linux", "dep:libc"]
 ## Register the on-chip SRAM heap (`deluge-alloc`) as the global allocator, so
-## `alloc` collections (`String`, `Vec`, `format!`) work. Needed by apps that use
-## the GPL `deluge-ui-toolkit`. Off by default — the SDK is otherwise allocator-free.
-## SDRAM is left for bulk audio buffers (samples/delay lines), allocated
-## explicitly via `deluge_alloc::SDRAM`. Apps enabling this must also
-## build with `-Zbuild-std=core,alloc`.
+## `String`, `Vec` and `format!` work (the GPL `deluge-ui-toolkit` needs this).
+## SDRAM stays reserved for explicit bulk buffers via `deluge_alloc::SDRAM`.
+## Requires `-Zbuild-std=core,alloc`.
 alloc = []
-## Route the `log` crate to a USB CDC-ACM serial interface (a `/dev/ttyACM*`
-## port on the host) so firmware logs are visible over the USB cable with **no
-## debug probe**. Off by default (brings up a USB device + costs flash/RAM).
-## Only one global logger may be registered, so `usb-log` takes precedence over
-## the `rtt` feature when both are enabled.
+## Route `log` output to a USB CDC-ACM serial port, so logs are readable over
+## the USB cable without a debug probe. Takes precedence over `rtt`, since only
+## one logger can be registered.
 usb-log = ["dep:embassy-usb"]
-## Let the app take USB0 as a CDC-ACM (virtual serial) device with its own
-## VID/PID/strings via `Deluge::usb_serial` — e.g. a REPL transport. Device-only.
-## Mutually exclusive with `usb-log` at runtime (both own USB0); enabling both
-## in the same build is only caught at runtime, when `Deluge::usb_serial`
-## panics — build firmware crate-by-crate with `-p`, not a combined workspace
-## build, so a stray `usb-log` from another crate's feature unification can't
-## slip in.
+## Let the app own USB0 as a CDC-ACM serial device via `Deluge::usb_serial`
+## (e.g. a REPL). Device only. Conflicts with `usb-log`, which also owns USB0:
+## `Deluge::usb_serial` panics if both are enabled, so build firmware with `-p`
+## to keep another crate's `usb-log` from unifying in.
 usb-serial = ["dep:embassy-usb"]
 ## Use the per-block RX DMA interrupt clock for `dlg.audio()` (drift-free, lower
 ## latency) instead of the default poll loop. Same `process()` API.
 audio-irq = ["deluge-bsp/audio-irq"]
-## Enable RTT (SEGGER Real-Time Transfer) debug logging. Initialises the RTT
-## logger in the `#[deluge::app]` runtime and turns on RTT in the HAL/BSP.
-## Off by default so a minimal app does not pull in the RTT control block.
-## An app that enables this must also build with its matching rtt linker script
-## (the example template's `rtt` feature wires both).
+## RTT (SEGGER Real-Time Transfer) debug logging, in the app runtime and the
+## HAL/BSP. Needs the matching RTT linker script, which the example template's
+## `rtt` feature also wires up.
 rtt = ["dep:rtt-target", "rza1l-hal/rtt"]

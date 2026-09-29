@@ -11,7 +11,7 @@ name = "audio_passthru_irq"
 test = false
 
 [dependencies]
-# Same as audio_passthru, but with the v2 per-block IRQ audio clock enabled.
+# Same as audio_passthru, but clocked by the per-block audio DMA interrupt.
 deluge = { path = "../../../crates/deluge-sdk", package = "deluge-sdk", features = ["audio-irq"] }
 
 [features]

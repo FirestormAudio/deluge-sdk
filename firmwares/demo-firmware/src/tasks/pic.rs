@@ -7,14 +7,15 @@ use deluge_bsp::pic;
 
 /// PIC32 event dispatcher — input handling and LED feedback.
 ///
-/// | Event                  | Action                                              |
-/// |------------------------|-----------------------------------------------------|
+/// | Event                     | Action                                              |
+/// |---------------------------|-----------------------------------------------------|
 /// | `PadPress { id }`         | Toggle pad; signal OLED redraw; log (x, y)          |
+/// | `ButtonPress` (any)       | Light the button's LED while held                   |
 /// | `ButtonPress BACK`        | Clear all pads + LEDs; signal redraw                |
-/// | `ButtonPress FILL`        | Fill all pads + LEDs; signal redraw                 |
-/// | `ButtonPress SELECT`      | Invert all pads; signal redraw                      |
-/// | `ButtonPress other`       | Light indicator LED while held                      |
-/// | `ButtonRelease`           | Extinguish indicator LED                            |
+/// | `ButtonPress SYNC_SCALING`| Fill all pads + LEDs; signal redraw                 |
+/// | `ButtonPress TRIPLETS`    | Invert all pads; signal redraw                      |
+/// | TEMPO encoder press       | Toggle the heartbeat LED                            |
+/// | `ButtonRelease`           | Extinguish the button's LED                         |
 /// | `OledSelected`            | Forward to [`pic::notify_oled_selected()`]          |
 /// | `OledDeselected`          | Forward to [`pic::notify_oled_deselected()`]        |
 #[embassy_executor::task]

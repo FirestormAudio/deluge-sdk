@@ -51,7 +51,12 @@ one dependency:
 use deluge::prelude::*;
 use deluge::{deluge_bsp, rza1l_hal};   // re-exported
 use deluge::fixed;                     // = the `fixedpoint` crate (Q31/Q16 DSP math)
+use deluge::deluge_alloc;              // SRAM / SDRAM heaps
 ```
+
+`deluge_bsp` is re-exported on every target; `rza1l_hal` and `deluge_alloc` only on
+the device (`target_os = "none"`), so an app that uses them directly won't build
+for the desktop simulator.
 
 There is **no svd2rust PAC** — the HAL does raw, typed MMIO (see
 [§7](#writing-a-peripheral-driver)). That keeps it small and host-testable.
@@ -73,12 +78,12 @@ this sequence:
 
 1. **Logging** — initialise the RTT or USB-CDC logger (feature-gated; one global logger).
 2. **`init_platform()`** (interrupts masked):
-   - `rza1l_hal::allocator::SRAM.init(...)` from the linker symbols `__sram_heap_start` / `__sram_heap_end`.
+   - `deluge_alloc::SRAM.init(...)` from the linker symbols `__sram_heap_start` / `__sram_heap_end`.
    - `deluge_bsp::system::init_clocks()` — CPG/PLL, MMU, L1+L2 caches, SDRAM controller, GIC, and the OSTM embassy-time driver.
-   - `rza1l_hal::allocator::SDRAM.init(0x0C00_0000, 64 MiB)`.
+   - `deluge_alloc::SDRAM.init(0x0C00_0000, 64 MiB)`.
    - With `usb-serial` enabled: register the USB0 device ISR, still masked, before `setup()` runs (the device itself is built later, when the app calls `Deluge::usb_serial`).
 3. **`setup()`** — your optional `#[deluge::app(setup = …)]` hook, still with **IRQs masked** (see [§5](#the-setup-window)).
-4. **USB-debug bring-up** (only with `usb-log`): register the USB0 ISR and start the controller while IRQs are still masked, mirroring the proven controller-firmware ordering.
+4. **USB-debug bring-up** (only with `usb-log`): register the USB0 ISR and start the controller while IRQs are still masked, the same ordering the controller firmware uses.
 5. **`cortex_ar::interrupt::enable()`** — unmask IRQs so the time driver and peripheral ISRs fire.
 6. **Executor** — construct a `static` `embassy_executor::Executor`, then `executor.run(...)`, which spawns your `async fn main` (and the USB-log drain task, if enabled).
 
@@ -320,33 +325,33 @@ The RTT build (`memory_rtt.x` + the `rtt` feature) additionally reserves a
 `__sram_heap_end` from the script.
 
 The MMU maps a **non-cached mirror** of every region at `+0x4000_0000`
-([`crates/rza1l-hal/src/mmu.rs`](../crates/rza1l-hal/src/mmu.rs),
-`UNCACHED_MIRROR_OFFSET`). DMA ring buffers are accessed through that mirror so you
+(`rza1l_hal::UNCACHED_MIRROR_OFFSET`; the section attributes are in
+[`crates/rza1l-hal/src/memmap.rs`](../crates/rza1l-hal/src/memmap.rs)). DMA ring buffers are accessed through that mirror so you
 never fight the D-cache for hardware-visible memory.
 
 ### Two heaps
 
-Both are `allocator-api` `Allocator`s (critical-section guarded) in
-[`crates/rza1l-hal/src/allocator.rs`](../crates/rza1l-hal/src/allocator.rs):
+Both are `allocator-api` `Allocator`s (critical-section guarded) in the
+[`deluge-alloc`](../crates/deluge-alloc/README.md) crate:
 
-- **`rza1l_hal::allocator::SRAM`** — fast on-chip RAM. The `alloc` feature registers
+- **`deluge_alloc::SRAM`** — fast on-chip RAM. The `alloc` feature registers
   it as the `#[global_allocator]`, so `Box`/`Vec`/`String`/`format!` work. Keep this
   for app state and UI.
-- **`rza1l_hal::allocator::SDRAM`** — the big, higher-latency external RAM. Reserve it
+- **`deluge_alloc::SDRAM`** — the big, higher-latency external RAM. Reserve it
   for bulk audio buffers (samples, delay lines) and allocate into it *explicitly* so
   it never fragments the global heap:
 
 ```rust
 #![feature(allocator_api)]
-use deluge::rza1l_hal::allocator::SDRAM;
+use deluge::deluge_alloc::SDRAM;
 
 let mut delay_line = Vec::<f32, _>::with_capacity_in(48_000, &SDRAM);
 let buf = Box::new_in([0i32; 4096], &SDRAM);
 ```
 
-`Allocator` (and `allocator_api`) require nightly and the `alloc` feature (which adds
-`alloc` to `build-std`, via the `cargo build-fw-alloc` alias). Query usage with
-`SRAM.used()` / `.free()` / `.size()`.
+`Allocator` (and `allocator_api`) require nightly, the `alloc` crate, and a build with
+`-Zbuild-std=core,alloc` (which `cargo deluge build` and `cargo build-fw` pass). Query
+usage with `SRAM.used()` / `.free()` / `.size()`.
 
 ---
 
@@ -509,7 +514,7 @@ Other useful flags: `--source` (file:line, needs `--elf`), `--continuous` (loop 
 Ctrl-C), `--timestamps`, `--return-stack`, `--branch-broadcast`, `--trace-id`.
 
 **Limitation:** trace is **full-stop only** — the core is halted to drain the ETF;
-there's no non-stop streaming yet. The 4 KB ETF holds on the order of ~1 K
+there's no non-stop streaming. The 4 KB ETF holds on the order of ~1 K
 instructions per sync point in circular mode.
 
 ### Performance counters (PMU)
@@ -550,14 +555,14 @@ pass the right `-Zbuild-std` flags:
 
 | Alias | What |
 |-------|------|
-| `cargo build-fw -p <crate>` | debug ELF (`-Zbuild-std=core`) |
-| `cargo build-fw-rel` | release ELF, default features off |
-| `cargo build-fw-alloc -p <crate>` | adds `alloc` to build-std (UI toolkit / SDRAM `Allocator`) |
-| `cargo build-fw-bin` | release `.bin` via `objcopy` (needs `cargo-binutils`) |
-| `cargo elf2uf2 <elf>` | host ELF→UF2 converter (firmware-flash path only, not apps) |
+| `cargo build-fw -p <crate>` | debug ELF (`-Zbuild-std=core,alloc`) |
+| `cargo build-fw-rel -p <crate>` | release ELF, default features off |
+| `cargo build-fw-bin` | demo-firmware release `.bin` via `objcopy` (needs `cargo-binutils`) |
+| `cargo build-app-loader` / `build-app-loader-bin` | the app-loader ELF / flashable `.bin` |
+| `cargo build-controller-bin`, `build-msc` / `build-msc-bin`, `build-wren` / `build-wren-bin`, `build-uac` / `build-uac-bin` | the other firmware images |
 
-`tools/build-examples.sh` compile-proves all examples. UF2 is only for flashing
-*firmware* (e.g. the app-loader) — apps are deployed as ELF to `/APPS/`.
+`tools/build-examples.sh` compile-proves all examples. Apps are deployed as ELF to
+`/APPS/`; a `.bin` is only for flashing *firmware* (e.g. the app-loader).
 
 **Tests** run on two host triples (the bare-metal target can't host the test
 harness): `armv7-unknown-linux-gnueabihf` under `qemu-arm` for ARM-asm/NEON crates,
@@ -572,7 +577,6 @@ and `x86_64-unknown-linux-gnu` for pure-logic crates. Run everything with
 
 | Module | What |
 |--------|------|
-| `allocator` | `SRAM` / `SDRAM` `Allocator`s (`CsHeap`) |
 | `gpio` | port/pin config + I/O; const-generic `Pin<PORT, BIT, MODE>` (embedded-hal) |
 | `gic` | GIC-400: `init`/`register`/`enable`/`set_priority`/edge config |
 | `ostm` / `time_driver` | OS timers + the embassy-time driver |
@@ -584,7 +588,13 @@ and `x86_64-unknown-linux-gnu` for pure-logic crates. Run everything with
 | `uart` | SCIF (async, DMA) |
 | `mmu` / `cache` / `stb` / `bsc` | MMU table, L1/L2 cache, clock gating, bus controller |
 | `mmio` | typed MMIO seam (`Reg8/16/32`, host-testable) |
+| `memmap` / `time_math` | pure (host-testable) memory-map and timer arithmetic |
+| `spibsc` | SPI NOR-flash controller (guarded erase/program) |
+| `adc` / `mtu2` | A/D converter, multi-function timer |
+| `usb` | RUSB1 device + host drivers (`embassy-usb-driver`) |
 | `startup` | reset/boot assembly, vector table, bootloader metadata |
+
+The SRAM/SDRAM heaps are in the separate `deluge_alloc` crate.
 
 **`deluge_bsp`** ([`crates/deluge-bsp/src/lib.rs`](../crates/deluge-bsp/src/lib.rs)):
 
@@ -600,9 +610,13 @@ and `x86_64-unknown-linux-gnu` for pure-logic crates. Run everything with
 | `cv_gate` / `jacks` / `midi_gate` / `trigger_clock` | CV DAC + gates, jack detect, DIN MIDI, clock-in |
 | `pads` / `rgb` | RGB pad matrix + colour conversions |
 | `sdram` | SDRAM controller init |
+| `encoder` | encoder IRQ accumulators + waker |
+| `usb` | USB classes (UAC2, MIDI, MSC) and, with `usb-host`, host-side drivers |
+| `flash` | SPI-NOR chip profile + board flash map (`flash` feature) |
+| `scux_*_path` / `battery` / `uart` | SCUX audio paths, battery sense, SCIF (MIDI + PIC) |
 | `sample_fmt` / `encoder_detent` | pure (host-testable) conversion + quadrature logic |
 
-See the [getting started guide](getting-started.md) for the friendly capability API,
-the [design doc](dev/deluge-sdk.md) for rationale, and the per-crate READMEs
+See the [getting started guide](getting-started.md) for the friendly capability API
+and the per-crate READMEs
 ([rza1l-hal](../crates/rza1l-hal/README.md), [deluge-bsp](../crates/deluge-bsp/README.md))
 for more.

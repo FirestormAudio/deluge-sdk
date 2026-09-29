@@ -4,11 +4,11 @@
 //!
 //! - [`PipeConfig`]: describes how a pipe is configured (endpoint, type, MPS,
 //!   packet buffer allocation).
-//! - [`PipeState`]: runtime transfer state (active buffer pointer, remaining
-//!   bytes, waker).
+//! - [`PipeXferState`]: runtime transfer state (active buffer pointer,
+//!   remaining bytes).
 //! - [`PIPE_WAKERS`]: one [`AtomicWaker`] per pipe; the ISR wakes the
 //!   appropriate waker when a transfer completes (BRDY/BEMP).
-//! - [`BufAllocator`]: bump allocator over the 128 × 64-byte packet buffer.
+//! - [`BufAllocator`]: first-fit allocator over the 128 × 64-byte packet buffer.
 //!
 //! All mutable access to the per-pipe state in IRQ + task must go through
 //! critical sections (`critical_section::with`).
@@ -41,8 +41,6 @@ pub const PIPE_COUNT: usize = 16;
 // ---------------------------------------------------------------------------
 
 /// One waker per pipe.  The ISR calls `wake()` when a transfer finishes.
-///
-/// These are `'static` because ISR context has no lifetime.
 pub static PIPE_WAKERS: [AtomicWaker; PIPE_COUNT] = {
     #[allow(clippy::declare_interior_mutable_const)]
     const W: AtomicWaker = AtomicWaker::new();
@@ -107,7 +105,7 @@ pub unsafe fn register_iso_out_hook(pipe: usize, cb: unsafe fn(*const u8, usize)
 }
 
 // ---------------------------------------------------------------------------
-// ISO IN packet hook (symmetric to the OUT hook — continuous BRDY-driven TX)
+// ISO IN packet hook (continuous BRDY-driven TX)
 // ---------------------------------------------------------------------------
 
 /// Pipe number for which the ISO IN hook is registered.  [`usize::MAX`] = none.
@@ -129,7 +127,7 @@ static mut ISO_IN_BUF: [u8; ISO_DRAIN_LEN] = [0; ISO_DRAIN_LEN];
 ///
 /// Unlike the blocking `EndpointIn::write()` path, this drives the ISO IN pipe
 /// in continuous BUF mode: the pipe stays armed and the BRDY ISR calls the hook
-/// to stage each packet, matching the proven tinyusb model (and symmetric with
+/// to stage each packet, as TinyUSB does (the counterpart of
 /// [`register_iso_out_hook`]).  Enable BRDY for the pipe (done by
 /// `endpoint_set_enabled` for the hook pipe) after registering.
 ///
@@ -170,10 +168,8 @@ pub unsafe fn pipe_iso_in_activate(regs: *mut Rusb1Regs, n: usize) {
         // "BRDY interrupt (a), transmitting direction" condition 4: BRDY fires
         // when one plane empties AND the OTHER plane has been fully written — so
         // with only one plane primed, transmitting it leaves the other plane
-        // empty and BRDY never fires, stalling the stream.  Filling both planes
-        // bootstraps the double-buffer cadence (each subsequent BRDY refills the
-        // plane the SIE just freed).  Also stages data so the first IN tokens
-        // transmit real audio.
+        // empty and BRDY never fires, stalling the stream.  With both planes
+        // filled, each subsequent BRDY refills the plane the SIE just freed.
         pipe_xfer_in_brdy(regs, n); // plane A
         pipe_xfer_in_brdy(regs, n); // plane B
         // Clear any stale BRDY, arm BRDY *before* releasing to BUF.
@@ -236,10 +232,9 @@ pub struct PipeXferState {
     pub length: u16,
     /// Bytes remaining (counts down as packets are transferred).
     pub remaining: u16,
-    /// Bytes actually transferred so far.  Used to report the final byte count
-    /// to the task, because for ISO OUT the `done` path forces `remaining = 0`
-    /// early (to allow the ISO guard to fire on re-entry) before `remaining`
-    /// naturally reaches zero.
+    /// Bytes actually transferred so far; the byte count reported to the task.
+    /// `length - remaining` is not usable for this, because the ISO OUT `done`
+    /// path forces `remaining = 0` before it counts down to zero.
     pub transferred: u16,
     /// Max packet size (cached from PIPEMAXP to avoid register reads in ISR).
     pub mps: u16,
@@ -332,7 +327,7 @@ pub struct PipeConfig {
 // Packet buffer allocator
 // ---------------------------------------------------------------------------
 
-/// Simple bump allocator over the 128 × 64-byte packet buffer.
+/// First-fit allocator over the 128 × 64-byte packet buffer.
 ///
 /// Uses a 128-bit bitmask: bit N = block N is allocated.
 ///
@@ -416,7 +411,7 @@ pub unsafe fn pipe_configure(regs: *mut Rusb1Regs, n: usize, cfg: &PipeConfig) {
         // Select the pipe and write configuration registers.
         wr(core::ptr::addr_of_mut!((*regs).pipesel), n as u16);
 
-        // Record direction so the BRDY ISR can dispatch IN vs OUT (see PIPE_IS_IN).
+        // Record direction so the BEMP ISR can dispatch IN vs OUT (see PIPE_IS_IN).
         if cfg.is_in {
             PIPE_IS_IN.fetch_or(1u16 << n, core::sync::atomic::Ordering::Release);
         } else {
@@ -434,8 +429,8 @@ pub unsafe fn pipe_configure(regs: *mut Rusb1Regs, n: usize, cfg: &PipeConfig) {
                 if !cfg.is_in {
                     // SHTNAK: NAK on short packet (OUT), prevents spurious BRDYs.
                     pipecfg |= PIPECFG_SHTNAK;
-                    // Double-buffer bulk OUT is explicitly disabled to avoid the
-                    // BRDY race described in dcd_rusb1.c comments.
+                    // No DBLB on bulk OUT: double-buffering it races BRDY (see
+                    // TinyUSB dcd_rusb1.c).
                 } else if cfg.continuous {
                     // Continuous transfer mode: one buffer > MaxPacketSize over
                     // which the SIE streams several packets per micro-frame.
@@ -454,17 +449,15 @@ pub unsafe fn pipe_configure(regs: *mut Rusb1Regs, n: usize, cfg: &PipeConfig) {
 
         // PIPEBUF: BUFNMB (start block) | BUFSIZE ((blocks - 1) in 64-byte units).
         // BUFSIZE is a 5-bit field [14:10]; mask after the shift so an oversized
-        // buf_blocks can never spill into the reserved bit 15 (matches the C
-        // reference `(0x1f & bufnmb_cnt) << 10`).
+        // buf_blocks can never spill into the reserved bit 15.
         let bufsize_field = (((cfg.buf_blocks as u16).saturating_sub(1)) << PIPEBUF_BUFSIZE_SHIFT)
             & PIPEBUF_BUFSIZE_MASK;
         let pipebuf = cfg.buf_start as u16 | bufsize_field;
         wr(core::ptr::addr_of_mut!((*regs).pipebuf), pipebuf);
 
-        // Log the actual packet-RAM footprint so overlaps are visible: a
-        // double-buffered pipe occupies TWO banks of `buf_blocks` each, i.e.
-        // blocks [buf_start, buf_start + banks*buf_blocks).  Two pipes whose
-        // ranges intersect will wedge on the hardware.
+        // Log the packet-RAM footprint so overlaps are visible: a
+        // double-buffered pipe occupies two banks of `buf_blocks` each.  Pipes
+        // whose ranges intersect wedge the hardware.
         let banks: u16 = if cfg.double_buf || cfg.xfer_type == XferType::Isochronous {
             2
         } else {
@@ -532,9 +525,8 @@ pub unsafe fn pipe_xfer_in_start(regs: *mut Rusb1Regs, n: usize, mps: u16) -> bo
                     // Explicit zero-length-packet transmit (write(&[])).  TRM
                     // §28.4.5: "to send a zero-length packet, the BCLR bit must
                     // be used to clear the buffer and then the BVAL bit is set
-                    // to end the writing."  Without this commit nothing is ever
-                    // staged, the SIE NAKs every IN token, no BEMP fires, and
-                    // write(&[]) hangs forever.
+                    // to end the writing."  Without the commit the SIE NAKs every
+                    // IN token and no BEMP ever fires.
                     let fifo = fifo_for_pipe(regs, n);
                     fifo_select_pipe(&fifo, n, true);
                     if fifo_is_ready(&fifo, n) {
@@ -589,10 +581,9 @@ unsafe fn fill_in_packet(
         // Transmit trigger (RZ/A1 TRM Table 28.11, DIR=1):
         //   (1) a fill that reaches the full buffer-plane size auto-transmits;
         //   (2) any *partial* fill must be committed by writing BVAL.
-        // So BVAL whenever we did not exactly fill the buffer.  For an ordinary
-        // pipe `cap == mps`, this reduces to "BVAL on a short packet" — the
-        // original behaviour.  (Filling a whole number of packets that is still
-        // less than the buffer needs BVAL too, or it would never be sent.)
+        // So BVAL whenever the fill is short of the buffer.  For an ordinary
+        // pipe `cap == mps`, i.e. BVAL on a short packet; for a CNTMD pipe a
+        // whole number of packets short of the buffer needs BVAL too.
         if len < cap {
             fifo_bval(&fifo);
         }
@@ -609,8 +600,8 @@ unsafe fn fill_in_packet(
 ///
 /// For non-ISO pipes the hardware PID is set to NAK before the FIFO is read
 /// (preventing the SIE from writing new data while CPU reads), then re-armed
-/// to BUF if the transfer is not yet done — matching the C `process_pipe_brdy`
-/// / `pipe_xfer_out` reference implementation.
+/// to BUF if the transfer is not yet done, as TinyUSB's `process_pipe_brdy` /
+/// `pipe_xfer_out` do.
 ///
 /// `speculative` distinguishes the two callers:
 /// - `false` — invoked from the BRDY ISR, where the SIE has set BRDYSTS, so a
@@ -632,8 +623,8 @@ unsafe fn fill_in_packet(
 pub unsafe fn pipe_xfer_out_brdy(regs: *mut Rusb1Regs, n: usize, speculative: bool) -> bool {
     unsafe {
         let state = &mut *{
-            // Access state without critical_section — we're already in IRQ context
-            // where the task cannot run (single-core).
+            // No critical section: the ISR caller cannot be preempted by the
+            // task on a single core, and the speculative caller holds one.
             PIPE_XFER[n]
                 .borrow(critical_section::CriticalSection::new())
                 .get()
@@ -647,17 +638,14 @@ pub unsafe fn pipe_xfer_out_brdy(regs: *mut Rusb1Regs, n: usize, speculative: bo
             // If an ISO OUT hook is registered for this pipe, drain the packet
             // from the FIFO into the scratch buffer and hand it to the hook here,
             // in ISR context.  This is the audio fast path: it decouples ISO OUT
-            // servicing from executor scheduling latency entirely.  Without it, a
-            // packet that arrives while no read() is armed sits in the
-            // double-buffered FIFO; if the CPU does not drain it within ~2
-            // microframes the SIE has nowhere to put the next packet and drops it
-            // (TRM §28.4.9 / Table 28.26: OVRN set, NRDY raised, "no data packet
-            // is received in response to OUT token") — an audible gap.
+            // servicing from executor scheduling latency.  A packet left in the
+            // double-buffered FIFO for more than ~2 microframes makes the SIE
+            // drop the next one (TRM §28.4.9 / Table 28.26: OVRN set, NRDY
+            // raised, "no data packet is received in response to OUT token").
             //
             // A hook is only ever installed on the ISO OUT pipe, so matching the
-            // pipe number is sufficient; `state.xfer_type` is NOT reliable here
-            // because it is only set by `read()`, the very dependency this path
-            // exists to avoid.
+            // pipe number is sufficient; `state.xfer_type` is not reliable here
+            // because only `read()` sets it.
             if n == core::ptr::addr_of!(ISO_OUT_HOOK_PIPE).read()
                 && let Some(hook) = core::ptr::addr_of!(ISO_OUT_HOOK).read()
             {
@@ -689,7 +677,7 @@ pub unsafe fn pipe_xfer_out_brdy(regs: *mut Rusb1Regs, n: usize, speculative: bo
         let ctr_ptr = pipectr_ptr(regs, n);
 
         // For non-ISO: NAK first to prevent the SIE from filling the FIFO while
-        // the CPU is reading it (matches C `process_pipe_brdy` NAK-before-read).
+        // the CPU is reading it.
         if !is_iso {
             let cur = rd(ctr_ptr);
             wr(
@@ -702,9 +690,9 @@ pub unsafe fn pipe_xfer_out_brdy(regs: *mut Rusb1Regs, n: usize, speculative: bo
         // Receiving (OUT) pipe selection.  For bulk pipes on the shared D1FIFO
         // (e.g. CDC OUT pipe 3 sharing the port with IN pipe 4) use the TRM
         // deselect-first CURPIPE-change procedure so this read cannot surface
-        // the previously-selected IN pipe's staged data (the IN/OUT
-        // cross-corruption).  ISO pipes live on their own D0FIFO and are
-        // timing-critical for audio, so keep their original single select.
+        // the previously-selected IN pipe's staged data.  ISO pipes have
+        // D0FIFO to themselves and are timing-critical, so they use a single
+        // select.
         if is_iso {
             fifo_select_pipe(&fifo, n, false);
         } else {
@@ -734,7 +722,7 @@ pub unsafe fn pipe_xfer_out_brdy(regs: *mut Rusb1Regs, n: usize, speculative: bo
             state.transferred += len as u16;
         }
 
-        // Always BCLR after reading (matches C reference — not just on short packet).
+        // BCLR after every read, not just a short packet.
         fifo_bclr(&fifo);
 
         // A zero-byte non-ISO read from a speculative call is not a real packet
@@ -754,9 +742,9 @@ pub unsafe fn pipe_xfer_out_brdy(regs: *mut Rusb1Regs, n: usize, speculative: bo
                 hook(start, state.transferred as usize);
             }
             state.buf = core::ptr::NonNull::dangling();
-            // Reset remaining to 0 so the ISO guard at the top of this function
-            // fires correctly if BRDY re-enters before the task calls read() again.
-            // (For ISO, done can be true via len<mps while remaining is still non-zero.)
+            // Force remaining to 0 so the no-pending-read path at the top of
+            // this function handles a BRDY that arrives before the next read().
+            // (For ISO, done can be true via len < mps with remaining non-zero.)
             state.remaining = 0;
             return true;
         }
@@ -797,8 +785,8 @@ pub unsafe fn pipe_xfer_in_bemp(regs: *mut Rusb1Regs, n: usize) -> bool {
 
         let mps = state.mps as usize;
         // Fill the next packet (shared with the task-context first-fill path).
-        // A `false` return means the FIFO port wasn't ready; we report "not yet
-        // done" and the next BEMP will retry, matching the prior behaviour.
+        // A `false` return means the FIFO port wasn't ready; report "not yet
+        // done" and let the next BEMP retry.
         fill_in_packet(regs, n, mps, state);
         false
     }

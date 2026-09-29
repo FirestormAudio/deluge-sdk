@@ -1,4 +1,4 @@
-//! Task 5.1 (harness Layer 2): drive host events into a live debug VM.
+//! Drive host events into a live debug VM.
 //!
 //! The debug agent ([`crate::agent::debug_run_driven`]) interprets the entry
 //! (which registers callbacks like `Midi.onNoteOn`), then — with the debugger
@@ -9,8 +9,8 @@
 //! breakpoint inside a fired handler parks the VM thread mid-`vm.call`.
 //!
 //! Each variant maps 1:1 onto a `deluge_wren_core::*_impl` entry; see
-//! [`dispatch`]. The type is shared by `agent` and `harness` today and will be
-//! threaded through 5.2's `dbg_launch` + controller + drive-panel UI.
+//! [`dispatch`]. The type is shared by `agent`, `harness` and the threaded
+//! build's `dbg_launch`.
 
 use deluge_wren_core::{enc_turn_impl, midi_rx_impl, tick_impl};
 

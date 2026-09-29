@@ -1,6 +1,6 @@
 //! Analog clock I/O: the trigger-clock input jack and a software clock output.
 //!
-//! [`ClockIn`] wraps the existing edge-counting driver
+//! [`ClockIn`] wraps the edge-counting driver
 //! ([`deluge_bsp::trigger_clock`]) behind the SDK's take-once handle style.
 //! [`ClockOut`] has no dedicated jack — it pulses one of the V-trig gate outputs
 //! (see [`Gate`](crate::Gate)), so the channel it claims should not also be

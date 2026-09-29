@@ -29,8 +29,7 @@ use core::arch::asm;
 // ---------------------------------------------------------------------------
 
 // The section-attribute constants and the area table live in the host-tested
-// `crate::memmap` module (single source of truth, validated against the RZ/A1L
-// address map). Re-export the attrs so `mmu::PARA_*` keeps working.
+// `crate::memmap` module; re-exported here as `mmu::PARA_*` etc.
 pub use crate::memmap::{
     AREAS, PARA_NORMAL_CACHE, PARA_NORMAL_NOT_CACHE, PARA_STRONGLY_ORDERED, ttb_section_descriptor,
 };
@@ -46,11 +45,10 @@ struct Ttb([u32; 4096]);
 /// before the MMU is turned on.
 ///
 /// Placed in `.ttb_mmu1`, the NOLOAD window `rza1l.x` / `rza1l_rtt.x` reserve at
-/// the bottom of on-chip SRAM for exactly this table, rather than in `.bss`. In
-/// `.bss` its 16 KB alignment made it jump a whole 16 KB block whenever the
-/// `.bss` in front of it crossed a boundary, and it sat beside the reservation
-/// meant for it. Nothing zeroes `.ttb_mmu1`, and nothing needs to:
-/// [`init_and_enable`] writes all 4096 entries before the table is used.
+/// the bottom of on-chip SRAM for exactly this table. Keeping it out of `.bss`
+/// gives it a fixed address and avoids up to 16 KB of alignment padding there.
+/// Nothing zeroes `.ttb_mmu1`, and nothing needs to: [`init_and_enable`] writes
+/// all 4096 entries before the table is used.
 #[unsafe(link_section = ".ttb_mmu1")]
 static mut TTB: Ttb = Ttb([0; 4096]);
 
@@ -170,7 +168,7 @@ pub unsafe fn invalidate_tlb_all() {
 ///
 /// ```no_run
 /// // Remap the internal SRAM region as strongly-ordered (e.g. for DMA setup):
-/// unsafe { rza1::mmu::update_section(0x2000_0000, rza1::mmu::PARA_STRONGLY_ORDERED) };
+/// unsafe { rza1l_hal::mmu::update_section(0x2000_0000, rza1l_hal::mmu::PARA_STRONGLY_ORDERED) };
 /// ```
 ///
 /// # Safety

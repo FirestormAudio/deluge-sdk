@@ -3,12 +3,15 @@
 //! Loaded by the Deluge first-stage bootloader from SPI flash into SRAM at
 //! `0x20020000`.  On boot it:
 //!   1. Initialises the platform (MMU, caches, SDRAM, GIC, OSTM).
-//!   2. Mounts the SD card FAT filesystem.
-//!   3. Lists ELF application images from `/APPS/` on the card.
-//!   4. If more than one image is found, presents an OLED + encoder-wheel
-//!      file-selector; otherwise auto-launches the only image.
-//!   5. Seeks through the selected ELF file, loads PT_LOAD segments to their
-//!      physical addresses, flushes all caches, and branches to `e_entry`.
+//!   2. Probes the SPI-flash app slot and mounts the SD card FAT filesystem.
+//!   3. Builds a boot menu from the flash image (the default entry), the ELF
+//!      images in `/APPS/` on the card, and the `DATA TRANSFER` and `SETTINGS`
+//!      entries.
+//!   4. Depending on the persisted auto-boot setting, launches the default entry
+//!      at once, after a countdown, or waits for a selection on the OLED +
+//!      encoder-wheel menu.  Holding LOAD at power-on always forces the menu.
+//!   5. Loads the selected image's `PT_LOAD` segments to their physical
+//!      addresses, quiesces the hardware, and branches to its entry point.
 
 #![no_std]
 #![no_main]
@@ -184,9 +187,8 @@ async fn pic_rx_task() {
 pub(crate) unsafe fn quiesce_for_handoff() {
     unsafe {
         // Stop + software-reset every DMA channel and clear its DMARS request
-        // route (covers PIC RX/TX, SD, and OLED channels). Clearing DMARS here
-        // is what lets Linux's rz-dmac claim SCIF1-RX cleanly — previously
-        // U-Boot's deluge_reset_dmac() had to do it after us.
+        // route (covers PIC RX/TX, SD, and OLED channels). Clearing DMARS lets
+        // Linux's rz-dmac claim SCIF1-RX cleanly.
         for ch in 0..16u8 {
             rza1l_hal::dmac::stop(ch);
         }
@@ -200,8 +202,7 @@ pub(crate) unsafe fn quiesce_for_handoff() {
 
 /// Draw the Deluge droplet right before handing off to a launched image, so the
 /// panel holds the boot logo (not the loader's menu) all the way through U-Boot
-/// and early kernel until the image's own display code takes over. Replaces the
-/// former blank so early boot is never a dark panel.
+/// and early kernel until the image's own display code takes over.
 ///
 /// Must be called while interrupts, the executor, and `pic_rx_task` are still
 /// live: `send_frame` awaits the OLED DMA-completion IRQ and the PIC chip-select
@@ -343,10 +344,9 @@ async fn boot_task(spawner: Spawner) {
     // write-to-flash also returns here, so the menu is rebuilt from fresh state
     // (re-probing the flash slot and re-listing the SD card).
     //
-    // Only the very first pass shows the "DELUGE BOOT / INIT SD..." splash:
-    // re-showing it when returning from a USB mode or a DEV MODE toggle looks
-    // like the unit rebooted instead of simply going back to the menu.  Later
-    // passes rebuild quietly and let `run_selector` redraw the menu directly.
+    // Only the first pass shows the "DELUGE BOOT / INIT SD..." splash; on later
+    // passes it would look like a reboot, so the menu is simply redrawn by
+    // `run_selector`.
     let mut first_pass = true;
     loop {
         // Read persisted settings each pass so a DEV MODE toggle takes effect on
@@ -398,9 +398,9 @@ async fn boot_task(spawner: Spawner) {
         let sd_count = sd_listing.as_ref().map_or(0, |(_, _, e)| e.len());
         let boot_total = flash_offset + sd_count; // real boot targets
         // DATA TRANSFER only needs a *card*, not a working filesystem, and the
-        // Deluge's card-detect pin is unreliable (it reads "no card" even with
-        // one inserted — see the SSB RTT logs), so gating on detection hides the
-        // recovery path exactly when it's needed.  Offer it unconditionally: the
+        // Deluge's card-detect pin is unreliable (it can read "no card" with one
+        // inserted), so gating on detection would hide the recovery path exactly
+        // when it's needed.  Offer it unconditionally: the
         // SdBlock backend retries `sd::init` on demand when the host probes it,
         // so an unformatted/corrupt/initially-unresponsive card can still be
         // accessed or reformatted from the host; with no card the host simply
@@ -459,8 +459,8 @@ async fn boot_task(spawner: Spawner) {
             // Crucially, bring the USB device up *before* `run_selector` starts
             // drawing: USB bring-up reconfigures interrupts/clocks, and doing that
             // while an OLED frame DMA + PIC handshake is in flight can wedge the
-            // display so the menu never redraws (the proven `usbmsc` path builds USB
-            // before starting its OLED loop for the same reason).
+            // display so the menu never redraws (`usbmsc` builds USB before
+            // starting its OLED loop for the same reason).
             if cfg.dev_mode {
                 use embassy_futures::select::{Either, select};
                 let listener = devupload::prepare();
@@ -544,9 +544,8 @@ async fn boot_task(spawner: Spawner) {
                 ui::show_message(b"SETTINGS", b"SAVED").await;
                 embassy_time::Timer::after(embassy_time::Duration::from_millis(700)).await;
             } else {
-                // The flash write didn't stick (the device stays responsive
-                // thanks to the bounded SPIBSC waits). Show the JEDEC ID and
-                // status register so the failure can be diagnosed: ID `01 02 20`
+                // The flash write didn't stick. Show the JEDEC ID and status
+                // register so the failure can be diagnosed: ID `01 02 20`
                 // confirms manual-mode works; status `BP[2:0]` (bits 2-4) set
                 // means the settings sector is write-protected.
                 let id = rza1l_hal::spibsc::read_id();

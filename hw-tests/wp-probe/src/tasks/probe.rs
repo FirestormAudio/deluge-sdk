@@ -6,7 +6,7 @@
 //!
 //! 1. **SDHI INFO7** — `SD_INFO1` bit 7, the SD host controller's own view of the
 //!    dedicated `SD_WP1` alternate-function pin (P7_1, mux 3).  Per the RZ/A1
-//!    manual INFO7 = 1 ⇒ the `SD_WP` pin is at level 0 (low), which the current
+//!    manual INFO7 = 1 ⇒ the `SD_WP` pin is at level 0 (low), which the
 //!    driver maps to "write protected".
 //! 2. **Raw P7_1 level** — the live pin voltage via the Port Pin Read register.
 //!    `enable_input_buffer(7, 1)` lets PPR reflect the pin even while it stays
@@ -48,7 +48,7 @@ pub(crate) async fn probe_task() {
     loop {
         let card = sd::is_inserted();
         let ready = sd::is_ready();
-        // SDHI's view: INFO7 != 0 (the driver's current "write protected" test).
+        // SDHI's view: INFO7 != 0 (the driver's "write protected" test).
         let info7 = unsafe { rza1l_hal::sdhi::card_write_protected(SD_PORT) };
         // Raw live pin level on P7_1.
         let pin_high = unsafe { rza1l_hal::gpio::read_pin(7, 1) };

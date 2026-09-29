@@ -13,8 +13,8 @@
 //!
 //! DMA Resource Selector (DMARS) registers are at `0xFCFE_1000 + (ch/2) * 4`.
 //! Each 32-bit DMARS register covers a channel pair:
-//!   - bits [15:0]  → even channel of the pair
-//!   - bits [31:16] → odd  channel of the pair
+//!   - bits `[15:0]`  → even channel of the pair
+//!   - bits `[31:16]` → odd  channel of the pair
 //!
 //! (RZ/A1L TRM §9, register table: DMARS0=0xFCFE1000 … DMARS7=0xFCFE101C)
 
@@ -181,8 +181,8 @@ pub unsafe fn channel_start(ch: u8) {
 
 /// Stop a DMA channel immediately: clear its enable bit, then software-reset
 /// it so any in-flight (including circular/peripheral-driven) transfer ceases.
-/// Also clears the channel's DMARS resource selector, releasing its
-/// peripheral-request route.
+/// Also zeroes the channel's DMARS register, releasing its peripheral-request
+/// route (the whole word is cleared, including the paired channel's selector).
 ///
 /// Intended for use before handing the SoC to another program — a circular
 /// channel such as the SCIF RX DMA keeps writing to its buffer forever and is
@@ -200,8 +200,7 @@ pub unsafe fn stop(ch: u8) {
         crate::mmio::write32(chctrl, CHCTRL_SWRST);
         // Release the peripheral request route too: SWRST resets CHCTRL but not
         // DMARS, so a latched route (e.g. SCIF1-RX = 0x66) would keep claiming
-        // its request line and starve the next program's channel. Clearing it
-        // here is the teardown U-Boot's deluge_reset_dmac() used to do.
+        // its request line and starve the next program's channel.
         crate::mmio::write32(dmars_reg(ch) as usize, 0);
     }
 }
@@ -339,7 +338,7 @@ pub unsafe fn register_completion_irq(ch: u8) {
     }
 }
 
-/// Call from the DMAIC completion ISR for channel `ch`.
+/// Call from the DMAINT completion ISR for channel `ch`.
 ///
 /// Wakes any Embassy task waiting in [`wait_transfer_complete`].
 pub fn on_dma_int(ch: u8) {

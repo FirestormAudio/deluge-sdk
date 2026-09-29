@@ -38,7 +38,7 @@
 //! | CMNCR    | 0x000  | Common control. Bit 31 `MD`: 0 = memory-mapped read, 1 = manual SPI. |
 //! | DRCR     | 0x00C  | Data-read (memory-mapped) control. Bit 9 `RCF`: flush read cache. |
 //! | SMCR     | 0x020  | Manual control. `SPIE`(0) start, `SPIWE`(1) write, `SPIRE`(2) read, `SSLKP`(8) keep SSL. |
-//! | SMCMR    | 0x024  | Manual command. `CMD[7:0]` in bits[23:16]. |
+//! | SMCMR    | 0x024  | Manual command. `CMD[7:0]` in bits `[23:16]`. |
 //! | SMADR    | 0x028  | Manual address (flash-relative, 0-based). |
 //! | SMENR    | 0x030  | Manual enable. `CDE`(14) command, `ADE[11:8]` address, `SPIDE[3:0]` data width. |
 //! | SMRDR0   | 0x038  | Manual read data. |
@@ -47,13 +47,12 @@
 //!
 //! ## Interrupts must be masked during a manual-mode operation
 //! While the controller is in manual SPI mode the memory-mapped read window at
-//! `0x1800_0000` stops responding.  The Deluge bootloader found the hard way that
-//! taking an interrupt during this window — specifically the **OLED SPI DMA**
-//! completion interrupt — **freezes the machine** (`DelugeBootloader`
-//! `src/spibsc_init2.c:739`: *"if you `R_INTC_Disable(DMA_INTERRUPT_0 +
-//! OLED_SPI_DMA_CHANNEL)` … that at least saves everything from freezing"*).
-//! The ISR (or a task it wakes) evidently touches the now-dead flash window and
-//! stalls the AHB bus.  So every public erase/program here runs the whole
+//! `0x1800_0000` stops responding.  Taking an interrupt during this window —
+//! specifically the **OLED SPI DMA** completion interrupt — **freezes the
+//! machine** (documented in `DelugeBootloader` `src/spibsc_init2.c`, which masks
+//! `DMA_INTERRUPT_0 + OLED_SPI_DMA_CHANNEL` for the same reason); the ISR (or a
+//! task it wakes) touches the dead flash window and stalls the AHB bus.  So
+//! every public erase/program here runs the whole
 //! `to_manual … to_read_mode` window inside a [`critical_section`] (interrupts
 //! masked); `to_read_mode` restores the read window before interrupts come back,
 //! which is also what lets the OLED work again afterwards.
@@ -63,10 +62,10 @@
 //! `[31:24]`, a 16-bit datum at `[31:16]`; a 32-bit datum is the little-endian
 //! word as-is.  [`read_id`] reports the JEDEC ID; its **density byte** is used to
 //! derive the chip's true size, and every erase/program is bounded against that
-//! size ([`chip_capacity`]) so an out-of-range offset can never *alias* down onto
+//! size (`chip_capacity`) so an out-of-range offset can never *alias* down onto
 //! a reserved sector (a too-large offset on a small part wraps modulo the chip
-//! size — this is what once erased the FSB).  Callers should still read
-//! programmed data back through the memory-mapped window to verify.
+//! size, e.g. onto the FSB).  Callers should still read programmed data back
+//! through the memory-mapped window to verify.
 
 use core::sync::atomic::{AtomicU32, Ordering, compiler_fence};
 
@@ -85,10 +84,8 @@ pub const SPI_FLASH_BASE: u32 = 0x1800_0000;
 /// `FlashMap` carries them so a different part/board is a one-line BSP change.
 ///
 /// Every erase/program goes through [`FlashMap`]'s methods, which refuse any range
-/// not inside one of `writable` (the board's app-writable windows) **and** not
-/// inside the physically present chip ([`in_chip`]).  That keeps the single
-/// write-guard choke point — now keyed on the supplied windows rather than
-/// hardcoded constants.
+/// not inside one of `writable` (the board's app-writable windows) **and** inside
+/// the physically present chip, so the write guard has a single choke point.
 pub struct FlashMap {
     /// Erase-block size in bytes — the granularity of the `0xD8` block erase on
     /// this part.  Erase offsets are rounded down to this, and ranges are erased
@@ -156,8 +153,8 @@ fn chip_capacity() -> u32 {
 /// present flash (using the cached [`chip_capacity`]).
 ///
 /// The chip-size bound is what prevents an out-of-range offset from wrapping
-/// (modulo the chip size) onto a reserved low sector — the failure that erased
-/// the FSB.  It is combined with [`within_windows`] on the normal write path and
+/// (modulo the chip size) onto a reserved low sector such as the FSB.  It is
+/// combined with [`within_windows`] on the normal write path and
 /// is the *only* guard kept on the `unlock-bootloader` forced path (which
 /// deliberately drops the window restriction so a recovery tool can rewrite the
 /// FSB / settings / SSB).  Reads only the cache, so it is safe inside a
@@ -274,7 +271,7 @@ unsafe fn wait_tend() -> bool {
 /// **This is mandatory** — mirrors the reference `spibsc_stop()`
 /// (`DelugeBootloader/src/spibsc_ioset_drv.c`).  Flipping `MD` while SSL is still
 /// asserted wedges the controller: manual transfers never complete, `TEND` never
-/// sets, and reads come back as `0x00` (observed as a JEDEC ID of `00 00 00`).
+/// sets, and reads come back as `0x00` (a JEDEC ID of `00 00 00`).
 /// Bounded so a stuck `SSLF` can't hang.
 #[inline]
 unsafe fn stop() {
@@ -514,8 +511,8 @@ unsafe fn program_page_manual(
 
 /// Read the 3-byte JEDEC ID (`RDID`, 0x9F): manufacturer, memory type, and
 /// **density**.  The density byte gives the chip's true size (`1 << density`
-/// bytes), which [`chip_capacity`] uses to bound every write.  A `00 00 00`
-/// result means manual mode isn't communicating (see [`stop`]); a plausible
+/// bytes), which is used to bound every write.  A `00 00 00` result means
+/// manual mode isn't communicating (the bus was not quiesced); a plausible
 /// non-`00`/`FF` ID confirms the register plumbing.  Runs its manual-mode window
 /// with interrupts masked.
 pub fn read_id() -> [u8; 3] {
@@ -560,8 +557,8 @@ impl FlashMap {
     ///
     /// # Safety
     /// Switches the flash bus out of memory-mapped read mode, so no code may
-    /// execute from flash during the call.  Offsets outside [`self.writable`] are
-    /// refused.
+    /// execute from flash during the call.  Offsets outside
+    /// [`writable`](FlashMap::writable) are refused.
     pub unsafe fn erase_sector(&self, offset: u32) {
         // Probe the chip size *before* entering manual mode (it issues its own
         // RDID); the per-block guard then reads the cached value.
@@ -648,9 +645,8 @@ impl FlashMap {
 // `unlock-bootloader` cargo feature so the capability cannot be linked into normal
 // firmware (or the app-loader) by accident.  The anti-aliasing chip-bounds check
 // ([`in_chip`]) is retained: that is what prevents an out-of-range offset from
-// wrapping onto a low sector, and dropping it is what once erased the FSB.  The
-// caller passes the geometry (which lives in the BSP profile, e.g.
-// `deluge-bsp::flash`).
+// wrapping onto a low sector such as the FSB.  The caller passes the geometry
+// (which lives in the BSP profile, e.g. `deluge-bsp::flash`).
 
 /// Erase every `sector_size`-byte block touched by `[offset, offset+len)`
 /// (flash-relative), **including the protected FSB / settings / SSB regions**.

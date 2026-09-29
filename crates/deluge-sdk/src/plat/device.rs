@@ -1,5 +1,4 @@
-//! Device backend ops (deluge-bsp peripherals). Bodies moved verbatim from the
-//! capability modules' `#[cfg(target_os = "none")]` arms.
+//! Device backend ops (deluge-bsp peripherals).
 use core::convert::Infallible;
 use core::future::poll_fn;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -21,8 +20,7 @@ use embassy_time::{Duration, Ticker};
 use embedded_hal::digital::{OutputPin, StatefulOutputPin};
 use rza1l_hal::gpio::{Output, Pin};
 
-/// Run `f` over every audio block, forever. Body moved verbatim from
-/// `Audio::process`'s `#[cfg(target_os = "none")]` arm.
+/// Run `f` over every audio block, forever.
 pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame]) + Send + 'static>(
     mut f: F,
 ) -> ! {
@@ -31,7 +29,7 @@ pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame]) + Send 
     let mut state = BlockState::new();
     let mut block = [crate::audio::StereoFrame::default(); audio_block::BLOCK_FRAMES];
 
-    // v1: Ticker-paced poll loop. The codec crystal is the effective master
+    // Default: Ticker-paced poll loop. The codec crystal is the effective master
     // (try_read_block skips on underrun / re-anchors on overrun), so OSTM vs
     // codec drift costs at most an occasional one-block glitch.
     #[cfg(not(feature = "audio-irq"))]
@@ -49,7 +47,7 @@ pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame]) + Send 
         }
     }
 
-    // v2: per-block RX DMA interrupt clock — codec-locked, drift-free.
+    // `audio-irq`: per-block RX DMA interrupt clock — codec-locked, drift-free.
     #[cfg(feature = "audio-irq")]
     loop {
         audio_block::wait_block().await;
@@ -95,8 +93,7 @@ pub(crate) async fn leds_gold_knob(knob: u8, brightness: [u8; 4]) {
     pic::set_gold_knob_indicators(knob, brightness).await;
 }
 
-/// PIC UART link speed (matches the demo firmware / PIC power-on baud). Body
-/// moved verbatim from `pic_service`'s `#[cfg(target_os = "none")]` arm.
+/// PIC UART link speed at power-on (`pic::init` then switches to the fast baud).
 const PIC_BAUD: u32 = 31_250;
 
 static PIC_STARTED: AtomicBool = AtomicBool::new(false);
@@ -122,9 +119,9 @@ pub(crate) fn pic_ensure_started(spawner: Spawner) {
 
 /// PIC RX pump: configure the PIC, then forward decoded events.
 ///
-/// Currently it routes only the OLED chip-select echoes that
-/// [`oled::send_frame`](deluge_bsp::oled::send_frame) waits on. Input routing
-/// (pads/buttons/encoders) is added alongside the `input()` capability.
+/// OLED chip-select echoes go to the waiters in
+/// [`oled::send_frame`](deluge_bsp::oled::send_frame); pad and button events go
+/// to the input queue.
 #[embassy_executor::task]
 async fn pic_pump() {
     // Configures debounce/refresh, switches to the fast baud, and signals
@@ -203,8 +200,8 @@ pub(crate) fn midi_try_recv() -> Option<u8> {
 
 pub(crate) fn clock_in_init() {
     // SAFETY: runs once. Registers the P1_14/IRQ6 handler and enables the
-    // GIC line. Registering lazily here (after global IRQ enable) matches
-    // the proven `input()`/encoder precedent.
+    // GIC line. Registered lazily, after interrupts are enabled, as the
+    // encoder IRQs are in `input_start_pump`.
     unsafe { trigger_clock::irq_init() };
 }
 pub(crate) async fn clock_in_wait_edge() -> u64 {

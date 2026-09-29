@@ -1,10 +1,9 @@
-//! Task 2.1: the debug agent hits a line breakpoint.
+//! The debug agent hits a line breakpoint.
 //!
 //! `agent::debug_run` spawns a deluge VM (bindings + prelude, debugger
 //! attached) on its own thread and hands back the `DebugSession` controller
-//! immediately. This proves the whole path — VM boot, debugger install,
-//! interpret — actually parks the VM thread at the requested source line,
-//! rather than just compiling.
+//! immediately. This checks the whole path — VM boot, debugger install,
+//! interpret — parks the VM thread at the requested source line.
 
 mod common;
 

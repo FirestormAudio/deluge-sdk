@@ -969,8 +969,8 @@ mod tests {
         // The phdr table of a real RTT-enabled firmware ELF (sd-bench, rustc
         // 1.8x + lld): 7 PT_LOAD — including filesz-0 BSS segments and one
         // addressed via the 0x4000_0000 uncached mirror — plus trailing
-        // GNU_STACK and ARM_EXIDX. 9 phdrs total; the loader must not reject
-        // a table merely because non-LOAD entries push it past 8.
+        // GNU_STACK and ARM_EXIDX: 9 phdrs total, all of which count toward
+        // `MAX_PHDRS`.
         const PT_GNU_STACK: u32 = 0x6474_E551;
         const PT_ARM_EXIDX: u32 = 0x7000_0001;
         let front = elf_front(

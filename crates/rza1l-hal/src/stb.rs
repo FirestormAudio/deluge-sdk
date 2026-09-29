@@ -1,11 +1,11 @@
 //! CPG Standby Control Register (STBCR) initialisation for RZ/A1L.
 //!
-//! Enables the module clocks for all peripherals used by the Deluge firmware
-//! by writing CPG.STBCR2–STBCR12.  This is a direct port of `STB_Init()` in
+//! Enables peripheral module clocks by writing CPG.STBCR2–STBCR12 with a
+//! board-supplied [`StbConfig`]; a port of `STB_Init()` in the C BSP's
 //! `src/RZA1/stb/stb.c`.
 //!
 //! In CPG STBCRn, a **0 bit enables** (clock running) and a **1 bit stops**
-//! (clock gated).  The values below are taken unchanged from the C BSP.
+//! (clock gated).
 //!
 //! ## CPG register addresses (RZ/A1L Hardware Manual §10)
 //! CPG struct base: 0xFCFE_0010 (FRQCR).
@@ -40,11 +40,8 @@ const STBCR12: usize = 0xFCFE_0444;
 /// Board-specific clock-gate configuration for CPG.STBCR2–STBCR12.
 ///
 /// Each field maps directly to the corresponding STBCR register (0 bit =
-/// clock running, 1 bit = clock stopped).  Pass a value of this struct to
-/// [`init`] rather than editing the HAL directly.
-///
-/// See the per-register documentation in the source of this module for
-/// bit-field descriptions.
+/// clock running, 1 bit = clock stopped); see RZ/A1L HW Manual §10 for the
+/// module assigned to each bit.
 pub struct StbConfig {
     pub stbcr2: u8,
     pub stbcr3: u8,

@@ -42,12 +42,10 @@
 //!
 //! ## ISR wiring
 //!
-//! You must call `dcd_int_handler` (device mode) or `hcd_int_handler` (host
-//! mode) from your GIC interrupt dispatcher:
-//!
-//! Both handlers take the port number.  A firmware that only ever runs one
-//! mode can call that handler directly; one that switches at runtime dispatches
-//! on a flag, as below.
+//! Call `dcd_int_handler` (device mode) or `hcd_int_handler` (host mode) from
+//! your GIC interrupt dispatcher; both take the port number.  Firmware that
+//! only ever runs one mode can call that handler directly; firmware that
+//! switches at runtime dispatches on a flag, as below.
 //!
 //! ```rust,no_run
 //! use core::sync::atomic::{AtomicBool, Ordering};
@@ -293,8 +291,8 @@ pub unsafe fn init_device_mode(port: u8) -> (UsbPort<Device>, Rusb1Driver) {
 /// Enable the USB clock, initialise the RUSB1 hardware in **host** mode, and
 /// return an ownership handle plus the [`Rusb1HostDriver`].
 ///
-/// The driver implements [`embassy_usb_driver::host::UsbHostDriver`] and is
-/// ready to be wrapped in `embassy_usb_host::UsbHost` for enumeration.
+/// The driver implements [`embassy_usb_driver::host::UsbHostController`] and
+/// is ready to hand to `embassy_usb_host::bus` for enumeration.
 ///
 /// # Safety
 /// Must only be called once per port.

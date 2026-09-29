@@ -1,9 +1,8 @@
 //! Procedural macros for the Deluge SDK.
 //!
-//! The only macro today is [`macro@app`], which turns a plain `async fn main`
-//! into a complete firmware entry point — absorbing the platform bring-up
-//! (heaps, clocks, interrupts, executor) and the panic handler that an app
-//! author would otherwise hand-write.
+//! [`macro@app`] turns a plain `async fn main` into a complete entry point,
+//! absorbing the platform bring-up (heaps, clocks, interrupts, executor) and the
+//! panic handler that an app author would otherwise hand-write.
 
 use proc_macro::TokenStream;
 use quote::quote;
@@ -39,10 +38,12 @@ use syn::{parse_macro_input, FnArg, ItemFn};
 /// ```
 ///
 /// ## What it expands to
-/// - an Embassy task wrapping the function body,
-/// - `extern "C" fn main` that runs `deluge::__rt::run(setup, spawn)` (logging →
-///   heaps + clocks → `setup` → enable interrupts → executor), and
-/// - a `#[panic_handler]`.
+/// - an Embassy task wrapping the function body;
+/// - on the device, `extern "C" fn main` that runs `deluge::__rt::run(setup,
+///   spawn)` (logging → heaps + clocks → `setup` → enable interrupts →
+///   executor), and a `#[panic_handler]`;
+/// - on the host, a plain `fn main` handing off to the simulator (`sim`
+///   feature) or Linux (`linux` feature) runtime.
 #[proc_macro_attribute]
 pub fn app(args: TokenStream, item: TokenStream) -> TokenStream {
     // Parse optional `setup = path` from the attribute arguments.

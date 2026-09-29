@@ -21,17 +21,16 @@ pub(crate) mod mock;
 /// Maximum concurrently hosted MIDI devices.
 ///
 /// Bounded by the RUSB1 host pipe budget. RX pipes are dedicated per device
-/// (USB is host-polled, so a receive must be armed to catch unsolicited MIDI),
-/// while TX shares one pipe once OUT-pipe multiplexing lands in the HAL. With
-/// bulk pipe 1 reserved for shared TX, bulk RX has pipes 2-5 — **4 devices**.
+/// (USB is host-polled, so a receive must be armed to catch unsolicited MIDI).
+/// With bulk pipe 1 reserved for a shared TX pipe, bulk RX has pipes 2-5 —
+/// **4 devices**. The HAL does not yet multiplex OUT pipes, so TX currently
+/// takes a dedicated pipe per device too and the practical ceiling is lower
+/// (~2 bidirectional devices).
 ///
-/// The original firmware reaches 6 by also servicing MIDI devices that use
+/// The C firmware reaches 6 by also servicing MIDI devices that use
 /// *interrupt* endpoints on RX pipes 7-8 (`USB_CFG_HMIDI_INT_RECV_MIN/MAX`).
-/// [`midi::find_midi_interface`] only claims bulk endpoints, so that last 2 is
-/// not available here; interrupt-endpoint MIDI is a documented follow-up.
-///
-/// Until OUT-pipe multiplexing lands, TX also consumes a dedicated pipe, so the
-/// practical ceiling is lower still (~2 bidirectional devices).
+/// [`midi::find_midi_interface`] only claims bulk endpoints, so those two are
+/// not available here. TODO: support interrupt-endpoint MIDI.
 pub const MAX_MIDI_DEVICES: usize = 4;
 
 /// Depth of the merged RX channel, in event packets.
@@ -244,11 +243,10 @@ mod runtime {
                 );
                 // Capture the channel count before `host` moves into the
                 // task, and only call `shared::begin` once the spawn actually
-                // succeeds. If a 2nd concurrent UAC device hits a full task
+                // succeeds. If a second concurrent UAC device hits a full task
                 // pool, `begin` must not run: it resets the shared ring and
-                // overwrites `channels`, which would corrupt state for a
-                // FIRST device that is still streaming — with no rollback,
-                // since nothing was mutated on this path in the first place.
+                // overwrites `channels`, corrupting the state of the first
+                // device, which is still streaming.
                 let ch = host.channels();
                 let play_ch = host.playback_channels();
                 match uac_capture_task(host) {
@@ -405,7 +403,7 @@ mod runtime {
                 Either::Second(p) => {
                     if let Err(e) = host.write(&[p]).await {
                         // A send error is normal when a device attaches or
-                        // detaches from a hub mid-traffic — the original
+                        // detaches from a hub mid-traffic — the C
                         // firmware logs and continues rather than dropping the
                         // device (midi_engine.cpp:128-135). Do the same.
                         warn!("usb_host: device {:?} write error: {:?}", id, e);
@@ -467,10 +465,9 @@ mod runtime {
                     Err(RegisterError::NoSupportedInterface) => {
                         // Not a hub — fall through to the MIDI matcher, then
                         // UAC. MIDI binding takes precedence: a composite
-                        // audio+MIDI device that binds as MIDI will not have
-                        // its audio captured in Phase 1. Pure UAC audio
-                        // devices fail `bind_midi` and fall through to
-                        // `bind_uac`.
+                        // audio+MIDI device that binds as MIDI does not have
+                        // its audio captured. Pure UAC audio devices fail
+                        // `bind_midi` and fall through to `bind_uac`.
                         match ConfigurationDescriptor::try_from_slice(&config_buf) {
                             Ok(cfg) => {
                                 if !bind_midi(&handle, spawner, &dev_info, &cfg) {

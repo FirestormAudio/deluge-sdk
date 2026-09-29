@@ -1,10 +1,9 @@
 //! Pure memory-system math shared by the (bare-metal-only) `cache` and `mmu`
 //! modules: L1 cache-line range planning and the MMU section-descriptor table.
 //!
-//! `cache` and `mmu` are `#[cfg(target_os = "none")]` (they issue CP15 / asm),
-//! so their arithmetic could not otherwise be unit-tested. This module has no
-//! hardware dependencies, so it compiles and tests on the host/QEMU target and
-//! is the single source of truth both gated modules call into.
+//! `cache` and `mmu` are `#[cfg(target_os = "none")]` (they issue CP15 / asm);
+//! this module has no hardware dependencies, so their arithmetic compiles and
+//! is unit-tested on the host.
 //!
 //! The MMU area table mirrors the RZ/A1L address map (HW manual ch.5,
 //! "Address space"); the cache-line size is the Cortex-A9 fixed 32-byte line.
@@ -121,7 +120,7 @@ pub const PARA_NORMAL_CACHE: u32 = 0x1DEE;
 
 /// Area table — `(size_in_mb, attribute)` low → high address, mirroring the
 /// RZ/A1L address map (HW manual ch.5). The sizes sum to 4096 (a full 4 GB of
-/// 1 MB sections); see [`AREAS_FILL_4GB`] in the tests.
+/// 1 MB sections), checked by the `areas_fill_exactly_4gb` test.
 pub const AREAS: &[(u32, u32)] = &[
     (128, PARA_NORMAL_CACHE),      // area  0  CS0/CS1 NOR flash      0x0000_0000
     (128, PARA_NORMAL_CACHE),      // area  1  CS2/CS3 SDRAM          0x0800_0000

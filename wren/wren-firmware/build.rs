@@ -42,11 +42,11 @@ fn main() {
     println!("cargo:rerun-if-changed=memory.x");
     println!("cargo:rerun-if-changed=memory_rtt.x");
 
-    // ── newlib (libc/libm) for crow's embedded Lua VM ───────────────────────
+    // ── newlib (libc/libm) for the wren C VM ────────────────────────────────
     // rust-lld is the linker (no override for armv7a-none-eabihf), so the
     // archives and group markers are passed straight through as lld args.
     // Note: libgcc is intentionally omitted — Rust's compiler-builtins already
-    // provides the __aeabi_* integer-div/helper intrinsics the Lua C code needs
+    // provides the __aeabi_* integer-div/helper intrinsics the wren C code needs
     // on the A9, and pulling libgcc drags in its ARM EH unwinder (references to
     // __exidx_start/_end that this bare-metal image doesn't define).
     // newlib-nano stubs out float in printf/sprintf by default; wren formats

@@ -29,11 +29,10 @@ That means:
 
 ## 1. Prerequisites
 
-This guide assumes your Deluge is already set up to run apps. If it isn't — or
-you're starting from a fresh clone — do the one-time
-[**Device setup**](device-setup.md) first; it's the single source of truth for
-flashing the app-loader, preparing the SD card, and the full toolchain. The
-checklist you need here:
+This guide assumes your Deluge is already set up to run apps. If it isn't,
+install the app-loader first — see the
+[App Loader Manual](app-loader.md#installing-the-loader). The checklist you need
+here:
 
 - **Rust toolchain** — pinned in [`rust-toolchain.toml`](../rust-toolchain.toml);
   `rustup show` installs it on first run (nightly + the `armv7a-none-eabihf`
@@ -42,13 +41,14 @@ checklist you need here:
   you never touch `-Zbuild-std`, linker flags, or the target triple by hand:
   `cargo install --path tools/cargo-deluge`.
 - **A Deluge running the app-loader** — the on-device menu that launches your
-  app ELFs. Flashing it is the one-time [Device setup](device-setup.md) step
-  (see [`firmwares/app-loader/README.md`](../firmwares/app-loader/README.md) for its internals).
+  app ELFs. Flashing it is a one-time step
+  ([Installing the loader](app-loader.md#installing-the-loader); see
+  [`firmwares/app-loader/README.md`](../firmwares/app-loader/README.md) for its internals).
 - **DEV MODE: ON** — required for `cargo deluge run`'s USB upload. On the boot
   menu, select **`SETTINGS`**, then press SELECT on **`DEV MODE: OFF`** to flip it
   to **`DEV MODE: ON`**, and choose **`BACK`** to save (persistent,
   default-off, survives reboots). Without it, deploy to the SD card's `/APPS/`
-  instead — see [Device setup → Build and install an app](device-setup.md#7-build-and-install-an-app).
+  instead with `cargo deluge deploy`.
 
 ---
 
@@ -75,18 +75,22 @@ the wrong port.
 myapp/
 ├── Cargo.toml            # depends on `deluge` + embassy-executor/-time
 ├── rust-toolchain.toml   # pinned nightly + armv7a-none-eabihf
-├── .cargo/config.toml    # target triple, Cortex-A9/NEON flags, -Zbuild-std=core
+├── .cargo/config.toml    # target triple, Cortex-A9/NEON flags
 ├── build.rs              # selects the memory layout / linker script
 ├── memory.x              # default layout
 ├── memory_rtt.x          # layout with the RTT buffer reserved
+├── rza1_debug.JLinkScript
+├── .vscode/              # rust-analyzer settings, cargo deluge tasks, J-Link debug config
 └── src/main.rs           # a working blinky
 ```
 
 The generated `src/main.rs`:
 
 ```rust
-#![no_std]
-#![no_main]
+// `no_std`/`no_main` only on the device; `cargo deluge sim` builds the same
+// source as a normal std binary for the desktop simulator.
+#![cfg_attr(target_os = "none", no_std)]
+#![cfg_attr(target_os = "none", no_main)]
 // Required by the Embassy task the `#[deluge::app]` macro generates.
 #![feature(impl_trait_in_assoc_type)]
 
@@ -127,6 +131,9 @@ Every app crate root needs these:
 | `#![no_main]` | The macro provides the real `extern "C" fn main`. |
 | `#![feature(impl_trait_in_assoc_type)]` | Required by the Embassy task the macro expands to. |
 | `use deluge::prelude::*;` | Brings in the macro, the `Deluge` handle, all capability types, `controls`, `Color`, `Event`, and the `log` macros. |
+
+The scaffold writes the first two as `#![cfg_attr(target_os = "none", …)]`, so the
+same source also builds as a normal host binary for the desktop simulator.
 
 ### The entry point
 
@@ -351,7 +358,8 @@ The toolkit needs a global allocator, so an app that uses it must:
 
 - enable the `deluge` crate's **`alloc`** feature (registers the on-chip SRAM
   heap), and
-- build with `-Zbuild-std=core,alloc` (the `cargo build-fw-alloc` alias in-repo).
+- build with `-Zbuild-std=core,alloc` (`cargo deluge build` and the in-repo
+  `cargo build-fw` alias both do).
 
 Remember this makes your app **GPL-3.0** (see [Licensing](#getting-started-with-the-deluge-sdk)).
 
@@ -384,7 +392,10 @@ All features are **off by default**.
 | `usb-log` | Route `log` to a USB CDC serial port (no probe). | Wins over `rtt` (one logger). |
 | `rtt` | SEGGER RTT logging over a debug probe. | Reserves SRAM (uses `memory_rtt.x`). |
 | `audio-irq` | Drift-free, DMA-clocked audio (same `process()` API). | — |
-| `alloc` | Register the on-chip SRAM heap as the global allocator (needed by the GPL UI toolkit). | Needs `-Zbuild-std=core,alloc` (`cargo build-fw-alloc`). |
+| `alloc` | Register the on-chip SRAM heap as the global allocator (needed by the GPL UI toolkit). | Needs `-Zbuild-std=core,alloc` (`cargo deluge build` and `cargo build-fw` already pass it). |
+| `usb-serial` | Take USB0 as your own CDC-ACM serial device via `Deluge::usb_serial`. | Device-only; can't be combined with `usb-log` at runtime. |
+| `sim` | Desktop-simulator backend (see [the simulator guide](simulator.md)). | Host builds only. |
+| `linux` | Run on the Deluge's Linux userland through `libdeluge`. | Built with `cargo deluge linux`. |
 
 Enable them on the `deluge` dependency, e.g. `deluge = { ..., features = ["usb-log"] }`,
 or via your app's own feature that forwards to `deluge/<feature>` (the scaffold
@@ -396,15 +407,19 @@ already wires up `rtt` this way).
 
 | Command | What it does |
 |---------|--------------|
+| `cargo deluge new <name>` | Scaffold a new app crate. |
 | `cargo deluge build [--release]` | Build the current app crate → ELF. |
 | `cargo deluge run [--release] [--port <p>] [--log]` | Build, then upload the ELF over USB and launch it from RAM (requires **DEV MODE: ON** on the unit). `--port` overrides port auto-detection; `--log` tails the app's USB log after launch. |
 | `cargo deluge deploy [--release] --dest <sd-mount>` | Build, then copy the ELF to `<sd-mount>/APPS/<name>.elf` (omit `--dest` to print how to deploy by hand). |
+| `cargo deluge log [--port <p>]` | Stream a running app's USB serial log (`usb-log` feature). |
+| `cargo deluge sim [--release] [--headless …]` | Build for the host and run the app in the [desktop simulator](simulator.md). |
+| `cargo deluge linux [opts]` | Build for the Deluge's Linux userland and pack a bootable image (needs `DELUGE_BASE` set to an unpacked bundle; see `cargo deluge help`). |
 | `cargo deluge debug [--release] [-- <args>]` | Build, then `probe-rs run` over J-Link (chip preset to `R7S721020`). Needs the `trace-a9` probe-rs fork. |
 | `cargo deluge trace [--release] [--flow] [--duration-ms N] [-- <args>]` | Build, then `probe-rs read-trace` (Cortex-A9 PTM trace). `--flow` for the compact execution-flow view, else decoded packets. |
 
-The ELF lands in `target/armv7a-none-eabihf/{debug,release}/<name>`. Because the
-scaffold ships its own `.cargo/config.toml`, a plain `cargo build` works inside
-your app crate too.
+The ELF lands in `target/armv7a-none-eabihf/{debug,release}/<name>`. The
+scaffold's `.cargo/config.toml` selects the target and CPU flags; `cargo deluge
+build` adds the `-Zbuild-std` flags the bare-metal target needs.
 
 **In-repo examples** build through the workspace aliases instead:
 
@@ -417,9 +432,8 @@ cargo build-fw -p blinky        # debug ELF for one example
 
 ## 10. Troubleshooting
 
-App and runtime issues are below; for setup/flashing problems (no boot menu,
-`objcopy` errors, app missing from the menu) see
-[Device setup → Troubleshooting](device-setup.md#9-troubleshooting).
+App and runtime issues are below; for loader problems (no boot menu, app
+missing from the menu) see the [App Loader Manual](app-loader.md#recovery).
 
 - **Panic: `… called more than once`** — a capability accessor was taken twice;
   acquire each handle once and pass it around.
@@ -429,7 +443,7 @@ App and runtime issues are below; for setup/flashing problems (no boot menu,
 - **`cargo deluge debug`/`trace` say `probe-rs not found`** — install the
   `trace-a9` fork (the command prints the two-line install).
 - **UI toolkit won't link / allocation errors** — enable the `alloc` feature and
-  build with `cargo build-fw-alloc` (`-Zbuild-std=core,alloc`).
+  build with `-Zbuild-std=core,alloc` (`cargo deluge build` does this).
 - **No log output** — pick a logger feature (`usb-log` or `rtt`); without one the
   `log` macros are no-ops.
 - **Audio glitches / `audio()` blocks at startup** — acquire `audio()` (and
@@ -459,7 +473,8 @@ App and runtime issues are below; for setup/flashing problems (no boot menu,
 - **Going deeper** — the [Advanced developer guide](advanced-guide.md) covers
   Embassy tasks, interrupts/GIC, SDRAM allocation, dropping to the HAL/BSP, audio
   internals, and the Cortex-A9 probe-rs trace/PMU tooling.
-- **Design rationale** — [`docs/dev/deluge-sdk.md`](dev/deluge-sdk.md).
+- **No hardware?** — the [desktop simulator](simulator.md) runs the same app on
+  your computer.
 - **Lower layers** — the board support package
   ([`crates/deluge-bsp`](../crates/deluge-bsp/README.md)) and HAL
   ([`crates/rza1l-hal`](../crates/rza1l-hal/README.md)) are re-exported from

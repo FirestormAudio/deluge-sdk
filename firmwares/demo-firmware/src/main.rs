@@ -43,11 +43,11 @@ use rza1l_hal::usb::{
 // USB mode selection
 // ---------------------------------------------------------------------------
 
-/// Set to `true` before `setup()` registers the ISR to start USB0 in host mode
-/// instead of device mode. Switching at runtime requires quiescing the port,
-/// calling `UsbPort::into_device_mode` / `UsbPort::into_host_mode`, and updating
-/// this flag under an IRQ-disabled critical section. The ISR dispatcher reads
-/// this on every interrupt.
+/// When `true` at boot, USB0 starts in host mode instead of device mode. The
+/// ISR dispatcher reads this on every interrupt. Switching at runtime requires
+/// quiescing the port, calling `UsbPort::into_device_mode` /
+/// `UsbPort::into_host_mode`, and updating this flag under an IRQ-disabled
+/// critical section.
 static USB0_HOST_MODE: AtomicBool = AtomicBool::new(false);
 
 // ---------------------------------------------------------------------------
@@ -179,11 +179,9 @@ async fn main(dlg: Deluge) {
 
             // Allocate the UAC2 speaker + mic interfaces.
             // CAPTURE_CH=2: stereo ISO IN, matching the stereo SSI codec and the
-            // stereo packing in uac2_mic_task.  (Was 8, which both mis-declared
-            // the channel count and made the ISO IN maxpacket 49*8*3=1176 B —
-            // over the 1024 B high-speed ISO limit, so the host rejected/clamped
-            // it and capture failed.  Stereo → 49*2*3=294 B, valid.)  ISO OUT is
-            // always stereo.
+            // stereo packing in uac2_mic_task.  (Stereo 24-bit needs a 294 B ISO
+            // IN maxpacket; eight channels would need 1176 B, over the 1024 B
+            // high-speed ISO limit.)  ISO OUT is always stereo.
             let (audio_instance, ep_out, ep_in) =
                 deluge_bsp::usb::classes::audio::AudioClass::<2>::new(&mut builder, 288);
             // Store in a `'static` slot so the `&'static mut` reference satisfies

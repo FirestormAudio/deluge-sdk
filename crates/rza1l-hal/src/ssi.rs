@@ -13,6 +13,8 @@
 //!
 //!
 //! ## DMA layout
+//! Channels come from [`SsiConfig`]; the Deluge uses:
+//!
 //! | Channel | Direction       | GIC IRQ |
 //! |---------|-----------------|---------|
 //! | DMA 6   | SRAM → SSIFTDR  | 47      |
@@ -92,9 +94,8 @@ const SSITDMR_OFF: usize = 0x20; // TDM mode register
 //   - SCKP=SWSP=SPDP=SDTA=PDTA=DEL=0 (all defaults)
 //   - CKDV=0010 (7:4)  : AUDIO_X1 ÷ 4 = 5.6448 MHz BCLK
 //
-// NOTE: the previously-used value 0x003B_C020 had DWL=7 (prohibited). The
-// correct Deluge SSICR value is 0x002B_C020 (DWL bits [21:19] = 0b101 = 24-bit),
-// held in `deluge_bsp::system::SSI_CONFIG.ssicr`.
+// The Deluge value is 0x002B_C020 (DWL bits [21:19] = 0b101 = 24-bit; DWL=0b111
+// is prohibited), held in `deluge_bsp::system::SSI_CONFIG.ssicr`.
 
 /// SSIFCR bit positions (verified against vendor/rbsp ssif.h SSIF_FCR_SHIFT_*).
 const SSIFCR_RFRST: u32 = 1 << 0; // RX FIFO reset (active high)
@@ -115,7 +116,7 @@ const SSICR_TEN: u32 = 1 << 1; // Transmit enable
 const SSITDMR_CONT: u32 = 1 << 8;
 
 /// SSIFCR bits [7:6]: TTRG — TX trigger level (0b10 = assert DMA request when ≥ 4 TX FIFO
-/// stages are empty).  BSP: `SSI_SSIFCR_TTRG_INIT_VALUE = 0x000000A0` (Rohan).
+/// stages are empty).  BSP: `SSI_SSIFCR_TTRG_INIT_VALUE = 0x000000A0`.
 const SSIFCR_TTRG_4: u32 = 0b10 << 6; // = 0x80
 /// SSIFCR bits [5:4]: RTRG — RX trigger level (0b10 = assert DMA request when ≥ 4 RX FIFO
 /// stages have been filled).
@@ -198,7 +199,9 @@ const DESC_HEADER: u32 = 0b1101;
 const STEREO_FRAME_ALIGN_MASK: u32 = !7u32;
 
 // CHCFG values for the two SSI DMA channels, composed from named field constants.
-// Reference: C BSP `drivers/ssi/ssi.c` link-descriptor initialisers:
+// For reference, the C BSP `drivers/ssi/ssi.c` link-descriptor initialisers
+// (which also set DEM, masking the end interrupt; `tx_chcfg`/`rx_chcfg` leave
+// it clear):
 //
 //   TX: DMS | DEM | DAD | DDS_32BIT | SDS_32BIT | AM_BURST | HIEN | REQD | LVL | sel
 //       = 0x8000_0000 | 0x0100_0000 | 0x0020_0000 | 0x0002_0000 | 0x0000_2000
@@ -283,7 +286,7 @@ fn ssi_reg(off: usize) -> *mut u32 {
 /// and captures the codec's output into the RX sample buffer, indefinitely.
 ///
 /// **Call order requirements:**
-/// 1. `rza1::stb::init()` — enables the SSIF0 module clock.
+/// 1. [`crate::stb::init`] — enables the SSIF0 module clock.
 /// 2. Board audio pin-mux setup (done by `deluge_bsp::audio::init`).
 /// 3. `ssi::init()` — this function.
 /// 4. 5 ms hardware delay for codec power-on (done by `deluge_bsp::audio::init`).
@@ -385,14 +388,14 @@ const RX_RING_DESCS: usize = RX_FRAMES / RX_IRQ_BLOCK_FRAMES;
 /// Descriptor ring for the block-IRQ RX path (one per [`RX_IRQ_BLOCK_FRAMES`]).
 static mut RX_RING: [LinkDesc; RX_RING_DESCS] = [const { LinkDesc([0u32; 8]) }; RX_RING_DESCS];
 
-/// Like [`init`] but the RX DMA uses a ring of [`RX_RING_DESCS`] descriptors
+/// Like [`init`] but the RX DMA uses a ring of `RX_FRAMES / RX_IRQ_BLOCK_FRAMES` descriptors
 /// (each [`RX_IRQ_BLOCK_FRAMES`] long, with the END interrupt **enabled**) that
 /// tile the *same* contiguous `RX_BUF`. The RX DMAINT therefore fires once per
 /// block instead of once per full buffer, giving an interrupt-driven block clock
 /// ([`crate::dmac::register_block_irq`] / [`crate::dmac::wait_block`]).
 ///
-/// Because the descriptors tile one contiguous buffer, `rx_current_ptr` (CRDA)
-/// still sweeps linearly — existing readers are unaffected. TX is the same single
+/// Because the descriptors tile one contiguous buffer, [`rx_current_ptr`] (CRDA)
+/// still sweeps linearly, exactly as with [`init`]. TX is the same single
 /// self-referential descriptor as [`init`].
 ///
 /// # Safety
@@ -466,8 +469,8 @@ pub unsafe fn init_block_irq(cfg: &SsiConfig) {
 /// SSIF0 transmitter.
 ///
 /// Performs the same SSI hardware reset and register setup as [`init`], then
-/// starts **only** the RX DMA (ch 7) and enables only the RX FIFO and REN.
-/// The TX DMA (ch 6), TX FIFO, and TEN bit are left untouched so that the
+/// starts **only** the RX DMA channel and enables only the RX FIFO and REN.
+/// The TX DMA channel, TX FIFO, and TEN bit are left untouched so that the
 /// SCUX can drive SSIF0 TX via its own direct-drive path without conflict.
 ///
 /// # Safety
@@ -598,16 +601,17 @@ pub fn rx_buf_end() -> *const i32 {
 
 /// Returns the DMA channel number assigned to the SSI RX path.
 ///
-/// Valid after [`init`] or [`init_rx_only`] has been called.  Used by the
-/// firmware to register a GIC completion handler (DMAINT = 41 + ch).
+/// Valid after [`init`], [`init_block_irq`] or [`init_rx_only`] has been
+/// called.  Used by the firmware to register a GIC completion handler
+/// (DMAINT = 41 + ch).
 pub fn rx_dma_ch() -> u8 {
     RX_DMA_CH_ACTIVE.load(core::sync::atomic::Ordering::Relaxed)
 }
 
 /// Returns the DMA channel number assigned to the SSI TX path.
 ///
-/// Valid after [`init`] has been called.  Used by the firmware to register a
-/// GIC completion handler (DMAINT = 41 + ch).
+/// Valid after [`init`] or [`init_block_irq`] has been called.  Used by the
+/// firmware to register a GIC completion handler (DMAINT = 41 + ch).
 pub fn tx_dma_ch() -> u8 {
     TX_DMA_CH_ACTIVE.load(core::sync::atomic::Ordering::Relaxed)
 }
@@ -665,7 +669,7 @@ mod tests {
 
     #[test]
     fn tx_and_rx_chcfg_share_format_but_differ_in_direction() {
-        // Both 32-bit burst transfers with high-priority + level trigger.
+        // Both 32-bit burst transfers triggered by a high-level DMA request (HIEN + LVL).
         let common = CHCFG_DDS_32BIT | CHCFG_SDS_32BIT | CHCFG_AM_BURST | CHCFG_HIEN | CHCFG_LVL;
         assert_eq!(tx_chcfg(0) & common, common);
         assert_eq!(rx_chcfg(0) & common, common);

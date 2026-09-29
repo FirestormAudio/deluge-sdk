@@ -33,12 +33,13 @@ at runtime rather than compiled in.
 | `stb`         | CPG Standby Control Register (STBCR2–STBCR12) init — ungate module clocks for all required peripherals via a `StbConfig` struct. |
 | `gic`         | ARM GIC-400 (GICD/GICC) driver. `gic::init` → `gic::register(id, handler)` → `gic::enable(id)`. The IRQ assembly shim calls `gic::dispatch`. |
 | `bsc`         | Bus State Controller CS0/CS1 timing (NOR flash). |
+| `memmap`      | Pure memory-map and cache-line arithmetic shared by `mmu` and `cache` (host-testable). |
+| `mmio`        | Memory-mapped I/O seam: `Reg8` / `Reg16` / `Reg32` handles and `read32` / `write32`; volatile on the device, a shadow memory with an access log in host tests. |
 
 ### Memory
 
-| Module      | Description |
-|-------------|-------------|
-| `allocator` | Two independent `linked_list_allocator`-backed heaps: `allocator::SRAM` and `allocator::SDRAM`. Each is protected by a critical-section lock. Call `CsHeap::init` once during startup before any allocation in that arena. |
+The SRAM and SDRAM heaps live in the separate
+[`deluge-alloc`](../deluge-alloc/README.md) crate.
 
 The RZ/A1L provides **uncached mirror aliases** of SRAM and SDRAM at
 `physical_address + 0x4000_0000` (see `UNCACHED_MIRROR_OFFSET`). DMA-shared
@@ -49,8 +50,9 @@ without explicit cache maintenance.
 
 | Module        | Description |
 |---------------|-------------|
-| `ostm`        | OS Timer — two 32-bit channels clocked from P0 (33.33 MHz). Supports free-running and interval modes. Used as the Embassy time-driver tick source. |
+| `ostm`        | OS Timer — two 32-bit channels clocked from P0φ (33.064 MHz on the Deluge). Supports free-running and interval modes. Used as the Embassy time-driver tick source. |
 | `time_driver`  | Embassy `time-driver` implementation backed by OSTM0 (free-running) + OSTM1 (alarm). |
+| `time_math`   | Pure tick/µs conversion and wrap arithmetic behind `time_driver` (host-testable). |
 | `mtu2`        | Multi-Function Timer Pulse Unit 2 — five 16-bit channels. Used for bare-metal timing where OSTM is unavailable. |
 
 ### DMA
@@ -67,7 +69,7 @@ documented in each peripheral module.
 | Module | Description |
 |--------|-------------|
 | `ssi`  | SSIF (I²S) stereo 44.1 kHz driver. TX and RX each run in self-referential circular link-descriptor DMA mode so the hardware re-arms automatically. Buffer pointers and current-position helpers are exposed for the audio task. |
-| `scux` | Sample Rate Conversion Unit — FFD (CPU→SCUX), IPC, 2SRC (async SRC), DVU (digital volume), MIX, OPC, FFU (SCUX→CPU) blocks. Exposes `init_ffd_dma`, `init_ffu_dma`, `set_volume`, `set_src_ratio`, etc. |
+| `scux` | Sample Rate Conversion Unit — FFD (CPU→SCUX), IPC, 2SRC (async SRC), DVU (digital volume), MIX, OPC, FFU (SCUX→CPU) blocks. Exposes `init_ffd_dma`, `init_ffu_dma`, `set_volume`, etc. |
 
 ### Peripherals
 
@@ -76,8 +78,10 @@ documented in each peripheral module.
 | `sdhi`  | SD Host Interface — two ports (SDHI0/SDHI1). Async `send_cmd`, `read_blocks_sw` / `write_blocks_sw` (PIO with `AtomicWaker`), `read_blocks_dma` / `write_blocks_dma` (DMAC-backed), and polling variants for use outside the executor. |
 | `uart`  | SCIF async serial — five channels (SCIF0–4). TX via TXI interrupts; RX via DMA ring buffer (`init_dma_rx`) or interrupt (`register_txi_for`). |
 | `rspi`  | SPI master (RSPI0–4). 32-bit frame mode; interrupt-driven transfer-complete. Used for CV DAC and OLED. |
-| `gpio`  | GPIO port registers (P1–P11, PMC0–PMC11). `set_pin_mux`, `set_output`, `read_input`. Implements `embedded-hal` `InputPin` / `OutputPin`. |
-| `usb` | RUSB1 USB 2.0 dual-role driver: chip plumbing (bases, IRQs, STBCR7 clock gates) plus full `embassy-usb-driver` **device** (`usb::driver`) and **host** (`usb::host`) implementations over shared `regs`/`fifo`/`pipe` layers. `usb::init_device_mode(port)` / `usb::init_host_mode(port)` are the entry points. USB *class* code (UAC2/MIDI/MSC/BOT) stays in `deluge_bsp::usb`, which re-exports this module. |
+| `gpio`  | GPIO port registers (P1–P11, PMC0–PMC11). `set_pin_mux`, `set_as_output` / `set_as_input`, `write`, `read_pin`, plus a const-generic `Pin` type implementing the `embedded-hal` `InputPin` / `OutputPin` traits. |
+| `adc`   | 12-bit A/D converter, single-scan polled. |
+| `spibsc` | SPI Multi-I/O Bus Controller — manual-command NOR-flash erase/program/read, with erase and program refused outside the board's writable windows. |
+| `usb` | RUSB1 USB 2.0 dual-role driver: chip plumbing (bases, IRQs, STBCR7 clock gates) plus full `embassy-usb-driver` **device** (`usb::driver`) and **host** (`usb::host`) implementations over shared `regs`/`fifo`/`pipe` layers. `usb::init_device_mode(port)` / `usb::init_host_mode(port)` are the entry points. USB *class* code (UAC2/MIDI/MSC/BOT) lives in `deluge_bsp::usb`. |
 
 ---
 
@@ -88,7 +92,7 @@ Add to `Cargo.toml`:
 ```toml
 [dependencies]
 rza1l-hal = { path = "../rza1l-hal" }
-embassy-executor = { version = "0.6", features = ["arch-cortex-ar"] }
+embassy-executor = { version = "0.10", features = ["platform-cortex-ar", "executor-thread"] }
 embassy-time    = "0.5"
 ```
 
@@ -122,6 +126,7 @@ peripheral.
 | Feature | Description |
 |---------|-------------|
 | `rtt`   | Enables RTT (SEGGER Real-Time Transfer) logging via `rtt-target`. |
+| `unlock-bootloader` | Adds `spibsc` routines that bypass the writable-window guard, so a JTAG-loaded recovery tool can rewrite the protected boot regions. Never enable it in normal firmware. |
 
 ---
 

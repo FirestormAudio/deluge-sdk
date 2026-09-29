@@ -2,8 +2,7 @@
 //!
 //! Brings USB0 up in host mode, runs `usb_host_supervisor` (which auto-binds the
 //! `deluge_bsp::usb::host::uac` driver on connect), and loops captured audio back
-//! to playback. First real-hardware exercise of the host UAC capture+playback
-//! stack. See `docs/superpowers/specs/2026-07-17-uac-host-validation-firmware-design.md`.
+//! to playback, exercising the host UAC capture + playback stack on hardware.
 
 #![no_std]
 #![no_main]

@@ -1,7 +1,7 @@
 //! Unipolar horizontal bar parameter control
 //!
 //! Provides a horizontal bar that fills from left to right (0.0 to 1.0).
-//! Unlike the bipolar HorizontalBar, this doesn't have a center point.
+//! Unlike [`BipolarBar`](super::BipolarBar), it has no centre point.
 
 use crate::Positionable;
 use embedded_graphics::{

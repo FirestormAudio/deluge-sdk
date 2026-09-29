@@ -27,14 +27,12 @@ pub struct FwHost;
 /// The single host instance, registered at boot.
 pub static mut FW_HOST: FwHost = FwHost;
 
-// Device-side `Wavetable.from(...)` now builds + binds a real table inline:
-// `upload_table` below forwards to `crate::audio::upload_table`, which builds
-// the mip pyramid directly into a pool region of the audio engine and returns
-// its handle. This runs synchronously inside the Wren foreign call on the one
-// cooperative executor and is real-time-safe under that model — see
-// `audio.rs`'s `## Concurrency` docs and the device-upload spec for why the
-// sub-millisecond IFFT build fits the audio write-ahead lead without stalling
-// `audio_task` or aliasing its engine borrow.
+// `upload_table` forwards to `crate::audio::upload_table`, which builds the mip
+// pyramid directly into a pool region of the audio engine and returns its
+// handle. It runs synchronously inside the Wren foreign call on the one
+// cooperative executor; the sub-millisecond IFFT build fits within the audio
+// write-ahead lead without stalling `audio_task` or aliasing its engine borrow
+// (see `audio.rs`'s `## Concurrency` docs).
 impl Host for FwHost {
     fn now_ms(&mut self) -> u64 {
         Instant::now().as_millis()
@@ -95,8 +93,7 @@ impl Host for FwHost {
     // Host (sim): hand the node+ring+path off to the host-only WAV prefetch
     // (`crate::stream::stream_task`), which loads/decodes the file and fills
     // the ring as playback advances — see `stream.rs`'s module docs. Device:
-    // no filesystem/prefetch yet (device streaming is Sa-3b slice 5); the
-    // node simply stays silent until then.
+    // there is no device-side prefetch, so the node stays silent.
     fn stream_register(
         &mut self,
         node: flare_graph::NodeId,
@@ -106,6 +103,6 @@ impl Host for FwHost {
         #[cfg(not(target_os = "none"))]
         crate::stream::register(node, handle, path);
         #[cfg(target_os = "none")]
-        let _ = (node, handle, path); // device prefetch is slice 5
+        let _ = (node, handle, path); // no device prefetch: stays silent
     }
 }

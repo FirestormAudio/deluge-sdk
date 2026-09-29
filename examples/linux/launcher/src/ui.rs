@@ -43,9 +43,8 @@ impl View {
     }
 
     fn render_apps(&self, model: &Model, target: &mut OledTarget) {
-        // Title bar: canonical Deluge style — plain title text + a 1px
-        // underline separator (matches DelugeFirmware's drawScreenTitle and
-        // spark's render_title), not the inverted-bar `Header`. ListMenuView's
+        // Title bar in the Deluge firmware's style — plain title text + a 1px
+        // underline separator, not the inverted-bar `Header`. ListMenuView's
         // rows (y=14/23/32) are laid out to sit under exactly this.
         let _ = Title::new("APPS").with_separator(true).draw(target);
 

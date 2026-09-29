@@ -1,7 +1,7 @@
 //! GPIO port registers for the RZ/A1L (see HW Manual §21).
 //!
 //! Port numbering mirrors the hardware: ports 1..=11 for P1..P11.
-//! PMC is the exception — it includes PMC0, so [`pmc(0)`] is valid.
+//! PMC is the exception — it includes PMC0, so `pmc(0)` is valid.
 //!
 //! ## Register map summary (all 16-bit, stride 4)
 //! - Pn    (output data)           : `0xFCFE_3004 + (n-1)*4`
@@ -137,7 +137,7 @@ pub unsafe fn read_pin(port: u8, pin: u8) -> bool {
 /// Read all 16 pins of a port in a single atomic PPR register read.
 ///
 /// Returns a bitmask; bit `n` corresponds to pin `n` of `port`.
-/// Both PIBC bits for the pins of interest must be set before calling this.
+/// The PIBC bits for the pins of interest must be set before calling this.
 ///
 /// # Safety
 /// Reads a memory-mapped peripheral register; `port` must be 1-based (1..=11).
@@ -207,7 +207,7 @@ pub struct Input;
 /// `PORT` is 1-based (1–11); `BIT` is 0–15.
 ///
 /// Owns no resources; the hardware configuration is managed via the
-/// underlying [`set_as_output`] / [`write`] free functions.
+/// underlying [`set_as_output`] / [`write`](fn@write) free functions.
 pub struct Pin<const PORT: u8, const BIT: u8, MODE>(PhantomData<MODE>);
 
 impl<const PORT: u8, const BIT: u8, MODE> Pin<PORT, BIT, MODE> {

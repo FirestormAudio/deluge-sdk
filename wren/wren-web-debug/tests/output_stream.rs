@@ -1,8 +1,7 @@
-//! Deferred fix: a debug session's `System.print` output — and a failed
-//! `interpret` (compile/runtime error) — reach the controller as `Output`
-//! events, instead of vanishing into a no-op `write_fn`.
+//! A debug session's `System.print` output — and a failed `interpret`
+//! (compile/runtime error) — reach the controller as `Output` events.
 //!
-//! `agent::debug_run` now wires the VM's write sink to the hook's
+//! `agent::debug_run` wires the VM's write sink to the hook's
 //! `OutputWriter`, so stdout streams to `wait_event()` as
 //! `DebugStop::Output { category: "stdout", .. }`, and a broken script surfaces
 //! as `"stderr"`.

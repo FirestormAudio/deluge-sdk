@@ -15,7 +15,8 @@
 //! ## Concurrency note
 //! While acting as USB mass storage the **host owns the filesystem**.  This app
 //! performs raw block passthrough only and never mounts or writes FAT itself,
-//! avoiding cache-coherency corruption on the RZ/A1L.
+//! so the host's cached view of the filesystem is never invalidated behind its
+//! back.
 
 #![no_std]
 #![no_main]
@@ -69,8 +70,8 @@ static mut EXECUTOR: MaybeUninit<Executor> = MaybeUninit::uninit();
 
 #[unsafe(no_mangle)]
 pub extern "C" fn main() -> ! {
-    // rtt_init! must always run to define the _SEGGER_RTT control-block symbol
-    // that rtt-target references at link time (also used by rza1 and deluge-bsp).
+    // With the `rtt` feature, log over a 16 KB RTT up-channel in `.rtt_buffer`
+    // (uncached RAM).
     #[cfg(feature = "rtt")]
     {
         let channels = rtt_target::rtt_init! {

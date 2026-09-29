@@ -43,11 +43,12 @@ fn dvu_vol_from_knob(level: i32) -> u32 {
 
 /// Quadrature encoder task — interrupt-driven.
 ///
-/// Sleeps via [`AtomicWaker`] until any encoder IRQ fires, then drains the BSP
-/// encoder state and emits detent events.
+/// Sleeps on [`encoder::ENCODER_WAKER`] until any encoder IRQ fires, then
+/// drains the BSP encoder state and handles the detents.
 ///
-/// Gold knobs (`controls::encoder::MOD_0` and `controls::encoder::MOD_1`) additionally
-/// drive their indicator rings via [`pic::set_gold_knob_indicators`].
+/// The gold knobs (`controls::encoder::MOD_0` / `MOD_1`) keep a 0–32 level shown
+/// on their indicator rings via [`pic::set_gold_knob_indicators`]; `MOD_0` also
+/// sets the DVU master volume.  Other encoders are only logged.
 #[embassy_executor::task]
 pub(crate) async fn encoder_task() {
     let mut enc_pos = [0i8; encoder::NUM_ENCODERS];

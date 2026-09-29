@@ -1,6 +1,6 @@
 //! USB host UAC **playback** primitives: `f32`->24-bit encode and an
 //! output-driven (pull) resampler that turns engine-rate frames into
-//! device-rate frames. Pure `core` math, host-tested. See the Phase-2 design.
+//! device-rate frames. Pure `core` math, host-tested.
 
 use super::MAX_CHANNELS;
 use super::ring::SampleRing;

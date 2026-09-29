@@ -3,10 +3,10 @@
 //!
 //! It is launched from the boot menu and **returns when the BACK button is
 //! pressed**, dropping back to the menu.  Rather than spawning detached tasks
-//! (which cannot be cancelled), each mode runs the USB device, the BOT/SCSI loop
-//! and the OLED status display concurrently with a BACK watcher via `select`;
-//! when BACK wins, the other futures are dropped (cancelled), the port is
-//! disconnected, and the function returns.
+//! (which cannot be cancelled), it runs the USB device and the OLED status
+//! display alongside the BOT/SCSI loop via `select`; the SCSI loop watches BACK
+//! and returns between commands, at which point the other futures are dropped
+//! (cancelled), the port is disconnected, and the function returns.
 
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, Ordering};

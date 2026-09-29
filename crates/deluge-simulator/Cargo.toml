@@ -16,12 +16,9 @@ path = "src/main.rs"
 
 [features]
 default = ["rack"]
-# The top-panel "rack" strip above the faceplate: CV/gate meters and the L/R
-# audio output oscilloscopes. On by default (the in-process `cargo deluge sim`
-# path feeds the scopes from host audio). DelugeFirmware's `dbt sim` builds with
-# `--no-default-features`: the protocol link carries no audio, so the scopes
-# would be dead — the whole strip is compiled out and the window is
-# faceplate-only.
+# The strip above the faceplate: CV/gate meters and L/R output scopes. Build
+# without it when the simulator is linked to a remote brain over the protocol,
+# which carries no audio.
 rack = []
 
 [dependencies]
@@ -41,7 +38,7 @@ hound = "3.5"
 # PNG output for headless OLED golden-frame snapshots.
 png = "0.17"
 
-# GUI + faceplate rendering (ported from spark's simulator).
+# GUI and faceplate rendering.
 iced = { version = "0.14", features = ["tokio", "canvas", "advanced", "image"] }
 resvg = "0.47"
 usvg = "0.47"

@@ -8,8 +8,8 @@
 //! | 1 | `0x0200` | 512 bytes | USB MIDI 2.0 — raw UMP 32-bit words |
 //!
 //! The host selects an alt setting via `SET_INTERFACE`.  A [`MidiClassHandler`]
-//! implements [`embassy_usb::Handler`] to track the active mode (stored in the
-//! static [`MIDI2_ACTIVE`] flag) and to respond to class-specific
+//! implements [`embassy_usb::Handler`] to track the active mode (queried with
+//! [`midi2_active`]) and to respond to class-specific
 //! `GET_DESCRIPTOR (0x26)` requests with the Group Terminal Block descriptors
 //! required by the MIDI 2.0 spec.
 //!
@@ -453,8 +453,8 @@ fn build_usb_midi_packet(msg: &[u8; 3]) -> [u8; 4] {
 
 /// Drive the alt-0 bulk OUT endpoint (host → device, MIDI 1.0).
 ///
-/// Reads 4-byte USB MIDI 1.0 event packets and pushes decoded 3-byte
-/// messages into [`MIDI_RX`].
+/// Reads 4-byte USB MIDI 1.0 event packets and queues the decoded 3-byte
+/// messages for [`try_recv_from_host`].
 pub async fn run_rx_midi1<'d, D: Driver<'d>>(mut ep_out: D::EndpointOut)
 where
     D::EndpointOut: EndpointOut,
@@ -484,9 +484,9 @@ where
 
 /// Drive the alt-0 bulk IN endpoint (device → host, MIDI 1.0).
 ///
-/// Reads raw MIDI 1.0 bytes from [`MIDI_TX`], assembles them into
-/// 3-byte messages (with running-status and realtime handling), and writes
-/// 4-byte USB MIDI event packets to the host.
+/// Reads raw MIDI 1.0 bytes queued by [`try_send_to_host_byte`], assembles
+/// them into 3-byte messages (with running-status and realtime handling), and
+/// writes 4-byte USB MIDI event packets to the host.
 pub async fn run_tx_midi1<'d, D: Driver<'d>>(mut ep_in: D::EndpointIn)
 where
     D::EndpointIn: EndpointIn,
@@ -545,8 +545,8 @@ where
 
 /// Drive the alt-1 bulk OUT endpoint (host → device, MIDI 2.0 UMP).
 ///
-/// Reads raw 32-bit UMP words from the host and pushes complete messages
-/// (zero-padded to `[u32; 4]`) into [`MIDI2_RX`].
+/// Reads raw 32-bit UMP words from the host and queues complete messages
+/// (zero-padded to `[u32; 4]`) for [`try_recv_ump_from_host`].
 pub async fn run_rx_midi2<'d, D: Driver<'d>>(mut ep_out: D::EndpointOut)
 where
     D::EndpointOut: EndpointOut,
@@ -586,8 +586,8 @@ where
 
 /// Drive the alt-1 bulk IN endpoint (device → host, MIDI 2.0 UMP).
 ///
-/// Pops UMP messages from [`MIDI2_TX`] and writes the appropriate number
-/// of 32-bit words (1, 2, or 4) as little-endian bytes.
+/// Pops UMP messages queued by [`try_send_ump_to_host`] and writes the
+/// appropriate number of 32-bit words (1, 2, or 4) as little-endian bytes.
 pub async fn run_tx_midi2<'d, D: Driver<'d>>(mut ep_in: D::EndpointIn)
 where
     D::EndpointIn: EndpointIn,
@@ -609,7 +609,7 @@ where
 }
 
 // ============================================================================
-// Backward-compatible aliases
+// Aliases
 // ============================================================================
 
 /// Alias for [`run_rx_midi1`] — for callers that only use MIDI 1.0.

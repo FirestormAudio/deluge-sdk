@@ -1,5 +1,5 @@
-//! `SlotApi` over the stock C VM (`wren_sys::Vm`). Delegates to the existing
-//! ergonomic wrappers; behavior is identical to the pre-refactor direct calls.
+//! `SlotApi` over the stock C VM (`wren_sys::Vm`), delegating to its
+//! ergonomic wrappers.
 use crate::slotapi::{Handle, SlotApi, WrenForeign as DwcForeign, WrenType};
 use wren_sys::Vm;
 
@@ -64,8 +64,7 @@ impl SlotApi for Vm {
     }
     unsafe fn new_foreign_in<T: DwcForeign>(&self, slot: i32, value: T) {
         // Bridge the dwc marker to wren-sys's WrenForeign via a local shim
-        // that inlines `Vm::new_foreign_in`'s body. (Concrete binding types
-        // will implement the dwc marker directly in Task 0.2.)
+        // that inlines `Vm::new_foreign_in`'s body.
         unsafe { new_foreign_in_shim(self, slot, value) }
     }
     fn get_handle(&self, slot: i32) -> Handle {

@@ -250,14 +250,11 @@ fn line_in_composes_with_mul() {
 
 #[test]
 fn line_in_round_trips_through_graph() {
-    // End-to-end proof (Task 3) that a real `EngineHost`'s fed input block
-    // actually reaches the rendered audio: `Out.patch(In.line())` routes
-    // port0 (L) and port1 (R) straight into the master bus (Task 2's
-    // `patch_line_in_emits_input_node_two_side_writes_and_root`), so a fed
-    // stereo block with L != R must come back out unchanged on BOTH
-    // channels — proving per-channel routing, not just "some signal passed
-    // through". This is the test that fails before `run_and_render_with_input`
-    // (Part A of Task 3) feeds the block and passes after.
+    // A real `EngineHost`'s fed input block reaches the rendered audio:
+    // `Out.patch(In.line())` routes port 0 (L) and port 1 (R) straight into
+    // the master bus (see `patch_line_in_emits_input_node_two_side_writes_and_root`),
+    // so a stereo block with L != R must come back unchanged on BOTH
+    // channels — per-channel routing, not just "some signal passed through".
     let input: Vec<StereoFrame> = (0..32).map(|_| StereoFrame { l: 0.3, r: -0.2 }).collect();
     let mut out = [StereoFrame::default(); 32];
     run_and_render_with_input("Out.patch(In.line())", &mut out, &input);
@@ -418,7 +415,7 @@ fn free_emits_free_and_reuses_id() {
 fn golden_saw_lpf_renders_expected_block() {
     let mut out = [StereoFrame::default(); 32];
     run_and_render("Out.patch(Osc.saw(110).lpf(800))", &mut out);
-    // CHARACTERIZATION golden re-pinned 2026-07-07 after Osc band-limiting (Tasks 1-3).
+    // Characterization golden for the band-limited saw through the lowpass.
     // Regenerate only on an intended, reviewed output change.
     let expected = [0.0, -0.103913695, -0.204913, -0.29383174];
     for i in 0..4 {
@@ -501,7 +498,7 @@ fn osc_feedback_emits_setparam() {
 
 #[test]
 fn poly_osc_pm_emits_setinput_port2() {
-    // Task 4: inside Synth (poly_mode true), `c.pm = m` targets the poly pm
+    // Inside a Synth (poly_mode true), `c.pm = m` targets the poly pm
     // edge (port 2), not the mono pm port (1).
     let cmds = run_and_capture_cmds(
         "var b = Synth.new { |p|\n  var m = Osc.sine(p)\n  var c = Osc.sine(p)\n  c.pm = m\n  return c * Env.ar(0.01,0.3)\n}",
@@ -521,12 +518,11 @@ fn poly_osc_pm_emits_setinput_port2() {
 
 #[test]
 fn poly_osc_feedback_emits_setparam_param1() {
-    // Task 4: inside Synth (poly_mode true), `c.feedback = v` targets the poly
-    // feedback param (1), not the mono feedback param (0). NOTE: PolyOsc
+    // Inside a Synth (poly_mode true), `c.feedback = v` targets the poly
+    // feedback param (1), not the mono feedback param (0). PolyOsc
     // construction itself emits `SetParam{param: 0, value: <shape>}` (the
-    // sine/saw/square/tri shape selector, e.g. 0.0 for `Osc.sine`) —
-    // unrelated to feedback — so we assert on the 0.4 *value* landing on
-    // param 1, rather than a blanket absence of param 0.
+    // shape selector), so assert on the 0.4 *value* landing on param 1
+    // rather than on a blanket absence of param 0.
     let cmds = run_and_capture_cmds(
         "var b = Synth.new { |p|\n  var c = Osc.sine(p)\n  c.feedback = 0.4\n  return c * Env.ar(0.01,0.3)\n}",
     );
@@ -546,8 +542,8 @@ fn poly_osc_feedback_emits_setparam_param1() {
 
 #[test]
 fn mono_osc_pm_feedback_unchanged() {
-    // Non-regression: at top level (poly_mode false) pm=/feedback= still emit
-    // the pre-Task-4 mono indices (pm port 1, feedback param 0).
+    // At top level (poly_mode false) pm=/feedback= use the mono indices
+    // (pm port 1, feedback param 0).
     let cmds =
         run_and_capture_cmds("var c = Osc.sine(440)\nc.pm = Osc.sine(110)\nc.feedback = 0.4");
     assert!(
@@ -585,7 +581,7 @@ fn osc_wavetable_emits_newnode_and_bindtable() {
     )));
     assert!(cmds.iter().any(|c| matches!(c,
         Cmd::BindTable { node: NodeId(0), src: TableSrc::Static(id) } if id.0 == 0)));
-    // WT.Saw == id 0 — Saw is index 0 in the generated `TABLES` (Task 3).
+    // WT.Saw == id 0 — Saw is index 0 in the generated `TABLES`.
 }
 
 #[test]
@@ -633,17 +629,14 @@ fn wavetable_from_emits_bindtable_pooled_and_renders_finite() {
 
 #[test]
 fn wavetable_from_round_trip_renders_finite_nonsilent_bounded_deterministic() {
-    // End-to-end round-trip through the FULL dynamic-table path with a real
-    // `EngineHost` (not the `CmdCaptureHost` used by the Cmd-shape tests
-    // above): a known single-cycle sawtooth, generated here as a Wren list
-    // literal (deterministic, no reliance on Wren-side loop syntax) ->
-    // `Wavetable.from` (list-read, Task 1) -> `Host::upload_table` (Task 4,
-    // real `pool_alloc` + `build_pyramid_into`) -> `TableSrc::Pooled` bind
-    // (Task 5) -> `Osc.wavetable` render through the real pool region (Task
-    // 3). This is stronger than Task 4's level-0-only pool-readback check and
-    // stronger than `wavetable_from_emits_bindtable_pooled_and_renders_finite`
-    // above (which only checks finite+bounded): it also asserts non-silence
-    // and bit-exact determinism across independent VM/engine lifecycles.
+    // End-to-end round-trip through the full dynamic-table path with a real
+    // `EngineHost` (not the `CmdCaptureHost` of the Cmd-shape tests above): a
+    // single-cycle sawtooth written as a Wren list literal -> `Wavetable.from`
+    // -> `Host::upload_table` (real `pool_alloc` + `build_pyramid_into`) ->
+    // `TableSrc::Pooled` bind -> `Osc.wavetable` render through the pool
+    // region. Beyond `wavetable_from_emits_bindtable_pooled_and_renders_finite`
+    // (finite + bounded only), this asserts non-silence and bit-exact
+    // determinism across independent VM/engine lifecycles.
     let n = 32;
     let pts: Vec<String> = (0..n)
         .map(|i| format!("{:.6}", 2.0 * (i as f64 / n as f64) - 1.0))
@@ -954,7 +947,7 @@ fn chorus_new_emits_node_and_params_no_bind_on_capture_host() {
     use flare_graph::{Cmd, Kind};
     use deluge_wren_core::test_support::run_and_capture_cmds;
     // CmdCaptureHost has no pool → alloc_buffer None → NewNode + SetParams but
-    // NO BindTable (dry-passthrough contract, same as Ef-1 Delay). The real
+    // NO BindTable (the dry-passthrough contract, same as Delay). The real
     // bind + render is covered by `chorus_renders_stereo_bounded_on_engine_host`.
     let cmds = run_and_capture_cmds("var c = Chorus.new(Osc.saw(110), 0.5, 0.4, 0.5)");
     assert!(cmds.iter().any(|c| matches!(
@@ -1635,13 +1628,11 @@ fn curve_sugar_renders_bounded() {
     );
 }
 
-/// Regression for C1: a MONO (non-Synth) `Env.adsr` gated on must actually
-/// render — pre-fix, `Node::gate` only dispatched `State::Ar`/`State::Lfo`,
-/// so `State::Adsr` fell into `_ => {}` and `e.gate(true)` was a silent no-op:
-/// the envelope never left `Stage::Idle` and `Osc * Env.adsr(...)` rendered
-/// pure silence with no error. Mirrors `curve_sugar_renders_bounded`'s mono
-/// `Env.ar` shape but explicitly gates (as that test never does) and asserts
-/// non-silence rather than just boundedness.
+/// A MONO (non-Synth) `Env.adsr` gated on must actually render: `Node::gate`
+/// has to dispatch `State::Adsr`, or `e.gate(true)` is a silent no-op, the
+/// envelope stays in `Stage::Idle` and `Osc * Env.adsr(...)` renders silence
+/// with no error. Unlike `curve_sugar_renders_bounded`, this gates explicitly
+/// and asserts non-silence rather than just boundedness.
 #[test]
 fn adsr_mono_gate_renders_nonsilent() {
     let mut out = [StereoFrame::default(); 32];
@@ -1781,8 +1772,8 @@ fn poly_mode_reflects_build_state() {
     // polyMode_ is 1 during a build, 0 after (script leaves it set; a follow-up
     // script starts fresh — poly_begin resets). Here: 1 right after polyBegin_.
     let cmds = run_and_capture_cmds("var m = Node.polyMode_\nvar p = Node.polyBegin_()");
-    // Nothing to assert on m directly via Cmds; the render/error behavior in
-    // Task 3 exercises polyMode_. This test just confirms polyBegin_ emits nodes.
+    // Nothing to assert on m directly via Cmds; the render/error tests
+    // exercise polyMode_. This test just confirms polyBegin_ emits nodes.
     assert!(cmds.iter().any(|c| matches!(
         c,
         Cmd::NewNode {
@@ -1797,7 +1788,7 @@ fn synth_note_on_emits_pitch_and_gate() {
     let cmds = run_and_capture_cmds(
         "var p = Node.polyBegin_()\nvar v = Node.polymul_(Node.polysvf_(Node.polyosc_(p, 0), 1200, 0.2), Node.polyar_(0.01, 0.3))\nvar s = Node.polyEnd_(v)\ns.noteOn(69, 100)",
     );
-    // StereoVoiceSum built at polyEnd_ (Sy-6a: width-2 sum node, replaces the old mono VoiceSum).
+    // StereoVoiceSum (the width-2 voice-sum node) built at polyEnd_.
     assert!(
         cmds.iter().any(|c| matches!(
             c,
@@ -1886,9 +1877,9 @@ fn synth_error_cases_abort() {
         !run_script_ok("Synth.new { |p| Osc.sine(p) }"),
         "no Env.ar aborts"
     );
-    // Sy-5c: the gate-count guard now allows up to 4 envelopes per voice, so
-    // two Env.ar no longer aborts — see `synth_two_envelopes_*` and
-    // `synth_five_envelopes_aborts` below for the current boundary (>4 aborts).
+    // Up to 4 envelopes per voice are allowed, so two Env.ar build — see
+    // `synth_two_envelopes_*` and `synth_five_envelopes_aborts` below for the
+    // boundary (>4 aborts).
     assert!(
         run_script_ok("Synth.new { |p| Osc.sine(p) * Env.ar(0.01,0.3) * Env.ar(0.01,0.3) }"),
         "two Env.ar now ok (Sy-5c, cap raised to 4)"
@@ -1904,7 +1895,7 @@ fn synth_error_cases_abort() {
         !run_script_ok("Synth.new { |p| Synth.new { |q| Osc.sine(q) * Env.ar(0.01,0.3) } }"),
         "nested Synth aborts"
     );
-    // Poly pink/brown noise now work in a Synth (Sy-2d) — see
+    // Poly pink/brown noise work in a Synth — see
     // `synth_sources_render_sound` for the positive case.
     assert!(
         run_script_ok("Synth.new { |p| Noise.pink() * Env.ar(0.01,0.3) }"),
@@ -1944,14 +1935,13 @@ fn bus_write_mono_and_const_ok() {
 
 #[test]
 fn synth_env_scaled_by_constant_renders() {
-    // Task-6 review gap, now locked intentionally: `Env.ar(...)` is a
-    // CONTROL/amp signal, not an audio-voice signal (`node_polyar_impl` uses
-    // `return_node`, not `return_poly_node` — see its doc comment), so scaling
-    // the envelope by a constant is a legitimate control-rate op that
-    // broadcasts a `Ctrl(k)` per voice via `PolyMul` (same mechanism as PWM's
+    // `Env.ar(...)` is a CONTROL/amp signal, not an audio-voice signal
+    // (`node_polyar_impl` uses `return_node`, not `return_poly_node`), so
+    // scaling it by a constant is a legitimate control-rate op that
+    // broadcasts a `Ctrl(k)` per voice via `PolyMul` (the same mechanism as
     // `.to`/`.atten`/`.offset` on a mono LFO) — it must NOT abort, unlike
-    // scaling an actual audio-voice signal (`Osc.sine(p) * 0.5`, asserted to
-    // abort in `synth_error_cases_abort`).
+    // scaling an audio-voice signal (`Osc.sine(p) * 0.5`, asserted to abort
+    // in `synth_error_cases_abort`).
     assert!(
         run_script_ok("Synth.new { |p| Osc.sine(p) * (Env.ar(0.01, 0.3) * 0.7) }"),
         "Env.ar * scalar is a control op, doesn't abort"
@@ -2033,7 +2023,7 @@ fn synth_saw_renders_sound() {
 #[test]
 fn synth_add_and_noise_render_sound() {
     // A `+`-mixed voice and a noise voice both render non-silent end-to-end
-    // (spec §5 — PolyAdd/PolyNoise through the full Synth→VoiceSum path).
+    // (PolyAdd/PolyNoise through the full Synth→VoiceSum path).
     let mut mixed = [StereoFrame::default(); 32];
     run_and_render(
         "var b = Synth.new { |p| (Osc.sine(p) + Osc.saw(p)) * Env.ar(0.001,0.05) }\nOut.patch(b.out)\nb.noteOn(69,100)",
@@ -2096,7 +2086,7 @@ fn synth_plays_from_midi() {
 
 #[test]
 fn synth_moog_and_ms20_render_sound() {
-    // Sy-2c: poly Moog/Ms20 voices render finite, bounded, non-silent audio
+    // Poly Moog/Ms20 voices render finite, bounded, non-silent audio
     // end-to-end through the full Synth → VoiceSum path.
     let mut moog = [StereoFrame::default(); 32];
     run_and_render(
@@ -2129,7 +2119,7 @@ fn synth_moog_and_ms20_render_sound() {
 
 #[test]
 fn synth_sources_build_correct_kinds() {
-    // Sy-2d: each flipped source route emits the poly Kind, not the mono one.
+    // Each poly-capable source emits the poly Kind, not the mono one.
     let sync =
         run_and_capture_cmds("var b = Synth.new { |p| Osc.syncSaw(p, p*1.5) * Env.ar(0.01,0.3) }");
     assert!(
@@ -2237,8 +2227,8 @@ fn synth_sources_build_correct_kinds() {
 
 #[test]
 fn synth_sources_render_sound() {
-    // Sy-2d: poly sync/wavetable(single+morph)/pink/brown/PWM all render
-    // finite, bounded, non-silent audio end-to-end through Synth → VoiceSum.
+    // Poly sync/wavetable(single+morph)/pink/brown/PWM all render finite,
+    // bounded, non-silent audio end-to-end through Synth → VoiceSum.
     let mut sync = [StereoFrame::default(); 32];
     run_and_render(
         "var b = Synth.new { |p| Osc.syncSaw(p, p*1.5).lpf(2000) * Env.ar(0.01,0.3) }\nOut.patch(b.out)\nb.noteOn(69,100)",
@@ -2264,7 +2254,7 @@ fn synth_sources_render_sound() {
         "wavetable voice sounds"
     );
 
-    // 2D morph table (WT.HarmonicSweep, a named static bank — Task 5).
+    // 2D morph table (WT.HarmonicSweep, a named static bank).
     let mut morph = [StereoFrame::default(); 32];
     run_and_render(
         "var b = Synth.new { |p| Osc.wavetable(WT.HarmonicSweep, p) * Env.ar(0.01,0.3) }\nOut.patch(b.out)\nb.noteOn(69,100)",
@@ -2301,7 +2291,7 @@ fn synth_sources_render_sound() {
     );
     assert!(brown.iter().any(|f| f.l.abs() > 1e-4), "brown voice sounds");
 
-    // PWM: a mono LFO drives the width port via the Task-1 mono→poly broadcast.
+    // PWM: a mono LFO drives the width port via the mono→poly broadcast.
     let mut pwm = [StereoFrame::default(); 32];
     run_and_render(
         "var b = Synth.new { |p|\n  var o = Osc.square(p)\n  o.width = LFO.sine(4).to(0.2,0.8)\n  return o * Env.ar(0.01,0.3)\n}\nOut.patch(b.out)\nb.noteOn(69,100)",
@@ -2316,11 +2306,10 @@ fn synth_sources_render_sound() {
 
 #[test]
 fn polyosc_no_width_unchanged_no_setinput_port1() {
-    // Backward-compat (Task 3 gate): a PolyOsc voice that never sets `.width`
-    // must not emit any SetInput on port 1 (the poly width port) — it stays
-    // at its NewNode-time default (Const(0.0) ⇒ 0.5 duty), bit-identical to
-    // the pre-Sy-2d PolyOsc (proven bit-exact at the engine level — see
-    // flare-graph's node.rs tests).
+    // A PolyOsc voice that never sets `.width` must not emit any SetInput on
+    // port 1 (the poly width port) — it stays at its NewNode-time default
+    // (Const(0.0) ⇒ 0.5 duty), bit-identical to a PolyOsc without a width
+    // port (checked at the engine level by flare-graph's node.rs tests).
     let cmds = run_and_capture_cmds("var b = Synth.new { |p| Osc.square(p) * Env.ar(0.01, 0.3) }");
     assert!(
         cmds.iter().any(|c| matches!(
@@ -2339,9 +2328,8 @@ fn polyosc_no_width_unchanged_no_setinput_port1() {
         "no SetInput on PolyOsc's width port when .width wasn't set"
     );
 
-    // Sanity: the render is non-silent and bounded (same as the pre-existing
-    // `synth_saw_renders_sound`-style checks), i.e. the width-port addition
-    // didn't silently break the default 0.5-duty square.
+    // Sanity: the default 0.5-duty square renders non-silent and bounded
+    // (same as the `synth_saw_renders_sound`-style checks).
     let mut out = [StereoFrame::default(); 32];
     run_and_render(
         "var b = Synth.new { |p| Osc.square(p) * Env.ar(0.001, 0.05) }\nOut.patch(b.out)\nb.noteOn(69,100)",
@@ -2356,13 +2344,11 @@ fn polyosc_no_width_unchanged_no_setinput_port1() {
 
 #[test]
 fn synth_fixed_numeric_master_drives_hard_sync() {
-    // I-1 regression guard: `Osc.syncSaw(60, p)` wires a FIXED numeric
-    // literal (Input::Const(60), not a Ctrl/Node) onto the poly master
-    // port. Pre-fix, the engine's poly-input resolution silently dropped
-    // Input::Const into its catch-all zero arm, so dtp_m == 0 and the
-    // hard-sync reset (`mp_adv >= 1.0 && dtp_m > 0.0` in PolySync::process)
-    // never fired — the slave free-ran exactly like a bare `Osc.saw(p)`,
-    // i.e. NO sync at all despite the script asking for it.
+    // `Osc.syncSaw(60, p)` wires a FIXED numeric literal (Input::Const(60),
+    // not a Ctrl/Node) onto the poly master port. The engine's poly-input
+    // resolution must honour Input::Const: if it resolved to zero, dtp_m == 0
+    // and the hard-sync reset (`mp_adv >= 1.0 && dtp_m > 0.0` in PolySync::process)
+    // never fires, so the slave free-runs like a bare `Osc.saw(p)`.
     let mut synced = [StereoFrame::default(); 32];
     run_and_render(
         "var b = Synth.new { |p| Osc.syncSaw(60, p) * Env.ar(0.01,0.3) }\nOut.patch(b.out)\nb.noteOn(69,100)",
@@ -2397,12 +2383,10 @@ fn synth_fixed_numeric_master_drives_hard_sync() {
 
 #[test]
 fn synth_fixed_numeric_width_applies_to_pwm_duty() {
-    // I-1 regression guard: `o.width = 0.3` wires a FIXED numeric literal
-    // (Input::Const(0.3)) onto PolyOsc's poly width port. Pre-fix, the
-    // engine's poly-input resolution silently dropped Input::Const into its
-    // catch-all zero arm, so the port read 0 — which PolyOsc's `<= 0 ⇒ 0.5`
-    // sentinel then treats as "unset", silently forcing 0.5 duty regardless
-    // of what the script asked for.
+    // `o.width = 0.3` wires a FIXED numeric literal (Input::Const(0.3)) onto
+    // PolyOsc's poly width port. The engine's poly-input resolution must
+    // honour Input::Const: if it resolved to zero, PolyOsc's `<= 0 ⇒ 0.5` sentinel
+    // treats the port as unset and forces 0.5 duty regardless of the script.
     let mut narrow = [StereoFrame::default(); 32];
     run_and_render(
         "var b = Synth.new { |p|\n  var o = Osc.square(p)\n  o.width = 0.3\n  return o * Env.ar(0.01,0.3)\n}\nOut.patch(b.out)\nb.noteOn(69,100)",
@@ -2438,15 +2422,15 @@ fn synth_fixed_numeric_width_applies_to_pwm_duty() {
 
 #[test]
 fn non_poly_classes_abort_inside_synth() {
-    // Sy-2c footgun close: classes not yet poly-ified (or that are post-voice
-    // effects) must Fiber.abort rather than silently building a mono/broken
-    // voice inside a Synth.
+    // Classes that are not poly-capable (or are post-voice effects) must
+    // Fiber.abort rather than silently building a mono/broken voice inside a
+    // Synth.
     for src in [
         "Synth.new { |p| Tb303.lp(Osc.saw(p), 400, 0.9) * Env.ar(0.01, 0.3) }",
         "Synth.new { |p| Resonator.new(Osc.saw(p), 220, 0.4) * Env.ar(0.01, 0.3) }",
         "Synth.new { |p| Svf.lp(Osc.saw(p), 1200, 0.6) * Env.ar(0.01, 0.3) }",
         "Synth.new { |p| Delay.new(Osc.saw(p), 0.2, 0.4) * Env.ar(0.01, 0.3) }",
-        // I-1: signal-input control/shaping classes missed by Sy-2c.
+        // Signal-input control/shaping classes.
         "Synth.new { |p| Slew.new(Osc.saw(p), 0.01) * Env.ar(0.01, 0.3) }",
         "Synth.new { |p| Osc.saw(p).curve(0.5) * Env.ar(0.01, 0.3) }",
         "Synth.new { |p| SampleHold.new(Osc.saw(p), Osc.square(p)) * Env.ar(0.01, 0.3) }",
@@ -2512,7 +2496,7 @@ fn synth_adsr_counts_as_amp_gate() {
 
 #[test]
 fn synth_velocity_scales_amplitude() {
-    // Task 3: an arity-2 builder `{ |pitch, vel| ... }` gets a second,
+    // An arity-2 builder `{ |pitch, vel| ... }` gets a second,
     // control-flagged carrier from `Node.polyVelBegin_()`; `noteOn`'s velocity
     // (normalized vel/127 by the VoiceAllocator) multiplies the amp. A loud
     // note-on must render a higher RMS than a quiet one. Two separate Synths
@@ -2559,7 +2543,7 @@ fn synth_arity1_still_builds_without_velocity_node() {
 #[test]
 fn synth_velocity_composes_as_control_signal() {
     // `vel` is control-flagged (isPoly_==0, per `node_poly_vel_begin_impl`),
-    // so it composes through the Sy-2d control-scaling path just like the
+    // so it composes through the control-scaling path just like the
     // voice pitch: routed to a filter cutoff via `.to(lo, hi)`, and scaled by
     // a constant via `vel * 0.5 + 0.5` (sensitivity curve).
     assert!(run_script_ok(
@@ -2570,7 +2554,7 @@ fn synth_velocity_composes_as_control_signal() {
     ));
 }
 
-// ── Task 5: Synth.mono + synth.glide ────────────────────────────────────────
+// ── Synth.mono + synth.glide ──────────────────────────────────────────────
 
 #[test]
 fn synth_mono_builds_and_renders() {
@@ -2615,19 +2599,18 @@ fn synth_mono_renders_finite_nonsilent() {
 fn synth_poly_glide_aborts() {
     // `.glide` targets the mono build's PolySlew node (recorded by
     // `mono_begin`/`mono_end`); a `Synth.new` (poly) voice has no such node.
-    // M1: this is a misuse to reject, not a silent no-op — the prelude's
+    // This is a misuse to reject, not a silent no-op: the prelude's
     // `glide=(seconds)` wrapper checks `isMono_` and `Fiber.abort`s before
-    // ever calling the native `setGlide_` (mirrors the Sy-2e `Bus.write`
-    // guard pattern), so this script must fail to run.
+    // calling the native `setGlide_` (the same guard pattern as `Bus.write`),
+    // so this script must fail to run.
     assert!(!run_script_ok(
         "var s = Synth.new { |p| Osc.saw(p) * Env.adsr(0.01,0.1,0.6,0.3) }\ns.glide = 0.1"
     ));
 }
 
-// Sy-5c: the Wren gate-count guard now allows up to 4 `Env.ar`/`Env.adsr`
-// envelopes per voice (was capped at exactly 1). These lock the new boundary:
-// 1 (existing, unchanged elsewhere in this file), 2 and 4 build, 5 aborts,
-// 0 still aborts.
+// The Wren gate-count guard allows up to 4 `Env.ar`/`Env.adsr` envelopes per
+// voice. These lock the boundary: 1 (covered elsewhere in this file), 2 and 4
+// build; 0 and 5 abort.
 
 #[test]
 fn synth_two_envelopes_amp_and_filter_builds_and_renders() {
@@ -2641,7 +2624,7 @@ fn synth_four_envelopes_builds() {
     // amp + 3 mod envelopes (routed harmlessly into the cutoff sum) — at the cap.
     // (The block's first statement must start on its own line after `|p|` —
     // a `var` decl on the same line as the block params doesn't parse in this
-    // Wren dialect; see `synth_five_envelopes_aborts` below for the same fix.)
+    // Wren dialect; `synth_five_envelopes_aborts` below follows the same rule.)
     assert!(run_script_ok(
         "var s = Synth.new { |p|\n  var e2 = Env.adsr(0.01,0.1,0.5,0.2)\n  var e3 = Env.adsr(0.01,0.1,0.5,0.2)\n  var e4 = Env.adsr(0.01,0.1,0.5,0.2)\n  Osc.saw(p).lpf(e2.to(400,4000) + e3*0 + e4*0) * Env.adsr(0.005,0.1,0.7,0.2)\n}\nOut.patch(s.out)\ns.noteOn(60,100)"
     ));
@@ -2666,9 +2649,8 @@ fn synth_mono_two_envelopes_builds_and_renders() {
     ));
 }
 
-// Sy-5e Task 5: e2e proof that `synth.unison = N` / `synth.detune = cents`
-// (Task 4 setters) actually render — poly and mono fat detuned voices, plus
-// the 1/sqrt(N) VoiceSum normalization (Task 1/2) taking effect end-to-end.
+// End-to-end: `synth.unison = N` / `synth.detune = cents` actually render —
+// poly and mono fat detuned voices, plus the 1/sqrt(N) VoiceSum normalization.
 
 #[test]
 fn synth_poly_unison_builds_and_renders() {
@@ -2763,10 +2745,9 @@ fn synth_unison_normalization_reduces_level() {
     );
 }
 
-// Sy-6a Task 5: e2e proof that `synth.width = amount` (Task 4 setter) renders
-// a real stereo image end-to-end — poly and mono unison voices spread across
-// L/R via StereoVoiceSum per-lane pan (Tasks 1-3) — and that `width=0` (or no
-// width call at all) stays exactly today's dual-mono, byte-identical output.
+// End-to-end: `synth.width = amount` renders a real stereo image — poly and
+// mono unison voices spread across L/R via StereoVoiceSum per-lane pan — and
+// `width=0` (or no width call at all) renders byte-identical dual-mono.
 
 #[test]
 fn synth_poly_width_renders_stereo_image() {
@@ -2834,7 +2815,7 @@ fn synth_width_zero_is_mono_and_byte_identical() {
     assert!(a.iter().any(|f| f.l.abs() > 1e-3), "still sounds");
 }
 
-// Sy-6b Task 4: e2e proof that a LIVE `synth.detune`/`synth.width` setter
+// End-to-end: a LIVE `synth.detune`/`synth.width` setter
 // call — placed AFTER `noteOn` in the same script — moves a sounding note's
 // output, while a setter call BEFORE `noteOn` (the normal case, no sounding
 // voice yet) re-emits nothing and stays byte-identical to not calling the
@@ -2848,19 +2829,10 @@ fn synth_live_detune_moves_sounding_note() {
     let base = "var s = Synth.new { |p| Osc.saw(p) * Env.adsr(0.005,0.5,0.9,0.3) }\ns.unison = 4\ns.detune = 5\nOut.patch(s.out)\ns.noteOn(60,100)";
     // Live: same start, then re-detune the held note mid-render.
     //
-    // NOTE: the brief's literal `s.detune = 40` (35-cent extreme-lane swing)
-    // produces a real, correctly-emitted pitch change (verified via direct
-    // Cmd inspection: SetParam values on the pitch PolyCtrl move from the
-    // ±0.05-semitone spread to the ±0.4-semitone spread exactly as
-    // `unison_offset` predicts), but a symmetric unison spread run through
-    // `PolyMtof`'s *exponential* semitone→Hz mapping cancels to first order
-    // when summed (Σu unison_offset(u) == 0 by construction) — the surviving
-    // divergence is O(t²) and only reaches ~1.6e-5 by frame 31 of this fixed
-    // 32-frame/44.1kHz render, well under the 1e-4 bar (measured sweep: 100c
-    // barely crosses 1e-4, 400c clears it with a comfortable ~16x margin).
-    // Widened to 400 cents so the assertion measures the live re-emit
-    // reliably rather than living at the edge of the render window's noise
-    // floor; the 1e-4 threshold itself is untouched.
+    // A symmetric unison spread (Σu unison_offset(u) == 0) cancels to first
+    // order when summed, so the output divergence grows only as O(t²) within
+    // the 32-frame render window. Small detunes (tens of cents) stay under the
+    // 1e-4 threshold; 400 cents clears it with a wide margin.
     let live = "var s = Synth.new { |p| Osc.saw(p) * Env.adsr(0.005,0.5,0.9,0.3) }\ns.unison = 4\ns.detune = 5\nOut.patch(s.out)\ns.noteOn(60,100)\ns.detune = 400";
     let mut a = [StereoFrame::default(); 32];
     let mut b = [StereoFrame::default(); 32];
@@ -2906,9 +2878,8 @@ fn synth_live_width_respreads_sounding_note() {
 #[test]
 fn synth_live_mono_detune_moves_sounding_note() {
     let base = "var s = Synth.mono { |p| Osc.saw(p) * Env.adsr(0.005,0.5,0.9,0.3) }\ns.unison = 3\ns.detune = 5\nOut.patch(s.out)\ns.noteOn(60,100)";
-    // See `synth_live_detune_moves_sounding_note`: 400 cents (not the brief's
-    // literal 40) for a comfortable margin above the 32-frame render window's
-    // O(t²) symmetric-unison-cancellation floor.
+    // 400 cents for margin above the O(t²) symmetric-unison cancellation —
+    // see `synth_live_detune_moves_sounding_note`.
     let live = "var s = Synth.mono { |p| Osc.saw(p) * Env.adsr(0.005,0.5,0.9,0.3) }\ns.unison = 3\ns.detune = 5\nOut.patch(s.out)\ns.noteOn(60,100)\ns.detune = 400";
     let mut a = [StereoFrame::default(); 32];
     let mut b = [StereoFrame::default(); 32];
@@ -3137,17 +3108,9 @@ fn player_pitch_and_build() {
     );
 }
 
-// `Keymap.from` (Sa-2 Task 5) has no consuming node yet — that's Task 6's
-// `PolySamplePlayer`-backed synth build path — so these are smoke tests via
-// the existing `run_script_ok`/`run_and_render` harnesses (same style as
-// `wavetable_from2d_unbound_on_cmd_capture_host_no_bogus_bindtable` above),
-// not a pool-content readback: neither `sample_from_impl`/`SampleBuffer` nor
-// `wavetable_from2d_impl`/`Wavetable` has a dedicated raw-pool-readback test
-// in this suite either (their coverage is render-round-trip through a
-// consuming node). Once Task 6 lands a node that binds a `Keymap`'s pooled
-// region, extend coverage with a render-level round-trip (mirroring
-// `wavetable_from2d_round_trip_renders_finite_nonsilent_and_morphs`) that
-// exercises both zones and asserts the concatenated layout end-to-end.
+// `Keymap.from` upload smoke tests (no consuming node). Render-level
+// coverage of a `Keymap` through `Sample.new` is in the `sample_new_keymap_*`
+// and `keymap_and_scope_guard` tests below.
 #[test]
 fn keymap_from_unbound_on_cmd_capture_host_builds_without_panicking() {
     // The `run_script_ok` host (`CmdCaptureHost`) has no pool, so
@@ -3172,7 +3135,7 @@ fn keymap_from_uploads_through_real_pool_without_panicking() {
     // and copies every element via `pool_set` — exercises the full nested-
     // read + offset-advance path, not just the `None`-handle skip above.
     // Nothing is patched to `Out`, so this only asserts the upload/build
-    // doesn't panic (see the module comment above for the coverage gap).
+    // doesn't panic.
     let mut out = [StereoFrame::default(); 32];
     run_and_render(
         "var k = Keymap.from([\n\
@@ -3187,17 +3150,15 @@ fn keymap_from_uploads_through_real_pool_without_panicking() {
     );
 }
 
-// Task 5 review fix (CRITICAL): `keymap_from_impl` used to read zone
-// sub-elements (samples list, low/high/root) at fixed indices with no
-// `slot_type`/count guard first. Since `wren-sys` compiles the C VM's
-// `ASSERT` bounds/type checks to no-ops (see the crate's `wren-sys/build.rs`
-// — `DEBUG` is never defined), calling `get_list_count`/`get_list_element`
-// on a slot that isn't actually a list, or with an out-of-range index, was
-// undefined behavior (a wild out-of-bounds read), not a catchable Wren
-// error. These three scripts each hit one of the vulnerable shapes — arg
-// not a list, zone not a list, zone list shorter than 4 elements — and must
-// still build without crashing, degrading the missing fields to
-// `flare_kernels::sampler::Zone::empty()`'s defaults instead.
+// `wren-sys` compiles the C VM's `ASSERT` bounds/type checks to no-ops
+// (`DEBUG` is never defined, see `wren-sys/build.rs`), so calling
+// `get_list_count`/`get_list_element` on a slot that isn't a list, or with an
+// out-of-range index, is undefined behaviour (a wild out-of-bounds read), not
+// a catchable Wren error. `keymap_from_impl` must guard every zone sub-element
+// read. These scripts each hit one malformed shape — arg not a list, zone not
+// a list, zone list shorter than 4 elements — and must build without
+// crashing, degrading the missing fields to
+// `flare_kernels::sampler::Zone::empty()`'s defaults.
 #[test]
 fn keymap_from_malformed_arg_not_a_list_does_not_crash() {
     assert!(
@@ -3217,22 +3178,19 @@ fn keymap_from_malformed_zone_not_a_list_does_not_crash() {
 #[test]
 fn keymap_from_malformed_short_zone_missing_high_and_root_does_not_crash() {
     // Zone has only 2 elements (samples list + low) — `high`/`root` (indices
-    // 2/3) are missing entirely; the old fixed-index reads would have walked
-    // off the end of this 2-element zone list.
+    // 2/3) are missing entirely; an unguarded fixed-index read would walk off
+    // the end of this 2-element zone list.
     assert!(
         run_script_ok("var k = Keymap.from([[[1.0, 2.0], 60]])"),
         "a zone list shorter than 4 elements must degrade its missing tail, not UB"
     );
 }
 
-// Wren slot-read UB hardening, Task 1: the same no-op-`ASSERT` UB the
-// `keymap_from_malformed_*` tests above cover for `Keymap.from` also applies
-// to `SampleBuffer.from`, `Wavetable.from`, `Wavetable.from2d`, `Steps.new`
-// (list-arg reads), and `Oled.text` (string-arg read) — each called
-// `get_list_count`/`get_list_element`/`get_str` on a slot with no prior
-// `slot_type` check. `checked_list_count`/`checked_str` (`slotapi.rs`) now
-// guard all five, degrading a wrong-type slot to 0 / `""` instead of an
-// out-of-bounds read.
+// The same no-op-`ASSERT` UB the `keymap_from_malformed_*` tests cover also
+// applies to `SampleBuffer.from`, `Wavetable.from`, `Wavetable.from2d`,
+// `Steps.new` (list-arg reads) and `Oled.text` (string-arg read).
+// `checked_list_count`/`checked_str` (`slotapi.rs`) guard all five, degrading
+// a wrong-type slot to 0 / `""` instead of an out-of-bounds read.
 #[test]
 fn sample_from_malformed_arg_not_a_list_does_not_crash() {
     assert!(
@@ -3277,13 +3235,13 @@ fn oled_text_malformed_non_string_does_not_crash() {
     );
 }
 
-// `Sample.new(pitch, source)` (Sa-2 Task 6) — the poly sample-source factory
+// `Sample.new(pitch, source)` — the poly sample-source factory
 // that consumes either a `SampleBuffer` (synthesizes one full-range zone) or
 // a `Keymap` (uses its zone table). Builds INSIDE a `Synth.new`/`Synth.mono`
 // voice closure, mirroring the `Osc.sine(p) * Env.ar(...)` shape every other
 // poly-source smoke test above uses. `sample_new_samplebuffer_round_trip_*`
 // goes one step further than a build-only smoke test and renders through a
-// real note-on, asserting non-silence (Task 7 owns full e2e coverage).
+// real note-on, asserting non-silence.
 #[test]
 fn sample_new_samplebuffer_builds_without_panicking() {
     assert!(
@@ -3381,13 +3339,12 @@ fn sample_new_keymap_round_trip_renders_finite_nonsilent() {
     );
 }
 
-// Sa-2 Task 7 — end-to-end: a poly sample voice actually plays inside a
-// `Synth`, polyphonically, through a multi-zone `Keymap`, and the
-// outside-a-Synth scope guard still fires. Task 6 already proved the single
-// render round-trip (`sample_new_*_round_trip_renders_finite_nonsilent`
-// above); these three exercise the paths that weren't covered yet: an
-// `Env.adsr` (not just `Env.ar`) gate shape, two simultaneous poly voices,
-// and multi-zone note routing.
+// End-to-end: a poly sample voice plays inside a `Synth`, polyphonically,
+// through a multi-zone `Keymap`, and the outside-a-Synth scope guard fires.
+// Beyond the single render round-trip above
+// (`sample_new_*_round_trip_renders_finite_nonsilent`), these cover an
+// `Env.adsr` gate shape, two simultaneous poly voices, and multi-zone note
+// routing.
 
 #[test]
 fn poly_sample_voice_plays_in_synth() {
@@ -3422,13 +3379,9 @@ fn keymap_and_scope_guard() {
     // (0..59, root 48), note 72 falls in zone 1 (60..127, root 72) — two
     // different zones latched by two different poly voices.
     //
-    // NB: `Keymap.from` takes ONE list argument (a list of zones), not one
-    // zone per positional argument — see `foreign static from(zones)` and
-    // the `Keymap.from([[...], ...])` doc example in prelude.wren, and the
-    // `sample_new_keymap_*` tests above. The brief's literal
-    // `Keymap.from([...], [...])` (two args) would pass a wrong arity to a
-    // 1-arg foreign method, so the two zone lists are wrapped in an outer
-    // list here.
+    // `Keymap.from` takes ONE list argument (a list of zones), not one zone
+    // per positional argument — see `foreign static from(zones)` in
+    // prelude.wren.
     assert!(
         run_script_ok(
             "var k = Keymap.from([[[0.5,0.5,-0.5,-0.5], 0, 59, 48], [[0.3,0.3,-0.3,-0.3], 60, 127, 72]])\nvar s = Synth.new { |p| Sample.new(p, k) * Env.adsr(0.001,0.5,1,0.2) }\nOut.patch(s.out)\ns.noteOn(48,100)\ns.noteOn(72,100)"
@@ -3442,22 +3395,18 @@ fn keymap_and_scope_guard() {
     );
 }
 
-// Wren slot-read UB hardening, Task 2: the same no-op-`ASSERT` UB the Task 1
-// tests above cover for list/string reads also applies to the 3 tagged-
-// foreign sites (`node_player_impl`/`node_wavetable_pooled_impl`/
-// `node_polywt_pooled_impl`, each reading a `SampleObj`/`WtObj` with no prior
-// `slot_type`/tag check) plus the `Out.patch` tag peek (`node_patch_impl`,
-// reading a tag byte off arg 1 with no `slot_type` guard first). Beyond the
-// plain "non-foreign arg" case, a *wrong-tag* foreign (e.g. a `Bus`, whose
-// `BusObj` is only 4 bytes) cast to the larger `WtObj`/`SampleObj` is a
-// genuine heap over-read into adjacent VM memory, not just a logic bug —
-// `checked_tagged_foreign` (`slotapi.rs`) now peeks the leading tag byte
-// before ever casting to the full struct, degrading a non-Foreign or
-// wrong-tag slot to `None` (silent/inert node) instead of reading past the
-// object. `Player.new`/`Node.wavetable_pooled_`/`Node.polywt_pooled_` are all
-// called directly here (bypassing `Osc.wavetable`'s `is Wavetable` prelude
-// guard) since the audit found these foreign statics reachable straight from
-// Wren.
+// The same no-op-`ASSERT` UB applies to the tagged-foreign reads
+// (`node_player_impl`/`node_wavetable_pooled_impl`/`node_polywt_pooled_impl`,
+// each reading a `SampleObj`/`WtObj`) and the `Out.patch` tag peek
+// (`node_patch_impl`). Beyond the plain "non-foreign arg" case, a *wrong-tag*
+// foreign (e.g. a `Bus`, whose `BusObj` is only 4 bytes) cast to the larger
+// `WtObj`/`SampleObj` is a heap over-read into adjacent VM memory.
+// `checked_tagged_foreign` (`slotapi.rs`) peeks the leading tag byte before
+// casting to the full struct, degrading a non-Foreign or wrong-tag slot to
+// `None` (a silent/inert node). `Player.new`/`Node.wavetable_pooled_`/
+// `Node.polywt_pooled_` are called directly here, bypassing `Osc.wavetable`'s
+// `is Wavetable` prelude guard, since these foreign statics are reachable
+// straight from Wren.
 #[test]
 fn player_malformed_buffer_not_a_foreign_does_not_crash() {
     assert!(
@@ -3507,48 +3456,25 @@ fn out_patch_malformed_non_source_does_not_crash() {
     );
 }
 
-// ── Poly FM Task 5: end-to-end poly FM ──────────────────────────────────────
+// ── Poly FM end-to-end ───────────────────────────────────────────────────────
 //
-// Tasks 1-4 built the chain: PolyOsc/WtOsc per-voice pm + self-feedback
-// kernels (T1/T2), engine `poly_in` widened 2->3 + poly pm/position edges +
-// feedback set_param (T3), and `poly_mode()`-aware `pm=`/`feedback=`/
-// `position=` Wren routing that mirrors the existing `width=` split (T4,
-// see `poly_osc_pm_emits_setinput_port2` / `poly_osc_feedback_emits_setparam_param1`
-// above). These four tests prove the whole chain actually renders finite,
-// bounded, non-silent audio end-to-end through a real `Synth` (mirroring
-// `poly_sample_voice_plays_in_synth`/`poly_sample_two_notes_two_voices`
-// above for the render-harness idiom): poly sine-carrier FM, poly
-// self-feedback, poly WAVETABLE-carrier FM (this is also the first e2e
-// coverage of poly `position=` routing on `PolyWt`, deferred from Task 4),
-// and mono wavetable self-feedback (the WtOsc side of T2's shared feedback
-// kernel, which only had unit/Cmd-shape coverage before now).
+// Per-voice pm + self-feedback on PolyOsc/WtOsc, routed by the
+// `poly_mode()`-aware `pm=`/`feedback=`/`position=` setters (Cmd shape checked
+// by `poly_osc_pm_emits_setinput_port2` /
+// `poly_osc_feedback_emits_setparam_param1`), rendered through a real `Synth`:
+// poly sine-carrier FM, poly self-feedback, poly wavetable-carrier FM (which
+// also covers poly `position=` routing on `PolyWt`), and mono wavetable
+// self-feedback.
 //
-// NB on the scripts below vs. the brief's literal text: (1) the brief's
-// `c.pm = m * 3` / `c.pm = m * 2` index-scale multiplies a poly AUDIO node
-// (`m`, `Osc.sine(p).isPoly_ == 1`) by a bare Num — that's the pre-existing,
-// unrelated-to-this-subproject `*` guard in prelude.wren ("multiply by a
-// constant inside a Synth isn't supported yet — the amp comes from Env.ar",
-// see `synth_error_cases_abort`'s "poly * scalar aborts" case), so it
-// aborts the whole script before `pm=` is even reached; dropped to a bare
-// `c.pm = m` (the same idiom already proven by `poly_osc_pm_emits_setinput_port2`
-// above) — `pm` is added directly as a phase offset in the kernel
-// (`rp = p + pm + fb`, ../flare/crates/flare-kernels/src/poly.rs), so an unscaled
-// full-amplitude ([-1,1]) modulator is already strongly audible FM, no
-// index multiply needed to prove the chain sounds. (2) multi-statement
-// Synth builder blocks need an explicit `return` on the last line — Wren
-// only auto-returns a block's value for a *single-expression* body; a
-// `{ |p|\n  var c = ...\n  c.pm = m\n  c * Env.adsr(...)\n}` block (as
-// literally written in the brief) evaluates `c * Env.adsr(...)` as a
-// statement and discards it, so the block implicitly returns `null` and
-// `Node.polyEnd_(out)` gets a null out-node — the `pm=`/`feedback=`
-// SetInput/SetParam commands still fire (confirmed via `run_and_capture_cmds`)
-// but the voice's audio path is never wired to `s.out`, rendering silence.
-// This was diagnosed by isolating single-expression vs. multi-statement
-// block bodies with `run_and_render` peak-amplitude probes (removed after
-// diagnosis) — not a kernel/graph/engine bug; every existing multi-statement
-// Synth-builder test in this file (`poly_osc_pm_emits_setinput_port2`,
-// `poly_osc_feedback_emits_setparam_param1`) already uses `return`.
-
+// `pm` is added directly as a phase offset in the kernel (`rp = p + pm + fb`,
+// flare-kernels' `poly.rs`), so an unscaled full-amplitude modulator
+// (`c.pm = m`) is already strongly audible FM.
+//
+// Multi-statement Synth builder blocks need an explicit `return` on the last
+// line: Wren only yields a block's value for a single-expression body, so
+// without it the block returns `null`, `Node.polyEnd_` gets a null out-node,
+// and the voice renders silence even though the `pm=`/`feedback=` commands
+// still fire.
 #[test]
 fn poly_sine_fm_plays_in_synth() {
     let mut out = [StereoFrame::default(); 64];
@@ -3610,7 +3536,7 @@ fn fm_index_enveloped_renders() {
 
 #[test]
 fn scale_two_arg_audio_safe_renders() {
-    // The fixed two-arg scale(m,a) must no longer abort on an audio node.
+    // The two-arg scale(m, a) must not abort on an audio node.
     assert!(
         run_script_ok(
             "var s = Synth.new { |p|\n  var c = Osc.sine(p).scale(2, 0)\n  return c * Env.adsr(0.001, 0.5, 1, 0.2)\n}\nOut.patch(s.out)\ns.noteOn(60, 100)"
@@ -3659,7 +3585,7 @@ fn mono_wavetable_feedback_plays() {
     );
 }
 
-// Sa-3b slice 4 Task 1 — `Sample.stream(pitch, path)`: a poly streaming
+// `Sample.stream(pitch, path)`: a poly streaming
 // sample voice source (`Kind::StreamPlayer`), mirroring `Sample.new`'s
 // poly-voice-closure shape and outside-a-Synth scope guard, but backed by a
 // host-filled streaming ring (registered via `Host::stream_register`) rather
@@ -3710,7 +3636,7 @@ fn sample_stream_outside_synth_aborts() {
     );
 }
 
-// Sa-4 Task 3 — `Granular.new(pitch, buffer)`: a poly grain-cloud voice
+// `Granular.new(pitch, buffer)`: a poly grain-cloud voice
 // source (`Kind::PolyGranular`) over an in-RAM `SampleBuffer`, mirroring
 // `Sample.new`'s poly-voice-closure shape, outside-a-Synth scope guard, and
 // Cmd-capture/round-trip test structure exactly.
@@ -3862,7 +3788,7 @@ fn granular_new_round_trip_renders_finite_nonsilent() {
     // `sample_new_samplebuffer_round_trip_renders_finite_nonsilent`. Default
     // kernel params (density=20/s) are enough to spawn grains within a
     // 64-sample window at 44.1 kHz only occasionally, so bump density/size
-    // via the new setters to guarantee audible grains inside this short render.
+    // via the setters to guarantee audible grains inside this short render.
     let mut out = [StereoFrame::default(); 64];
     run_and_render(
         "var g = Synth.new { |p|\n\
@@ -3883,15 +3809,11 @@ fn granular_new_round_trip_renders_finite_nonsilent() {
     );
 }
 
-// Sa-4 Task 4 — end-to-end: a poly granular voice driven from a Wren `Synth`,
-// rendered through a real `EngineHost`, over a longer window than the Task 3
-// round-trip above. `granular_new_round_trip_renders_finite_nonsilent`
-// (Task 3, above) already proved a short 64-frame render sounds with a
-// density/size bump; this test renders a much longer window (~10 engine
-// blocks) with a plain `density=100` (the brief's literal setter value) so
-// grains actually spawn and their Hann windows climb well off the `hann(0)
-// == 0` onset before the assertions run, matching the brief's "render a few
-// blocks" guidance.
+// End-to-end: a poly granular voice driven from a Wren `Synth`, rendered
+// through a real `EngineHost` over a much longer window (~10 engine blocks)
+// than `granular_new_round_trip_renders_finite_nonsilent`, with a plain
+// `density=100`, so grains spawn and their Hann windows climb well off the
+// `hann(0) == 0` onset before the assertions run.
 #[test]
 fn granular_renders_finite_bounded_nonsilent() {
     let mut out = [StereoFrame::default(); 320];
@@ -4057,7 +3979,7 @@ fn out_eq_high_shelf_emits_type_2() {
     );
 }
 
-// e2e (Task 4): a saw through Out.eq with a big peak boost on a strong harmonic
+// e2e: a saw through Out.eq with a big peak boost on a strong harmonic
 // renders with a higher peak than the un-EQ'd render. `run_and_render` fills the
 // buffer in 32-frame chunks (TestEng is 44.1 kHz), giving the biquad settle time.
 #[test]
@@ -4096,7 +4018,7 @@ fn bus_gain_setter_emits_bus_gain() {
     );
 }
 
-// e2e (IO-2b): a source routed through a bus at gain 0.5 renders at ~half the
+// e2e: a source routed through a bus at gain 0.5 renders at ~half the
 // unity level. `run_and_render` fills the buffer in 32-frame chunks.
 #[test]
 fn bus_gain_halves_render() {
@@ -4145,7 +4067,7 @@ fn bus_send_non_bus_dst_is_noop() {
     );
 }
 
-// e2e (IO-2c): a source on an aux bus sent to master at 0.5 renders at ~half of
+// e2e: a source on an aux bus sent to master at 0.5 renders at ~half of
 // the same source patched directly at unity. `Bus.new()` allocates master=id1,
 // send=id2, so the send is from=2 → to=1 (from > to, correct).
 #[test]
@@ -4173,7 +4095,7 @@ fn bus_send_aux_to_master_half_level() {
     );
 }
 
-// ── IO-2d Aux/Mixer sugar ─────────────────────────────────────────────────────
+// ── Aux/Mixer sugar ──────────────────────────────────────────────────────────
 
 #[test]
 fn aux_reverb_wires_effect_into_target() {
@@ -4212,7 +4134,7 @@ fn mixer_channel_routes_to_master() {
 #[test]
 fn aux_reverb_renders_wet() {
     // A saw sent into an Aux.reverb, patched to master, renders a non-silent wet
-    // signal (the reverb reads the aux one block late, IO-2e; the reverb tail
+    // signal (the reverb reads the aux one block late; the reverb tail
     // ramps up over ~tens of ms, so render a long window — ~93ms at 44.1kHz).
     let mut out = [StereoFrame::default(); 4096];
     run_and_render(
@@ -4233,7 +4155,7 @@ fn aux_reverb_renders_wet() {
 
 #[test]
 fn mixer_channel_gain_is_a_real_fader() {
-    // ch.gain scales the channel's master contribution (post-fader sends, IO-2f).
+    // ch.gain scales the channel's master contribution (post-fader sends).
     let mut unity = [StereoFrame::default(); 64];
     run_and_render(
         "var mix = Mixer.new()\nvar ch = mix.channel(Osc.saw(110) * 0.4)\nOut.patch(mix.master)",
@@ -4261,7 +4183,7 @@ fn mixer_channel_gain_is_a_real_fader() {
     );
 }
 
-// End-to-end proof (Task 4) that `Out.limit` actually bounds a real render,
+// End-to-end proof that `Out.limit` actually bounds a real render,
 // not just that it emits the right `Cmd` (the two tests above): a saw
 // overdriven 4x (dry peak ~4.0, way past the [-1,1] clamp let alone a 0.5
 // ceiling) patched through `Out.limit(0.5)` on a real `EngineHost` must come
@@ -4281,9 +4203,8 @@ fn out_limit_bounds_a_loud_render() {
     );
 }
 
-// Sanity (Task 4): the same loud patch WITHOUT `Out.limit` still renders
-// finite — only the engine's existing `[-1,1]` clamp acts, proving the
-// limiter is opt-in and the un-limited path is untouched by Tasks 1-3.
+// Sanity: the same loud patch WITHOUT `Out.limit` still renders finite — only
+// the engine's `[-1,1]` clamp acts; the limiter is opt-in.
 #[test]
 fn out_without_limit_unbounded_by_limiter() {
     let mut out = [StereoFrame::default(); 32];
@@ -4291,7 +4212,7 @@ fn out_without_limit_unbounded_by_limiter() {
     assert!(out.iter().all(|f| f.l.is_finite() && f.r.is_finite()));
 }
 
-// e2e (Task 4): a constant-DC input (via In.line()) through Out.dcBlock() — the
+// e2e: a constant-DC input (via In.line()) through Out.dcBlock() — the
 // settled output has the DC removed. Rendering a long buffer gives the one-pole HP
 // time to settle (many 32-frame chunks). The companion test shows the same DC
 // input WITHOUT dcBlock passes through, proving the DC-block did the work.
@@ -4326,15 +4247,15 @@ fn out_without_dcblock_passes_dc() {
     );
 }
 
-// ── GL2: incremental patch update ────────────────────────────────────────
+// ── Incremental patch update ─────────────────────────────────────────────
 
 #[test]
 fn re_running_a_script_under_an_update_emits_the_identical_command_stream() {
-    // This is what makes GL2 work here without a parser or an AST diff: node
-    // ids come from a deterministic allocator, so re-running the same script
-    // re-emits exactly the same `NewNode`s for exactly the same ids. The
-    // engine then keeps every node whose kind is unchanged and sweeps the rest,
-    // which means the *script re-run is the diff*.
+    // Incremental update needs no parser or AST diff: node ids come from a
+    // deterministic allocator, so re-running the same script re-emits exactly
+    // the same `NewNode`s for exactly the same ids. The engine keeps every
+    // node whose kind is unchanged and sweeps the rest, so the *script re-run
+    // is the diff*.
     let (first, second) = run_and_capture_update("Out.patch(Svf.lp(Osc.saw(110), 800, 0.3))");
     assert_eq!(second.first(), Some(&Cmd::BeginUpdate));
     assert_eq!(second.last(), Some(&Cmd::EndUpdate));
@@ -4356,7 +4277,7 @@ fn an_update_does_not_reset_the_engine() {
     );
 }
 
-// ── GL6: explicit names pin node identity across an edit ─────────────────
+// ── Explicit names pin node identity across an edit ─────────────────────
 
 /// The `NodeId` of the first node of `kind` created in this run.
 fn id_of(cmds: &[Cmd], kind: Kind) -> NodeId {
@@ -4370,7 +4291,7 @@ fn id_of(cmds: &[Cmd], kind: Kind) -> NodeId {
 
 #[test]
 fn a_named_scope_keeps_its_ids_when_a_stage_is_inserted_above_it() {
-    // The GL2 hole GL6 closes: ids come from a bump allocator, so inserting a
+    // The gap names close: ids come from a bump allocator, so inserting a
     // node earlier in the script shifts every later id by one, and the engine's
     // (id, kind) match then reattaches state to the wrong node. A name pins the
     // ids inside its scope regardless of what moves around it.

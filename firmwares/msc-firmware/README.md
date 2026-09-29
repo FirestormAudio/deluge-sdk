@@ -47,7 +47,7 @@ second-stage window the app-loader uses. Either:
 - **Run the ELF over a probe** — J-Link / `probe-rs` load and run it; see the
   [workspace README → Debugging](../../README.md#debugging).
 - **Flash the `.bin` as the device firmware** — installed the same way as the
-  app-loader, so the unit boots straight into it; see the
-  [Device setup guide](../../docs/device-setup.md).
+  app-loader, so the unit boots straight into it; see
+  [Installing the loader](../../docs/app-loader.md#installing-the-loader).
 
 [Synthstrom Deluge]: https://synthstrom.com/product/deluge/

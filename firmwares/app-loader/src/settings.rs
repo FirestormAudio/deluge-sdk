@@ -2,11 +2,14 @@
 //! ([`flash::SETTINGS_ADDR`]) so they survive a power-cycle and do not
 //! depend on the SD card.
 //!
-//! The only setting today is the **dev-mode** flag: when on, `boot_task` brings
-//! up a USB CDC upload listener in the background (see [`crate::devupload`]) and
-//! disables the auto-boot countdown so an upload can arrive at any time.  USB
-//! firmware acceptance is impossible unless the user has explicitly turned dev
-//! mode on, which is why it is persisted here rather than re-derived.
+//! Two settings are stored:
+//!
+//! * **Dev mode**: when on, `boot_task` brings up a USB CDC upload listener in
+//!   the background (see [`crate::devupload`]) and disables auto-boot so an
+//!   upload can arrive at any time.  The loader never accepts firmware over USB
+//!   unless the user has explicitly turned dev mode on.
+//! * **Auto-boot**: how long the boot menu waits before launching the default
+//!   entry (see [`AutoBoot`] and [`boot_mode`]).
 //!
 //! The on-flash **format** (magic / version / flags / CRC) and its encode/decode
 //! are the host-tested [`deluge_image::settings`] functions; this module only
@@ -22,7 +25,7 @@ pub use deluge_image::settings::{
 /// Address of the settings sector in the **uncached** memory-mapped flash mirror
 /// (`0x5840_0000`).  We read settings through this mirror, not the cached
 /// `SETTINGS_SECTOR_ADDR` window, because the RZ/A1L's caches ignore maintenance
-/// ops: after [`write`] programs the sector, the cached window can still return
+/// ops: after [`write()`] programs the sector, the cached window can still return
 /// the stale pre-write line, which would make the post-write read-back (and a
 /// same-session re-read) lie.  The uncached mirror always sees current flash.
 const SETTINGS_UNCACHED_ADDR: u32 = flash::SETTINGS_ADDR + rza1l_hal::UNCACHED_MIRROR_OFFSET as u32;
@@ -50,7 +53,7 @@ pub fn read() -> Settings {
 ///
 /// # Safety
 /// Switches the SPI-flash bus out of memory-mapped read mode (no code may run
-/// from flash during the call — true in the SSB, which runs from SRAM).  Call
+/// from flash during the call — true for the app loader, which runs from SRAM).  Call
 /// only from the boot menu context, like the app-slot store.
 pub async unsafe fn write(s: &Settings) -> bool {
     let record = encode(s);

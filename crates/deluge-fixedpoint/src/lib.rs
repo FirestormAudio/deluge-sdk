@@ -651,8 +651,7 @@ impl<const FRAC_BITS: u32, const ROUNDED: bool> FixedPoint<FRAC_BITS, ROUNDED> {
             return Self::ZERO;
         }
 
-        // Note: Cannot use dsp::saturate_signed_shl because it requires
-        // compile-time constant shift amount, but we have runtime shift
+        // `dsp::lshift_saturate` needs a compile-time shift; this one is runtime.
         let max_val = i32::MAX >> shift;
         let min_val = i32::MIN >> shift;
         let clamped = self.value.clamp(min_val, max_val);
@@ -686,9 +685,8 @@ impl<const FRAC_BITS: u32, const ROUNDED: bool> FixedPoint<FRAC_BITS, ROUNDED> {
         #[cfg(all(target_arch = "arm", target_feature = "dsp"))]
         {
             // Saturate to (32 - SHIFT) signed bits with SSAT, then shift left.
-            // (The earlier `SSAT …, LSL` form shifted *before* saturating, with a
-            // modular shift, so it couldn't saturate values that overflow 32 bits
-            // on the shift — see `lshift_saturate`'s docs.)
+            // Not `SSAT …, LSL`, which shifts modulo 2³² *before* saturating and
+            // so cannot saturate values that overflow on the shift.
             Self {
                 value: dsp::lshift_saturate::<SHIFT>(self.value),
             }

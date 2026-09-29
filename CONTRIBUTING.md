@@ -14,6 +14,10 @@ rustup show
 cargo install --path tools/cargo-deluge   # the `cargo deluge` host subcommand
 ```
 
+The audio engine comes from the separate `flare` repository through path
+dependencies, so the workspace only resolves with a `flare` checkout next to
+this one (`../flare`).
+
 To build firmware images and examples, use the build aliases defined in
 `.cargo/config.toml` (they pass the required `-Zbuild-std` flags) rather than a
 bare `cargo build`. See the [README](README.md#working-on-the-sdk-itself) and
@@ -49,11 +53,12 @@ This repository is **dual-licensed**, and which license applies depends on the
 crate you are touching:
 
 - The SDK and core libraries (`crates/deluge-sdk`, `deluge-bsp`, `rza1l-hal`,
-  `deluge-fft`, `deluge-image`, `deluge-sdk-macros`, `deluge-fixedpoint`,
-  `armv7-dsp-intrinsics`, the firmwares and examples) are
-  **`MIT OR Apache-2.0`**.
-- The OLED UI toolkit (`crates/deluge-ui-toolkit`) and its fonts
-  (`crates/deluge-fonts`) are **`GPL-3.0-or-later`**.
+  `deluge-alloc`, `deluge-image`, `deluge-sdk-macros`, `deluge-fixedpoint`,
+  `armv7-dsp-intrinsics`, `wren-sys`, `deluge-wren-core`, `wren-firmware`, the
+  firmwares and examples) are **`MIT OR Apache-2.0`**.
+- The OLED UI toolkit (`crates/deluge-ui-toolkit`), its fonts
+  (`crates/deluge-fonts`) and the pad-grid toolkit
+  (`crates/deluge-grid-toolkit`) are **`GPL-3.0-or-later`**.
 
 Unless you state otherwise, contributions you submit to a given crate are
 understood to be offered under that crate's existing license(s). Don't copy code

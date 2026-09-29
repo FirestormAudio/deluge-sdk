@@ -39,15 +39,9 @@ members = [
   "wren/wren-sys",
   "wren/wren-firmware",
 ]
-# Host-side tooling: built for the host triple, not the embedded armv7a target,
-# so it must not be a member of this no_std cross-compiled workspace.
-# `crates/deluge-sim-link` is the std-only in-process simulator link: it is a
-# path-dependency of deluge-bsp/deluge-sdk *only* under cfg(not(target_os="none")),
-# so it must never build for the device — keep it out of the workspace too.
-# `wren/wren-web` is the wasm core for the web simulator: a cdylib built for
-# wasm32-unknown-unknown (not the device triple), so it is excluded too.
-# `wren/wren-web-debug` is the host-side, std, wren-core-based debug harness:
-# also built for the host triple, not the device triple, so it is excluded too.
+# Crates that never build for the device: host tools and the simulator, the
+# wasm web-simulator core, and the Linux backend and examples. Each builds for
+# its own target from its own directory.
 exclude = [
   "tools/cargo-deluge",
   "crates/deluge-simulator",
@@ -74,19 +68,14 @@ repository = "https://github.com/FirestormAudio/deluge-sdk"
 homepage = "https://github.com/FirestormAudio/deluge-sdk"
 
 [workspace.dependencies]
-# The audio engine, extracted to its own repo (see
-# docs/superpowers/specs/2026-09-08-flare-audio-engine-extraction-design.md).
-# A path dependency on a sibling checkout: flare has no remote, exactly as
-# deluge-ndk has none. Swapping this for a pinned git dependency is a later,
-# separate decision.
+# The audio engine, from the flare repository checked out next to this one.
 flare = { path = "../flare/crates/flare" }
 flare-graph = { path = "../flare/crates/flare-graph" }
 flare-kernels = { path = "../flare/crates/flare-kernels" }
 flare-fft = { path = "../flare/crates/flare-fft" }
 flare-mipgen = { path = "../flare/crates/flare-mipgen" }
 
-# Embassy async runtime + USB stacks — pinned to crates.io releases so builds
-# are reproducible and don't track a moving `main`. Bump versions here only.
+# Embassy async runtime and USB stacks. Versions are set here only.
 embassy-executor = "0.10.0"
 embassy-futures = "0.1.2"
 embassy-sync = "0.8.0"
@@ -100,28 +89,22 @@ embassy-usb-host = "0.1.0"
 # Shared platform / utility crates.
 cortex-ar = "0.3"
 critical-section = "1"
-# NOT `release_max_level_off`. Cargo features are additive and unify across the whole
-# graph, so declaring that here compiled out every `log::` macro in every crate of a
-# release build -- and release is the only profile that fits in the RZ/A1L's SRAM, so it
-# silenced the BSP's logging entirely on the only profile anyone can run. That cost a
-# debugging session: a Rust panic inside the storage fiber left no trace at all, and
-# presented as a dead front panel with audio still playing.
-# `info` keeps the bulky `debug!`/`trace!` call sites out of the image while leaving the
-# lines that matter for a device post-mortem.
+# `info`, not `off`: features unify across the whole graph, and release is the
+# only profile that fits in SRAM, so `off` would silence all logging on the
+# device. `info` still drops the bulky `debug!`/`trace!` call sites.
 log = { version = "0.4", features = ["release_max_level_info"] }
 rtt-target = { version = "0.6", features = ["log"] }
 
 gdbstub = { version = "0.7" }
 
-# Vendored from the `spark` repo (MIT/Apache). Fixed-point DSP math; ARMv7 = the
-# Deluge's Cortex-A9, so the DSP intrinsics map straight onto the hardware.
+# Fixed-point DSP math and ARMv7 DSP intrinsics, vendored from the `spark`
+# project (MIT/Apache).
 armv7-dsp-intrinsics = { path = "crates/armv7-dsp-intrinsics", version = "0.1.0" }
-# Published as `deluge-fixedpoint`; kept under the `fixedpoint` dependency name
-# so members `use fixedpoint::…` unchanged.
+# Published as `deluge-fixedpoint`, imported as `fixedpoint`.
 fixedpoint = { package = "deluge-fixedpoint", path = "crates/deluge-fixedpoint", version = "0.1.0" }
 
-# Vendored from `spark` (GPL-3.0-or-later — kept as standalone crates apps opt
-# into; the permissive `deluge` facade must NOT depend on these).
+# UI crates vendored from `spark`, GPL-3.0-or-later. Apps opt into them; the
+# permissively licensed `deluge` facade must not depend on them.
 deluge-fonts = { path = "crates/deluge-fonts", version = "0.1.0" }
 deluge-ui-toolkit = { path = "crates/deluge-ui-toolkit", version = "0.1.0" }
 deluge-grid-toolkit = { path = "crates/deluge-grid-toolkit", version = "0.1.0" }
@@ -132,15 +115,8 @@ lto = true
 codegen-units = 1
 debug = true
 
-# The FFT is the one dependency whose release performance is load-bearing
-# regardless of the firmware's size-first default above.
-#
-# This has to live here, not in flare. A `[profile.*]` section only applies in
-# the workspace that is the build ROOT, so flare's own copy governs its
-# benchmarks and nothing else; when this workspace builds the firmware, this
-# manifest's profile is the only one Cargo reads. Without this entry flare-fft
-# was silently compiled at `opt-level = "s"` along with everything else —
-# verified with `cargo build -v` before it was added.
+# The FFT is worth its size at full optimisation. Profiles apply only in the
+# workspace being built, so this must be set here rather than in flare.
 [profile.release.package.flare-fft]
 opt-level = 3
 

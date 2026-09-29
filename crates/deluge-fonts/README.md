@@ -17,7 +17,7 @@ Fonts extracted from the Synthstrom Audible Deluge firmware for use with embedde
 The `seven_segment` module provides rendering of the Deluge's 7-segment LED display as OLED graphics.
 
 ```rust
-use embedded_fonts_deluge::seven_segment;
+use deluge_fonts::seven_segment;
 
 // Render a 4-digit number (pass as string)
 seven_segment::render_display(&mut display, "1234", 1, 0)?;
@@ -51,7 +51,7 @@ use embedded_graphics::{
     pixelcolor::BinaryColor,
     prelude::*,
 };
-use embedded_fonts_deluge::Font;
+use deluge_fonts::Font;
 
 fn render(display: &mut impl DrawTarget<Color = BinaryColor>) {
     // Draw text with default 2px spacing (matching Deluge firmware)
@@ -84,7 +84,7 @@ let descriptors = font.descriptors(); // Glyph descriptors
 You can also access the raw font data directly if needed:
 
 ```rust
-use embedded_fonts_deluge::*;
+use deluge_fonts::*;
 
 // Access font data constants
 let descriptors = &METRIC_BOLD_9PX_DESCRIPTORS;
@@ -95,26 +95,6 @@ let height = METRIC_BOLD_9PX_HEIGHT;
 let char_index = ('A' as usize) - (' ' as usize);
 let glyph = &descriptors[char_index];
 println!("Width: {}px, Index: {}", glyph.w_px, glyph.glyph_index);
-```
-
-## Examples
-
-Run the demo showing all fonts:
-
-```bash
-cargo run --example all_fonts
-```
-
-Run the simple demo with just the 9px font:
-
-```bash
-cargo run --example demo
-```
-
-Run the seven-segment display demo:
-
-```bash
-cargo run --example seven_segment
 ```
 
 ## Features

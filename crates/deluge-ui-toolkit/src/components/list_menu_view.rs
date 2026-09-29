@@ -104,7 +104,7 @@ impl ListMenuView {
         total_len: usize,
         delta_ms: u32,
     ) -> bool {
-        // DelugeFirmware cadence:
+        // Label-scroll cadence, matching the Deluge firmware:
         //   forward 15 ms/px  →  pause 400 ms  →  back 5 ms/px  →  pause  →  repeat
         const PAUSE_MS: u32 = 400;
         const FORWARD_MS_PER_PX: u32 = 15;

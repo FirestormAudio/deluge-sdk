@@ -33,8 +33,7 @@ impl Cv {
         }
     }
 
-    /// Write a raw 16-bit DAC code to channel `ch`. On the host simulator the
-    /// value is recorded in the shared panel (not yet rendered).
+    /// Write a raw 16-bit DAC code to channel `ch`.
     #[inline]
     pub async fn set(&mut self, ch: u8, code: u16) {
         crate::plat::cv_set(ch, code).await;

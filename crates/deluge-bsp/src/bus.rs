@@ -1,4 +1,4 @@
-//! Shared-bus arbitration (RSPI0 today; PIC transport to follow).
+//! Shared-bus arbitration for RSPI0.
 //!
 //! RSPI0 is physically shared between two consumers that need *mutually
 //! incompatible* frame modes:
@@ -8,18 +8,13 @@
 //!
 //! Driving either without coordinating corrupts the other's transfer, and
 //! switching frame mode underneath an in-flight transfer is silently wrong.
-//! Until now this was guarded by a hand-rolled `RSPI0_DMA_ACTIVE` spin-flag that
-//! every CV write had to *remember* to poll — a forgettable lock, and one that
-//! never reconfigured the frame mode (so a CV write after an OLED frame ran in
-//! 8-bit mode by accident; it only worked because no firmware interleaved them).
 //!
-//! This module replaces that with a single owned resource behind an async-aware
-//! mutex. Consumers `lock_rspi0().await`, drive the bus through the returned
-//! guard, and release it by dropping the guard. The guard may be held across
-//! `.await` (e.g. while an OLED DMA transfer completes); other consumers simply
-//! wait. The guard also *tracks the frame mode*, so `enter_8bit` / `enter_32bit`
-//! reconfigure only when the mode actually changes — arbitration and mode
-//! correctness become unforgettable instead of documented.
+//! The bus is a single owned resource behind an async-aware mutex. Consumers
+//! `lock_rspi0().await`, drive the bus through the returned guard, and release
+//! it by dropping the guard. The guard may be held across `.await` (e.g. while
+//! an OLED DMA transfer completes); other consumers wait. The guard also
+//! *tracks the frame mode*, so `enter_8bit` / `enter_32bit` reconfigure only
+//! when the mode actually changes.
 //!
 //! See the Advanced developer guide (`docs/advanced-guide.md`, §7 — *Dropping
 //! down to the BSP & HAL*) for the RSPI0 arbitration design.
@@ -73,12 +68,10 @@ impl Rspi0 {
     ///
     /// The cached [`enter_8bit`](Self::enter_8bit) skips reconfiguration when the
     /// channel is already in 8-bit mode — fine for SPDCR/SPCMD0, which persist,
-    /// but the RX FIFO does *not*: a full-duplex OLED DMA clocks 768 dummy bytes
+    /// but not for the RX FIFO: a full-duplex OLED DMA clocks 768 dummy bytes
     /// back into it every frame, and `SPBFCR.RXRST` must be re-asserted each time
-    /// or the next transfer mis-paces (visible as a horizontal "stretch"). With a
-    /// concurrent CV writer this was masked — CV flips the mode to 32-bit, so the
-    /// following frame's `enter_8bit` reconfigured anyway — but with CV idle the
-    /// reset was skipped. rza1 rewrites SPBFCR every frame for this exact reason.
+    /// or the next transfer mis-paces (visible as a horizontal "stretch"). The C
+    /// firmware (rza1) likewise rewrites SPBFCR every frame.
     /// Call once per OLED frame before arming the DMA.
     #[inline]
     pub fn reconfigure_8bit(&mut self) {
@@ -124,8 +117,8 @@ impl Rspi0 {
 /// The one and only RSPI0 token, behind an async mutex.
 ///
 /// `CriticalSectionRawMutex` (not an async-only raw mutex) is deliberate: it
-/// lets [`steal_rspi0`] and [`try_lock_rspi0`] work outside the executor (boot,
-/// and a future panic handler).
+/// lets [`steal_rspi0`] and [`try_lock_rspi0`] work outside the executor (boot
+/// and a panic handler).
 static RSPI0: Mutex<CriticalSectionRawMutex, Rspi0> = Mutex::new(Rspi0 {
     mode: Mode::Unknown,
 });

@@ -3,7 +3,6 @@ use std::fs;
 use std::path::PathBuf;
 
 fn main() {
-    // Generate icon constants from BMP files
     generate_icon_constants();
 }
 
@@ -13,7 +12,6 @@ fn generate_icon_constants() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let output_file = out_dir.join("generated_icons.rs");
 
-    // Find all BMP files
     let mut bmp_files = Vec::new();
     if let Ok(entries) = fs::read_dir(&icons_dir) {
         for entry in entries.flatten() {
@@ -26,7 +24,6 @@ fn generate_icon_constants() {
 
     bmp_files.sort();
 
-    // Generate Rust code
     let mut output = String::new();
     output.push_str("// Auto-generated icon constants from BMP files\n");
     output.push_str("//\n");
@@ -36,7 +33,7 @@ fn generate_icon_constants() {
     for bmp_path in &bmp_files {
         let filename = bmp_path.file_stem().unwrap().to_str().unwrap();
 
-        // Remove _icon suffix and convert to SCREAMING_SNAKE_CASE
+        // `checked_box_icon.bmp` → `CHECKED_BOX`.
         let name = if let Some(stripped) = filename.strip_suffix("_icon") {
             stripped
         } else {
@@ -44,10 +41,9 @@ fn generate_icon_constants() {
         };
         let const_name = name.to_uppercase();
 
-        // Use absolute path from CARGO_MANIFEST_DIR so include_bytes! can find it
+        // Absolute path: include_bytes! resolves relative to the generated file in OUT_DIR.
         let abs_path = bmp_path.to_str().unwrap().replace('\\', "/");
 
-        // Generate doc comment
         let doc_name = filename.replace('_', " ");
         output.push_str(&format!("/// {}\n", doc_name));
         output.push_str(&format!(
@@ -56,10 +52,8 @@ fn generate_icon_constants() {
         ));
     }
 
-    // Write the generated file
     fs::write(&output_file, output).expect("Failed to write generated icons file");
 
-    // Tell cargo to rerun if any BMP file changes
     for bmp_path in &bmp_files {
         println!("cargo:rerun-if-changed={}", bmp_path.display());
     }

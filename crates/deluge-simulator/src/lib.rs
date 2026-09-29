@@ -1,14 +1,15 @@
 //! Deluge desktop front-panel simulator.
 //!
 //! Renders the Deluge's OLED, RGB pad grid, buttons, encoders and LEDs and feeds
-//! input back to a "brain" that owns all UI logic. Two front-ends share the same
-//! rendering:
+//! input back to a "brain" that owns all UI logic. Entry points:
 //!
 //! - [`run_connected`] — drive an external brain over the [`deluge_protocol`]
 //!   wire (TCP / Unix socket), e.g. DelugeFirmware's native `deluge_host`.
-//! - [`run_in_process`] — drive an SDK app running in *this* process, sharing
-//!   state through [`deluge_sim_link`] with no serialization. This is what
-//!   `cargo deluge sim` uses.
+//! - [`run_brain`] / [`run_in_process`] — drive a program running in *this*
+//!   process, sharing state through [`deluge_sim_link`] with no serialization.
+//!   This is what `cargo deluge sim` uses.
+//! - [`run_headless`] — the window-less, scripted driver for the in-process
+//!   case (CI, golden frames), selected by `DELUGE_HEADLESS`.
 
 mod app;
 mod audio;
@@ -141,14 +142,18 @@ pub fn run_in_process(panel: SharedPanel, gui_audio: GuiEnds) {
     }
 }
 
-/// Run a program (the "brain") against the simulator panel in this process: create the panel and the audio
-/// bridge, start `brain` on its own thread with the program's ends of both, and hand the main thread to the
-/// window. `DELUGE_HEADLESS` runs the scripted, window-less driver instead (CI, golden frames). Returns when the
-/// window closes, with the brain still running: the caller ends the process, since only it knows how its threads
-/// must be torn down.
+/// Run a program (the "brain") against the simulator panel in this process.
 ///
-/// `brain` owns everything else: its executors, its threads, and binding the ends to its peripherals (a
-/// `deluge_bsp` program passes them to `deluge_bsp::sim::install`). The SDK's host runtime is one such brain; a
+/// Creates the panel and the audio bridge, starts `brain` on its own thread
+/// with the program's ends of both, and hands the main thread to the window.
+/// `DELUGE_HEADLESS` runs the scripted, window-less driver instead (CI, golden
+/// frames). Returns when the window closes, with the brain still running: the
+/// caller ends the process, since only it knows how its threads must be torn
+/// down.
+///
+/// `brain` owns everything else: its executors, its threads, and binding the
+/// ends to its peripherals (a `deluge_bsp` program passes them to
+/// `deluge_bsp::sim::install`). The SDK's host runtime is one such brain; a
 /// program built on the BSP directly is another.
 pub fn run_brain(brain: impl FnOnce(SharedPanel, deluge_sim_link::audio::BrainEnds) + Send + 'static) {
     let panel = SharedPanel::new();

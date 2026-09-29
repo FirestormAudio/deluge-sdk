@@ -50,11 +50,17 @@
 //! | Channel | DMARS value | Description |
 //! |---------|-------------|-------------|
 //! | FFD0_0  | 0x0101      | SCUTXI0 — CPU → SCUX input FIFO 0 |
-//! | FFD0_1  | 0x0103      | SCUTXI1 — CPU → SCUX input FIFO 1 |
+//! | FFD0_1  | 0x0105      | SCUTXI1 — CPU → SCUX input FIFO 1 |
+//! | FFD0_2  | 0x0109      | SCUTXI2 — CPU → SCUX input FIFO 2 |
+//! | FFD0_3  | 0x010D      | SCUTXI3 — CPU → SCUX input FIFO 3 |
 //! | FFU0_0  | 0x0102      | SCURXI0 — SCUX output FIFO 0 → CPU |
-//! | FFU0_1  | 0x0104      | SCURXI1 — SCUX output FIFO 1 → CPU |
+//! | FFU0_1  | 0x0106      | SCURXI1 — SCUX output FIFO 1 → CPU |
+//! | FFU0_2  | 0x010A      | SCURXI2 — SCUX output FIFO 2 → CPU |
+//! | FFU0_3  | 0x010E      | SCURXI3 — SCUX output FIFO 3 → CPU |
 //!
 //! ## DMA channel allocation (Deluge)
+//! Channels are passed in by the board crate ([`init_ffd_dma`] / [`init_ffu_dma`]).
+//!
 //! | DMA ch | Direction        | SCUX path    | Max ch |
 //! |--------|-----------------|--------------|--------|
 //! | 0      | SRAM → FFD0_0   | DMATD0_CIM   | 8      |
@@ -68,16 +74,14 @@
 
 use crate::dmac;
 
-// ── Uncached mirror (must match ssi.rs) ──────────────────────────────────────
+// ── Uncached mirror ───────────────────────────────────────────────────────────
 
 /// Add to any internal-SRAM cached VA to get its uncached alias.
-// UNCACHED_MIRROR_OFFSET is defined at crate root (crate::UNCACHED_MIRROR_OFFSET).
 use crate::UNCACHED_MIRROR_OFFSET;
 
 mod regs;
 use regs::*;
-// Re-export the public SCUX register/API constants (formerly defined here)
-// so existing `scux::NAME` paths keep working for callers (e.g. deluge-bsp).
+// Re-export the public SCUX register/API constants as `scux::NAME`.
 pub use regs::{
     DMARS_SCURXI0, DMARS_SCURXI1, DMARS_SCURXI2, DMARS_SCURXI3, DMARS_SCUTXI0, DMARS_SCUTXI1,
     DMARS_SCUTXI2, DMARS_SCUTXI3, FDTSEL_DIVEN, FDTSEL_SCKSEL_SSIF0_WS, INTIFS_44100_TO_44100,
@@ -92,7 +96,7 @@ pub use regs::{
 pub enum BitDepth {
     /// 24-bit samples (OTBL = 0b00000).
     B24,
-    /// 16-bit samples (OTBL = 0b00110).
+    /// 16-bit samples (OTBL = 0b01000).
     B16,
 }
 
@@ -111,7 +115,7 @@ impl BitDepth {
 ///
 /// Encodes as: `channels | (otbl << 16)` per the BSP convention.
 /// CHNUM is the actual channel count (1=mono, 2=stereo), not count−1.
-/// OTBL field occupies bits [20:16] in SADIR/VADIR (FDAIR/FUAIR/MADIR have no OTBL field).
+/// OTBL field occupies bits `[20:16]` in SADIR/VADIR (FDAIR/FUAIR/MADIR have no OTBL field).
 /// For 24-bit audio, OTBL = 0 so the shift position is moot, but is kept correct.
 #[derive(Copy, Clone, Debug)]
 pub struct AudioInfo {
@@ -161,7 +165,7 @@ pub struct SrcConfig {
     /// Minimum frequency register (MNFSR).  Set to `intifs * 2 >> 1` for
     /// safety margin; 0 disables the minimum frequency check.
     pub mnfsr: u32,
-    /// Buffer size select (BFSSR bits [1:0]).  0 = 256 samples (recommended
+    /// Buffer size select (BFSSR bits `[1:0]`).  0 = 256 samples (recommended
     /// for most use cases).
     pub buf_size: u32,
 }
@@ -170,7 +174,7 @@ pub struct SrcConfig {
 #[derive(Copy, Clone, Debug)]
 pub struct RampConfig {
     /// Ramp speed in VRPDR units (hardware step interval register value).
-    /// Consult TRM §37.9.6.  A value of 0x0F corresponds to ~1 ms per step.
+    /// See TRM §37.3.37.  A value of 0x0F corresponds to ~1 ms per step.
     pub vrpdr: u32,
     /// Ramp step size in VRDBR units (dB-per-step register value).
     /// 0 = minimum step (≈ 0.0078 dB), 0xFF = maximum step.
@@ -237,7 +241,7 @@ pub enum IpcSel {
 /// - `100` = SRC (sync) → OPC → FFU
 /// - `101–111` = no operation
 ///
-/// The reference always uses 0b001 for any SSIF output route (SRC direct,
+/// The Renesas BSP uses 0b001 for any SSIF output route (SRC direct,
 /// SRC+DVU, or SRC+DVU+MIX). DVU/MIX routing is configured separately.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(u32)]
@@ -470,7 +474,7 @@ pub unsafe fn configure_ffu(ch: u8, audio: AudioInfo, dma_size: u8) {
 /// Writes to 2SRC memory-mapped registers.
 pub unsafe fn configure_src(unit: u8, pair: u8, cfg: SrcConfig) {
     unsafe {
-        // Audio direction — stereo 24-bit etc.
+        // Audio information — channel count and bit depth.
         src(unit, pair, SADIR_OFF).write_volatile(cfg.audio.to_reg());
 
         // BSP (SCUX_InitHw) always writes SRCCR = BASE_VALUE (0x00010110) regardless

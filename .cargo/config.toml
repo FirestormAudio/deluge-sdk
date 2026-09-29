@@ -1,13 +1,8 @@
 [build]
 target = "armv7a-none-eabihf"
 
-# ---------------------------------------------------------------------------
-# armv7-unknown-linux-gnueabihf — used for QEMU benchmark runs only.
-# Run: cargo bench --target armv7-unknown-linux-gnueabihf
-#
-# qemu-arm -cpu cortex-a9 emulates Cortex-A9 including VFPv3-D16 and NEON.
-# The RUSTFLAGS here match the embedded target so codegen is representative.
-# ---------------------------------------------------------------------------
+# ARM Linux under QEMU (Cortex-A9 with NEON), for tests and benchmarks of the
+# crates that need ARM. Flags match the device target so codegen is the same.
 [target.armv7-unknown-linux-gnueabihf]
 linker = "arm-linux-gnueabihf-gcc"
 runner = ["qemu-arm", "-cpu", "cortex-a9", "-L", "/usr/arm-linux-gnueabihf"]
@@ -25,56 +20,33 @@ rustflags = [
 ]
 
 [alias]
-# Used when building the embedded firmware for armv7a-none-eabihf.
-# build-std cannot live in [unstable] because it applies to all targets,
-# breaking host-native `cargo test` for the rza1/deluge-bsp crates.
-# build-fw-bin requires cargo-binutils (`cargo install cargo-binutils`).
-# `core,alloc` (not just `core`): matches `cargo deluge build` (see
-# tools/cargo-deluge/src/build.rs) so `alloc` apps (e.g. the GPL
-# deluge-ui-toolkit menu/text) don't hit E0152 under this alias but not that
-# one. `alloc` is a no-op extra for apps that don't use it.
+# Firmware builds. build-std is set per alias rather than under [unstable],
+# which would apply it to host builds too and break `cargo test`. It builds
+# `core,alloc`, as `cargo deluge build` does: with `core` alone, crates that
+# use `alloc` get it from the prebuilt sysroot and the two `core`s collide
+# (E0152). The `*-bin` aliases need cargo-binutils.
 build-fw      = "build -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem"
-# `core,alloc` here for the same reason as `build-fw` above: with `core` alone,
-# `alloc`-using workspace members (deluge-grid-toolkit, deluge-ui-toolkit) pull
-# `alloc` from the prebuilt sysroot while `core` is built from source, and the
-# two `core`s collide with `E0152: duplicate lang item in crate 'core'`.
 build-fw-rel  = "build -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem --release --no-default-features"
-# Kept as a documented alias of `build-fw` (identical build-std set) now that
-# `build-fw` itself includes `alloc` — old invocations/scripts keep working.
-# Usage: cargo build-fw-alloc -p oled_menu
+# Same as `build-fw`.
 build-fw-alloc = "build -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem"
 build-fw-bin  = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p demo-firmware -- -O binary target/armv7a-none-eabihf/release/demo-firmware.bin"
 build-controller-bin = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p deluge-controller -- -O binary target/armv7a-none-eabihf/release/deluge-controller.bin"
 build-msc            = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem -p msc-firmware"
 build-msc-bin        = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p msc-firmware -- -O binary target/armv7a-none-eabihf/release/msc-firmware.bin"
-# --features rtt is explicit because uac-host-firmware can no longer default it
-# on: a default-on `rtt` leaks through workspace feature unification into the
-# shared rza1l-hal rlib and breaks the link of every other firmware (see the
-# comment in hw-tests/uac-host-firmware/Cargo.toml).  This alias keeps the
-# usual RTT-enabled dev build; build-uac-bin stays --no-default-features.
+# `rtt` is enabled here rather than by default: a default-on feature would
+# unify into the shared rza1l-hal build and break every other firmware's link.
 build-uac            = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem -p uac-host-firmware --features rtt"
 build-uac-bin        = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p uac-host-firmware -- -O binary target/armv7a-none-eabihf/release/uac-host-firmware.bin"
 build-app-loader     = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem -p app-loader"
 build-app-loader-bin = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p app-loader -- -O binary target/armv7a-none-eabihf/release/app-loader.bin"
-# Host-side ELF -> Deluge-SSB UF2 converter (tools/elf2uf2). The explicit
-# --target overrides the armv7a [build] target above so it builds for the host.
-# Usage: cargo elf2uf2 path/to/firmware.elf [-o out.uf2] [--bin]
-elf2uf2              = "run --manifest-path tools/elf2uf2/Cargo.toml --target x86_64-unknown-linux-gnu --release --"
-# Host-side wren-core debug harness (wren/wren-web-debug). The explicit
-# --target overrides the armv7a [build] target above so it builds for the host.
-# Usage: cargo test-wren-debug
+# Wren debug harness tests (`--target` overrides the device default).
 test-wren-debug       = "test --manifest-path wren/wren-web-debug/Cargo.toml --target x86_64-unknown-linux-gnu"
-# The static-wavetable generator moved to flare (flare-mipgen). Run it there:
-#   cd ../flare && cargo gen-tables > crates/flare-kernels/src/wavetables_generated.rs
 build-wren           = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem -p wren-firmware"
 build-wren-bin       = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p wren-firmware -- -O binary target/armv7a-none-eabihf/release/wren-firmware.bin"
 
-# ---------------------------------------------------------------------------
-# armv7-unknown-linux-musleabihf — the Deluge's Linux userland (deluge-linux).
-# `cargo deluge linux` selects this triple and prepends the bundle toolchain's
-# bin to PATH so `arm-linux-gcc` resolves; apps are fully static (crt-static)
-# because they run from the SD card and must not depend on any image's rootfs.
-# ---------------------------------------------------------------------------
+# The Deluge's Linux userland, selected by `cargo deluge linux` (which puts the
+# bundle toolchain's `arm-linux-gcc` on PATH). Apps are statically linked
+# because they run from the SD card, independent of any image's rootfs.
 [target.armv7-unknown-linux-musleabihf]
 linker = "arm-linux-gcc"
 rustflags = [

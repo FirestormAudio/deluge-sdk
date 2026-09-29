@@ -38,15 +38,15 @@ echo "==> QEMU ARM bucket ($QEMU)"
 # under QEMU. The portable fallback is covered in the host bucket below.
 cargo test --target "$QEMU" -p armv7-dsp-intrinsics --lib
 cargo test --target "$QEMU" -p armv7-dsp-intrinsics --features nightly --lib
-# No --lib: also runs the cross-crate dsp_pipeline integration test, which moved
-# here from the FFT crate — that crate is flare-fft now, in its own repo, and
-# must not dev-depend on anything staying in the SDK.
+# No --lib: also runs the cross-crate dsp_pipeline integration test. It lives
+# here because the FFT crate (flare-fft) is in its own repo and must not
+# dev-depend on the SDK.
 cargo test --target "$QEMU" -p deluge-fixedpoint
 cargo test --target "$QEMU" -p rza1l-hal --lib
 cargo test --target "$QEMU" -p deluge-bsp --features usb-host --lib
 cargo test --target "$QEMU" -p deluge-fonts --lib
-# The audio engine (flare-kernels, flare-graph, flare-fft) moved to its own
-# repo and is tested by ~/GitHub/flare/tools/test.sh, which runs its own
+# The audio engine (flare-kernels, flare-graph, flare-fft) lives in its own
+# repo and is tested by that repo's tools/test.sh, which runs its own
 # two-bucket, two-config matrix. deluge-wren-core is this repo's integration
 # check against it: on 32-bit ARM specifically, because the deploy target is
 # 32-bit (`usize == u32`) and the binding layer is full of offset arithmetic
@@ -72,10 +72,9 @@ cargo test --target "$HOST" --manifest-path tools/cargo-deluge/Cargo.toml
 cargo test --target "$HOST" --manifest-path wren/wren-web-debug/Cargo.toml
 
 # `wren/wren-web` is the web simulator's wasm core. It is excluded from the
-# workspace and only builds for wasm, so nothing else here compiles it — which
-# is exactly how it silently rotted through several `Cmd`-surface changes before
-# anyone noticed. Its logic (the `Cmd` wire codec) lives in deluge-wren-core so
-# it is unit-tested above; this is the build guard that catches API drift.
+# workspace and only builds for wasm, so nothing else here compiles it. Its
+# logic (the `Cmd` wire codec) lives in deluge-wren-core so it is unit-tested
+# above; this is the build guard that catches API drift.
 if rustup target list --installed | grep -q '^wasm32-wasip1$'; then
   cargo check --manifest-path wren/wren-web/Cargo.toml --target wasm32-wasip1
 else

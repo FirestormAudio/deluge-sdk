@@ -28,27 +28,45 @@ testing.
 | [`uart`] | SCIF0 MIDI DIN (31 250 bps) + SCIF1 PIC UART; DMA-backed RX/TX |
 | [`sd`] | SDHI SD v2 card — full JEDEC init, block read/write, SDHC/SDXC auto-detect, DMA bounce buffer |
 | [`fat`] | `embedded-sdmmc` wrapper — `DelugeVolumeManager`, `DelugeBlockDevice`, FAT filesystem access |
-| [`usb`] | RUSB1 USB port — device mode (`embassy-usb-driver`) and host mode (`embassy-usb-host`) with compile-time mode tracking |
+| [`usb`] | USB class layer over the RUSB1 drivers in `rza1l-hal`: UAC2, USB-MIDI and MSC device classes, the MSC Bulk-Only Transport, and (feature `usb-host`) host-side class drivers |
+| [`bus`] | RSPI0 ownership guard shared by the OLED and the CV DAC (`lock_rspi0`, `enter_8bit` / `enter_32bit`) |
+| [`audio_block`] | Block-oriented audio tap over the SSI0 DMA rings, used by the SDK's `dlg.audio()` |
+| [`jacks`] | Audio jack-detect inputs and the speaker-amp enable |
+| [`trigger_clock`] | Analog trigger-clock input |
+| [`rgb`] | RGB pad-LED surface for the 18 × 8 grid |
+| [`battery`] | Battery-voltage sense via the ADC |
+| [`flash`] | SPI-NOR chip profile and board flash map (feature `flash`) |
+| [`sim`] | Desktop-simulator panel standing in for the peripherals on host builds (feature `sim-link`) |
 
 ## Peripheral sharing
 
 RSPI0 is shared between the OLED DMA path (`oled`) and the CV DAC
-(`cv_gate`).  The global `RSPI0_DMA_ACTIVE` atomic flag serialises access:
-`cv_gate::cv_set_blocking` spins until the OLED DMA transfer completes before
-reconfiguring the bus.
+(`cv_gate`). Both go through the async mutex in [`bus`]: a consumer
+`lock_rspi0().await`s a guard, drives the bus through it, and releases it on
+drop. The guard tracks the current frame mode, so switching between the OLED's
+8-bit and the DAC's 32-bit frames only reconfigures the peripheral when needed.
 
-## USB modes
+## USB
 
-`usb::init_device_mode` and `usb::init_host_mode` return a typed
-`UsbPort<Device>` / `UsbPort<Host>` handle, preventing mode confusion at
-compile time.  The port can be switched at runtime via
-`into_device_mode()` / `into_host_mode()`.
+The chip-level RUSB1 device and host drivers (`init_device_mode` /
+`init_host_mode`, the `embassy-usb-driver` implementations) live in
+[`rza1l_hal::usb`](../rza1l-hal/README.md); this crate adds the board's USB
+classes on top.
 
 ## Feature flags
 
-There are currently no Cargo feature flags.  Peripherals that require
-Embassy (timers, USB, SCUX async paths) are gated on
-`#[cfg(target_os = "none")]` and are excluded from host builds.
+| Feature | Effect |
+|---|---|
+| `fat` | The `embedded-sdmmc` FAT stack (`fat` module and the SD block-device adapters) |
+| `flash` | The `flash` module (only the app-loader writes flash) |
+| `audio-irq` | Clock `audio_block` from a per-block RX-DMA interrupt instead of a poll loop |
+| `embedded-graphics` | `DrawTarget` impl for `oled::FrameBuffer` |
+| `usb-host` | USB host-side class drivers (`embassy-usb-host`) |
+| `sim-link` | Route PIC commands and OLED frames to the desktop simulator (host builds only) |
+
+Modules that need the bare-metal target (Embassy tasks, DMA, MTU2) are gated on
+`#[cfg(target_os = "none")]`; the pure-logic modules also build on the host for
+unit testing.
 
 ## Usage
 
@@ -57,12 +75,16 @@ Embassy (timers, USB, SCUX async paths) are gated on
 deluge-bsp = { path = "../deluge-bsp" }
 ```
 
-A typical boot sequence:
+A typical boot sequence (`init_clocks` also brings up the SDRAM controller):
 
 ```rust
-deluge_bsp::system::init_clocks();
-deluge_bsp::sdram::init();
-deluge_bsp::audio::init();
-deluge_bsp::uart::init_pic(31_250);
-deluge_bsp::cv_gate::init();
+unsafe {
+    deluge_bsp::system::init_clocks();
+    deluge_bsp::audio::init();
+    deluge_bsp::uart::init_pic(31_250);
+    deluge_bsp::cv_gate::init();
+}
 ```
+
+Apps built on the `deluge` SDK get all of this from `#[deluge::app]` and don't
+call it directly.
