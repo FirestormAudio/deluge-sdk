@@ -11,42 +11,35 @@ description = "Board support package for the Synthstrom Deluge (peripherals, PIC
 categories = ["embedded", "no-std", "hardware-support"]
 keywords = ["deluge", "synthstrom", "bsp", "rza1", "embedded"]
 
-# docs.rs builds on the x86_64 host by default; the bare-metal peripheral code
-# only compiles for the device triple, so build the docs there.
+# The peripheral code builds only for the device target.
 [package.metadata.docs.rs]
 default-target = "armv7a-none-eabihf"
 
 [lib]
-# Unit tests (in #[cfg(all(test, not(target_os="none")))]) run natively via
-# `cargo test` (host target). They cannot compile for armv7a-none-eabihf
-# because the `test` crate requires std.
+# Unit tests run on the host; the test harness needs std.
 test = false
 
 [features]
-## The synchronous embedded-sdmmc FAT stack (`fat` module + the BlockDevice/TimeSource adapters in
-## `sd`). Off by default: DelugeFirmware replaced it with the async `embedded-fatfs` mount in R4 and
-## references none of it, so the whole second filesystem -- and its heapless 0.8 pin -- stays out of
-## the dependency graph unless something actually asks for it.
+## The synchronous embedded-sdmmc FAT stack (the `fat` module and the
+## BlockDevice/TimeSource adapters in `sd`). Opt-in, so firmware that mounts
+## the card another way doesn't carry a second filesystem.
 fat = ["dep:embedded-sdmmc"]
 default = []
-## Drive `audio::init_direct` from a per-block RX DMA interrupt (the audio SDK's
-## v2 cadence) instead of the default poll loop. Selected by `deluge/audio-irq`.
+## Drive `audio::init_direct` from a per-block RX DMA interrupt instead of the
+## default poll loop. Selected by `deluge/audio-irq`.
 audio-irq = []
-## Expose the [`flash`] module (SPI-NOR chip profile + board memory map over the
-## SoC `rza1l_hal::spibsc` controller). Opt-in because only the app-loader writes
-## to flash; gating it keeps it out of every other firmware's build.
+## The [`flash`] module: SPI-NOR chip profile and board memory map over
+## `rza1l_hal::spibsc`. Opt-in; only the app-loader writes flash.
 flash = []
-## Implement `embedded-graphics` `DrawTarget`/`OriginDimensions` for `oled::FrameBuffer`
-## so the page-major buffer is a runtime-agnostic draw surface (host + device) without
-## the async `deluge-sdk::Oled` wrapper. Used by hosts (e.g. spark) that render their
-## own UI into the frame buffer and read it back via `FrameBuffer::as_bytes`.
+## `embedded-graphics` `DrawTarget` for `oled::FrameBuffer`, so a caller can draw
+## into it directly (host or device) without the async `deluge::Oled` wrapper,
+## then read it back with `FrameBuffer::as_bytes`.
 embedded-graphics = ["dep:embedded-graphics-core"]
-## Expose the USB **host** stack (`usb::host`: generic host class drivers +
-## UAC/MIDI). Opt-in — only host-role firmwares need it; gating it keeps
-## `embassy-usb-host` (and its `ssmarshal` dep) out of every other build.
+## The USB host stack (`usb::host`: class drivers, UAC and MIDI). Opt-in; only
+## host-role firmware needs it.
 usb-host = ["dep:embassy-usb-host"]
-## Drive the desktop simulator's panel from the host arms (the `sim` module): PIC commands and OLED frames land
-## on a `deluge-sim-link` panel instead of being dropped. Host builds only; a simulator installs the panel.
+## Send PIC commands and OLED frames to the desktop simulator's panel
+## (`deluge-sim-link`) instead of dropping them. Host builds only.
 sim-link = ["dep:deluge-sim-link", "dep:embassy-time"]
 
 [dependencies]
@@ -56,11 +49,8 @@ critical-section = { workspace = true }
 log = { workspace = true }
 embedded-graphics-core = { version = "0.4", optional = true }
 heapless = "0.9"
-# USB **host** stack — gated behind the `usb-host` feature, unlike the
-# device-side `embassy-usb` below. The host class drivers in `usb::host` are
-# generic over `UsbHostAllocator` and are unit-tested against a mock on
-# armv7-unknown-linux-gnueabihf under QEMU (see tools/test.sh), which is
-# `target_os = "linux"` — so these cannot be gated to `target_os = "none"`.
+# Not device-only: the host class drivers are also unit-tested under QEMU on
+# ARM Linux (see tools/test.sh).
 embassy-sync = { workspace = true }
 embassy-usb-driver = { workspace = true }
 embassy-usb-host = { workspace = true, optional = true }
@@ -70,24 +60,19 @@ cortex-ar = { workspace = true }
 embassy-futures = { workspace = true }
 embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
 embassy-usb = { workspace = true }
-# For `#[embassy_executor::task]` + `Spawner` in `usb::host`'s supervisor and
-# per-device tasks. No executor features needed here — the firmware selects the
-# platform/executor backend.
+# Task macros for `usb::host`; the firmware chooses the executor backend.
 embassy-executor = { workspace = true }
 
 [target.'cfg(not(target_os = "none"))'.dependencies]
 # The desktop simulator's panel (the `sim-link` feature). std-only, like the simulator itself.
 deluge-sim-link = { path = "../deluge-sim-link", optional = true }
-# Polls the simulator's input for `pic::read_byte` (`sim-link`). The program supplies the time driver, as on the
-# device.
+# Polls the simulator's input for `pic::read_byte` (`sim-link`).
 embassy-time = { workspace = true, optional = true }
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
 critical-section = { workspace = true, features = ["std"] }
-# `embassy-usb-host` pulls in `embassy-time`, which needs a registered time
-# driver to *link* the test binary. `mock-driver` supplies one.
-# `generic-queue-8`: the `sim` module's input poll waits on a `Timer`, and a test binary has no executor to supply the
-# timer queue a program's executor would.
+# Tests have no executor: `mock-driver` supplies a time driver to link against,
+# and `generic-queue-8` a timer queue for the `sim` input poll.
 embassy-time = { workspace = true, features = ["mock-driver", "generic-queue-8"] }
 embassy-futures = { workspace = true }
 
