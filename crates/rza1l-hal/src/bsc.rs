@@ -1,7 +1,7 @@
 //! Bus State Controller (BSC) chip-select area timing for RZ/A1L.
 //!
 //! The BSC divides the external address space into six areas (CS0–CS5).
-//! CS2 and CS3 are configured for SDRAM in [`crate::sdram`].  This module
+//! CS2 and CS3 are configured for SDRAM by the board crate (`deluge_bsp::sdram`).  This module
 //! handles CS0 and CS1, which the Renesas BSP configures for a 16-bit
 //! external-bus device (NOR flash timing from `bsc_userdef.c`).
 //!

@@ -4,15 +4,18 @@
 //!
 //! ```text
 //! application
-//!   │  Rusb1HostDriver (implements embassy_usb_driver::host::UsbHostDriver)
+//!   │  Rusb1HostDriver (implements embassy_usb_driver::host::UsbHostController)
 //!   │    ├─ wait_for_device_event() ← Connected(Speed) / Disconnected
 //!   │    ├─ bus_reset()             ← async, drives USBRST for ~20 ms
-//!   │    └─ alloc_channel()         ← returns Rusb1Channel<T,D>
+//!   │    └─ allocator()             ← returns Rusb1Allocator
 //!   │
-//!   │  Rusb1Channel<T, D> (implements UsbChannel<T, D>)
+//!   │  Rusb1Allocator (implements UsbHostAllocator)
+//!   │    └─ alloc_pipe()            ← returns Rusb1Pipe<T, D>
+//!   │
+//!   │  Rusb1Pipe<T, D> (implements UsbPipe<T, D>)
 //!   │    ├─ control_in / control_out  ← setup + data + status ZLP
 //!   │    ├─ request_in / request_out  ← non-control IN / OUT
-//!   │    └─ retarget_channel()        ← after SET_ADDRESS
+//!   │    └─ reset_data_toggle()       ← back to DATA0
 //!   │
 //!   └─ hcd_int_handler(port)   ← GIC IRQ 73/74
 //!         ├─ INTSTS1: ATTCH/DTCH → HCD_EVENTS + waker
@@ -24,7 +27,7 @@
 //!
 //! ## Pipe allocation (host mode)
 //!
-//! The reference `hcd_rusb1.c` driver uses only pipes 0-9.
+//! Host mode uses pipes 0-9 only, as TinyUSB's `hcd_rusb1.c` does.
 //!
 //! | Pipe | Purpose       |
 //! |------|---------------|
@@ -41,12 +44,12 @@
 //! ## PIPECFG.DIR in host mode
 //!
 //! DIR is inverted relative to device mode: DIR=1 means the host is sending
-//! (USB OUT), DIR=0 means the host is receiving (USB IN).  The C reference
-//! computes this as `(1 ^ dir_in) << 4`.
+//! (USB OUT), DIR=0 means the host is receiving (USB IN), i.e.
+//! `(1 ^ dir_in) << 4`.
 //!
 //! ## Reference
 //!
-//! `lib/tinyusb/src/portable/renesas/rusb1/hcd_rusb1.c`
+//! TinyUSB `src/portable/renesas/rusb1/hcd_rusb1.c`.
 
 use core::sync::atomic::{AtomicU8, AtomicU16, Ordering};
 use embassy_sync::waitqueue::AtomicWaker;
@@ -95,7 +98,7 @@ pub(crate) const fn dev_addr_supported(dev_addr: u8) -> bool {
     dev_addr > 0 && (dev_addr as usize) < HCD_MAX_DEV
 }
 
-// HCD_EVENTS bit layout (matches C: process_attach / process_detach).
+// HCD_EVENTS bit layout.
 const EVT_ATTACH: u8 = 1 << 0;
 const EVT_DETACH: u8 = 1 << 1;
 const EVT_SACK: u8 = 1 << 2; // setup ACK from device
@@ -103,14 +106,6 @@ const EVT_SIGN: u8 = 1 << 3; // setup ignored (NAK/error)
 
 // FIFO SEL/CTR field layout is shared by CFIFO and DnFIFO and lives in
 // `regs.rs` (CURPIPE [3:0], FRDY bit 13, DTLN [11:0] — TRM §28.3.8/28.3.9).
-// Earlier revisions redefined FRDY as 0x0020 and DTLN as 0x01FF here, which
-// polled a DTLN bit instead of FRDY and truncated a 512-byte HS bulk packet's
-// length to 0.
-
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
-// (Re-exported from embassy_usb_driver — no custom type duplication needed.)
 
 // ---------------------------------------------------------------------------
 // Per-pipe ISR ↔ task state
@@ -207,7 +202,7 @@ impl HcdAlloc {
     }
 
     /// Allocate a free pipe for `ep_type`.  Searches backward (highest pipe
-    /// first) within the type's range, same as the C `find_pipe` function.
+    /// first) within the type's range, as TinyUSB's `find_pipe` does.
     fn alloc_pipe(&mut self, ep_type: EndpointType) -> Option<usize> {
         let (first, last): (usize, usize) = match ep_type {
             EndpointType::Isochronous => (1, 2),
@@ -267,11 +262,11 @@ static HCD_ALLOC: [critical_section::Mutex<core::cell::UnsafeCell<HcdAlloc>>; 2]
 
 /// USB host-mode driver for one RUSB1 port.
 ///
-/// Implements [`embassy_usb_driver::host::UsbHostDriver`] so it can be used
+/// Implements [`embassy_usb_driver::host::UsbHostController`] so it can be used
 /// directly with the `embassy-usb-host` enumeration stack.
 ///
-/// The raw async methods (`wait_for_event`, `setup_send`, `xfer_in`, …) are
-/// also kept for direct use without the Embassy host stack.
+/// The lower-level async methods (`wait_for_event`, `setup_send`, `xfer_in`, …)
+/// are public for use without the Embassy host stack.
 pub struct Rusb1HostDriver {
     port: u8,
 }
@@ -294,8 +289,8 @@ impl Rusb1HostDriver {
             // Stop clock supply to this port first.
             rmw(core::ptr::addr_of_mut!((*regs).suspmode), SUSPMODE_SUSPM, 0);
 
-            // UPLLE lives in USB0's SYSCFG0 (C reference always writes
-            // rusb0->SYSCFG0) and may only be modified while SUSPM=0 on BOTH
+            // UPLLE lives in USB0's SYSCFG0 regardless of which port is being
+            // initialised, and may only be modified while SUSPM=0 on BOTH
             // channels (TRM §28.3.1).  Only enable it when off: a set UPLLE means
             // the PLL is already locked from the other port's bring-up, so we
             // must not repeat the lock wait or disturb that port's SUSPM.  When
@@ -439,8 +434,8 @@ impl Rusb1HostDriver {
     /// Wait for the next raw bus event: device attached or detached.
     ///
     /// For `Connected`, speed is not yet valid — call [`bus_reset`](Self::bus_reset)
-    /// first, then read [`port_speed`](Self::port_speed).  Consider using
-    /// `UsbHostDriver::wait_for_device_event` which handles this automatically.
+    /// first, then read [`port_speed`](Self::port_speed).
+    /// `UsbHostController::wait_for_device_event` does both automatically.
     pub async fn wait_for_event(&self) -> DeviceEvent {
         core::future::poll_fn(|cx| {
             HCD_EVENT_WAKER.register(cx.waker());
@@ -457,10 +452,10 @@ impl Rusb1HostDriver {
         .await
     }
 
-    /// Drive a USB bus reset (~20 ms), then re-enable SOF generation.
+    /// Drive a USB bus reset (USBRST for ~20 ms), then re-enable SOF generation.
     ///
     /// Must be called after every [`DeviceEvent::Connected`] before
-    /// enumeration.  Drives USBRST for ~20 ms using the async timer.
+    /// enumeration.
     pub async fn bus_reset(&self) {
         unsafe {
             let regs = Rusb1Regs::ptr(self.port);
@@ -523,7 +518,6 @@ impl Rusb1HostDriver {
             );
         }
 
-        // Wait for reset to propagate — async sleep instead of busy-spinning.
         Timer::after_millis(20).await;
 
         let p = self.port as usize;
@@ -542,10 +536,8 @@ impl Rusb1HostDriver {
         // Wait for the reset handshake to complete before the caller reads the
         // speed.  RHST only latches a determined value (001 LS / 010 FS / 011
         // HS) once SE0 driving finishes; for HS the chirp handshake can take a
-        // few ms, during which RHST reads 0b1xx.  A prior version read RHST
-        // immediately, so the 0b100 "in progress" value fell through
-        // port_speed()'s `_ => Full` fallback and LS/HS devices were mis-detected
-        // as Full.  Poll up to ~50 ms (mirrors the reference's bounded retry).
+        // few ms, during which RHST reads 0b1xx, which port_speed() would
+        // misreport as Full.  Poll for up to ~50 ms.
         for _ in 0..50 {
             let rhst = unsafe { rd(core::ptr::addr_of!((*Rusb1Regs::ptr(self.port)).dvstctr0)) }
                 & DVSTCTR0_RHST;
@@ -595,8 +587,8 @@ impl Rusb1HostDriver {
     /// Must be called (and DEVADDn fully configured) **before** starting
     /// any pipe that targets this device (TRM Note 1 for DEVADDn).
     ///
-    /// Returns [`HostError::OutOfSlots`] if `dev_addr` exceeds what
-    /// [`HCD_MAX_DEV`] allows. Address 0 is permitted: enumeration programmes
+    /// Returns [`HostError::OutOfSlots`] if `dev_addr` is above 5.
+    /// Address 0 is permitted: enumeration programmes
     /// the DCP at the default address before `SET_ADDRESS`.
     pub fn device_open(
         &self,
@@ -956,7 +948,6 @@ impl Rusb1HostDriver {
                 );
 
                 // PIPECFG.DIR: 1 = host sends (OUT), 0 = host receives (IN).
-                // C: cfg = ((1 ^ dir_in) << 4) | epn
                 let dir_field: u16 = if dir_in { 0x0000 } else { 0x0010 };
                 let type_field: u16 = match ep_type {
                     EndpointType::Bulk => PIPECFG_TYPE_BULK | PIPECFG_SHTNAK | PIPECFG_DBLB,
@@ -1095,7 +1086,7 @@ impl Rusb1HostDriver {
                 wr(core::ptr::addr_of_mut!(e.d0fifosel), 0);
                 while rd(core::ptr::addr_of!(e.d0fifosel)) & FIFOSEL_CURPIPE_MASK != 0 {}
             } else {
-                // Write first packet to D0FIFO (16-bit access for speed).
+                // Write the first packet to D0FIFO (32-bit access).
                 wr(
                     core::ptr::addr_of_mut!(e.d0fifosel),
                     pipe as u16 | (MBW_32 << FIFOSEL_MBW_SHIFT),
@@ -1282,10 +1273,10 @@ pub unsafe fn hcd_int_handler(port: u8) {
 
         // ── ATTCH: a device connected ─────────────────────────────────────────
         if is1 & INTSTS1_ATTCH != 0 {
-            // Do NOT enable SOF (UACT) here: the reference leaves it off until
-            // the bus reset completes.  Generating SOF to a freshly-attached,
-            // un-reset device is non-standard; `bus_reset` owns UACT (it clears
-            // it before asserting USBRST and re-enables it as the reset ends).
+            // Do NOT enable SOF (UACT) here: generating SOF to a
+            // freshly-attached, un-reset device is non-standard.  `bus_reset`
+            // owns UACT (it clears it before asserting USBRST and re-enables it
+            // as the reset ends).
             critical_section::with(|cs| {
                 (&mut *HCD_ALLOC[port as usize].borrow(cs).get()).need_reset = true;
             });
@@ -1383,9 +1374,8 @@ unsafe fn pipe0_in_brdy(regs: *mut Rusb1Regs) {
         // Byte-level read from CFIFO.  The FIFO port is selected at MBW=8; per
         // TRM Table 28.9 (8-bit access, BIGEND=0) the valid received byte sits
         // on bits[31:24] = CPU byte-address base+3, and each MBW=8 access pops
-        // one byte and advances the FIFO.  (The unvalidated TinyUSB
-        // `pipe_read_packet` this was modeled on read base+0 — the *prohibited*
-        // lane — and would return garbage on silicon.)
+        // one byte and advances the FIFO.  Base+0 is the prohibited lane
+        // (TinyUSB's `pipe_read_packet` reads it).
         if len > 0 && !xfer.buf.is_null() {
             let cfifo_byte = (regs as usize
                 + core::mem::offset_of!(super::regs::Rusb1Regs, cfifo)
@@ -1473,8 +1463,8 @@ unsafe fn pipe_brdy_in(regs: *mut Rusb1Regs, n: usize) {
 
         // Byte-level read from D0FIFO.  Selected at MBW=8; per TRM Table 28.9
         // (8-bit access, BIGEND=0) the valid byte is on bits[31:24] = base+3,
-        // and each access pops one byte and advances the FIFO.  (Reading base+0,
-        // as the unvalidated TinyUSB reference did, samples the prohibited lane.)
+        // and each access pops one byte and advances the FIFO.  Base+0 is the
+        // prohibited lane.
         if len > 0 {
             let d0fifo_byte = (regs as usize
                 + core::mem::offset_of!(super::regs::Rusb1Regs, d0fifo)
@@ -1662,7 +1652,7 @@ impl<'d> UsbHostController<'d> for Rusb1HostDriver {
             }
 
             if ev & EVT_ATTACH != 0 {
-                // Spec: issue bus reset before reporting speed.
+                // RHST only reports the device speed after a bus reset.
                 Rusb1HostDriver::bus_reset(&*self).await;
                 let speed = self.port_speed();
                 return DeviceEvent::Connected(speed);
@@ -1671,7 +1661,6 @@ impl<'d> UsbHostController<'d> for Rusb1HostDriver {
     }
 
     async fn bus_reset(&mut self) {
-        // Delegate to the existing inherent async method.
         Rusb1HostDriver::bus_reset(&*self).await;
     }
 }
@@ -1873,10 +1862,9 @@ mod tests {
 
     #[test]
     fn host_pipe_buffers_are_disjoint_and_clear_of_the_dcp() {
-        // Regression: host-mode pipes previously never programmed PIPEBUF, so
-        // every bulk/iso pipe defaulted to block 0 (the DCP region) and
-        // overlapped.  Two 512-byte double-buffered bulk pipes must now get
-        // disjoint regions, both clear of the reserved blocks 0-6.
+        // Without an explicit PIPEBUF every bulk/iso pipe would default to
+        // block 0 (the DCP region). Two 512-byte double-buffered bulk pipes
+        // must get disjoint regions, both clear of the reserved blocks 0-6.
         let mut a = HcdAlloc::new();
         let p1 = a.alloc_pipe(EndpointType::Bulk).unwrap();
         let (s1, n1) = a.alloc_pipe_buf(p1, 512, true).unwrap();

@@ -77,7 +77,7 @@ const STBCR5_MSTP51: u8 = 1 << 1;
 /// those two bits so it is safe to call even if the rest of STBCR5 was set
 /// by an earlier boot stage.
 ///
-/// In production firmware, prefer [`rza1::stb::init`] which enables all
+/// In production firmware, prefer [`crate::stb::init`] which enables all
 /// peripheral clocks at once. Call this function directly only in isolated
 /// tests or examples that do not call `stb::init()`.
 ///

@@ -24,12 +24,15 @@
 //!
 //! ```ignore
 //! unsafe {
-//!     sdhi::init(1);
+//!     sdhi::init(1, sd_option);
 //!     sdhi::register_irqs(1);
 //! }
 //! // In an async task — SD card protocol:
-//! sdhi::send_cmd(1, 0 /*CMD0*/, 0).await?;   // Reset
-//! let resp = sdhi::last_r1(1);
+//! unsafe {
+//!     sdhi::set_arg(1, 0);
+//!     sdhi::send_cmd(1, 0 /* CMD0: reset */).await?;
+//!     let resp = sdhi::read_r1(1);
+//! }
 //! ```
 
 use core::future::poll_fn;
@@ -489,7 +492,7 @@ fn irq_sdhi0_op() {
         interrupt_handler(0);
     }
 }
-fn irq_sdhi0_io() { /* SDIO not used; clear and ignore */
+fn irq_sdhi0_io() { /* SDIO not used; ignored */
 }
 
 fn irq_sdhi1_cd() {
@@ -502,7 +505,7 @@ fn irq_sdhi1_op() {
         interrupt_handler(1);
     }
 }
-fn irq_sdhi1_io() { /* SDIO not used; clear and ignore */
+fn irq_sdhi1_io() { /* SDIO not used; ignored */
 }
 
 /// Core interrupt handler: capture INFO1/INFO2, accumulate, wake waiter.
@@ -824,7 +827,7 @@ pub unsafe fn read_r1(port: u8) -> u32 {
 
 /// Read the full 128-bit R2 response (CID or CSD register).
 ///
-/// Returns `[word0, word1, word2, word3]` where word0 contains bits [127:96].
+/// Returns `[word0, word1, word2, word3]` where word0 contains bits `[127:96]`.
 ///
 /// # Safety
 /// Reads SDHI response registers.
@@ -954,7 +957,7 @@ pub async unsafe fn write_blocks_sw(port: u8, buf: *const u8, count: u32) -> Res
 /// restored to 512 afterwards — on the error path too.
 ///
 /// `cmd_val` must be an extended-mode single-block-read encoding: for CMD6
-/// this is `0x1C06` (TRM table 38.7 — MD[2:0]=100 extended/R1, MD3=with-data,
+/// this is `0x1C06` (TRM table 38.7 — `MD[2:0]`=100 extended/R1, MD3=with-data,
 /// MD4=read, MD5=0 single-block).  `arg` is the CMD6 mode/function argument.
 ///
 /// # Safety
@@ -1198,7 +1201,7 @@ pub async unsafe fn write_blocks_dma(
 /// only bounds how many blocks the *controller* clocks in (so DATA_TRNS fires
 /// at the right count) — it does **not** issue CMD12 to the card.  Whether
 /// CMD12 is sent is governed by the SD_CMD mode bits: a command in extended
-/// mode with [15:14]=01 (e.g. `CMD18 | 0x7C00`) suppresses the auto-CMD12, so
+/// mode with `[15:14]`=01 (e.g. `CMD18 | 0x7C00`) suppresses the auto-CMD12, so
 /// the caller must issue [`stop_transfer`] manually after the transfer.
 ///
 /// # Safety
@@ -1255,9 +1258,9 @@ pub unsafe fn card_inserted(port: u8) -> bool {
 /// Reads SD_INFO1 bit 7 (INFO7 = SD_WP level).  **The Deluge socket inverts the
 /// usual polarity**: per the RZ/A1 manual INFO7 = 1 means the `SD_WP` pin is low,
 /// which a standard pulled-up socket asserts when the lock tab is engaged — but
-/// on the Deluge board the engaged tab drives `SD_WP` *high* (INFO7 = 0).  This
-/// was confirmed empirically with known locked/unlocked cards (`wp-probe`
-/// firmware), so here a **clear** INFO7 means write-protected.
+/// on the Deluge board the engaged tab drives `SD_WP` *high* (INFO7 = 0), so here
+/// a **clear** INFO7 means write-protected (verified on hardware with known
+/// locked and unlocked cards).
 ///
 /// # Safety
 /// Reads SDHI INFO1 register.
@@ -1355,11 +1358,9 @@ pub fn card_size_blocks(port: u8) -> u32 {
 // safe to call outside of an Embassy executor (e.g. from embedded-sdmmc's
 // synchronous BlockDevice trait impl).
 //
-// A timeout counter guards against hardware hang.  The limit is chosen to be
-// comfortably above the maximum expected transfer time for 512-byte blocks at
-// the fast SD clock (~33 MHz):  512 bytes / 33 MHz ≈ 120 µs → ≈ 4 000 ticks
-// at P0 / 8.  We use 10 000 000 to allow for card back-off without being
-// infinite.
+// A spin-iteration bound guards against a hardware hang.  It is far above the
+// time a 512-byte block needs even at the fast SD clock (~120 µs at 33 MHz),
+// leaving room for card back-off without spinning forever.
 
 const POLL_TIMEOUT: u32 = 10_000_000;
 
@@ -1555,8 +1556,8 @@ impl<const PORT: u8> Sdhi<PORT> {
     /// Claim ownership of SDHI port `PORT`.
     ///
     /// # Safety
-    /// The caller must ensure no other code uses port `PORT` concurrently, and
-    /// that the SDHI clock has been enabled (via `stb::init` or equivalent).
+    /// The caller must ensure no other code uses port `PORT` concurrently.  The
+    /// module clock is enabled by [`Sdhi::init`] (or [`crate::stb::init`]).
     pub unsafe fn new() -> Self {
         Sdhi
     }

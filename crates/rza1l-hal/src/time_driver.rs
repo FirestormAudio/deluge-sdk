@@ -9,17 +9,17 @@
 //!
 //! ## Clock and tick rate
 //!
-//! OSTM0 runs at P0 = ~33.333 MHz. The Embassy tick rate is 1 MHz (1 µs per
-//! tick), so `now()` returns `ostm0_count / OSTM_PER_US`.
+//! OSTM0 runs at P0φ = 33,064,062.5 Hz on the Deluge. The Embassy tick rate is
+//! 1 MHz (1 µs per tick); `now()` converts OSTM0 ticks with the exact 21161/640
+//! ticks-per-µs rational from [`crate::time_math`].
 //!
 //! ## Overflow handling for `now()`
 //!
 //! OSTM0 is 32-bit and wraps every ~129.9 s. The 64-bit clock is extended **in software**:
 //! `raw_ostm_ticks` compares each CNT sample against the last published one and treats CNT going
 //! backwards as a wrap, so the extension is monotonic by construction and no interrupt is on the
-//! correctness path. [`LAST_RAW`] explains why that matters — the previous ISR-maintained epoch
-//! could read an epoch low whenever its interrupt ran late, which stalled every timer-driven task
-//! for 129.9 s. The wrap arithmetic lives in [`crate::time_math`], where it is host-tested.
+//! correctness path (see `LAST_RAW`). The wrap arithmetic lives in [`crate::time_math`], where
+//! it is host-tested.
 //!
 //! ## Alarm
 //!
@@ -55,30 +55,20 @@ const OSTM_IRQ_PRIORITY: u8 = 14;
 ///
 /// # Why not an ISR-maintained epoch counter
 ///
-/// It used to be one (`EPOCH_HI`, incremented by the OSTM0 CMP==0 ISR), read as
-/// `(EPOCH_HI << 32) | CNT` under a double-read of EPOCH_HI to catch a wrap racing the two reads.
-/// That guard covers the wrong window. It does nothing about the OSTM0 ISR being **late** — pending
-/// behind a same-or-higher-priority handler, or a critical section — and while it is late, CNT has
-/// already wrapped to a small value whereas the epoch has not advanced. Both reads then agree on a
-/// stale epoch, the guard passes, and `now()` silently returns a value **one full epoch (2^32 ticks,
-/// 129.9 s) in the past**.
+/// An epoch advanced by the OSTM0 wrap interrupt is wrong whenever that interrupt is **late**
+/// (pending behind a same-or-higher-priority handler or a critical section): CNT has already
+/// wrapped to a small value while the epoch has not advanced, so `now()` returns a value one full
+/// epoch (2^32 ticks, ~129.9 s) in the past. `try_set_alarm` computes `at - now`, so a rewound
+/// `now` arms OSTM1 for its maximum and every timer-driven task stalls.
 ///
-/// That is not a cosmetic error. `try_set_alarm` computes `at - now`, so a rewound `now` yields a
-/// delta of ~129.9 s, which saturates the u32 tick clamp and arms OSTM1 for its maximum. Every
-/// timer-driven task in the system then waits that long. It was observed on device as a total
-/// freeze — no audio, no UI, no fault — whose measured duration was 129.900029 s against a
-/// theoretical maximum arm of 129.898353 s: a match to five significant figures.
-///
-/// Software extension removes the ISR from the correctness path: monotonicity is guaranteed by
-/// construction, so `now()` can never jump backwards and a spurious epoch-sized delta cannot arise
-/// however late any interrupt is.
+/// Software extension removes the ISR from the correctness path: `now()` is monotonic by
+/// construction however late any interrupt is.
 ///
 /// # Requirement
 ///
 /// The clock must be read at least once per wrap period (~129.9 s), or a wrap goes unobserved and
 /// time loses an epoch. Satisfied structurally — the audio render path reads it continuously — and
-/// guaranteed regardless by [`ostm0_overflow_isr`], which exists now only to force one read per
-/// wrap.
+/// guaranteed regardless by [`ostm0_overflow_isr`], which exists only to force one read per wrap.
 static LAST_RAW: AtomicU64 = AtomicU64::new(0);
 
 // ---------------------------------------------------------------------------
@@ -99,8 +89,7 @@ impl OstmDriver {
     /// Raw OSTM0 tick count as a monotonic 64-bit value, extending the 32-bit counter in software.
     ///
     /// Never returns less than a previously returned value, for any interleaving of callers and any
-    /// interrupt latency — see [`LAST_RAW`] for why that property is load-bearing rather than
-    /// merely tidy.
+    /// interrupt latency (see [`LAST_RAW`]).
     #[inline]
     fn raw_ostm_ticks() -> u64 {
         loop {
@@ -182,12 +171,8 @@ embassy_time_driver::time_driver_impl!(static DRIVER: OstmDriver = OstmDriver::n
 /// OSTM0 compare-match ISR — fires when CNT == 0 (after each 32-bit wrap).
 ///
 /// Reads the clock, and nothing else. The wrap itself is detected in software by
-/// [`OstmDriver::raw_ostm_ticks`]; this ISR exists only to guarantee the "read at least once per
-/// wrap period" requirement [`LAST_RAW`] documents, so the epoch cannot be skipped on a system that
-/// somehow stopped reading the clock for 129.9 s.
-///
-/// Its latency is therefore no longer a correctness concern — which is the entire point of the
-/// change. Previously this ISR owned the epoch, and being late made `now()` jump backwards an epoch.
+/// [`OstmDriver::raw_ostm_ticks`]; this ISR only guarantees the "read at least once per wrap
+/// period" requirement [`LAST_RAW`] documents, so its latency is not a correctness concern.
 fn ostm0_overflow_isr() {
     let _ = OstmDriver::raw_ostm_ticks();
 }

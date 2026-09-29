@@ -1,14 +1,14 @@
 //! RUSB1 peripheral register map for Renesas RZ/A1L.
 //!
 //! `Rusb1Regs` is a `#[repr(C)]` struct that mirrors `struct st_usb20` from
-//! `src/RZA1/system/iodefines/usb20_iodefine.h`.  All register accesses go
-//! through `core::ptr::read_volatile` / `write_volatile` to prevent the
-//! compiler from eliding or reordering hardware-visible writes.
+//! the Renesas `usb20_iodefine.h`.  All register accesses go through
+//! [`rd`] / [`wr`] / [`rmw`] (`read_volatile` / `write_volatile`) so the
+//! compiler cannot elide or reorder hardware-visible accesses.
 //!
 //! ## Usage
 //! ```ignore
-//! let r = Rusb1Regs::for_port(0);   // borrow (read-only) or use raw ptr
-//! unsafe { r.write_syscfg0(r.read_syscfg0() | SYSCFG_USBE); }
+//! let r = Rusb1Regs::ptr(0);
+//! unsafe { rmw(core::ptr::addr_of_mut!((*r).syscfg0), SYSCFG_USBE, SYSCFG_USBE) };
 //! ```
 //!
 //! ## Bit constants
@@ -175,7 +175,7 @@ pub const PIPECTR_PID_BUF: u16 = 0b01;
 // step 11→10→NAK (TRM §28.3.30 PID; matches Linux `__usbhsp_pid_try_nak_if_stall`).
 pub const PIPECTR_PID_STALL10: u16 = 0b10;
 pub const PIPECTR_PID_STALL11: u16 = 0b11;
-/// Legacy alias for [`PIPECTR_PID_STALL10`] (the firmware-set STALL encoding).
+/// Alias for [`PIPECTR_PID_STALL10`] (the firmware-set STALL encoding).
 pub const PIPECTR_PID_STALL: u16 = PIPECTR_PID_STALL10;
 pub const PIPECTR_CCPL: u16 = 0x0004; // DCP only
 pub const PIPECTR_PBUSY: u16 = 0x0020;
@@ -246,14 +246,14 @@ pub const PIPEPERI_IITV_MASK: u16 = 0x0007;
 // When UPPHUB/HUBPORT are non-zero the controller automatically issues
 // split transactions (SSPLIT/CSPLIT) for the device — no firmware action
 // beyond writing the register is needed.
-/// USBSPD field in DEVADDn: bits [7:6] = 01 → LS, 10 → FS.
+/// USBSPD field in DEVADDn: bits `[7:6]` = 01 → LS, 10 → FS, 11 → HS.
 pub const DEVADD_USBSPD_SHIFT: u32 = 6;
 pub const DEVADD_USBSPD_LS: u16 = 1 << 6; // Low-speed  (01)
 pub const DEVADD_USBSPD_FS: u16 = 2 << 6; // Full-speed (10)
 pub const DEVADD_USBSPD_HS: u16 = 3 << 6; // High-speed (11)
-/// UPPHUB field in DEVADDn: bits [14:11] — hub USB address (0 = direct).
+/// UPPHUB field in DEVADDn: bits `[14:11]` — hub USB address (0 = direct).
 pub const DEVADD_UPPHUB_SHIFT: u32 = 11;
-/// HUBPORT field in DEVADDn: bits [10:8] — hub port number (0 = direct).
+/// HUBPORT field in DEVADDn: bits `[10:8]` — hub port number (0 = direct).
 pub const DEVADD_HUBPORT_SHIFT: u32 = 8;
 
 // ---------------------------------------------------------------------------
@@ -275,7 +275,7 @@ pub const PKT_BUF_BLOCKS: usize = PKT_BUF_SIZE_BYTES / PKT_BUF_BLOCK_SIZE; // 12
 // BUSWAIT — BWAIT[5:0] wait cycles per register access (TRM §28.3.2).
 // Constraint: consecutive register accesses must take >= 67 ns of P1-bus
 // (66.7 MHz, 15 ns/cycle) time, i.e. >= 3 wait cycles (5 access cycles).
-// The Deluge firmware uses 0x0F (15 waits, the reset value) — conservative.
+// 0x0F (15 waits, the reset value) is used: conservative.
 // ---------------------------------------------------------------------------
 pub const BUSWAIT_VALUE: u16 = 0x000F;
 
@@ -508,7 +508,7 @@ pub unsafe fn devadd_ptr(regs: *mut Rusb1Regs, dev_addr: u8) -> *mut u16 {
 }
 
 // ---------------------------------------------------------------------------
-// Compile-time layout assertions
+// Layout tests
 // ---------------------------------------------------------------------------
 
 #[cfg(all(test, not(target_os = "none")))]

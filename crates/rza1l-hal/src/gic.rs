@@ -1,6 +1,6 @@
 //! Generic Interrupt Controller (GIC) driver for the Cortex-A9 / RZ/A1L.
 //!
-//! The RZ/A1L uses the ARM GIC-400 (PL390) split into:
+//! The RZ/A1L uses the ARM PrimeCell GIC (PL390, GICv1) split into:
 //!   - GIC Distributor (GICD) at 0xE820_1000  (the Renesas "INTC" peripheral)
 //!   - GIC CPU Interface (GICC) at 0xE820_2000
 //!
@@ -11,7 +11,7 @@
 //! Register handlers via [`register`], enable individual sources via [`enable`].
 //!
 //! ## IRQ dispatch
-//! The assembly IRQ handler in `startup.rs` calls [`dispatch`] with the raw
+//! The assembly IRQ handler in `startup.rs` calls `gic_dispatch` with the raw
 //! ICCIAR register value. This function looks up and calls the registered Rust
 //! handler (with IRQs re-enabled for nesting), then returns so the assembly
 //! can write ICCEOIR.
@@ -106,17 +106,10 @@ impl HandlerCell {
 ///
 /// # Thumb pointers
 ///
-/// This used to also require `addr % 4 == 0`, on the reasoning that "an ARM entry point is
-/// 4-byte aligned". That silently assumes the whole image is built for ARM mode. It is not: a
-/// Thumb function pointer carries the interworking bit in bit 0, and a Thumb entry point is only
-/// 2-byte aligned — so under a Thumb build EVERY registered handler failed this check and was
-/// refused as "corruption", leaving no interrupt dispatched at all. It reported as
-/// "N of 587 slots damaged", where N was simply the number of handlers registered.
-///
-/// Strip the interworking bit before range-checking, and require only 2-byte alignment, which
-/// both ISAs satisfy. Bit 0 is deliberately NOT treated as evidence either way: a corrupted slot
-/// is overwhelmingly likely to land outside the two code regions, which is what the range test
-/// is for.
+/// A Thumb function pointer carries the interworking bit in bit 0 and its entry point is only
+/// 2-byte aligned, so the check strips bit 0 and requires only 2-byte alignment, which both ISAs
+/// satisfy. Requiring 4-byte alignment would reject every handler in a Thumb build. Bit 0 is not
+/// treated as evidence either way; the range test is what rejects a corrupted slot.
 fn is_plausible_code_address(addr: usize) -> bool {
     const SRAM: core::ops::Range<usize> = 0x2000_0000..0x2030_0000;
     const SDRAM: core::ops::Range<usize> = 0x0C00_0000..0x1000_0000;
@@ -139,7 +132,8 @@ static HANDLERS: [HandlerCell; INT_ID_TOTAL] = {
 
 /// Initial ICDICFR edge/level configuration values (37 registers × 32 bits).
 /// Taken verbatim from the Renesas `intc_icdicfrn_table[]` in `intc.c`.
-/// Each 2-bit field: 0b01 = edge, 0b00 = level (for SPI sources bit[1] is the indicator).
+/// Each 2-bit field: bit[1] = 1 → edge-triggered, 0 → level-sensitive (GIC architecture);
+/// bit[0] is implementation-defined.
 static ICDICFR_INIT: [u32; 37] = [
     0xAAAAAAAA, /* ICDICFR0  :  15 to   0 */
     0x00000055, /* ICDICFR1  :  19 to  16 */
@@ -184,9 +178,7 @@ static ICDICFR_INIT: [u32; 37] = [
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Initialize the GIC distributor and CPU interface.
-///
-/// Initialise the Generic Interrupt Controller (GIC).
+/// Initialise the GIC distributor and CPU interface.
 ///
 /// Mirrors `R_INTC_Init()` from `intc.c`. Must be called once, with global
 /// IRQ disabled, before any [`register`] / [`enable`] calls.
@@ -195,8 +187,8 @@ static ICDICFR_INIT: [u32; 37] = [
 ///
 /// This function sets `GICC_PMR = 0xF8` (priority threshold = 31).  The GIC
 /// forwards an interrupt to the CPU **only if its programmed priority is
-/// strictly less than PMR**.  Because the hardware reset priority for every
-/// interrupt is 31, an interrupt whose priority has *not* been explicitly
+/// strictly less than PMR**.  Because this function sets every interrupt's
+/// priority to 31, an interrupt whose priority has *not* been explicitly
 /// lowered via [`set_priority`] will **never fire** even after [`enable`] is
 /// called.  Always call `set_priority(id, n)` with `n < 31` before `enable`.
 ///
@@ -252,7 +244,8 @@ pub unsafe fn init() {
         // 7. Binary point: group priority [7:3], sub-priority [2:0] unused.
         (GICC_BPR_ADDR as *mut u32).write_volatile(2);
 
-        // 8. Enable CPU interface — FIQ+IRQ forwarding for secure interrupts.
+        // 8. Enable CPU interface — forward both Group 0 (secure) and Group 1
+        //    (non-secure) interrupts.
         (GICC_CTLR_ADDR as *mut u32).write_volatile(ICCICR_ENABLES | ICCICR_ENABLENS);
 
         // 9. Enable GIC distributor.
@@ -266,7 +259,7 @@ pub unsafe fn init() {
 /// Must only be called while global IRQ is disabled (before `cpsie i`).
 ///
 /// # Safety
-/// See struct-level safety note. Must be called before IRQ is enabled.
+/// The handler table is unsynchronised: must be called before IRQ is enabled.
 pub unsafe fn register(id: u16, handler: Handler) {
     unsafe {
         log::trace!("gic: register IRQ {}", id);
@@ -279,7 +272,7 @@ pub unsafe fn register(id: u16, handler: Handler) {
 /// Enable (unmask) interrupt `id` in the GIC distributor.
 ///
 /// **Requires prior `set_priority` call:** `GICC_PMR` is set to priority 31
-/// by [`init`].  An interrupt left at its reset priority of 31 will not
+/// by [`init`].  An interrupt left at the initial priority of 31 will not
 /// reach the CPU even after being enabled here.  Always call
 /// [`set_priority`]`(id, n)` with `n < 31` before this function.
 ///
@@ -430,12 +423,9 @@ pub unsafe extern "C" fn gic_dispatch(icciar: u32) {
         if (int_id as usize) < INT_ID_TOTAL {
             if let Some(f) = HANDLERS[int_id as usize].get() {
                 // Refuse to branch to an address that cannot be code. A corrupted slot
-                // here is a wild `blx` into nothing, which on device shows up as an
-                // undefined-instruction abort whose only clue is `LR` pointing back at
-                // this function -- a dead panel with no explanation. Checking the target
-                // first turns that into a log line naming the interrupt whose slot was
-                // clobbered, which is the evidence needed to find whoever clobbered it,
-                // and leaves the machine running.
+                // would otherwise be a wild `blx` ending in an undefined-instruction abort
+                // with only `LR` as a clue; this logs the interrupt whose slot was
+                // clobbered and keeps the machine running.
                 if !is_plausible_code_address(f as usize) {
                     // Count the other damaged slots too: one bad slot points at a stray
                     // write or a bad index, many at a bulk overrun through the table.

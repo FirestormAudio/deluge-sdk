@@ -1,7 +1,6 @@
 //! SCUX register map: block base addresses, per-channel register accessors,
 //! bit-field constants, and the small `const fn` helpers that derive register
-//! values. Split out of `scux.rs` (the driver logic) the same way
-//! `usb/regs.rs` is split from the USB driver.
+//! values. The driver logic is in `scux.rs`.
 //!
 //! Most items are `pub(super)` so the driver in `scux.rs` can reach them via
 //! `use regs::*`; the few that form the public SCUX API (`DMARS_*`, `INTIFS_*`,
@@ -122,7 +121,7 @@ pub(super) const SRC_UNIT_STRIDE: usize = 0x100;
 pub(super) const SRC_PAIR_STRIDE: usize = 0x34;
 
 pub(super) const SRCIR_OFF: usize = 0x00; // SRCIRp_2SRC0_m (§37.3.18) Init register
-pub(super) const SADIR_OFF: usize = 0x04; // SADIRp_2SRC0_m (§37.3.19) Audio input direction (channels, bit depth)
+pub(super) const SADIR_OFF: usize = 0x04; // SADIRp_2SRC0_m (§37.3.19) Audio information (channels, bit depth)
 pub(super) const SRCBR_OFF: usize = 0x08; // SRCBRp_2SRC0_m (§37.3.20) Bypass register (bit 0 = BYPASS)
 pub(super) const IFSCR_OFF: usize = 0x0C; // IFSCRp_2SRC0_m (§37.3.21) Input frequency select (0=sync, 1=async)
 pub(super) const IFSVR_OFF: usize = 0x10; // IFSVRp_2SRC0_m (§37.3.22) Input frequency value (INTIFS ratio Q22)
@@ -169,7 +168,7 @@ pub(super) const DVU_BASE: usize = 0xE820_9200;
 pub(super) const DVU_STRIDE: usize = 0x100;
 
 pub(super) const DVUIR_OFF: usize = 0x00; // DVUIR_DVU0_n (§37.3.31) Init register
-pub(super) const VADIR_OFF: usize = 0x04; // VADIR_DVU0_n (§37.3.32) Audio direction (channels, bit depth)
+pub(super) const VADIR_OFF: usize = 0x04; // VADIR_DVU0_n (§37.3.32) Audio information (channels, bit depth)
 pub(super) const DVUBR_OFF: usize = 0x08; // DVUBR_DVU0_n (§37.3.33) Bypass register (bit 0 = BYPASS)
 pub(super) const DVUCR_OFF: usize = 0x0C; // DVUCR_DVU0_n (§37.3.34) Control (VRMD bit 4, VVMD bit 8)
 pub(super) const ZCMCR_OFF: usize = 0x10; // ZCMCR_DVU0_n (§37.3.35) Zero-cross mute control
@@ -209,15 +208,15 @@ pub(super) fn vol_off(audio_ch: u8) -> usize {
 pub(super) const MIX_BASE: usize = 0xE820_9600;
 
 pub(super) const MIXIR_OFF: usize = 0x00; // MIXIR_MIX0_0 (§37.3.52) Init register
-pub(super) const MADIR_OFF: usize = 0x04; // MADIR_MIX0_0 (§37.3.53) Audio direction
+pub(super) const MADIR_OFF: usize = 0x04; // MADIR_MIX0_0 (§37.3.53) Audio information
 pub(super) const MIXBR_OFF: usize = 0x08; // MIXBR_MIX0_0 (§37.3.54) Bypass register (bit 0 = BYPASS)
 pub(super) const MIXMR_OFF: usize = 0x0C; // MIXMR_MIX0_0 (§37.3.55) Mix mode register
 pub(super) const MVPDR_OFF: usize = 0x10; // MVPDR_MIX0_0 (§37.3.56) Master volume period
-pub(super) const MDB0R_OFF: usize = 0x14; // MDBAR_MIX0_0 (§37.3.57) Mix data buffer A — source 0 gain
-pub(super) const MDB1R_OFF: usize = 0x18; // MDBBR_MIX0_0 (§37.3.58) Mix data buffer B — source 1 gain
-pub(super) const MDB2R_OFF: usize = 0x1C; // MDBCR_MIX0_0 (§37.3.59) Mix data buffer C — source 2 gain
-pub(super) const MDB3R_OFF: usize = 0x20; // MDBDR_MIX0_0 (§37.3.60) Mix data buffer D — source 3 gain
-pub(super) const MDBER_OFF: usize = 0x24; // MDBER_MIX0_0 (§37.3.61) Mix data buffer enable
+pub(super) const MDB0R_OFF: usize = 0x14; // MDBAR_MIX0_0 (§37.3.57) Decibel A — source 0 gain
+pub(super) const MDB1R_OFF: usize = 0x18; // MDBBR_MIX0_0 (§37.3.58) Decibel B — source 1 gain
+pub(super) const MDB2R_OFF: usize = 0x1C; // MDBCR_MIX0_0 (§37.3.59) Decibel C — source 2 gain
+pub(super) const MDB3R_OFF: usize = 0x20; // MDBDR_MIX0_0 (§37.3.60) Decibel D — source 3 gain
+pub(super) const MDBER_OFF: usize = 0x24; // MDBER_MIX0_0 (§37.3.61) Decibel enable (MIXDBEN)
 
 #[inline(always)]
 pub(super) fn mix(off: usize) -> *mut u32 {
@@ -293,12 +292,11 @@ pub const DMARS_SCURXI2: u32 = 0x010A;
 /// DMARS resource-selector for SCUX output FIFO 3 RX (FFU0_3 → CPU, 2-ch path).
 pub const DMARS_SCURXI3: u32 = 0x010E;
 
-// ── DMA channel assignments (Deluge) — moved to deluge-bsp ───────────────────
+// ── DMA channel assignments ──────────────────────────────────────────────────
 //
-// The DMA channels previously declared here as FFD*_DMA_CH / FFU*_DMA_CH
-// public constants are board-specific and are now provided by the caller via
-// the `dma_ch` parameter of [`init_ffd_dma`] and [`init_ffu_dma`].
-// The Deluge values can be found in `deluge_bsp::system`.
+// DMA channels are board-specific: callers pass them as the `dma_ch` parameter
+// of `init_ffd_dma` / `init_ffu_dma`. The Deluge values are in
+// `deluge_bsp::system`.
 
 /// Link-descriptor HEADER word (same field encoding as SSI — see ssi.rs `DESC_HEADER`).
 /// bits: LDEN(3)=1, NXA(2)=1, reserved(1)=0, valid(0)=1 → 0b1101.
@@ -308,7 +306,8 @@ pub(super) const DESC_HEADER: u32 = 0b1101;
 //   DMS | DEM | DAD | DDS_32BIT | SDS_32BIT | AM_BURST | HIEN | REQD | LVL | channel
 //   = 0x8000_0000 | 0x0100_0000 | 0x0020_0000 | 0x0002_0000 | 0x0000_2000
 //     | 0x0000_0200 | 0x0000_0020 | 0x0000_0008 | 0x0000_0040 | ch
-//   = 0x8122_2268 | ch  (matches C BSP scux_dev.c)
+//   = 0x8122_2268 | ch  (the C BSP scux_dev.c value; `ffd_chcfg` omits DEM, so
+//     the end interrupt is not masked and the result is 0x8022_2268 | ch)
 pub(super) const fn ffd_chcfg(dma_ch: u8) -> u32 {
     CHCFG_DMS
         | CHCFG_DAD
@@ -343,9 +342,8 @@ pub(super) const fn ffu_chcfg(dma_ch: u8) -> u32 {
 /// Interpolation ratio for 44.1 kHz → 44.1 kHz (unity, passthrough mode).
 ///
 /// TRM Table 37.3 gives unity as 0x0400000 (= 2^22; FSO is fixed at 2^22).
-/// These constants were previously hand-written with an extra hex digit
-/// (0x0400_0000 = 2^26, 16× too large); deriving them via [`intifs`] keeps
-/// them consistent with the documented Q22 encoding.
+/// All the `INTIFS_*` constants are derived via [`intifs`] so they follow
+/// the documented Q22 encoding.
 pub const INTIFS_44100_TO_44100: u32 = intifs(44100, 44100);
 /// Interpolation ratio for 44.1 kHz → 48 kHz.
 pub const INTIFS_44100_TO_48000: u32 = intifs(44100, 48000);
@@ -425,9 +423,9 @@ pub(super) const DVUBR_BYPASS: u32 = 1 << 0;
 
 /// DVUCR bit 4: enable volume ramp mode (VRMD).
 /// BSP: DVUCR_DVU0_VRMD_SET = (1U << 4)
-/// The BSP ALWAYS sets this when DVU is enabled (not bypassed), even with
-/// zero-rate "dummy" ramp parameters (VRPDR=0, VRDBR=0).  This appears to
-/// be mandatory to open the volume-control data path through the DVU.
+/// The BSP always sets this when the DVU is enabled (not bypassed), even with
+/// zero-rate "dummy" ramp parameters (VRPDR=0, VRDBR=0); it appears to be
+/// required to open the volume-control data path through the DVU.
 pub(super) const DVUCR_VRMD: u32 = 1 << 4;
 
 /// DVUCR bit 8: enable direct digital volume mode (VVMD).
@@ -450,7 +448,7 @@ pub(super) const DVUER_DVUEN: u32 = 1 << 0;
 /// MIXBR bit 0: 1 = bypass MIX (first source passes through).
 pub(super) const MIXBR_BYPASS: u32 = 1 << 0;
 
-/// MDBER bit 0: enable MIX data buffer (enables per-source gain coefficients).
+/// MDBER bit 0: MIXDBEN — apply the per-source MDBxR gain settings.
 /// BSP: MDBER_MIX0_MIXDBEN_SET = (1U << 0)
 pub(super) const MDBER_MIXDBEN: u32 = 1 << 0;
 
@@ -458,7 +456,7 @@ pub(super) const MDBER_MIXDBEN: u32 = 1 << 0;
 /// BSP: FDTSEL_CIM_DIVEN_SET = (1U << 8)
 pub const FDTSEL_DIVEN: u32 = 1 << 8;
 
-/// FDTSEL/FUTSEL SCKSEL value for SSIF0 WS (bits [3:0] = 8).
+/// FDTSEL/FUTSEL SCKSEL value for SSIF0 WS (bits `[3:0]` = 8).
 /// BSP: FDTSEL_CIM_SCKSEL_SSIF0_WS_SET = (8U)
 pub const FDTSEL_SCKSEL_SSIF0_WS: u32 = 8;
 
@@ -507,8 +505,7 @@ mod tests {
     #[test]
     fn intifs_unity_is_q22_one_not_the_old_16x_bug() {
         // INTIFS is Q22: unity (Fin==Fout) must be exactly 2^22 = 0x0040_0000.
-        // A previous hand-written table used 0x0400_0000 (2^26, 16× too large) —
-        // guard against that regression.
+        // Guard against the easy mis-encoding 0x0400_0000 (2^26, 16× too large).
         assert_eq!(intifs(44100, 44100), 0x0040_0000);
         assert_eq!(intifs(48000, 48000), 0x0040_0000);
         assert_eq!(INTIFS_44100_TO_44100, 0x0040_0000);
@@ -543,7 +540,7 @@ mod tests {
         // FFD (CPU→SCUX): destination fixed (DAD) + dest-triggered (REQD).
         assert_eq!(ffd_chcfg(0) & CHCFG_DAD, CHCFG_DAD);
         assert_eq!(ffd_chcfg(0) & CHCFG_REQD, CHCFG_REQD);
-        // FFU (SCUX→CPU): source fixed (SAD) + completion interrupt (DEM).
+        // FFU (SCUX→CPU): source fixed (SAD), end interrupt masked (DEM).
         assert_eq!(ffu_chcfg(0) & CHCFG_SAD, CHCFG_SAD);
         assert_eq!(ffu_chcfg(0) & CHCFG_DEM, CHCFG_DEM);
         assert_eq!(ffu_chcfg(0) & CHCFG_REQD, 0, "FFU is source-triggered");
