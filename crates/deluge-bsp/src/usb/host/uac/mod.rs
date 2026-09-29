@@ -1,11 +1,9 @@
 //! USB **host**-side USB Audio Class (UAC2) capture driver.
 //!
-//! Records multichannel audio from a class-compliant USB audio interface.
-//! Mirrors [`super::midi`]: generic over the allocator so it unit-tests against
-//! [`super::mock`]. See the design of record,
-//! `docs/superpowers/specs/2026-07-16-usb-uac-host-design.md`.
-//!
-//! Playback (iso OUT) is Phase 2 (`out.rs`) and not present yet.
+//! Records multichannel audio from a class-compliant USB audio interface, and
+//! plays back to it too when the device is full-duplex (iso OUT, built on the
+//! primitives in [`out`]). Mirrors [`super::midi`]: generic over the allocator
+//! so it unit-tests against [`super::mock`].
 
 pub mod out;
 pub mod resample;
@@ -408,17 +406,14 @@ impl<'d, A: UsbHostAllocator<'d>> Uac<'d, A> {
     /// the drift ratio from the new ring fill.
     ///
     /// Iso has no retries: a failed or empty transfer logs and returns `Ok`
-    /// (the ring absorbs the gap) — EXCEPT [`PipeError::BadResponse`], which
-    /// this returns as `Err` to end the stream. That's not a design choice
-    /// about protocol errors specifically; it's what the RUSB1 HAL's DTCH
-    /// (detach) handler produces: it force-sets NRDY on every pipe to unstick
-    /// any in-flight transfer (`rza1l-hal/src/usb/host.rs`, the `INTSTS1_DTCH`
-    /// arm of `hcd_int_handler`), and `poll_pipe` maps NRDY to
-    /// `PipeError::BadResponse` unconditionally (there is no
-    /// `PipeError::Disconnected` anywhere in this HAL). Without this, the
-    /// caller's loop absorbs the detach error, calls in again, and the next
-    /// `request_in` awaits a pipe the (now UACT=0, idle) bus will never
-    /// service — the task hangs forever, its pipes/address never freed.
+    /// (the ring absorbs the gap) — except [`PipeError::BadResponse`], which
+    /// is returned as `Err` to end the stream. That is the RUSB1 HAL's detach
+    /// signal: its DTCH handler (the `INTSTS1_DTCH` arm of `hcd_int_handler`)
+    /// force-sets NRDY on every pipe, and `poll_pipe` maps NRDY to
+    /// `BadResponse` (the HAL has no `PipeError::Disconnected`). Absorbing it
+    /// would make the next `request_in` await a pipe the idle (UACT=0) bus
+    /// never services, hanging the task with its pipes and address never
+    /// freed.
     pub async fn pump_once(&mut self) -> Result<(), UacError> {
         let ch = self.num_channels as usize;
         let mut buf = [0u8; 1024]; // >= any HS iso mps

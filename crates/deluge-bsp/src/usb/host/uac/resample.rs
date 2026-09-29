@@ -3,7 +3,7 @@
 //! `r` is **input frames per output frame**. A device running fast fills the
 //! ring, the PI controller raises `r`, the resampler emits fewer frames per
 //! input frame, and the ring drains back to its setpoint. No feedback endpoint,
-//! no rate estimation — ring fill *is* the clock error (design of record §3.4).
+//! no rate estimation — ring fill *is* the clock error.
 
 use super::MAX_CHANNELS;
 

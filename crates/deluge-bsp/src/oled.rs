@@ -33,7 +33,7 @@
 //!                  bit 7 = bottom pixel.
 //! ```
 //! The SSD1309 is configured with page address 2–7 in horizontal addressing
-//! mode, so the 768-byte flat dump of pages[2..=7][0..128] fills the panel.
+//! mode, so the 768-byte flat dump of `pages[2..=7][0..128]` fills the panel.
 //!
 //! ## Usage
 //! ```rust,ignore
@@ -121,7 +121,7 @@ static INITIALISED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicB
 
 /// Host/QEMU capture surface: holds the frame most recently pushed via
 /// [`send_frame`]/[`draw_blocking`]. There is no panel off-target, so a
-/// consuming host (e.g. a future GUI/simulator, or a test) reads it back via
+/// consuming host (e.g. the desktop simulator, or a test) reads it back via
 /// [`captured_frame`] instead of a real SSD1309.
 #[cfg(not(target_os = "none"))]
 static CAPTURED_FRAME: std::sync::Mutex<FrameBuffer> = std::sync::Mutex::new(FrameBuffer::new());
@@ -129,7 +129,7 @@ static CAPTURED_FRAME: std::sync::Mutex<FrameBuffer> = std::sync::Mutex::new(Fra
 /// Host observability flag: flips true the first time [`capture_frame`] runs. A
 /// fresh [`CAPTURED_FRAME`] is already all-zero (blank), so `captured_frame()`
 /// alone cannot distinguish "no frame sent yet" from "a blank frame was sent" —
-/// this flag makes that distinction available to the boot smoke.
+/// this flag makes that distinction available to the host boot smoke test.
 #[cfg(not(target_os = "none"))]
 static BOOT_FRAME_CAPTURED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
@@ -610,10 +610,8 @@ pub async fn send_frame(fb: &FrameBuffer) {
     //  2. When a CV write has left the bus in 32-bit mode, this is a real 32→8
     //     reconfigure that rewrites SPCMD0 (clock polarity/phase, bit-rate, data
     //     length). Doing that while the OLED CS is asserted clocks the switching
-    //     transient on SCK into the OLED as a phantom bit → the image shifts. With
-    //     CV idle the bus is already 8-bit so it's a no-op and the bug is hidden;
-    //     reconfiguring before select makes it safe in both cases. Matches
-    //     oled::init, which also reconfigures before it selects.
+    //     transient on SCK into the OLED as a phantom bit → the image shifts.
+    //     oled::init likewise reconfigures before it selects.
     bus.reconfigure_8bit();
 
     pic::oled_select().await;
@@ -650,9 +648,8 @@ pub async fn send_frame(fb: &FrameBuffer) {
     // first-page corruption). Holding the bus until the deselect has settled
     // guarantees nothing else clocks the bus while the OLED is still listening.
     // Symmetric with the select path above, which waits via wait_oled_selected
-    // before touching the bus. (Sparse CV users rarely hit this window; a fast
-    // OLED+CV interleave — e.g. an external app driving CV every audio block —
-    // hits it constantly.)
+    // before touching the bus. (A fast OLED+CV interleave, e.g. CV updated every
+    // audio block, hits this window constantly.)
     //
     // Wait for the PIC to *echo* the deselect (byte 249) rather than a blind
     // delay: the DESELECT command is queued behind any other PIC TX traffic

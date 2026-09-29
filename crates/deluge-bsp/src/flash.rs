@@ -8,9 +8,8 @@
 //!
 //! ## The part
 //! The Deluge's SPI NOR is a **4 MB** S25FL032-class part with **64 KB** uniform
-//! erase blocks (the `0xD8` block erase clears 64 KB — an earlier 256 KB
-//! assumption, copied from an S25FL512 reference, left three quarters of every
-//! region un-erased and corrupted multi-block stores) and 256-byte program pages.
+//! erase blocks (the `0xD8` block erase clears 64 KB, not the 256 KB of larger
+//! parts such as the S25FL512) and 256-byte program pages.
 //!
 //! ## The map (flash-relative offsets)
 //! | Region | Bytes | Use |
@@ -30,8 +29,8 @@ use rza1l_hal::spibsc::{self, FlashMap};
 
 /// Erase-block size in bytes — the `0xD8` block-erase granularity of the part.
 pub const SECTOR_SIZE: u32 = 0x0001_0000; // 64 KB
-/// Page-program size in bytes.  The Deluge bootloader programs in 256-byte units
-/// ("Bigger doesn't seem to work" on this board); a program never crosses a page.
+/// Page-program size in bytes, matching the Deluge bootloader, which found larger
+/// program units unreliable on this board; a program never crosses a page.
 pub const PAGE: usize = 256;
 /// Total flash size — the Deluge SPI NOR is 4 MB; nothing exists above this and an
 /// offset at/beyond it aliases modulo the chip size onto a low sector.
@@ -47,8 +46,8 @@ pub const SLOT_LEN: u32 = 0x002C_0000;
 
 /// Flash-relative offset of the app-loader settings block, directly above the
 /// slot.  Only its first 64 KB block is used; the settings record occupies the
-/// first page.  Must stay strictly inside the chip (a previous `0x400000` choice
-/// aliased to `0x0` and erased the FSB).
+/// first page.  Must stay strictly inside the chip: an offset at the chip end
+/// (`0x400000`) aliases to `0x0` and would erase the FSB.
 pub const SETTINGS_OFFSET: u32 = 0x003C_0000;
 /// Memory-mapped (read-window) address of the settings block.
 pub const SETTINGS_ADDR: u32 = spibsc::SPI_FLASH_BASE + SETTINGS_OFFSET;
@@ -106,8 +105,8 @@ mod tests {
     }
 
     /// The settings block is block-aligned, sits directly above the slot, and
-    /// stays strictly inside the chip (its erase block must not reach/pass the
-    /// chip end — the alias that once erased the FSB).
+    /// stays strictly inside the chip (an erase block reaching the chip end
+    /// would alias onto the FSB).
     #[test]
     fn settings_block_is_in_chip_and_above_slot() {
         assert_eq!(

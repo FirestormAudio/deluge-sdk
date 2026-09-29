@@ -41,7 +41,7 @@
 //! |  21  | SET_GOLD_KNOB_1_INDICATORS | 4 × brightness bytes            |
 //! |  22  | RESEND_BUTTON_STATES       | —                               |
 //! |  23  | SET_FLASH_LENGTH           | time  (ms)                      |
-//! | 225  | SET_UART_SPEED             | divider (baud = 4MOhm / (d+1))  |
+//! | 225  | SET_UART_SPEED             | divider (baud = 4 MHz / (d+1))  |
 //! | 244  | SET_MIN_INTERRUPT_INTERVAL | time  (ms)                      |
 //! | 245  | REQUEST_FIRMWARE_VERSION   | —                               |
 //! | 247  | ENABLE_OLED                | —                               |
@@ -98,20 +98,18 @@ pub(crate) const CMD_SET_COLOUR_FOR_COLS_BASE: u8 = 1;
 pub(crate) const CMD_DONE_SENDING_ROWS: u8 = 240;
 
 /// Smooth-scroll animation opcodes. The PIC keeps its own off-screen framebuffer and smears it to
-/// animate a scroll, so the app sends one colour per row per tick instead of resending the grid —
-/// that bandwidth saving is the whole reason these exist rather than reusing
-/// [`set_column_pair_rgb`].
+/// animate a scroll, so the app sends one colour per row per tick instead of resending the whole
+/// grid with [`set_column_pair_rgb`].
 ///
 /// `SET_SCROLL_ROW` is a base: the row index is ADDED to it (228..=235 for the 8 rows).
 pub(crate) const CMD_SET_SCROLL_ROW_BASE: u8 = 228;
 /// Horizontal-scroll setup is also a base with the app's flag bits ADDED: bit 0 = scrolling
 /// right/positive, bit 1 = the scrolled area includes the sidebar (18 columns rather than 16).
 ///
-/// Encoded arithmetically, exactly as the legacy C++ BSP does (`PIC::setupHorizontalScroll`), and
-/// deliberately NOT via named per-combination constants: the legacy header names 238/239
-/// `SET_SCROLL_RIGHT_FULL`/`SET_SCROLL_LEFT_FULL`, which are transposed with respect to that flag
-/// encoding. The PIC's interpretation of `base + flags` is authoritative, so reproduce the
-/// arithmetic and leave the naming alone.
+/// Encoded arithmetically, as the C++ BSP does (`PIC::setupHorizontalScroll`), rather than via
+/// named per-combination constants: the C++ header's names for 238/239
+/// (`SET_SCROLL_RIGHT_FULL`/`SET_SCROLL_LEFT_FULL`) are transposed with respect to the flag
+/// encoding, and the PIC's interpretation of `base + flags` is authoritative.
 pub(crate) const CMD_SET_SCROLL_HORIZONTAL_BASE: u8 = 236;
 pub(crate) const CMD_SET_SCROLL_UP: u8 = 241;
 pub(crate) const CMD_SET_SCROLL_DOWN: u8 = 242;
@@ -357,7 +355,7 @@ async fn tx(bytes: &[u8]) {
 }
 
 /// Await one decoded byte from the PIC co-processor's SCIF1 UART (DMA RX ring).
-/// This is the RX transport counterpart to [`tx`]: the control pump loops on it,
+/// This is the RX transport counterpart to the serialized TX path: the control pump loops on it,
 /// feeding [`Parser`]. Device only — pops the DMA ring via `uart::read_byte`.
 #[cfg(target_os = "none")]
 pub async fn read_byte() -> u8 {
@@ -419,8 +417,8 @@ pub async fn set_column_pair_rgb(pair: u8, colours: &[[u8; 3]; 16]) {
 /// Begin a horizontal scroll animation.
 ///
 /// `flags` is the app's encoding: bit 0 set = scrolling right (positive direction), bit 1 set = the
-/// scrolled area spans all 18 columns (main grid plus sidebar) rather than the 16 main columns. See
-/// [`CMD_SET_SCROLL_HORIZONTAL_BASE`] for why this is `base + flags` arithmetic.
+/// scrolled area spans all 18 columns (main grid plus sidebar) rather than the 16 main columns. The
+/// opcode is sent as `base + flags`, matching the PIC's own decoding.
 #[inline]
 pub async fn setup_horizontal_scroll(flags: u8) {
     // Mask to the two meaningful bits so a stray high bit cannot walk into DONE_SENDING_ROWS (240).
@@ -637,16 +635,10 @@ mod ready_signal {
 /// so [`wait`] resolves immediately once `init` has run.
 ///
 /// Uses [`MultiWakerRegistration`] rather than the single-slot `AtomicWaker`
-/// `crate::oled`'s redraw signal uses: unlike that one-shot, single-consumer
-/// signal, `wait_ready()` is awaited *concurrently* by multiple tasks (at
-/// minimum `pad_render` and `oled_render`, both on `deluge-bsp-rust`). An
-/// `AtomicWaker` holds only one registration at a time, so a second
-/// concurrent waiter's `register()` silently clobbers the first's — the
-/// clobbered task is never woken and parks forever. This was caught for real
-/// (not just in review) by `deluge-bsp-rust`'s M3 host boot smoke: with
-/// `pad_render` and `oled_render` both parked in `wait_ready()` before
-/// `pic_pump` signals, whichever task happened to be polled last "won" the
-/// single waker slot and the other hung past the smoke's watchdog deadline.
+/// `crate::oled`'s redraw signal uses: `wait_ready()` is awaited
+/// *concurrently* by several tasks (e.g. the pad and OLED render tasks), and an
+/// `AtomicWaker` holds only one registration, so a second waiter's
+/// `register()` would clobber the first's and leave that task parked forever.
 #[cfg(not(target_os = "none"))]
 mod ready_signal {
     use core::cell::RefCell;
@@ -658,10 +650,9 @@ mod ready_signal {
     use embassy_sync::waitqueue::MultiWakerRegistration;
 
     static READY_FLAG: AtomicBool = AtomicBool::new(false);
-    /// Up to 4 concurrent waiters (today: `pad_render` + `oled_render`, with
-    /// headroom for future tasks that gate on the PIC handshake). If ever
-    /// exceeded, `register()` mass-wakes everything registered so far rather
-    /// than losing a registration — see its doc comment.
+    /// Up to 4 concurrent waiters. If exceeded, `register()` wakes everything
+    /// registered so far rather than losing a registration (see its doc
+    /// comment).
     static WAKERS: Mutex<CriticalSectionRawMutex, RefCell<MultiWakerRegistration<4>>> =
         Mutex::new(RefCell::new(MultiWakerRegistration::new()));
 

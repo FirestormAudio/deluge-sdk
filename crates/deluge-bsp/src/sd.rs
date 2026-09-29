@@ -8,8 +8,8 @@
 //! no SDHI hardware, so the same public API ([`init`], [`read_sectors`],
 //! [`write_sectors`], [`is_ready`], [`is_inserted`], [`is_write_protected`],
 //! [`total_sectors`]) is instead backed by a small file-backed disk image
-//! ([`host`]), so callers (e.g. `deluge-bsp-rust`'s FatFS diskio shim) need no
-//! `#[cfg]` of their own.
+//! ([`host`]), so callers (e.g. a FatFS diskio shim) need no `#[cfg]` of their
+//! own.
 //!
 //! ## SD protocol overview (device)
 //!
@@ -178,10 +178,10 @@ mod device {
     //
     // IMPORTANT: high-capacity vs standard cards differ only in the command
     // *argument* (block- vs byte-address, handled by `lba_to_addr`), NOT in the
-    // command encoding. The old `CMDxx | 0x7C00` "SDHC" constants were a bug:
-    // 0x7C00 forces *multiple-block read* mode, so a single-block CMD17 made the
-    // controller wait for a second block until the data-timeout (~1s), and the
-    // write commands additionally got the read-direction bit set.
+    // command encoding. Never OR 0x7C00 into the other commands: it forces
+    // *multiple-block read* mode, so a single-block CMD17 makes the controller
+    // wait for a second block until the data timeout (~1 s), and write commands
+    // get the read-direction bit set.
     const CMD18_MULTI: u16 = CMD18 | 0x7C00;
 
     // ---------------------------------------------------------------------------
@@ -318,13 +318,13 @@ mod device {
             sdhi::register_irqs(SD_PORT);
 
             // Register the DMAC completion IRQ for the RX channel so that
-            // read_blocks_dma can await DMAC TC after DATA_TRNS (M7 fix).
+            // read_blocks_dma can await DMAC TC after DATA_TRNS.
             dmac::register_completion_irq(SD_DMA_RX_CH);
 
             // Clean-invalidate the DMA bounce buffer's cacheable alias.  BSS
             // zeroing wrote dirty lines there; if those lines were later evicted
             // after a DMA fill via the uncached mirror, they would corrupt the
-            // received data (M8 fix).
+            // received data.
             let buf_start = core::ptr::addr_of!(SD_DMA_BUF) as usize;
             let buf_end = buf_start + core::mem::size_of::<SdDmaBuf>();
             cache::dma_clean_inv_range(buf_start, buf_end);
@@ -341,7 +341,7 @@ mod device {
         // blind-waits ~1 s here.  Instead we retry the protocol over a ~1 s budget
         // and return the instant it succeeds: a *warm* card (already awake from a
         // previous session) is ready on the first try, while a *cold* card is given
-        // the full second it needs — no manual reload required.
+        // the full second it needs.
         const INIT_ATTEMPTS: u32 = 16;
         const RETRY_DELAY_MS: u64 = 75; // 16 × ~(protocol + 75 ms) ≈ 1.3 s budget
 
@@ -957,7 +957,7 @@ mod device {
     #[cfg(feature = "fat")]
     impl PartitionShim {
         /// Probe LBA 0 and pick a [`ShimMode`]. Any read error or ambiguous layout
-        /// falls back to [`ShimMode::Passthrough`] (the previous behaviour).
+        /// falls back to [`ShimMode::Passthrough`].
         pub fn new() -> Self {
             let inner = DelugeBlockDevice;
             let mode = Self::detect(&inner);

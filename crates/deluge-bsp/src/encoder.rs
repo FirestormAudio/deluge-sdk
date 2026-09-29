@@ -1,3 +1,6 @@
+//! Front-panel rotary encoders: edge-interrupt quadrature decoding into
+//! per-encoder delta accumulators.
+
 use core::sync::atomic::{AtomicI8, Ordering};
 
 use embassy_sync::waitqueue::AtomicWaker;

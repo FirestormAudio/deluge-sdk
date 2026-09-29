@@ -8,8 +8,8 @@
 //! - [`classes`]: UAC2 audio, USB-MIDI, and MSC class implementations
 //!   (generic over any `embassy_usb::driver::Driver`).
 //! - [`bot`]: USB Mass Storage Bulk-Only Transport engine.
-//! - [`host`]: **host**-side class drivers for devices the Deluge hosts
-//!   (generic over any `embassy_usb_driver::host::UsbHostAllocator`).
+//! - `host` (feature `usb-host`): **host**-side class drivers for devices the
+//!   Deluge hosts (generic over any `embassy_usb_driver::host::UsbHostAllocator`).
 //!
 //! See [`rza1l_hal::usb`] for the quick-start examples (device mode, host
 //! mode, ISR wiring).

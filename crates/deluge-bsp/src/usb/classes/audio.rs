@@ -27,8 +27,7 @@ pub static USB_CAPTURE_BITS_PER_SAMPLE: AtomicU8 = AtomicU8::new(24);
 
 /// Current USB device sample rate in Hz (44100 or 48000).
 /// Updated by [`AudioClass`] when the host issues a SET_CUR sample-rate
-/// request.  Read by `uac2_task` / `uac2_mic_task` to decide whether the
-/// SCUX SRC paths are needed.
+/// request, and advertised as the only rate in the GET_RANGE response.
 pub static USB_SAMPLE_RATE: core::sync::atomic::AtomicU32 =
     core::sync::atomic::AtomicU32::new(44_100);
 
@@ -442,9 +441,8 @@ impl<const CAPTURE_CH: usize> Handler for AudioClass<CAPTURE_CH> {
                 // UAC2 §5.2.3.1: GET_RANGE response = wNumSubRanges followed by
                 // (dMIN, dMAX, dRES) tuples for each supported frequency.
                 //
-                // We advertise exactly the engine's current sample rate so the host
-                // is coerced to match it.  No SRC is needed: USB audio bypasses SCUX
-                // entirely and feeds the engine rings directly.
+                // Advertise only the current sample rate (`USB_SAMPLE_RATE`) so the
+                // host is coerced to match it and no SRC is needed on the device.
                 let rate = USB_SAMPLE_RATE.load(core::sync::atomic::Ordering::Acquire);
                 let resp: [u8; 14] = {
                     let mut b = [0u8; 14];

@@ -1,9 +1,8 @@
-// ---------------------------------------------------------------------------
-// Shared pad state — atomic bit fields (no mutex, no allocation)
-// ---------------------------------------------------------------------------
-//
-// 144 pads packed into 5 × u32 (160 bits; high 16 bits of word 4 unused).
-// AtomicU32::fetch_xor provides lock-free single-bit toggle.
+//! Shared pad lit-state as lock-free atomic bit fields.
+//!
+//! 144 pads are packed into 5 × `u32` (160 bits; the high 16 bits of word 4
+//! are unused and kept clear). `AtomicU32::fetch_xor` gives a lock-free
+//! single-bit toggle.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 

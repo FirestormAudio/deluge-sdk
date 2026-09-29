@@ -14,9 +14,9 @@
 //! ```
 //!
 //! ## Constraints
-//! - **Disables SSI TX DMA (ch 6).**  Call [`init`] instead of (or instead
-//!   of also calling) `rza1l_hal::ssi::init()`.  The SSI RX DMA path (ch 7) is
-//!   not affected.
+//! - **Disables SSI TX DMA (ch 6).**  Call [`init`] instead of
+//!   `rza1l_hal::ssi::init()`, not as well.  The SSI RX DMA path (ch 7) is not
+//!   affected.
 //! - Routing works only while SCUX is streaming (i.e. after [`init`]).
 //! - `set_volume` and `fade_to` are safe to call from any context (they write
 //!   only DVU register addresses, which are separate from DMA-accessed FIFOs).
@@ -96,7 +96,7 @@ pub unsafe fn init() {
         log::debug!("scux_dvu_path: init DVU output path (FFD0→IPC0→2SRC0→DVU0→OPC0→SSIF0)");
 
         // Start SSI0 RX DMA (codec → memory) but intentionally skip SSI0 TX DMA —
-        // the SCUX will drive SSIF0 TX directly via SSICTRL.SSI012TEN.
+        // the SCUX drives SSIF0 TX directly via SSICTRL.SSI0TX (step 5).
         ssi::init_rx_only(&crate::system::SSI_CONFIG);
 
         // 1. Software-reset the SCUX block.
@@ -337,9 +337,8 @@ pub fn tx_current_ptr() -> *mut i32 {
 
 /// Update the input sample rate of 2SRC0/0 while the path is running.
 ///
-/// Only valid when the path was initialised with [`init_with_src`].  Calling
-/// this when the path is in bypass mode (initialised with [`init`]) has no
-/// effect on audio quality but wastes a register write.
+/// Only meaningful when the path was initialised with [`init_with_src`]; in
+/// bypass mode (initialised with [`init`]) it has no audible effect.
 ///
 /// # Safety
 /// Writes to SCUX SRC memory-mapped registers.  Must not be called from the

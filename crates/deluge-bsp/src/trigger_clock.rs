@@ -35,7 +35,7 @@ const TRIG_GIC_ID: u16 = 38;
 /// Same priority as the encoders — well below audio (5) and OLED DMA (13).
 const TRIG_PRIORITY: u8 = 14;
 
-/// Number of pulses seen since boot (saturates by wrapping at `u32::MAX`).
+/// Number of pulses seen since boot (wraps at `u32::MAX`).
 pub static EDGE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 /// Embassy-time tick of the most recent pulse (`Instant::now().as_ticks()`).
@@ -63,10 +63,10 @@ pub unsafe fn irq_init() {
     unsafe {
         // Route P1_14 → IRQ6 via PFC alt-function 2.
         rza1l_hal::gpio::set_pin_mux(TRIG_PORT, TRIG_PIN, 2);
-        // `set_pin_mux` doesn't enable PIBC; without it, the pin's level isn't
-        // visible in PPR.  Not strictly required for the IRQ itself (IRQn taps
-        // the pad before the PIBC gate), but cheap insurance and matches the
-        // encoder setup pattern.
+        // `set_pin_mux` doesn't enable PIBC, without which the pin's level
+        // isn't visible in PPR. The IRQ itself doesn't need it (IRQn taps the
+        // pad before the PIBC gate); enabled so the level stays readable, as
+        // in the encoder setup.
         rza1l_hal::gpio::enable_input_buffer(TRIG_PORT, TRIG_PIN);
 
         // Falling edge: the on-board transistor inverts the external clock,

@@ -1,10 +1,10 @@
 //! Deluge board system initialisation.
 //!
 //! Centralises all board-specific peripheral configuration values and
-//! provides [`init_clocks`] as the single boot-time entry point that
-//! replaces the direct `rza1l_hal::stb`, `rza1l_hal::mmu`, `rza1l_hal::cache`,
-//! `rza1l_hal::gic`, `rza1l_hal::ostm`, and `rza1l_hal::time_driver` calls that would
-//! otherwise leak chip-level details into the top-level firmware crate.
+//! provides [`init_clocks`] as the single boot-time entry point, wrapping the
+//! `rza1l_hal::stb`, `rza1l_hal::mmu`, `rza1l_hal::cache`, `rza1l_hal::gic`,
+//! `rza1l_hal::ostm`, and `rza1l_hal::time_driver` calls so chip-level details
+//! stay out of the top-level firmware crate.
 //!
 //! ## CPG clock-gate values (`StbConfig`)
 //!
@@ -14,16 +14,16 @@
 //! | Register | Value      | Enabled modules                              |
 //! |----------|------------|----------------------------------------------|
 //! | STBCR2   | 0b01101010 | CoreSight                                    |
-//! | STBCR3   | 0b11110101 | MTU2, PWM                                    |
+//! | STBCR3   | 0b11110101 | MTU2, A/D (clock and analog supply)          |
 //! | STBCR4   | 0b00000111 | SCIF0–4                                      |
 //! | STBCR5   | 0b11111100 | OSTM0, OSTM1                                 |
-//! | STBCR6   | 0b01111111 | RTClock                                      |
+//! | STBCR6   | 0b01111111 | A/D                                          |
 //! | STBCR7   | 0b00111101 | DVDEC0/1, USB0                               |
 //! | STBCR8   | 0b11111101 | SCUX                                         |
-//! | STBCR9   | 0b11110111 | VDC50                                        |
-//! | STBCR10  | 0b00011111 | RSPI0–4                                      |
+//! | STBCR9   | 0b11110111 | SPIBSC0                                      |
+//! | STBCR10  | 0b00011111 | RSPI0–2                                      |
 //! | STBCR11  | 0b11011111 | SSIF0                                        |
-//! | STBCR12  | 0b11111011 | SDHI0 channel 0                              |
+//! | STBCR12  | 0b11111011 | SDHI01                                       |
 
 use rza1l_hal::ssi::SsiConfig;
 use rza1l_hal::stb::StbConfig;
@@ -46,10 +46,10 @@ unsafe fn cpg_basic_init() {
         let _ = frqcr.read_volatile();
     }
 
-    // NOTE: the original Deluge CPG_Init also wrote FRQCR2 (0xFCFE0014) here,
-    // but that register only exists on the RZ/A1H — the RZ/A1L manual's
-    // revision history (Rev 2.00) records its deletion.  CKIO standby
-    // behaviour on the A1L is controlled by FRQCR.CKOEN[1:0] (set above).
+    // The C firmware's CPG_Init also writes FRQCR2 (0xFCFE0014) here, but that
+    // register exists only on the RZ/A1H (the RZ/A1L manual deletes it in
+    // Rev 2.00).  CKIO standby behaviour on the A1L is controlled by
+    // FRQCR.CKOEN[1:0] (set above).
 
     // Enable writes to the on-chip data-retention RAM banks (0x20000000-
     // 0x2001FFFF).  The rest of the large-capacity on-chip RAM is gated by
@@ -72,11 +72,12 @@ unsafe fn cpg_basic_init() {
 /// All other module clocks are left stopped (gated) to minimise power and
 /// avoid spurious interrupt sources.
 pub const STB_CONFIG: StbConfig = StbConfig {
-    // CoreSight enabled; port-level standby for unused bits.
-    // `[1][1][0][1][0][1][CoreSight][_]`
+    // CoreSight enabled; port levels kept in standby (bit 7 = 0).
+    // `[port-level-keep][1][1][0][1][0][1][CoreSight]`
     stbcr2: 0b01101010,
-    // MTU2 and PWM enabled; IEBus, IrDA, LIN0/1, RSCAN2 stopped.
-    // `[IEBus][IrDA][LIN0][LIN1][MTU2][RSCAN2][0][PWM]`
+    // MTU2 and the A/D converter's clock and analog supply enabled; IEBus,
+    // IrDA, LIN0 and CAN stopped.
+    // `[IEBus][IrDA][LIN0][1][MTU2][CAN][A/D][1]`
     stbcr3: 0b11110101,
     // SCIF0–4 enabled; reserved bits [2:0] held at 1.
     // `[SCIF0][SCIF1][SCIF2][SCIF3][SCIF4][1][1][1]`
@@ -84,7 +85,7 @@ pub const STB_CONFIG: StbConfig = StbConfig {
     // OSTM0 and OSTM1 enabled; SCIM0/1 stopped.
     // `[SCIM0][SCIM1][1][1][1][1][OSTM1][OSTM0]`
     stbcr5: 0b11111100,
-    // RTClock enabled; A/D, CEU, JCU stopped.
+    // A/D enabled; CEU, JCU, RTClock stopped.
     // `[A/D][CEU][1][1][1][1][JCU][RTClock]`
     stbcr6: 0b01111111,
     // DVDEC0/1 and USB0 enabled; ETHER, FLCTL, USB1 stopped.
@@ -93,16 +94,17 @@ pub const STB_CONFIG: StbConfig = StbConfig {
     // SCUX clock enabled; IMR-LS2x, MMCIF, MOST50 stopped.
     // `[IMR-LS20][IMR-LS21][IMR-LSD][MMCIF][MOST50][1][SCUX][1]`
     stbcr8: 0b11111101,
-    // VDC50 enabled; I2Cx, SPIBSCx, VDC51 stopped.
-    // `[I2C0][I2C1][I2C2][I2C3][SPIBSC0][SPIBSC1][VDC50][VDC51]`
+    // SPIBSC0 enabled; I2C0–3 and VDC5 stopped.
+    // `[I2C0][I2C1][I2C2][I2C3][SPIBSC0][1][VDC5][1]`
     stbcr9: 0b11110111,
-    // RSPI0–4 enabled; CD-ROMDEC, RSPDIF, RGPVG stopped.
-    // `[RSPI0][RSPI1][RSPI2][RSPI3][RSPI4][CD-ROM][RSPDIF][RGPVG]`
+    // RSPI0–2 enabled; CD-ROM decoder and SPDIF stopped.
+    // `[RSPI0][RSPI1][RSPI2][1][1][CD-ROM][SPDIF][1]`
     stbcr10: 0b00011111,
     // SSIF0 enabled; SSIF1–3 stopped.
     // `[1][1][SSIF0][SSIF1][SSIF2][SSIF3][reserved][reserved]`
     stbcr11: 0b11011111,
-    // SDHI0 channel 0 enabled (port 0, pins 0+1); SDHI1, SDHI0 ch1 stopped.
+    // SDHI01 enabled; SDHI00, SDHI10/11 stopped. The SDHI driver ungates the
+    // clocks of the port it uses (`rza1l_hal::sdhi`).
     // `[1][1][1][1][SDHI00][SDHI01][SDHI10][SDHI11]`
     stbcr12: 0b11111011,
 };
@@ -112,7 +114,6 @@ pub const STB_CONFIG: StbConfig = StbConfig {
 /// SSICR value 0x002B_C020 decodes as: CKS=0 (AUDIO_X1 source), DWL=101
 /// (24-bit data words), SWL=011 (32-bit system words), SCKD=SWSD=1 (master),
 /// CKDV=0b0010 (AUDIOφ ÷ 4 → BCLK = 22.5792 MHz ÷ 4 = 5.6448 MHz).
-///
 ///
 /// - TX DMA channel 6 (SRAM → SSIFTDR).
 /// - RX DMA channel 7 (SSIFRDR → SRAM).
@@ -125,16 +126,15 @@ pub const SSI_CONFIG: SsiConfig = SsiConfig {
 /// SD_OPTION register value for SDHI port 1 on the Deluge board.
 ///
 /// 0x00BD selects a 2^23 SDCLK timeout cycle count and 4-bit bus width.
-/// This value was tuned by Rohan for reliable card detection on the Deluge
-/// hardware; it differs from the SDHI reset default.
+/// This is the Deluge C firmware's value, chosen for reliable card detection on
+/// this hardware; it differs from the SDHI reset default.
 pub const SD_OPTION: u16 = 0x00BD;
 
 // ---------------------------------------------------------------------------
 // SCUX DMA channel assignments for the Deluge board
 // ---------------------------------------------------------------------------
 //
-// These replace the previously-public rza1l_hal::scux::FFD*_DMA_CH constants.
-// Pass them as the `dma_ch` argument to `rza1l_hal::scux::init_ffd_dma` and
+// Pass these as the `dma_ch` argument to `rza1l_hal::scux::init_ffd_dma` and
 // `rza1l_hal::scux::init_ffu_dma`.
 
 /// DMA channel for FFD path 0 (CPU → SCUX, 8-ch, main synthesis / DVU path).
@@ -191,7 +191,7 @@ pub const SD_DMA_MAX_SECTORS: usize = 128;
 /// Performs, in order:
 /// 1. Basic CPG init (matches DelugeFirmware `CPG_Init`).
 /// 2. CPG module clock enable ([`rza1l_hal::stb::init`] with [`STB_CONFIG`]).
-/// 3. GIC init ([`rza1l_hal::gic::init`]) to match working `resetprg()` order.
+/// 3. GIC init ([`rza1l_hal::gic::init`]), in the C firmware's `resetprg()` order.
 /// 4. MMU enable ([`rza1l_hal::mmu::init_and_enable`]).
 /// 5. L1 cache enable ([`rza1l_hal::cache::l1_enable`]).
 /// 6. L2 cache init ([`rza1l_hal::cache::l2_init`]).
