@@ -11,6 +11,7 @@ type BoxedCb = Box<dyn FnMut(&[[f32; 2]], &mut [[f32; 2]]) + Send>;
 /// independent of where `Deluge` lives, since the input thread runs
 /// concurrently with any move of `Deluge`.
 type BoxedInputCb = Box<dyn FnMut(Event) + Send>;
+type BoxedMidiCb = Box<dyn FnMut(&[u8]) + Send>;
 
 /// The boxed USB hotplug callback. Double-boxed for the same reason as
 /// `BoxedCb`/`BoxedInputCb` (see `Deluge::usb_cb`).
@@ -83,12 +84,14 @@ pub struct Deluge {
     /// thread, so the thread never dereferences a freed `ctx`.
     audio_cb: Option<NonNull<BoxedCb>>,
     /// Heap pointer to the boxed input callback, owned by this handle. `None`
-    /// until `input_start`. Reclaimed in `Drop` AFTER `deluge_close` (which
-    /// stops the input thread via `deluge_input_free`), so the thread never
-    /// dereferences a freed `ctx`. `input_stop` deliberately does NOT reclaim
-    /// this box — only `Drop` does — so there is exactly one free site and no
-    /// double-free risk between an explicit `input_stop()` call and `Drop`.
+    /// until `input_start`. Reclaimed by `input_stop` or `Drop` (exactly one,
+    /// since each clears the field via `take()`), in both cases only after the
+    /// input thread is joined, so it never dereferences a freed `ctx`.
     input_cb: Option<NonNull<BoxedInputCb>>,
+    /// Heap pointer to the boxed MIDI receive callback, owned by this handle.
+    /// `None` until `midi_start`. Reclaimed by `midi_stop` or `Drop` after the
+    /// MIDI reader thread is joined, like `input_cb`.
+    midi_cb: Option<NonNull<BoxedMidiCb>>,
     /// Heap pointer to the boxed USB hotplug callback, owned by this handle.
     /// `None` until `usb_watch`. Reclaimed by `usb_unwatch` or `Drop` (exactly
     /// one of the two, since each clears the field via `take()`), mirroring
@@ -176,6 +179,7 @@ impl Deluge {
                 raw,
                 audio_cb: None,
                 input_cb: None,
+                midi_cb: None,
                 usb_cb: None,
             })
             .ok_or(Error(-1))
@@ -274,30 +278,50 @@ impl Deluge {
     ///
     /// `cb` runs on libdeluge's MIDI reader thread — hence `Send + 'static` —
     /// and must be short and non-blocking: queue and signal, don't do work.
-    /// Unlike [`input_start`](Self::input_start), the boxed closure is never
-    /// reclaimed: it is leaked and lives for the rest of the process.
+    /// Returns `Err(Error(-4))` if already started, `Err(Error(-1))` if MIDI is
+    /// unavailable, or `Err(Error(rc))` if the reader thread fails to start.
+    /// [`midi_stop`](Self::midi_stop) ends delivery and frees the closure.
     pub fn midi_start(&mut self, cb: impl FnMut(&[u8]) + Send + 'static) -> Result<(), Error> {
+        if self.midi_cb.is_some() {
+            return Err(Error(-4)); // DELUGE_ERR_STATE: already running
+        }
         let m = unsafe { deluge_sys::deluge_midi(self.raw.as_ptr()) };
         if m.is_null() {
             return Err(Error(-1));
         }
 
         unsafe extern "C" fn trampoline(data: *const u8, n: usize, ctx: *mut core::ffi::c_void) {
-            // SAFETY: `ctx` is the Box we leaked below, and libdeluge calls this
-            // only from the reader thread it owns, which is joined before the
-            // handle is freed — so the closure outlives every call.
-            let f = unsafe { &mut *(ctx as *mut Box<dyn FnMut(&[u8]) + Send>) };
+            // SAFETY: `ctx` is the `BoxedMidiCb` stored in `midi_cb`, and
+            // libdeluge calls this only from its reader thread, which
+            // `midi_stop` and `deluge_close` join before the box is freed.
+            let f = unsafe { &mut *(ctx as *mut BoxedMidiCb) };
             let bytes = unsafe { core::slice::from_raw_parts(data, n) };
             f(bytes);
         }
 
-        let boxed: Box<Box<dyn FnMut(&[u8]) + Send>> = Box::new(Box::new(cb));
-        let ctx = Box::into_raw(boxed) as *mut core::ffi::c_void;
-        let rc = unsafe { deluge_sys::deluge_midi_start(m, Some(trampoline), ctx) };
+        let boxed: BoxedMidiCb = Box::new(cb);
+        // Double-box: `ctx` is a heap address that survives moves of `Deluge`.
+        let ctx: *mut BoxedMidiCb = Box::into_raw(Box::new(boxed));
+        let rc = unsafe { deluge_sys::deluge_midi_start(m, Some(trampoline), ctx as *mut c_void) };
         if rc == 0 {
+            self.midi_cb = Some(unsafe { NonNull::new_unchecked(ctx) });
             Ok(())
         } else {
+            // C did not take ownership; reclaim the allocation.
+            drop(unsafe { Box::from_raw(ctx) });
             Err(Error(rc))
+        }
+    }
+
+    /// Stop MIDI push delivery and free its callback. Safe to call when not
+    /// started; `midi_start` can be called again afterwards.
+    pub fn midi_stop(&mut self) {
+        let m = unsafe { deluge_sys::deluge_midi(self.raw.as_ptr()) };
+        if !m.is_null() {
+            unsafe { deluge_sys::deluge_midi_stop(m) }; // joins the reader thread
+        }
+        if let Some(p) = self.midi_cb.take() {
+            drop(unsafe { Box::from_raw(p.as_ptr()) });
         }
     }
 
@@ -651,14 +675,16 @@ impl Deluge {
 
 impl Drop for Deluge {
     fn drop(&mut self) {
-        // deluge_close joins the RT thread and stops the input thread (via
-        // deluge_input_free) first, so neither callback is in use by the
-        // time we free its box below.
+        // deluge_close joins the RT, input, MIDI and hotplug threads first, so
+        // no callback is in use by the time its box is freed below.
         unsafe { deluge_sys::deluge_close(self.raw.as_ptr()) };
         if let Some(p) = self.audio_cb.take() {
             drop(unsafe { Box::from_raw(p.as_ptr()) });
         }
         if let Some(p) = self.input_cb.take() {
+            drop(unsafe { Box::from_raw(p.as_ptr()) });
+        }
+        if let Some(p) = self.midi_cb.take() {
             drop(unsafe { Box::from_raw(p.as_ptr()) });
         }
         if let Some(p) = self.usb_cb.take() {
