@@ -254,7 +254,7 @@ fn encode_input(event: InputEvent, bytes: &mut VecDeque<u8>) {
         }
         InputEvent::Encoder { index, delta } => {
             if let Some(edges) = crate::encoder::ENCODER_DELTAS.get(usize::from(index)) {
-                let _ = edges.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |e| {
+                let _ = edges.try_update(Ordering::Relaxed, Ordering::Relaxed, |e| {
                     Some(e.saturating_add(delta.saturating_mul(2)))
                 });
                 crate::encoder::ENCODER_WAKER.wake();
