@@ -1,6 +1,8 @@
-# fixedpoint
+# deluge-fixedpoint
 
-A type-safe, `no_std` fixed-point arithmetic library for Rust.
+A type-safe, `no_std` fixed-point arithmetic library for Rust. Published as
+`deluge-fixedpoint`; the library name is `fixedpoint`, and the `deluge` SDK
+re-exports it as `deluge::fixed`.
 
 ## Features
 
@@ -40,6 +42,7 @@ Common type aliases are provided:
 
 - `Q31` / `Q31Rounded`: 31 fractional bits, range [-1.0, 1.0)
 - `Q24` / `Q24Rounded`: 24 fractional bits, range [-128.0, 128.0)
+- `Q17` / `Q17Rounded`: 17 fractional bits, range [-16384.0, 16384.0)
 - `Q16` / `Q16Rounded`: 16 fractional bits, range [-32768.0, 32768.0)
 
 Or create custom formats:
@@ -136,10 +139,11 @@ runs in two buckets (see `tools/test.sh` at the workspace root): on the host
 e.g. `from_float` is the genuine `VCVT` instruction — so the hardware path is
 cross-checked against the portable one, not assumed equivalent.
 
-Run the tests (host):
+Run the tests from the workspace root:
 
 ```bash
-cargo test --target x86_64-unknown-linux-gnu
+cargo test --target x86_64-unknown-linux-gnu -p deluge-fixedpoint       # host
+cargo test --target armv7-unknown-linux-gnueabihf -p deluge-fixedpoint  # QEMU
 ```
 
 ## Performance
@@ -155,7 +159,6 @@ Perfect for:
 - **Audio DSP**: Filters, oscillators, envelopes (Q31 format matches audio sample range)
 - **Embedded systems**: Deterministic arithmetic without floating-point hardware
 - **Graphics**: Fixed-point is often faster than float on some architectures
-- **Finance**: Exact decimal representation requirements
 
 ## License
 
@@ -166,5 +169,5 @@ your option.
 
 Contributions are welcome! Please:
 - Add tests for new functionality
-- Run `cargo test` and `cargo clippy`
+- Run `./tools/test.sh` (from the workspace root) and `cargo clippy`
 - Update documentation as needed

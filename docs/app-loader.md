@@ -34,14 +34,17 @@ menu.
 
 ## Installing the loader
 
-The app loader is flashed onto your Deluge exactly like
-a normal Deluge firmware update. The Deluge's first-stage bootloader programs the
-`.bin` into what is typically taken up by the Deluge's firmware, making the loader the new default firmware.
+The app loader is flashed onto your Deluge exactly like a normal Deluge firmware
+update: the first-stage bootloader programs the `.bin` into the region normally
+occupied by the Deluge firmware, making the loader the new default firmware.
 
-1. Download the `app-loader.bin` from the GitHub Releases page.
+1. Get `app-loader.bin`: build it from the workspace root with
+   `cargo build-app-loader-bin` (it lands in
+   `target/armv7a-none-eabihf/release/`), or download the `image-app-loader`
+   artifact from the CI **Images** workflow.
 2. Copy `app-loader.bin` to the top level of your SD card.
-3. Insert the card, **hold SHIFT while powering on**.
-   image. The binary should flash to the internal memory.
+3. Insert the card and **hold SHIFT while powering on**. The first-stage
+   bootloader flashes the image to internal memory.
 4. Power-cycle. You should land on the app-loader's **boot menu**.
 
 Because it installs through the same update path as stock firmware, you can always
@@ -274,8 +277,8 @@ The loader is designed so you can always get back to a working state:
   repopulate `/APPS/` from your computer.
 - **Locking a unit down** — turn dev mode **off** so it will no longer accept
   USB uploads.
-- **Reinstalling the loader itself** — see the
-  [Device setup guide](device-setup.md).
+- **Reinstalling the loader itself** — repeat
+  [Installing the loader](#installing-the-loader).
 
 ---
 
@@ -283,6 +286,5 @@ The loader is designed so you can always get back to a working state:
 
 - [Getting started guide](getting-started.md) — toolchain, `cargo deluge`, and
   your first app.
-- [Device setup guide](device-setup.md) — installing the app loader onto a unit.
 - [`firmwares/app-loader/README.md`](../firmwares/app-loader/README.md) — module-by-module source
   reference.

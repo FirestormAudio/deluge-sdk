@@ -1,7 +1,6 @@
 # wren-web
 
-The wasm core for the Deluge Wren web editor/simulator (milestone **M2** of
-[`docs/web-editor-plan.md`](../../docs/web-editor-plan.md)).
+The wasm core for the Deluge Wren web editor/simulator.
 
 It implements [`deluge_wren_core::Host`](../deluge-wren-core) against
 in-memory buffers — the browser counterpart of the firmware's `FwHost` — and
@@ -9,11 +8,11 @@ exposes a small C-ABI surface to JS: boot the VM, run a script, inject input
 (pads / buttons / encoders / MIDI), advance the clock, and drain output
 (`System.print` / errors, OLED pixels, CV / gate / LED state, MIDI TX).
 
-The wren C VM is compiled and linked against a **wasi-sdk sysroot** (see
-[plan §5](../../docs/web-editor-plan.md#5-runtime-half-vm--dsp-to-wasm)), so the
+The wren C VM is compiled and linked against a **wasi-sdk sysroot**, so the
 module has a few `wasi_snapshot_preview1` imports a tiny JS shim satisfies.
-Audio-graph commands are applied to the engine but not yet rendered to Web Audio
-(a later milestone).
+Audio-graph commands are applied to a main-thread engine (used for the on-screen
+scope) and queued for a second engine instance running in an AudioWorklet, which
+renders the audible output.
 
 ## Build
 
@@ -30,6 +29,17 @@ tar -xzf /tmp/wasi-sysroot.tar.gz -C /tmp
 export WASI_SYSROOT=/tmp/wasi-sysroot-25.0
 cargo build --target wasm32-unknown-unknown --release
 # → target/wasm32-unknown-unknown/release/wren_web.wasm  (~230 KB)
+```
+
+The web editor in [`app/`](app/) loads the core from
+`app/public/wren_web.wasm`; copy a fresh build there after changing this crate.
+
+## Run the web editor
+
+```sh
+cd app
+npm install
+npm run dev        # Vite dev server; `npm run build` for a static bundle in dist/
 ```
 
 ## Test

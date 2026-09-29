@@ -27,6 +27,7 @@ picocom -c -b 115200 /dev/ttyACM0
 - `^^w` — end upload, run, and save to `/MAIN.WREN` on the SD card.
 - `^^c` — cancel/clear the upload buffer.
 - `^^v` — print the version banner.
+- `^^m` — print the VM heap's SRAM/SDRAM usage (live and peak).
 
 `/MAIN.WREN` (if present) is loaded and run at boot.
 
@@ -117,7 +118,29 @@ Sources: `Osc.sine/saw/square/tri(freq)`, `Noise.new()`.
 Shaping: `Env.ar(attack, release)`, `node.lpf(cutoff)`.
 Combining: `a * b`, `a + b`, `a - b` (operands may be nodes or numbers).
 Params: `node.freq = …`, `node.cutoff = …`, `node.gate(bool)`, `node.trigger()`.
-Output is mono, duplicated to both channels.
+A mono signal patched to `Out` plays on both channels; `Pan.new(node, pos)`
+places one in the stereo field.
+
+This is only the core of the API. Filters (`Svf`, `Moog`, `Ms20`, `Tb303`),
+effects (`Delay`, `Chorus`, `Room`, `Drive`, `Comp`, `EQ`, …), wavetables and
+samples, modulators (`LFO`, `Steps`, `Slew`), and the mixer (`Bus`, `Aux`,
+`Mixer`) are all declared, with usage comments, in
+[`prelude.wren`](../wren/deluge-wren-core/wren/prelude.wren).
+
+### Polyphony — `Synth`
+
+`Synth.new` builds a polyphonic instrument from a voice closure that receives the
+note pitch (and optionally velocity). Each voice needs an `Env.ar` or `Env.adsr`
+as its amp envelope:
+
+```wren
+var bass = Synth.new { |pitch| Osc.saw(pitch).lpf(1200) * Env.ar(0.01, 0.3) }
+Out.patch(bass.out)
+bass.bindMidi()                              // play it from DIN MIDI
+```
+
+`Synth.mono { … }` builds a single legato voice instead; set `.glide = seconds`
+for portamento between overlapping notes.
 
 ### Keeping a patch alive across an edit — `Patch.named`
 
@@ -151,20 +174,23 @@ See `wren/wren-firmware/examples/`:
 
 ## Authoring on a computer
 
-`wren/deluge-wren-core/wren/prelude.wren` is the single source of truth for the scripting
-API — every `foreign` class + signature is declared there. Point the `wren-rs`
-toolchain (`~/GitHub/wren-rs`: LSP, analyzer, formatter) at it as a library/context
-to get completion, go-to-definition, and diagnostics while editing `.wren` files,
-then load them via `^^w` (saved to `/MAIN.WREN`) or the SD card.
+`wren/deluge-wren-core/wren/prelude.wren` is the single source of truth for the
+scripting API — every `foreign` class and signature is declared there. Point the
+[`wren-rs`](https://github.com/FirestormAudio/wren-rs) toolchain (LSP, analyzer,
+formatter) at it as a library/context to get completion, go-to-definition, and
+diagnostics while editing `.wren` files, then load them via `^^w` (saved to
+`/MAIN.WREN`) or the SD card.
 
-## Known limitations (v1)
+The browser-based editor and simulator in [`wren/wren-web`](../wren/wren-web/README.md)
+runs the same VM and bindings compiled to WebAssembly, with live diagnostics.
+
+## Known limitations
 
 - **No script watchdog.** An accidental infinite loop in a script/callback hangs
   the VM (and everything it cooperatively shares — MIDI/UI/audio). Recovery is a
-  reset. (A future fix adds a deadline check to the interpreter loop.)
+  reset.
 - **Audio glitches during big compiles.** Rendering is cooperative; a long
   `wrenInterpret` (large `^^w` upload) can briefly starve the audio task. Small
   REPL edits are fine.
-- **Mono audio, single patch.** No polyphony / per-voice allocation yet.
-- **MIDI is DIN only** (no USB-MIDI bridge yet). Pad **RGB** colors not yet exposed
-  (LEDs are).
+- **MIDI is DIN only** (no USB-MIDI). Pad **RGB** colours are not exposed (LEDs
+  are).

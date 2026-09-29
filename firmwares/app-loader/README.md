@@ -33,15 +33,16 @@ The menu also exposes two synthetic entries:
 - **`SETTINGS`** — opens the settings screen: the `AUTO-BOOT` delay
   (`INSTANT` / `1S`–`20S` / `NEVER`) and the persistent dev-mode flag. Written to
   flash on exit.
-- **Recovery** — hold **LOAD** while powering on to force the boot menu with no
-  countdown, whatever `AUTO-BOOT` is set to.
+
+**Recovery:** hold **LOAD** while powering on to force the boot menu with no
+countdown, whatever `AUTO-BOOT` is set to.
 
 ### Dev mode (USB upload-and-run)
 
 Dev mode is a **persistent, default-off** setting stored in the SPI-flash
-**settings sector** (`0x40_0000`, one 256 KB sector above the app slot, outside
-the FSB / settings / SSB / app-slot regions — see the `spibsc` flash map and the
-second `writable()` window that guards it). Because it survives reboots and is
+**settings block** (`0x3C0000`, one 64 KB erase block directly above the app
+slot, outside the FSB / device-settings / SSB regions — see the flash map in
+`deluge_bsp::flash`, whose writable windows guard it). Because it survives reboots and is
 independent of the SD card, a stock unit never accepts firmware over USB until
 the user explicitly turns it on.
 
@@ -64,7 +65,7 @@ the CDC device down first so a later `DATA TRANSFER` MSC init has the port free.
 **Long-press** SELECT on an SD `/APPS` ELF entry to pop up a `WRITE TO FLASH?`
 prompt. Choosing `YES` flattens the ELF into a flat `.bin`, validates its FSB
 metadata, and programs it into the flash app slot (`0x100000`, above the FSB /
-settings / SSB, which the `spibsc` `writable()` guard physically protects). The
+settings / SSB, which the `deluge_bsp::flash` writable-window guard protects). The
 stored image then becomes the first/default `BOOT FLASH` entry and the unit can
 boot it with no SD card present. Only fully SRAM-linked images can be stored.
 
@@ -76,7 +77,7 @@ boot it with no SD card present. Only fully SRAM-linked images can be stored.
 |--------|------|
 | [`elf`](src/elf.rs) | Streaming ELF32-LE loader for ARM firmware images, slice loader (`load_from_slice`) + flatten-to-flash-staging |
 | [`devupload`](src/devupload.rs) | Dev-mode USB CDC upload listener: receive a framed ELF, load it to RAM, and launch |
-| [`settings`](src/settings.rs) | Persistent dev-mode flag in the SPI-flash settings sector (format in `deluge-image`) |
+| [`settings`](src/settings.rs) | Persistent loader settings (auto-boot delay, dev-mode flag) in the SPI-flash settings block (format in `deluge-image`) |
 | [`file_browser`](src/file_browser.rs) | Enumerates loadable ELF images from `/APPS` on the SD card |
 | [`flashboot`](src/flashboot.rs) | Probes/launches a firmware image stored in SPI flash, and programs the flash slot |
 | [`launcher`](src/launcher.rs) | Cache flush + branch-to-application handoff |
@@ -93,8 +94,10 @@ Run from the workspace root (aliases in `.cargo/config.toml` supply the required
 | `cargo build-app-loader` | `target/armv7a-none-eabihf/debug/app-loader` (debug ELF) |
 | `cargo build-app-loader-bin` | `target/armv7a-none-eabihf/release/app-loader.bin` (raw image — flash as the device firmware) |
 
-Install `app-loader.bin` onto a unit with the [Device setup guide](../../docs/device-setup.md);
-see the [workspace README](../../README.md) for probe-based flashing and debugging.
+Install `app-loader.bin` onto a unit as described in
+[Installing the loader](../../docs/app-loader.md#installing-the-loader); see the
+[workspace README](../../README.md#debugging) for probe-based loading and
+debugging. The [App Loader Manual](../../docs/app-loader.md) covers day-to-day use.
 
 SD `/APPS` images are ordinary RAM-linked firmware ELFs (the same ones the
 `firmwares/` builds and `cargo deluge` produce).

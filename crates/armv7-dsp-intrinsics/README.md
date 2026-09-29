@@ -24,8 +24,11 @@ This crate provides access to ARM DSP instructions like SMMUL, SMMULR, QADD, and
 
 ## Platform Support
 
-- **ARM targets with DSP**: Uses native ARM instructions via inline assembly
-- **Other platforms**: Falls back to portable Rust implementations
+- **ARM targets with DSP** (`target_arch = "arm"`, `target_feature = "dsp"`):
+  native instructions via inline `asm!` by default, or via the unstable
+  `core::arch` intrinsics with the `nightly` feature.
+- **Other platforms**: portable Rust fallbacks with identical results, so code
+  using the crate also builds and tests on the host.
 
 ## Usage
 
@@ -78,9 +81,10 @@ let saturated = saturate_signed::<16>(100000);
 
 ## Target Configuration
 
-For ARM Cortex-A7
+The DSP paths need the `dsp` target feature, which `target-cpu=cortex-a9` (the
+Deluge's CPU) enables:
 
 ```toml
-[target.armv7-unknown-linux-gnueabihf]
-rustflags = ["-C", "target-cpu=cortex-a7", "-C", "target-feature=+dsp"]
+[target.armv7a-none-eabihf]
+rustflags = ["-C", "target-cpu=cortex-a9"]
 ```

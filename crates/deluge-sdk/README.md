@@ -39,20 +39,27 @@ async fn main(_dlg: Deluge) {
 
 | Feature | Description |
 |---|---|
-| `alloc` | Register the HAL's on-chip SRAM heap as the global allocator so `alloc` collections work. Off by default — the SDK is otherwise allocator-free. Required by apps that draw with the (GPL) `deluge-ui-toolkit`. Build with `-Zbuild-std=core,alloc`. |
+| `alloc` | Register the on-chip SRAM heap (`deluge-alloc`) as the global allocator so `alloc` collections work. Off by default — the SDK is otherwise allocator-free. Required by apps that draw with the (GPL) `deluge-ui-toolkit`. Build with `-Zbuild-std=core,alloc`. |
 | `usb-log` | Route the `log` crate to a USB CDC-ACM serial port, so firmware logs appear over the USB cable with no debug probe. |
 | `audio-irq` | Drive `dlg.audio()` from the per-block RX DMA interrupt (drift-free, lower latency) instead of the default poll loop. |
+| `usb-serial` | Let the app take USB0 as a CDC-ACM serial device with its own VID/PID via `Deluge::usb_serial`. Device-only; mutually exclusive with `usb-log` at runtime. |
 | `rtt` | Enable RTT (SEGGER Real-Time Transfer) debug logging in the `#[deluge::app]` runtime. |
+| `sim` | Host backend: run the app against the desktop simulator panel (`cargo deluge sim`). Host builds only. |
+| `linux` | Linux backend: run the app on the Deluge's Linux userland through `libdeluge` (`cargo deluge linux --features linux`). |
+
+Apps usually forward the backend features as their own, e.g.
+`sim = ["deluge/sim"]` and `linux = ["deluge/linux"]` (see
+`examples/baremetal/oled_hello`).
 
 `usb-log` takes precedence over `rtt` when both are enabled — only one global
 logger may be registered.
 
 ## Toolchain
 
-The SDK is `no_std` and targets `armv7a-none-eabihf`. It relies on nightly
-features (`impl_trait_in_assoc_type`, build-std), so a nightly toolchain and
-`-Zbuild-std` are required. See the [advanced developer guide] for the
-architecture and internals.
+On the device the SDK is `no_std` and targets `armv7a-none-eabihf`. It relies on
+nightly features (`impl_trait_in_assoc_type`, build-std), so a nightly toolchain
+and `-Zbuild-std` are required; `cargo deluge` passes the right flags for you.
+See the [advanced developer guide] for the architecture and internals.
 
 ## License
 
