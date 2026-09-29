@@ -104,22 +104,33 @@ impl DinParser {
                 return None;
             }
             if byte >= 0xF0 {
-                // Other system-common (0xF1–0xF6) — clear running status.
+                // System common cancels running status. A one-byte message
+                // (Tune Request) is complete now; an undefined status or a
+                // stray EOX starts nothing, so its data bytes are dropped.
                 self.running_status = 0;
-            } else {
-                // Channel voice message — update running status.
-                self.running_status = byte;
+                self.buf_pos = 0;
+                return match message_size(byte) {
+                    (1, cin) => Some([cin, byte, 0, 0]),
+                    (0, _) => None,
+                    _ => {
+                        self.buf[0] = byte;
+                        self.buf_pos = 1;
+                        None
+                    }
+                };
             }
+            // Channel voice message — update running status.
+            self.running_status = byte;
             self.buf[0] = byte;
             self.buf_pos = 1;
             return None;
         }
 
         // ---- Data byte ------------------------------------------------------
-        if self.running_status == 0 {
-            return None; // no active status — discard
-        }
         if self.buf_pos == 0 {
+            if self.running_status == 0 {
+                return None; // no message in progress — discard
+            }
             // Running-status re-insert.
             self.buf[0] = self.running_status;
             self.buf_pos = 1;
@@ -149,11 +160,77 @@ fn message_size(status: u8) -> (usize, u8) {
         0x80 | 0x90 | 0xA0 | 0xB0 | 0xE0 => (3, (status >> 4) & 0x0F),
         0xC0 | 0xD0 => (2, (status >> 4) & 0x0F),
         0xF0 => match status {
+            0xF1 => (2, 0x02), // MTC Quarter Frame
             0xF2 => (3, 0x03), // Song Position Pointer
             0xF3 => (2, 0x02), // Song Select
             0xF6 => (1, 0x05), // Tune Request
             _ => (0, 0),
         },
         _ => (0, 0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use super::*;
+    use std::vec::Vec;
+
+    fn feed(bytes: &[u8]) -> Vec<[u8; 4]> {
+        let mut p = DinParser::default();
+        bytes.iter().filter_map(|&b| p.push(b)).collect()
+    }
+
+    #[test]
+    fn channel_messages_use_running_status() {
+        assert_eq!(
+            feed(&[0x90, 0x3C, 0x40, 0x3E, 0x40]),
+            [[0x09, 0x90, 0x3C, 0x40], [0x09, 0x90, 0x3E, 0x40]]
+        );
+    }
+
+    #[test]
+    fn realtime_bytes_pass_through_mid_message() {
+        assert_eq!(
+            feed(&[0x90, 0x3C, 0xF8, 0x40]),
+            [[0x0F, 0xF8, 0, 0], [0x09, 0x90, 0x3C, 0x40]]
+        );
+    }
+
+    #[test]
+    fn song_position_pointer_is_forwarded() {
+        assert_eq!(feed(&[0xF2, 0x10, 0x20]), [[0x03, 0xF2, 0x10, 0x20]]);
+    }
+
+    #[test]
+    fn song_select_is_forwarded() {
+        assert_eq!(feed(&[0xF3, 0x05]), [[0x02, 0xF3, 0x05, 0]]);
+    }
+
+    #[test]
+    fn tune_request_is_forwarded_at_once() {
+        assert_eq!(feed(&[0xF6]), [[0x05, 0xF6, 0, 0]]);
+    }
+
+    #[test]
+    fn mtc_quarter_frame_is_forwarded() {
+        assert_eq!(feed(&[0xF1, 0x23]), [[0x02, 0xF1, 0x23, 0]]);
+    }
+
+    #[test]
+    fn system_common_cancels_running_status() {
+        // After Song Select, a bare data byte has no status to belong to.
+        assert_eq!(
+            feed(&[0x90, 0x3C, 0x40, 0xF3, 0x05, 0x3E, 0x40]),
+            [[0x09, 0x90, 0x3C, 0x40], [0x02, 0xF3, 0x05, 0]]
+        );
+    }
+
+    #[test]
+    fn undefined_status_bytes_swallow_their_data_safely() {
+        let mut bytes = std::vec![0xF4];
+        bytes.extend([0x01; 10]);
+        bytes.extend([0xF5, 0x02, 0x03, 0x04]);
+        assert!(feed(&bytes).is_empty());
     }
 }
