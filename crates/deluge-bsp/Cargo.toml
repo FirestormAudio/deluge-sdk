@@ -45,6 +45,9 @@ embedded-graphics = ["dep:embedded-graphics-core"]
 ## UAC/MIDI). Opt-in — only host-role firmwares need it; gating it keeps
 ## `embassy-usb-host` (and its `ssmarshal` dep) out of every other build.
 usb-host = ["dep:embassy-usb-host"]
+## Drive the desktop simulator's panel from the host arms (the `sim` module): PIC commands and OLED frames land
+## on a `deluge-sim-link` panel instead of being dropped. Host builds only; a simulator installs the panel.
+sim-link = ["dep:deluge-sim-link", "dep:embassy-time"]
 
 [dependencies]
 rza1l-hal = { path = "../rza1l-hal", version = "0.1.0" }
@@ -72,11 +75,20 @@ embassy-usb = { workspace = true }
 # platform/executor backend.
 embassy-executor = { workspace = true }
 
+[target.'cfg(not(target_os = "none"))'.dependencies]
+# The desktop simulator's panel (the `sim-link` feature). std-only, like the simulator itself.
+deluge-sim-link = { path = "../deluge-sim-link", optional = true }
+# Polls the simulator's input for `pic::read_byte` (`sim-link`). The program supplies the time driver, as on the
+# device.
+embassy-time = { workspace = true, optional = true }
+
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
 critical-section = { workspace = true, features = ["std"] }
 # `embassy-usb-host` pulls in `embassy-time`, which needs a registered time
 # driver to *link* the test binary. `mock-driver` supplies one.
-embassy-time = { workspace = true, features = ["mock-driver"] }
+# `generic-queue-8`: the `sim` module's input poll waits on a `Timer`, and a test binary has no executor to supply the
+# timer queue a program's executor would.
+embassy-time = { workspace = true, features = ["mock-driver", "generic-queue-8"] }
 embassy-futures = { workspace = true }
 
 

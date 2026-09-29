@@ -484,7 +484,8 @@ pub async fn init() {
 }
 
 /// Copy `fb` into the host capture surface, standing in for actually driving
-/// the panel. Shared by the host [`send_frame`] and [`draw_blocking`].
+/// the panel, and onto the simulator's panel when there is one (`sim-link`).
+/// Shared by the host [`send_frame`] and [`draw_blocking`].
 #[cfg(not(target_os = "none"))]
 fn capture_frame(fb: &FrameBuffer) {
     let mut captured = CAPTURED_FRAME
@@ -492,6 +493,8 @@ fn capture_frame(fb: &FrameBuffer) {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     *captured = fb.clone();
     BOOT_FRAME_CAPTURED.store(true, core::sync::atomic::Ordering::Release);
+    #[cfg(feature = "sim-link")]
+    crate::sim::display(fb.as_bytes());
 }
 
 /// Read back the frame most recently pushed via [`send_frame`]/[`draw_blocking`]

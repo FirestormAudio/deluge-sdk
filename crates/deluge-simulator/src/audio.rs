@@ -243,7 +243,7 @@ impl Feeder {
 
 /// Read a WAV fully into stereo `f32` frames, converting from int/float and
 /// mono/stereo. Warns (but proceeds) if the sample rate isn't the codec rate.
-fn load_wav(path: &Path) -> Result<Vec<[f32; 2]>, String> {
+pub(crate) fn load_wav(path: &Path) -> Result<Vec<[f32; 2]>, String> {
     let mut reader = hound::WavReader::open(path).map_err(|e| format!("open {path:?}: {e}"))?;
     let spec = reader.spec();
     if spec.sample_rate != SAMPLE_RATE_HZ {
