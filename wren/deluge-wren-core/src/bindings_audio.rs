@@ -1,7 +1,7 @@
-//! The Wren audio foreign classes (`Node`/`Out`), retargeted onto
-//! `flare-graph`. Factory statics allocate an id and emit `NewNode`;
-//! instance methods mutate via the `crate::audio` emitters. `Port` and `Bus`
-//! are added in later P1 tasks.
+//! The Wren audio foreign classes (`Node`, `Port`, `Bus`, `Synth`, pooled
+//! `Wavetable`/`SampleBuffer`/`Keymap`, `Out`) over `flare_graph`. Factory
+//! statics allocate an id and emit `NewNode`; instance methods mutate via the
+//! `crate::audio` emitters.
 
 use flare_graph::{Input, Kind, NodeId};
 
@@ -15,7 +15,7 @@ use crate::slotapi::{
 
 // All audio foreign objects lead with a `tag: u8` (offset 0 under `repr(C)`) so
 // `arg_input` can discriminate a Node/Port/Bus argument by reading that byte —
-// no VM class query, no `SlotApi` change. `Port`/`Bus` land in later tasks.
+// no VM class query needed.
 pub(crate) const TAG_NODE: u8 = 0;
 pub(crate) const TAG_PORT: u8 = 1;
 pub(crate) const TAG_BUS: u8 = 2;
@@ -182,11 +182,11 @@ impl WrenForeign for BusObj {
 }
 
 /// A handle to a dynamically-uploaded (pooled) wavetable, produced by
-/// `Wavetable.from([samples])` (Task 5). `handle` is `None` when the upload
+/// `Wavetable.from([samples])`. `handle` is `None` when the upload
 /// was rejected (bad host / pool exhaustion) — `PoolHandle` has no public
 /// constructor, so `None` is the only representable "unbound" state; nodes
 /// built from an unbound `Wavetable` skip `BindTable` and render silent
-/// rather than panicking. Larger than the other (4-byte) audio foreigns —
+/// rather than panicking. Larger than `NodeObj`/`PortObj`/`BusObj` —
 /// safe, because `arg_input` only ever reads the leading tag *byte* for
 /// unknown tags, never the whole struct.
 #[repr(C)]
@@ -213,12 +213,12 @@ impl WrenForeign for WtObj {
 }
 
 /// A handle to a dynamically-uploaded (pooled) raw-PCM buffer, produced by
-/// `SampleBuffer.from([samples])` (Task 3). `handle` is `None` when the
+/// `SampleBuffer.from([samples])`. `handle` is `None` when the
 /// upload was rejected (bad host / pool exhaustion) — same graceful-degrade
 /// contract as [`WtObj`]: a node built from an unbound `SampleBuffer` skips
 /// its pool bind rather than panicking. `len` is the sample count uploaded
 /// (Rust already knows this without querying the pool — `PoolHandle`'s
-/// fields are private to `pool.rs`), read by `Player.new` (Task 4) to know
+/// fields are private to `pool.rs`), read by `Player.new` to know
 /// the buffer's extent.
 #[repr(C)]
 pub(crate) struct SampleObj {
@@ -236,13 +236,13 @@ impl WrenForeign for SampleObj {
 }
 
 /// A handle to a dynamically-uploaded, multi-zone keymap, produced by
-/// `Keymap.from([[samplesList, low, high, root], ...])` (Sa-2 Task 5): every
+/// `Keymap.from([[samplesList, low, high, root], ...])`: every
 /// zone's PCM is concatenated *verbatim* (no mip pyramid, no band-limiting —
 /// same raw-PCM contract as [`SampleObj`]) into ONE pool region, and a zone
 /// table `(offset, len, low, high, root)` is recorded per zone — field order
 /// matches `flare_kernels::sampler::PolySamplePlayer::set_zone_field`'s
-/// numbering (0=offset,1=len,2=low,3=high,4=root), which is how Task 6's
-/// node `set_param` scheme addresses each field. `handle` is `None` when the
+/// numbering (0=offset,1=len,2=low,3=high,4=root), which is how the
+/// consuming node's `set_param` scheme addresses each field. `handle` is `None` when the
 /// upload was rejected (bad host / pool exhaustion) — same graceful-degrade
 /// contract as [`SampleObj`]/[`WtObj`]: the zone table (and `n_zones`) is
 /// still recorded so downstream can size its `SetParam`s, but a node built
@@ -301,17 +301,16 @@ fn sync_kind(code: u8) -> Kind {
 }
 
 /// Resolve a number / Node / Port / Bus argument at `slot` into an engine
-/// `Input`, discriminating foreign objects by their leading `tag` byte. Task 2
-/// only has `Node`; Tasks 4/5 add the `Port`/`Bus` arms.
+/// `Input`, discriminating foreign objects by their leading `tag` byte.
 pub(crate) fn arg_input<S: SlotApi>(vm: &S, slot: i32) -> Input {
     match vm.slot_type(slot) {
         WrenType::Num => Input::Const(vm.get_f(slot) as f32),
         WrenType::Foreign => {
-            // SAFETY: reads only the 1-byte tag at offset 0, then a 4-byte audio foreign
-            // (NodeObj/PortObj/BusObj are all 4 bytes == the minimum foreign size), so no
-            // over-read. Passing a non-audio foreign is a script error, not UB: it is
-            // misread as an audio object with an out-of-range id, which the engine treats
-            // as inert. `arg_input` trusts only that the arg is *some* >=4-byte foreign.
+            // SAFETY: reads the 1-byte tag at offset 0, then the tagged audio foreign
+            // (PortObj/BusObj are 4 bytes, NodeObj 6). Passing a non-audio foreign is a
+            // script error: it is misread as an audio object with an out-of-range id,
+            // which the engine treats as inert. `arg_input` trusts that the arg is a
+            // foreign at least as large as the struct its tag byte selects.
             let tag = unsafe { *vm.foreign_mut::<u8>(slot) };
             match tag {
                 TAG_NODE => {
@@ -375,7 +374,7 @@ unsafe fn return_poly_node<S: SlotApi>(vm: &S, id: u16) {
 /// Non-`Node` args (a bare number, `Port`, `Bus` — none reachable here today
 /// since `PolyMul`/`PolyAdd`'s operands are always `Node`s) default to `false`.
 ///
-/// The rule this flag enforces (prelude `*`/`+` operators, Task 6): a bare
+/// The rule this flag enforces (prelude `*`/`+` operators): a bare
 /// scalar `Num` may scale/offset a control-rate signal (LFO/Env/Ctrl/pitch)
 /// but not an audio-voice signal (Osc/filter/noise/sync/wavetable output) —
 /// `Env.ar(...) * k` broadcasts fine, `Osc.sine(p) * k` aborts. `poly`-ness
@@ -678,9 +677,8 @@ pub(crate) unsafe extern "C" fn node_wavetable(raw: *mut WrenVM) {
 /// pyramid per edit. Don't free a node while another node still shares the
 /// same `Wavetable` — that reclaims the region out from under the survivor.
 /// Consequences of misuse are always graceful (silence or a finite leak
-/// until the pool exhausts), never UB or a panic, but this is an accepted
-/// limitation pending a proper object-scoped ownership model
-/// (finalizer/refcount) as a follow-on.
+/// until the pool exhausts), never UB or a panic; there is no object-scoped
+/// ownership (finalizer/refcount) yet.
 pub(crate) fn wavetable_from_impl<S: SlotApi>(vm: &S) {
     let count = checked_list_count(vm, 1);
     let mut base = [0.0f32; flare_mipgen::N];
@@ -812,7 +810,7 @@ pub(crate) unsafe extern "C" fn sample_from(raw: *mut WrenVM) {
 /// pool region, recording a zone table `(offset, len, low, high, root)`
 /// alongside it.
 ///
-/// Two-pass, mirroring the brief: pass 1 sums every (capped) zone's samples-
+/// Two passes: pass 1 sums every (capped) zone's samples-
 /// list length to size the single `alloc_buffer` call; pass 2 walks the
 /// zones again, copying each zone's samples element-by-element via
 /// `audio::pool_set` (same one-at-a-time contract as `sample_from_impl` —
@@ -838,7 +836,7 @@ pub(crate) unsafe extern "C" fn sample_from(raw: *mut WrenVM) {
 ///
 /// Malformed input degrades gracefully too, rather than reading out of
 /// bounds: `wren-sys` compiles the C VM's `ASSERT` bounds/type checks to
-/// no-ops (see this crate's `wren-sys/build.rs` — `DEBUG` is never defined),
+/// no-ops (see `wren-sys/build.rs` — `DEBUG` is never defined),
 /// so `get_list_count`/`get_list_element`/`get_f` on a slot that isn't
 /// actually a list (or an out-of-range index) is undefined behavior, not a
 /// catchable error. Every list read here is therefore preceded by a
@@ -852,8 +850,8 @@ pub(crate) unsafe extern "C" fn sample_from(raw: *mut WrenVM) {
 /// allocated pool size and pass 2's recorded `len`s never disagree.
 pub(crate) fn keymap_from_impl<S: SlotApi>(vm: &S) {
     const MAX_ZONES: usize = flare_kernels::sampler::MAX_ZONES;
-    // `flare_kernels::sampler::Zone::empty()`'s defaults (sampler.rs
-    // ~L114): offset=0, len=0, low=0, high=0, root=60. A malformed or short
+    // `flare_kernels::sampler::Zone::empty()`'s defaults: offset=0, len=0,
+    // low=0, high=0, root=60. A malformed or short
     // zone fills in whichever of these fields it's missing.
     const EMPTY_LOW: u8 = 0;
     const EMPTY_HIGH: u8 = 0;
@@ -957,8 +955,7 @@ pub(crate) fn keymap_from_impl<S: SlotApi>(vm: &S) {
         zones[z] = (offset, len as u32, low, high, root);
         // `offset` is a running total of every prior zone's sample count; a
         // pathological script (many large zones) must degrade by saturating
-        // rather than overflow-panic under debug-assertions (same defect
-        // class as the Task 1 `hermite_read` u32 fix, commit a084d5b).
+        // rather than overflow-panic under debug-assertions.
         offset = offset.saturating_add(len as u32);
     }
 
@@ -981,7 +978,7 @@ pub(crate) unsafe extern "C" fn keymap_from(raw: *mut WrenVM) {
 }
 
 /// `Node.player_(buffer)` — create a `Kind::SamplePlayer` node from a
-/// `SampleBuffer` handle (Task 3). Reads the `SampleObj`'s `handle`+`len`
+/// `SampleBuffer` handle. Reads the `SampleObj`'s `handle`+`len`
 /// from slot 1: a bound handle emits `NewNode` + `BindTable{Pooled}` + a
 /// `SetParam{param: 3}` seeding loop_end to the buffer's length, so the
 /// default loop region covers the whole sample; an unbound one (upload
@@ -1271,7 +1268,7 @@ pub(crate) unsafe extern "C" fn node_set_wet(raw: *mut WrenVM) {
 }
 
 /// `Kind::Comp` compressor node (no buffer); sets threshold/ratio/attack/
-/// release/knee/makeup/detector params. (Modeled on `node_drive_impl`, :806.)
+/// release/knee/makeup/detector params.
 pub(crate) fn node_comp_impl<S: SlotApi>(vm: &S) {
     let input = arg_input(vm, 1);
     let threshold = vm.get_f(2) as f32;
@@ -1373,14 +1370,10 @@ pub(crate) unsafe extern "C" fn comp_set_detector(raw: *mut WrenVM) {
 }
 
 /// `Kind::Gate` gate/expander node (no buffer); sets threshold/ratio/attack/
-/// release/hold/range/detector params. (Modeled on `node_comp_impl`, :849.)
+/// release/hold/range/detector params.
 ///
-/// NOTE: named `node_gate_kind_impl` (not `node_gate_impl`) to avoid colliding
-/// with the pre-existing envelope-gate trigger `node_gate_impl`/`node_gate`
-/// (bound to the unrelated `.gate(_)` instance selector, :2046) — the Wren-
-/// visible selector for THIS factory is `gate_(_,_,_,_,_,_,_,_)`, distinct
-/// from `.gate(_)`, so there is no Wren-side ambiguity, only a Rust-side name
-/// clash that forced this rename.
+/// Bound to the Wren selector `gate_(_,_,_,_,_,_,_,_)`; named `_kind` to keep
+/// it distinct from the envelope-gate trigger `node_gate_impl` (`.gate(_)`).
 pub(crate) fn node_gate_kind_impl<S: SlotApi>(vm: &S) {
     let input = arg_input(vm, 1);
     let threshold = vm.get_f(2) as f32;
@@ -1482,7 +1475,7 @@ pub(crate) unsafe extern "C" fn gate_set_detector(raw: *mut WrenVM) {
 }
 
 /// `Kind::Bitcrush` lo-fi amplitude-quantize node (no buffer); sets bit depth
-/// param. (Modeled on `node_gate_kind_impl`, :954.)
+/// param.
 pub(crate) fn node_bitcrush_impl<S: SlotApi>(vm: &S) {
     let input = arg_input(vm, 1);
     let bits = vm.get_f(2) as f32;
@@ -1502,7 +1495,7 @@ pub(crate) unsafe extern "C" fn node_bitcrush(raw: *mut WrenVM) {
 }
 
 /// `Kind::Decimate` lo-fi sample-and-hold node (no buffer); sets rate (Hz)
-/// param. (Modeled on `node_gate_kind_impl`, :954.)
+/// param.
 pub(crate) fn node_decimate_impl<S: SlotApi>(vm: &S) {
     let input = arg_input(vm, 1);
     let rate = vm.get_f(2) as f32;
@@ -1593,7 +1586,7 @@ pub(crate) unsafe extern "C" fn node_set_regen(raw: *mut WrenVM) {
     node_set_regen_impl(&vm);
 }
 
-// NOTE: `damp=` (NOT `damping=`). `damping=` is already bound to
+// `damp=` (NOT `damping=`): `damping=` is already bound to
 // `node_set_res_impl` (Resonator, port-2 set_input); a Delay's port 2 is
 // feedback, so it needs a distinct selector → index 1 = damping (Kind::Delay).
 pub(crate) fn node_set_damp_impl<S: SlotApi>(vm: &S) {
@@ -1958,17 +1951,16 @@ pub(crate) unsafe extern "C" fn node_polyms20(raw: *mut WrenVM) {
 
 /// `Node.polyar_(attack, release)` — poly AR envelope. Ports 0/1 = attack/release
 /// (mono). Records itself as one of the voice's gates (up to `MAX_GATES`); all
-/// recorded envelopes are gated by the note (Sy-5c).
+/// recorded envelopes are gated by the note.
 ///
 /// Deliberately uses `return_node` (unflagged), not `return_poly_node`: for
 /// operator-guard purposes `Env.ar(...)` is a CONTROL/amp signal, not an
 /// audio-voice signal, even though it drives per-voice `PolyAr`. That makes
 /// `Env.ar(...) * k` (scaling the envelope's shape by a constant) a legitimate
 /// control-rate op — it broadcasts a `Ctrl(k)` per voice via `PolyMul` exactly
-/// like any other control chain (Task 6) — while `Osc.sine(p) * k` (an actual
+/// like any other control chain — while `Osc.sine(p) * k` (an actual
 /// audio-voice signal) still `Fiber.abort`s, preserving the "amp comes from
-/// Env.ar" UX rule. This is intentional and coherent, not an oversight: see
-/// `wren/deluge-wren-core/tests/audio_bindings.rs` for the locking tests.
+/// Env.ar" UX rule. Pinned by tests in `tests/audio_bindings.rs`.
 pub(crate) fn node_polyar_impl<S: SlotApi>(vm: &S) {
     let attack = arg_input(vm, 1);
     let release = arg_input(vm, 2);
@@ -2104,7 +2096,7 @@ fn poly_sync_kind(code: u8) -> Kind {
 
 /// `Node.polysync_(wave, master, slave)` — poly hard-sync oscillator. Both
 /// `master` (port 0) and `slave` (port 1) are poly edges, mirroring
-/// `node_sync_impl`; a mono source on either broadcasts (Task 1/§0).
+/// `node_sync_impl`; a mono source on either broadcasts.
 pub(crate) fn node_polysync_impl<S: SlotApi>(vm: &S) {
     let kind = poly_sync_kind(vm.get_f(1) as u8);
     let master = arg_input(vm, 2);
@@ -2124,7 +2116,7 @@ pub(crate) unsafe extern "C" fn node_polysync(raw: *mut WrenVM) {
 /// Used to select `Kind::PolyWt` vs `PolyWtMorph` at construction time: unlike
 /// the mono `Kind::Wavetable` (which branches on frame count at render time),
 /// a poly node's Kind is fixed at creation (`poly_process` dispatches on
-/// `self.kind`, not a runtime check) — see node.rs's `PolyWt` arm.
+/// `self.kind`, not a runtime check) — see the `PolyWt` arm in `flare_graph`.
 fn static_table_frames(table_id: u16) -> usize {
     flare_kernels::wavetable::static_table_flat(flare_kernels::wavetable::TableId(
         table_id,
@@ -2191,24 +2183,21 @@ pub(crate) unsafe extern "C" fn node_polywt_pooled(raw: *mut WrenVM) {
 /// synthesizes ONE full-range zone `(offset=0, len=<its len>, low=0,
 /// high=127, root=60)` — deliberately NOT `Zone::empty()` (whose `high=0`
 /// would key-split every note out): every MIDI note plays it, rooted at C4
-/// (the Sa-2 default), and `root=` retargets that zone afterward. A `Keymap`
+/// by default, and `root=` retargets that zone afterward. A `Keymap`
 /// uses its `handle`/`zones`/`n_zones` directly (already capped at
 /// `MAX_ZONES` and offset-consistent — see `keymap_from_impl`).
 ///
 /// Dispatches on the foreign's leading `tag` byte at slot 2 (`TAG_SAMPLE` vs
 /// `TAG_KEYMAP`), the same mechanism `arg_input` uses to discriminate
 /// `Node`/`Port`/`Bus` above — every audio foreign is `#[repr(C)]` with `tag:
-/// u8` as its first field (`NodeObj`/`WtObj`/`SampleObj`/`KeymapObj` all
-/// confirmed). Slot 2 is guarded by `slot_type(2) == WrenType::Foreign`
-/// FIRST: reading the tag byte off a non-foreign slot (e.g.
-/// `Sample.new(p, 5)`) would be UB (same defect class the Task 5 review
-/// fixed for `Keymap.from`'s unguarded list reads) — a non-foreign or
-/// unrecognized-tag `source` degrades to `handle: None`, zero zones: a
-/// silent node, never a panic.
+/// u8` as its first field. Slot 2 is guarded by `slot_type(2) ==
+/// WrenType::Foreign` FIRST: the VM's type `ASSERT`s are compiled out, so
+/// reading the tag byte off a non-foreign slot (e.g. `Sample.new(p, 5)`)
+/// would be UB. A non-foreign or unrecognized-tag `source` degrades to
+/// `handle: None`, zero zones: a silent node, never a panic.
 ///
 /// Ends by calling `audio::poly_record_trigger(id)` — this is what makes the
-/// allocator's per-lane `note_on` actually re-attack this source (Task 4's
-/// wiring); without it the sample source builds but never triggers. Returns
+/// allocator's per-lane `note_on` actually re-attack this source; without it the sample source builds but never triggers. Returns
 /// through the same poly-node path `node_polywt_pooled_impl` uses.
 pub(crate) fn node_polysampleplayer_impl<S: SlotApi>(vm: &S) {
     const MAX_ZONES: usize = flare_kernels::sampler::MAX_ZONES;
@@ -2220,8 +2209,8 @@ pub(crate) fn node_polysampleplayer_impl<S: SlotApi>(vm: &S) {
         [(u32, u32, u8, u8, u8); MAX_ZONES],
         usize,
     ) = if vm.slot_type(2) == WrenType::Foreign {
-        // SAFETY: slot 2 is confirmed Foreign above; every audio foreign is
-        // >=4 bytes with `tag: u8` at offset 0 (see `arg_input`'s SAFETY
+        // SAFETY: slot 2 is confirmed Foreign above; every foreign is
+        // >=4 bytes and audio foreigns lead with `tag: u8` (see `arg_input`'s SAFETY
         // note), so reading just the tag byte is sound regardless of which
         // concrete foreign this is.
         let tag = unsafe { *vm.foreign_mut::<u8>(2) };
@@ -2255,7 +2244,7 @@ pub(crate) unsafe extern "C" fn node_polysampleplayer(raw: *mut WrenVM) {
 
 /// `Node.granular_(pitch, buffer)` — poly grain-cloud voice source
 /// (`Kind::PolyGranular`) bound to a `SampleBuffer` foreign at slot 2,
-/// backing `Granular.new(pitch, buffer)` (Sa-4 Task 3). Mirrors
+/// backing `Granular.new(pitch, buffer)`. Mirrors
 /// `node_polysampleplayer_impl`'s shape but reads only the `SampleObj`
 /// `handle` (no zone synthesis — `PolyGranular` scrubs the whole buffer,
 /// positioned/sized/densified/sprayed via later `SetParam`s, not zones).
@@ -2264,9 +2253,7 @@ pub(crate) unsafe extern "C" fn node_polysampleplayer(raw: *mut WrenVM) {
 /// a non-`SampleObj` or missing argument (e.g. `Granular.new(p, 5)`) degrades
 /// to `handle: None` — the node still builds (silent, no bound PCM) — rather
 /// than reading a wrong-type/absent foreign, which the wren-sys VM's
-/// compiled-to-no-op ASSERTs would make UB (see the wren-binding-safety
-/// memory note; same defect class `node_polysampleplayer_impl`'s doc comment
-/// calls out for the Task 5 `Keymap.from` fix).
+/// compiled-to-no-op `ASSERT`s would make UB.
 ///
 /// Ends by calling `audio::poly_record_trigger(id)` — wires this source into
 /// the `VoiceAllocator` so `note_on` fans `TriggerVoice` to it, exactly like
@@ -2300,7 +2287,7 @@ pub(crate) fn node_stream_impl<S: SlotApi>(vm: &S) {
     let path = checked_str(vm, 2);
     let handle = audio::alloc_buffer(flare_graph::VOICES * STREAM_RING_CAP);
     let id = audio::alloc_node_id();
-    audio::new_stream_player(id, handle, pitch, 60.0); // root C4 (setter deferred)
+    audio::new_stream_player(id, handle, pitch, 60.0); // root C4 (no setter yet)
     audio::stream_register(id, handle, path);
     audio::poly_record_trigger(id);
     unsafe { return_poly_node(vm, id) };
@@ -2334,9 +2321,7 @@ pub(crate) unsafe extern "C" fn node_set_root(raw: *mut WrenVM) {
 /// setter, which does a poly-aware `set_input` port write, not a
 /// `set_param`) — reusing it here would silently misroute a scalar float
 /// into a port-wire call on `PolyGranular` (which doesn't consume that
-/// port), a wrong-behavior collision the brief didn't anticipate. Same
-/// distinct-name precedent as `strike=` (see its doc comment/prelude
-/// comment: chosen over `position=` for the same reason, for `Modal`).
+/// port). `strike=` avoids `position=` on `Modal` for the same reason.
 pub(crate) fn node_set_grain_position_impl<S: SlotApi>(vm: &S) {
     let v = vm.get_f(1) as f32;
     audio::set_param(self_id(vm), 1, v);
@@ -2515,8 +2500,7 @@ pub(crate) unsafe extern "C" fn synth_note_off(raw: *mut WrenVM) {
 /// `synth.out` — the `StereoVoiceSum` node, for routing (`Out.patch(synth.out)`).
 /// WIDTH-2 (port0=L, port1=R) — `write_source_to_bus` routes it per-side.
 /// At default width (0, no unison spread) both channels carry the identical
-/// mono sum, so this is byte-identical to the old mono `VoiceSum` unless
-/// `synth.width` is set.
+/// mono sum.
 pub(crate) fn synth_out_impl<S: SlotApi>(vm: &S) {
     let id = self_synth(vm).out_node;
     unsafe { return_node_w(vm, id, 2) }; // return_node_w overwrites slot 0 with a width-2 NodeObj
@@ -2529,7 +2513,7 @@ pub(crate) unsafe extern "C" fn synth_out(raw: *mut WrenVM) {
 
 /// `synth.isMono_` — true if this `Synth` was built via `Synth.mono` (i.e.
 /// `self_synth(vm).alloc` is `SynthAlloc::Mono`, which owns a PolySlew node).
-/// Used by the prelude `glide=` wrapper (M1) to `Fiber.abort` glide on a poly
+/// Used by the prelude `glide=` wrapper to `Fiber.abort` glide on a poly
 /// `Synth.new` instead of silently no-oping.
 pub(crate) fn synth_is_mono_impl<S: SlotApi>(vm: &S) {
     let is_mono = self_synth(vm).alloc.mono_slew().is_some();
@@ -2545,13 +2529,12 @@ pub(crate) unsafe extern "C" fn synth_is_mono(raw: *mut WrenVM) {
 /// (param 0 of the `PolySlew` node recorded by `mono_begin`/`mono_end`).
 /// Registered under `setGlide_` (not the public `glide=`) because the
 /// prelude's `glide=(seconds)` wrapper `Fiber.abort`s on a poly `Synth.new`
-/// (M1: "glide has no meaning on a poly Synth") before ever reaching here —
-/// see the `Synth` foreign class in `prelude.wren`, mirroring the Sy-2e
-/// `Bus.write`/`write_` guard pattern. `SlotApi` has no Rust-side "abort the
-/// fiber" primitive (no `wrenAbortFiber`/error-slot call anywhere in this
-/// crate or `slotapi.rs`), so all misuse checks are Wren-side. This still
-/// no-ops on a poly synth as defense-in-depth (`mono_slew()` returns `None`),
-/// in case a caller ever reaches `setGlide_` directly.
+/// (glide has no meaning there) before ever reaching here — see the `Synth`
+/// foreign class in `prelude.wren`, mirroring the `Bus.write`/`write_` guard
+/// pattern. `SlotApi` has no Rust-side "abort the fiber" primitive, so all
+/// misuse checks are Wren-side. This still no-ops on a poly synth
+/// (`mono_slew()` returns `None`) in case a caller reaches `setGlide_`
+/// directly.
 pub(crate) fn synth_set_glide_impl<S: SlotApi>(vm: &S) {
     let t = vm.get_f(1) as f32;
     if let Some(slew) = self_synth(vm).alloc.mono_slew() {
@@ -2595,7 +2578,7 @@ pub(crate) unsafe extern "C" fn synth_set_detune(raw: *mut WrenVM) {
 
 /// `synth.width = amount` — set the unison stereo spread (0..1) on the active
 /// allocator. Re-emits per-voice pan for any currently-sounding voices (live
-/// re-spread, Sy-6b); with no note sounding it only stores the value, so pan
+/// re-spread); with no note sounding it only stores the value, so pan
 /// takes effect on the next note-on.
 pub(crate) fn synth_set_width_impl<S: SlotApi>(vm: &S) {
     let amount = vm.get_f(1) as f32;
@@ -2639,7 +2622,7 @@ pub(crate) unsafe extern "C" fn node_split(raw: *mut WrenVM) {
 /// `Node.pan_(input, position)` — a constant-power mono→stereo pan node
 /// (`Kind::Pan`, width-2: port0=L, port1=R). `position` is port 1 (∈[-1,1],
 /// modulatable). Returns a WIDTH-2 node so width-aware routing sends its two
-/// ports to L/R (see `write_source_to_bus`, Task 5).
+/// ports to L/R (see `write_source_to_bus`).
 pub(crate) fn node_pan_impl<S: SlotApi>(vm: &S) {
     let input = arg_input(vm, 1);
     let position = arg_input(vm, 2);
@@ -2656,10 +2639,10 @@ pub(crate) unsafe extern "C" fn node_pan(raw: *mut WrenVM) {
 /// Route a source argument (at `slot`) to `bus`, honoring stereo width. A
 /// width-2 `Node` (e.g. `Pan`, `Chorus`) emits TWO per-side writes — port0→L
 /// `(1,0)`, port1→R `(0,1)`. Everything else (mono `Node`, `Port`, number,
-/// `Bus`) emits one center write `(1,1)` — unchanged behavior.
+/// `Bus`) emits one center write `(1,1)`.
 fn write_source_to_bus<S: SlotApi>(vm: &S, slot: i32, bus: u16) {
     if vm.slot_type(slot) == WrenType::Foreign {
-        // SAFETY: reads the leading tag byte, then (for TAG_NODE) the 4-byte
+        // SAFETY: reads the leading tag byte, then (for TAG_NODE) the
         // NodeObj — same access discipline as `arg_input`.
         let tag = unsafe { *vm.foreign_mut::<u8>(slot) };
         if tag == TAG_NODE {
@@ -2774,7 +2757,7 @@ pub(crate) unsafe extern "C" fn node_reset(raw: *mut WrenVM) {
     node_reset_impl(&vm);
 }
 
-/// `Node.scopeBegin_(name)` — open a named identity scope (GL6). The name is
+/// `Node.scopeBegin_(name)` — open a named identity scope. The name is
 /// read through `checked_str`, so a non-String argument reads as `""` (the
 /// global scope) rather than tripping the VM's disabled asserts.
 pub(crate) fn node_scope_begin_impl<S: SlotApi>(vm: &S) {
@@ -2876,8 +2859,8 @@ pub(crate) unsafe extern "C" fn node_set_pm(raw: *mut WrenVM) {
 /// `osc.width = v` — mono Osc: port 2 (PWM width). In poly mode (a Synth
 /// build), `this` is always a `PolyOsc` (`poly_in_count 2`: pitch/width both
 /// poly edges), so it must instead write port 1, the poly width port — a mono
-/// source (e.g. `LFO.sine(4).to(0.2,0.8)`) broadcasts to every voice lane
-/// (Task 1/§0); a poly source drives true per-voice PWM. NOTE: a literal
+/// source (e.g. `LFO.sine(4).to(0.2,0.8)`) broadcasts to every voice lane;
+/// a poly source drives true per-voice PWM. NOTE: a literal
 /// `width = 0.0` is indistinguishable from an unset width port — the osc
 /// kernel treats a `<= 0` width as the "use default 0.5 duty" sentinel, so
 /// `0.0` does NOT mean "fully off"/silent.
@@ -3417,7 +3400,7 @@ pub(crate) fn register_audio<S: SlotApi>(
         node_mono_begin_impl::<S>,
     );
     method("main", "Node", true, "monoEnd_(_)", node_mono_end_impl::<S>);
-    // Named identity scopes (GL6). These exist in the `METHODS` table used by
+    // Named identity scopes. These are also in the `METHODS` table used by
     // the wren-sys backend; they must be here too, or every wren-core-backed
     // host (the debug harness) fails to boot the prelude, which declares them
     // `foreign static`.

@@ -1,10 +1,5 @@
-//! Task 2.4: the transport-agnostic driver loop (`transport::serve`).
-//!
-//! `serve` is the same logic wren-dap's `spawn_driver`/`run_until_stop`
-//! (`wren-dap/src/session.rs:48-179`, `262-281`) implement, generalized
-//! from wren-dap's stdio/DAP-JSON transport to the `DebugTransport` trait
-//! (`src/transport.rs`). This test proves the seam actually works end to
-//! end with a real transport implementation: an in-memory `mpsc` pair.
+//! The transport-agnostic driver loop (`transport::serve`), end to end over
+//! a real transport implementation: an in-memory `mpsc` pair.
 //!
 //! Threading mirrors wren-dap's own arrangement (VM runs on its own thread,
 //! spawned inside `agent::debug_run`; the driver — here, `serve` — runs on
@@ -19,11 +14,8 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 
 use wren_web_debug::transport::{DebugCmd, DebugEvent, DebugTransport};
 
-/// An in-memory [`DebugTransport`] backed by a pair of `mpsc` channels — the
-/// test-only "native" transport the brief asks for. `recv_cmd`/`send_event`
-/// are exactly the two operations wren-dap's stdio transport performs
-/// (read a request, write a response/event); here they're just channel
-/// ops instead of JSON-over-stdio.
+/// An in-memory [`DebugTransport`] backed by a pair of `mpsc` channels, the
+/// test-only native transport.
 struct MpscTransport {
     cmd_rx: Receiver<DebugCmd>,
     event_tx: Sender<DebugEvent>,
@@ -75,12 +67,9 @@ fn stack_trace_then_continue_over_mpsc_transport() {
         wren_web_debug::transport::serve(&session, &transport);
     });
 
-    // Drain events until `Terminated` (the last event `serve` sends before
-    // returning after the `Continue`-triggered run-to-completion — see
-    // `run_until_stop`'s `Terminated` arm, which sends `Terminated` then
-    // `Exited`). Collecting stops here rather than at `Exited` so the
-    // assertions below can check exactly the three events the brief
-    // specifies without over-fitting to the `Exited` tail.
+    // Drain events until `Terminated` (`run_until_stop` sends `Terminated`
+    // then `Exited`). Stopping here keeps the assertions below independent
+    // of the `Exited` tail.
     let mut events = Vec::new();
     loop {
         match event_rx.recv() {
@@ -102,7 +91,7 @@ fn stack_trace_then_continue_over_mpsc_transport() {
     // invariant this crate requires.
     driver.join().expect("serve thread panicked");
 
-    // The program's `System.print(b)` (b == 2) now streams to the controller as
+    // The program's `System.print(b)` (b == 2) streams to the controller as
     // an `Output` event when the `Continue` runs it to completion — so split the
     // stream into that stdout and the structural events. Expected structural
     // sequence: the initial breakpoint stop (from `serve`'s pre-loop

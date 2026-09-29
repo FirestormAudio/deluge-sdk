@@ -1,17 +1,13 @@
-// Golden test: pins CV-output behavior across the Task 0.2 refactor that makes
-// binding bodies generic over `SlotApi` instead of hard-coding `wren_sys::Vm`.
-// Boots the real wren-sys VM (same path as `wren/wren-web`'s `sim_boot`), runs
+// Golden test: pins CV-output behavior of the `SlotApi`-generic binding bodies
+// on the wren-sys backend. Boots the real wren-sys VM (same path as `wren/wren-web`'s `sim_boot`), runs
 // a script that drives Output, and asserts the resulting CV voltage.
 //
 // The bindings' native state (`bindings.rs`'s `STATE`/`MIDI`/`UI`) is
 // documented single-threaded-only, and `cargo test` runs `#[test]` fns in
 // parallel threads by default — so every test in this file must hold `VM_LOCK`
-// for its whole body. Without it the two tests race over that shared state and
-// one reads the other's CV: a flaky failure that shows up as `cv1 = 3` (the
-// metro test's counter) rather than 1.0.
-//
-// The lock is deliberately not `#[serial]`-style magic: it is the one thing
-// keeping a documented invariant true, so it should be visible at each use.
+// for its whole body; without it the two tests race over that shared state and
+// one reads the other's CV. The lock is explicit at each use rather than
+// `#[serial]`-style, since it upholds a documented invariant.
 use deluge_wren_core::test_support::{run_and_read_cv, run_tick_read_cv};
 use std::sync::{Mutex, MutexGuard};
 
@@ -30,9 +26,8 @@ fn output_sets_cv() {
     assert!((cv - 1.0).abs() < 1e-6, "cv1 = {cv}");
 }
 
-// Task 0.3: pins the Engine callback-dispatch path (`tick` firing a stored
-// `Metro` callback handle) across the refactor that makes it generic over
-// `SlotApi`. A metro fires every tick; each fire bumps `n` and writes it to
+// Pins the callback-dispatch path (`tick` firing a stored `Metro` callback
+// handle) through the generic `SlotApi`. A metro fires every tick; each fire bumps `n` and writes it to
 // CV channel 0 — after 3 ticks the CV should have advanced to at least 3.0.
 #[test]
 fn metro_callback_fires() {

@@ -2,8 +2,9 @@
 //! instance, and the render task.
 //!
 //! The DSP itself (the node graph, the [`Engine`], the [`Cmd`] vocabulary) lives
-//! in `deluge_wren_core` so the device and the web simulator share one signal
-//! engine. This module is the firmware-specific plumbing around it:
+//! in the `flare` audio engine (`flare_graph`), shared with the web simulator
+//! through `deluge_wren_core`. This module is the firmware-specific plumbing
+//! around it.
 //!
 //! ## Concurrency
 //! `vm_task` (via the `Node` bindings → [`FwHost::audio_cmd`](crate::host::FwHost))
@@ -15,11 +16,11 @@
 //! before any task is spawned — so no task can ever observe it uninitialized.
 //! Every subsequent access is a freshly-derived, *scoped* `assume_init_mut`
 //! borrow: `audio_task`'s per-block closure re-derives `&mut Eng` inside the
-//! closure body (never held across the outer `.await`), and a future
-//! `upload_table` will do the same. This is sound because: (1) there is exactly
-//! one cooperative embassy executor with no preemption; (2) both accessors are
-//! synchronous (no `.await` inside either), so they run to completion without
-//! interleaving; (3) neither accessor ever holds a `&mut Eng` across a `.await`,
+//! closure body (never held across the outer `.await`), and the pool accessors
+//! (`upload_table`, `pool_set`, `alloc_buffer`, …) do the same. This is sound
+//! because: (1) there is exactly one cooperative embassy executor with no
+//! preemption; (2) every accessor is synchronous (no `.await` inside), so each
+//! runs to completion without interleaving; (3) no accessor ever holds a `&mut Eng` across a `.await`,
 //! so two overlapping borrows can never coexist; (4) `ENGINE` is written exactly
 //! once, before either accessor can run, so `assume_init_mut` never observes
 //! uninitialized memory; (5) no ISR touches `ENGINE`.
@@ -109,9 +110,8 @@ pub fn submit(c: Cmd) {
 /// Build a band-limited mip pyramid from `base` into a freshly-allocated pool region
 /// of the audio engine and return its handle. Called synchronously from `vm_task`'s
 /// `Wavetable.from` foreign method (via `FwHost::upload_table`). `None` on pool
-/// exhaustion. Blocks the executor for the (sub-millisecond, IFFT) build — see the
-/// `## Concurrency` docs and the device-upload spec for why this fits the audio
-/// write-ahead lead.
+/// exhaustion. Blocks the executor for the (sub-millisecond, IFFT) build, which
+/// fits within the audio write-ahead lead; see the `## Concurrency` docs.
 pub fn upload_table(base: &[f32]) -> Option<flare_graph::PoolHandle> {
     // SAFETY: ENGINE was initialized by `init_engine` in `main` before any task ran.
     // This runs synchronously inside a Wren foreign call on the one cooperative
@@ -141,9 +141,8 @@ pub fn pool_set(h: flare_graph::PoolHandle, index: usize, value: f32) {
 /// Read a `StreamPlayer` voice's playback read-cursor from the engine — `&self`
 /// read (even safer than `pool_set`'s mutable access), same single-executor
 /// SAFETY as [`upload_table`]. Device-safe in principle (no `std`), but the
-/// only caller is the host-only prefetch (`crate::stream::stream_task`) — the
-/// device prefetch is slice 5 — so this is gated host-only with the rest of
-/// that prefetch rather than left dead-code on device.
+/// only caller is the host-only prefetch (`crate::stream::stream_task`), so
+/// this is gated host-only rather than left as dead code on device.
 #[cfg(not(target_os = "none"))]
 pub fn stream_read_cursor(node: flare_graph::NodeId, voice: usize) -> Option<u64> {
     // SAFETY: see `upload_table`'s SAFETY comment above — read-only borrow,
@@ -203,11 +202,10 @@ const _: () = assert!(PCAP >= deluge_wren_core::PYRAMID_LEN);
 /// build per frame, same sub-millisecond-ish cost as a single `upload_table`
 /// call each). A `Wavetable.from2d` with many frames can therefore stall
 /// `audio_task` for roughly `nframes` times as long as one `upload_table`
-/// call. This inline path is only real-time-safe for SMALL frame counts (a
-/// handful, e.g. a handful of morph keyframes) — a large dynamic 2D bank
-/// should use a deferred/async build (not yet implemented; the write-ahead
-/// lead a single-cycle build fits does not scale to dozens of frames) instead
-/// of blocking here.
+/// call. This inline path is only real-time-safe for small frame counts
+/// (e.g. a handful of morph keyframes): the write-ahead lead that a
+/// single-cycle build fits does not scale to dozens of frames, and there is
+/// no deferred/async build path.
 pub fn upload_table_2d(
     nframes: usize,
     fill_frame: &mut dyn FnMut(usize, &mut [f32]),
@@ -260,7 +258,7 @@ pub async fn audio_task(audio: Audio) {
             // Chunk size must equal the engine's BLOCK (32) so `render` fills
             // each chunk fully.
             let mut scratch = [flare_graph::StereoFrame::default(); 32];
-            // Task 3: `block` arrives pre-loaded with captured codec input.
+            // `block` arrives pre-loaded with captured codec input.
             // Copy each chunk's current (input) contents into an engine-typed
             // scratch buffer BEFORE rendering — `chunk` is about to be
             // overwritten with output, and input/output must not alias.

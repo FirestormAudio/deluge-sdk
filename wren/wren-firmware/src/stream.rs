@@ -1,6 +1,6 @@
-//! Host-only SD-sample streaming prefetch (Sa-3b slice 4). Reads a WAV into RAM
-//! and feeds each `StreamPlayer` node's ring window as playback advances. The
-//! DEVICE prefetch (async `sd::read_sectors`, no-heap) is slice 5.
+//! Host-only SD-sample streaming prefetch. Reads a WAV into RAM and feeds each
+//! `StreamPlayer` node's ring window as playback advances. There is no device
+//! prefetch yet (it would use async `sd::read_sectors`, with no heap).
 #![cfg(not(target_os = "none"))]
 
 use flare_graph::{Cmd, NodeId, PoolHandle, VOICES};
@@ -83,15 +83,15 @@ fn sim_sd_join(path: &str) -> std::path::PathBuf {
 /// Host-only WAV prefetch: every 20 ms, for each registered streamed node,
 /// lazily load+decode its WAV (once, on the first tick after registration),
 /// then recompute and push each voice's resident ring window
-/// (`plan_window`, Task 2) from its current playback read-cursor.
+/// ([`plan_window`]) from its current playback read-cursor.
 ///
 /// A bad path or unparsable WAV leaves `pcm` empty and `total` at `0` — the
 /// node just never advances past silence (`Engine::stream_read_cursor` stays
 /// `0`, `plan_window(0, cap, 0)` keeps re-planning the same empty-ish window,
 /// and `pcm.get(a).unwrap_or(0.0)` always reads zero); no panic either way.
 ///
-/// The per-voice full-window rewrite each tick is O(ring_cap) — acceptable
-/// for the sim; the device prefetch (slice 5) will instead write only the
+/// The per-voice full-window rewrite each tick is O(ring_cap), which is
+/// acceptable for the sim; a device prefetch should write only the
 /// newly-exposed `[old_fill_hi, hi)` delta each tick.
 ///
 /// ## Concurrency

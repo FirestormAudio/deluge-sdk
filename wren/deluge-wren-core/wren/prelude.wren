@@ -200,7 +200,7 @@ foreign class Node {
   foreign static polymul_(a, b)
   foreign static polyadd_(a, b)
   foreign static polynoise_()
-  foreign isPoly_               // true if this Node wraps a per-voice audio signal (Sy-2d)
+  foreign isPoly_               // true if this Node wraps a per-voice audio signal
   foreign static polypink_()
   foreign static polybrown_()
   foreign static polysync_(wave, master, slave)
@@ -241,8 +241,8 @@ foreign class Node {
   // come from Env.ar, so a scalar Num is refused) from a control-rate Node
   // (the voice `pitch`, a mono LFO/Ctrl, or a chain built purely from those —
   // e.g. `LFO.sine(4).to(0.2, 0.8)` for PWM, or `p * 1.5` for a sync ratio):
-  // a scalar operand on THOSE is folded in via a broadcast `Ctrl` node (Sy-2d
-  // §0) rather than refused.
+  // a scalar operand on THOSE is folded in via a broadcast `Ctrl` node rather
+  // than refused.
   *(o) {
     if (Node.polyMode_ == 1) {
       if (o is Num) {
@@ -278,7 +278,7 @@ foreign class Node {
   unipolar()     { this * 0.5 + 0.5 }   // [-1,1] → [0,1]
   bipolar()      { this * 2 - 1 }       // [0,1] → [-1,1]
   scale(k)       { this * Node.ctrl_(k) }                 // audio-safe scale-by-constant (FM index, etc.): ctrl_ wrap dodges the `*`-Num guard, engine broadcasts across voices
-  scale(m, a)    { this * Node.ctrl_(m) + Node.ctrl_(a) } // audio-safe affine (was `this * m + a`, which aborted on an audio node)
+  scale(m, a)    { this * Node.ctrl_(m) + Node.ctrl_(a) } // audio-safe affine (a plain `this * m + a` would abort on an audio node)
   curve(k) {
     if (Node.polyMode_ == 1) Fiber.abort("curve not usable in a Synth yet (Sy-2c)")
     return Node.curve_(this, k)
@@ -307,13 +307,13 @@ foreign class Synth {
   foreign noteOff(note)
   foreign out
   foreign isMono_               // true if built via Synth.mono (has a PolySlew node)
-  foreign setGlide_(seconds)    // native glide set (renamed; guarded by `glide=` below)
+  foreign setGlide_(seconds)    // native glide set; guarded by `glide=` below
   foreign unison=(n)            // unison voice count (clamped 1..=VOICES); works mono or poly
   foreign detune=(cents)        // unison detune spread in cents; works mono or poly
   foreign width=(amount)        // unison stereo spread (0..1); works mono or poly
-  // Guard the M1 poly-glide footgun: `Synth.new` (poly) has no per-voice slew
-  // node, so `glide=` on a poly synth would otherwise be a silent no-op.
-  // Mirrors the Sy-2e `Bus.write_`/`write` guard pattern above.
+  // `Synth.new` (poly) has no per-voice slew node, so `glide=` on a poly
+  // synth would otherwise be a silent no-op. Mirrors the `Bus.write_`/`write`
+  // guard pattern.
   glide=(seconds) {
     if (isMono_ != 1) Fiber.abort("glide has no meaning on a poly Synth — use Synth.mono")
     setGlide_(seconds)
@@ -340,7 +340,7 @@ foreign class Synth {
   // the last-note-priority allocator gates ON only from silence and glides
   // the pitch (via `.glide = seconds`) on legato note-ons instead of
   // re-triggering the envelope. `.glide` ABORTS on `Synth.new` (poly) — there
-  // is no per-voice slew node to affect (M1).
+  // is no per-voice slew node to affect.
   //   var s = Synth.mono { |p| Osc.saw(p).lpf(1500) * Env.adsr(0.005,0.1,0.7,0.2) }
   //   s.glide = 0.08
   //   Out.patch(s.out)
@@ -393,7 +393,7 @@ foreign class Port {
   unipolar()     { this * 0.5 + 0.5 }   // [-1,1] → [0,1]
   bipolar()      { this * 2 - 1 }       // [0,1] → [-1,1]
   scale(k)       { this * Node.ctrl_(k) }                 // audio-safe scale-by-constant (FM index, etc.): ctrl_ wrap dodges the `*`-Num guard, engine broadcasts across voices
-  scale(m, a)    { this * Node.ctrl_(m) + Node.ctrl_(a) } // audio-safe affine (was `this * m + a`, which aborted on an audio node)
+  scale(m, a)    { this * Node.ctrl_(m) + Node.ctrl_(a) } // audio-safe affine (a plain `this * m + a` would abort on an audio node)
   curve(k) {
     if (Node.polyMode_ == 1) Fiber.abort("curve not usable in a Synth yet (Sy-2c)")
     return Node.curve_(this, k)
@@ -440,7 +440,7 @@ foreign class Wavetable {
   foreign static from2d(frames)
 }
 
-// A dynamically-uploaded raw-PCM buffer, for `Player` (Sa-1). Unlike
+// A dynamically-uploaded raw-PCM buffer, for `Player`. Unlike
 // `Wavetable`, the samples are uploaded verbatim — no mip pyramid, no
 // band-limiting — since this is a one-shot/looped sample, not a
 // band-limited oscillator cycle. Same node-scoped-lifetime contract as
@@ -451,7 +451,7 @@ foreign class SampleBuffer {
   foreign static from(samples)
 }
 
-// A multi-zone keymap for a poly sample source (Sa-2): each zone is
+// A multi-zone keymap for a poly sample source: each zone is
 // `[samplesList, low, high, root]` (raw PCM list, MIDI note range, root
 // note). `Keymap.from` concatenates every zone's PCM into ONE pool region
 // (verbatim, same raw-PCM contract as `SampleBuffer.from`) and records a
@@ -470,9 +470,8 @@ foreign class Keymap {
 //   var p = Player.new(SampleBuffer.from([0, 0.5, 1, 0.5, 0, -0.5, -1, -0.5]))
 //   p.speed = 1.5; p.semitones = -12; p.loopStart = 0; p.loopEnd = 4; p.loop = 1
 //   Out.patch(p); p.trigger()
-// `Player.new` returns a plain `Node`, so `.trigger()` uses the existing
-// `Node.trigger()` (dispatches to `State::SamplePlayer` — Sa-1 Task 2) and
-// the setters above use the new `Node` foreigns registered for Task 4.
+// `Player.new` returns a plain `Node`, so `.trigger()` and the setters above
+// are ordinary `Node` foreigns.
 class Player {
   static new(buffer) {
     if (Node.polyMode_ == 1) Fiber.abort("Player is a sample source — not usable in a Synth yet (Sa-2)")
@@ -499,12 +498,12 @@ class Sample {
 }
 
 // `Granular.new(pitch, buffer)` — poly grain-cloud voice source over an
-// in-RAM `SampleBuffer` (Sa-4 Task 3), mirroring `Sample.new`'s poly-only
+// in-RAM `SampleBuffer`, mirroring `Sample.new`'s poly-only
 // scope guard exactly. `.grainPosition =`/`.size =`/`.density =`/`.spray =`
 // retarget the cloud's scrub position (0..1), grain length (ms), spawn rate
 // (grains/sec), and position jitter (0..1) after construction — kernel
 // defaults (position=0, size=50ms, density=20/s, spray=0, root=60/C4) apply
-// otherwise. A `root=` setter is deferred this slice (default root stands).
+// otherwise. There is no `root=` for Granular; the root stays 60/C4.
 //   var g = Synth.new { |p| Granular.new(p, SampleBuffer.from([...])) * Env.adsr(0.01, 0.3, 0.6, 0.4) }
 class Granular {
   static new(pitch, buffer) {
@@ -513,7 +512,7 @@ class Granular {
   }
 }
 
-// In.line() — a stereo line-in source (Task 1's width-2 Kind::Input node).
+// In.line() — a stereo line-in source (a width-2 `Kind::Input` node).
 // Global/top-level source, not a poly voice, so no `polyMode_` guard.
 //   Out.patch(In.line())
 class In {
@@ -998,7 +997,7 @@ class Out {
 }
 
 // Names a chunk of a patch so its node ids survive an edit elsewhere in the
-// script (GL6). Only matters under an incremental update — the editor re-runs
+// script. Only matters under an incremental update — the editor re-runs
 // the script and the engine keeps every node whose id and kind are unchanged —
 // but ids are handed out in creation order, so inserting anything *above* an
 // unnamed node shifts its id and restarts it. A name pins the ids allocated
@@ -1024,12 +1023,12 @@ class Patch {
 //   Out.patch(m)
 foreign class Bus {
   foreign static new_()      // returns a fresh Bus foreign in slot 0
-  foreign write_(src)        // native bus write (renamed; guarded by `write` below)
+  foreign write_(src)        // native bus write; guarded by `write` below
   foreign gain=(v)           // per-bus mono gain (channel fader)
   foreign send_(dst, level)  // native stereo bus→bus send
   send(dst, level) { send_(dst, level) }
-  static new() { new_() }    // the public Bus.new() from the spec
-  // Guard the Sy-2e silent-mono footgun: a poly voice signal written to a
+  static new() { new_() }    // the public Bus.new()
+  // Guard against a silent mono mixdown: a poly voice signal written to a
   // (mono) bus inside a Synth bypasses the VoiceSum that `.out` inserts and is
   // read as a single interleaved row. A poly source is always a `Node`
   // (`return_poly_node`); Ports come only from Split etc., which abort in poly
@@ -1042,12 +1041,12 @@ foreign class Bus {
   }
 }
 
-// ── Aux / Mixer sugar (IO-2d) ─────────────────────────────────────────────────
+// ── Aux / Mixer sugar ─────────────────────────────────────────────────────────
 // Aux effect returns: each creates an aux bus, wires a FULLY-WET effect fed by
 // that bus back into `target`, and returns the aux bus to send dry sources to.
-// The effect reads the aux one block late (IO-2e) — fine for reverb/delay.
+// The effect reads the aux one block late — fine for reverb/delay.
 // Top-level only (effects abort in poly mode). Create the target (e.g. a Mixer
-// master) BEFORE the aux so bus ids increase (the from > to send rule, IO-2c).
+// master) BEFORE the aux so bus ids increase (sends must go from a higher to a lower id).
 //   var verb = Aux.reverb(master, 0.8, 0.4)
 //   ch.send(verb, 0.3)                        // dry send into the aux
 class Aux {
@@ -1079,9 +1078,9 @@ class Aux {
 }
 
 // A mixer: a master bus plus per-source channel strips. `channel(src)` returns a
-// channel Bus routed to the master — its `.gain=` is a real (post-fader, IO-2f)
-// fader and `.send(aux, level)` its aux sends. Create the mixer (master) FIRST,
-// then auxes, then channels, so send ids flow high→low (IO-2c from > to).
+// channel Bus routed to the master — its `.gain=` is a real fader (sends are
+// post-fader) and `.send(aux, level)` its aux sends. Create the mixer (master)
+// FIRST, then auxes, then channels, so send ids flow high→low.
 //   var mix = Mixer.new()
 //   var verb = Aux.reverb(mix.master, 0.8, 0.4)
 //   var ch = mix.channel(synth); ch.gain = 0.8; ch.send(verb, 0.3)

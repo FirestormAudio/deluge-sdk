@@ -1,5 +1,5 @@
 //! Compile-only check that the backend-agnostic surface is namable with the
-//! `wren-sys-backend` feature off — this is what Phase 1's `wren-web-debug`
+//! `wren-sys-backend` feature off — this is what the `wren-web-debug`
 //! crate needs (`default-features = false`), since it links a second upstream
 //! C VM and must not also pull in `wren-sys`'s copy.
 #![cfg(not(feature = "wren-sys-backend"))]

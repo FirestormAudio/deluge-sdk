@@ -334,7 +334,7 @@ fn nul_terminate(buf: &mut [u8], s: &str) -> *const c_char {
 
 /// A Rust type that can back a wren `foreign class`.
 ///
-/// Implement (or, later, `#[derive(WrenForeign)]`) so [`Vm::new_foreign_in`] can
+/// Implement so [`Vm::new_foreign_in`] can
 /// load the class and size the allocation.
 pub trait WrenForeign: Sized {
     /// The wren class name (e.g. `"Osc"`).

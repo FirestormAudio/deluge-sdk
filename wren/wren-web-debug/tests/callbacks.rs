@@ -1,4 +1,4 @@
-//! Proves a deluge callback binding (`Midi.onNoteOn`) round-trips through
+//! Checks that a deluge callback binding (`Midi.onNoteOn`) round-trips through
 //! wren-core: a foreign method stores the `Fn` as a handle during `interpret`,
 //! then the debug core's host loop fires it later via
 //! [`deluge_wren_core::midi_rx_impl`] — the same generic entry point the
@@ -6,10 +6,9 @@
 //! (`midi_rx`), just invoked directly here since this crate only links
 //! wren-core's C VM.
 //!
-//! This is the empirical validation of [`CoreSlots`]'s de-stubbed handle
-//! methods (`get_handle`/`set_handle`/`make_call_handle`/`call`/
-//! `release_handle`): before they delegated to wren-core's new handle API,
-//! this test failed (the callback silently never fired).
+//! This exercises [`CoreSlots`]'s handle methods (`get_handle`/`set_handle`/
+//! `make_call_handle`/`call`/`release_handle`); if any of them fails to
+//! delegate to wren-core's handle API, the callback silently never fires.
 
 mod common;
 

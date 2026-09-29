@@ -9,8 +9,9 @@
 //! The surface is raw `extern "C"` rather than wasm-bindgen because the module
 //! also carries the VM's WASI imports (it links wasi-libc), so it needs a custom
 //! JS loader regardless; a hand-written TS wrapper over these exports is small and
-//! keeps the crate `no_std`. Audio is engine-applied but not yet rendered to Web
-//! Audio (that's a later milestone).
+//! keeps the crate `no_std`. Audio renders in a second instance of this module
+//! running in an AudioWorklet, fed by a serialized command stream (see
+//! [`deluge_wren_core::codec`]).
 
 #![no_std]
 
@@ -348,7 +349,7 @@ pub extern "C" fn sim_reset() -> i32 {
     sim_boot()
 }
 
-/// Begin an **incremental** re-run (GL2): rebuild the VM, but keep the running
+/// Begin an **incremental** re-run: rebuild the VM, but keep the running
 /// audio graph instead of tearing it down. Returns 1 on success.
 ///
 /// This is [`sim_reset`]'s sibling, and the difference is exactly what does

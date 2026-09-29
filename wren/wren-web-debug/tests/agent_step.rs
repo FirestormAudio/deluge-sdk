@@ -1,10 +1,9 @@
-//! Task 2.3: stepping (`step_over`/`step_in`/`step_out`), `resume`, and
-//! `evaluate` on a parked [`wren_core::vm::DebugSession`].
+//! Stepping (`step_over`/`step_in`/`step_out`), `resume`, and `evaluate` on
+//! a parked [`wren_core::vm::DebugSession`].
 //!
 //! These exercise `DebugSession`'s own stepping/evaluate machinery directly
-//! (`wren-core/src/vm/debug.rs`) — `agent::debug_run` only builds the VM +
-//! attaches the hook (Task 2.1); once parked, driving it is exactly what
-//! wren-dap's `session.rs` does.
+//! (`wren-core/src/vm/debug.rs`); `agent::debug_run` only builds the VM and
+//! attaches the hook.
 
 mod common;
 

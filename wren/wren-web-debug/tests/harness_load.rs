@@ -1,4 +1,4 @@
-//! Task 1.3, Step 1: harness Layer 1 — running an entry that writes CV
+//! Running an entry that writes CV
 //! (`output[1].volts = 0.5`, i.e. `Output.new(0)`, the first/0-based CV
 //! channel per the prelude's `var output = [null, Output.new(0), ...]`)
 //! leaves that channel observable at 0.5 after `Harness::run_entry`, with no

@@ -1,7 +1,6 @@
-//! Task 2.2: stack trace + NAMED variable inspection.
+//! Stack trace + named variable inspection.
 //!
-//! This is the payoff of the whole Path B decision: wren-core's Rust
-//! compiler emits local/field debug info (`DebugLocal`/`DebugClass`) that
+//! wren-core's Rust compiler emits local/field debug info (`DebugLocal`/`DebugClass`) that
 //! the stock C compiler never produces, so `DebugSession::scopes`/
 //! `variables` can report a local by its *source name* — not just a slot
 //! index. Stop inside a method holding `var x = 42`, walk the stack via

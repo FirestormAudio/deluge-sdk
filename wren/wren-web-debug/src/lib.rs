@@ -19,18 +19,17 @@
     feature(stdarch_wasm_atomic_wait)
 )]
 
-/// The debug agent (Task 2.1): spawns a deluge VM on its own thread with
-/// wren-core's source debugger attached, and returns the [`DebugSession`]
-/// controller so a caller can drive it to a breakpoint stop.
+/// The debug agent: spawns a deluge VM on its own thread with wren-core's
+/// source debugger attached, and returns the [`DebugSession`] controller so a
+/// caller can drive it to a breakpoint stop.
 ///
 /// [`DebugSession`]: wren_core::vm::DebugSession
 pub mod agent;
-/// Task 5.1 (harness Layer 2): the [`drive::DriveEvent`] type + `dispatch`
-/// for replaying host events (MIDI/tick/encoder) into a live debug VM so a
+/// The [`drive::DriveEvent`] type and `dispatch`, for replaying host events (MIDI/tick/encoder) into a live debug VM so a
 /// breakpoint inside a fired callback parks the VM thread. Threaded through
 /// [`agent::debug_run_driven`] and [`harness::debug_drive_note`].
 pub mod drive;
-/// The harness (Task 1.3): runs a project through the same VM/prelude
+/// The harness: runs a project through the same VM/prelude
 /// machinery as [`build_vm`]/[`run_project_capture`], but with a *recording*
 /// [`Host`] installed instead of [`NoopHost`], so it can expose CV/gate state
 /// after the run.
@@ -45,19 +44,18 @@ pub mod register;
 /// the same adapter foreign methods get, reused outside a foreign call to
 /// prove the callback round-trip.
 pub mod slotapi_wrencore;
-/// Task 3.2: a [`transport::DebugTransport`] backed by a `SharedArrayBuffer`
-/// (a region of the wasm32-wasip1-threads shared linear memory), so the same
+/// A [`transport::DebugTransport`] backed by a `SharedArrayBuffer` (a region
+/// of the wasm32-wasip1-threads shared linear memory), so the same
 /// [`transport::serve`] loop runs unchanged in a wasm worker driven from the
 /// JS main thread. Only compiled for the threads build (it uses the wasm
-/// `atomic.wait`/`atomic.notify` intrinsics), so the native rlib and the
-/// single-threaded Task 3.1 wasm are unaffected.
+/// `atomic.wait`/`atomic.notify` intrinsics); the native rlib and the
+/// single-threaded wasm build don't include it.
 #[cfg(all(target_arch = "wasm32", target_feature = "atomics"))]
 pub mod sab;
-/// The transport seam (Task 2.4): a transport-agnostic driver loop
-/// (`serve`) that pumps a [`agent::debug_run`]-created
-/// [`wren_core::vm::DebugSession`] over any [`transport::DebugTransport`] —
-/// an in-process `mpsc` pair for native tests today, a `SharedArrayBuffer`
-/// protocol for the Phase 3 browser worker.
+/// The transport seam: a transport-agnostic driver loop (`serve`) that pumps
+/// a [`agent::debug_run`]-created [`wren_core::vm::DebugSession`] over any
+/// [`transport::DebugTransport`] — an in-process `mpsc` pair for native
+/// tests, a `SharedArrayBuffer` protocol for the browser worker.
 pub mod transport;
 
 use std::cell::RefCell;
@@ -80,7 +78,7 @@ const PRELUDE_IMPORT: &str = "import \"main\" for Output, Gate, Metro, Midi, Pad
 /// graph, CV/gate jacks, MIDI, LEDs, OLED) through this trait, so one must be
 /// registered before any script runs or the bodies panic. The debugger cares
 /// about control flow and locals, not hardware effects, so every method is a
-/// sink. Later phases can swap in a host that records effects for the UI.
+/// sink.
 struct NoopHost;
 
 impl Host for NoopHost {
@@ -196,14 +194,14 @@ pub fn run_project_capture(entry: &str, modules: Vec<(String, String)>) -> Strin
         .unwrap_or_else(|out| out.borrow().clone())
 }
 
-// ── wasm boot smoke (Task 3.1) ──────────────────────────────────────────
+// ── wasm boot smoke ─────────────────────────────────────────────────────
 //
 // A minimal C-ABI export that exercises the WHOLE wasm pipeline
 // single-threaded: wren-core's Rust compiler + the C VM + deluge foreign
 // bindings + the deluge prelude. It builds a VM (which compiles/runs the
 // prelude) and interprets a trivial `System.print("booted")` script, capturing
 // the output so the Node smoke can confirm it ran. No threads, no `debug_run`,
-// no transport — those are Task 3.2.
+// no transport — the threaded build (`sab.rs`) covers those.
 //
 // The most-recent captured output is stashed in a thread-local so `dbg_out_*`
 // can hand it back to the host (wasm is single-threaded; a `thread_local!` is

@@ -1,7 +1,7 @@
-//! Harness Layer 1 (Task 1.3): run a deluge project's entry through the same
-//! VM/prelude machinery as [`crate::build_vm`]/[`crate::run_project_capture`]
-//! and expose the resulting engine state (CV/gate) so later phases (and the
-//! debugger UI) can inspect what a script did.
+//! Run a deluge project's entry through the same VM/prelude machinery as
+//! [`crate::build_vm`]/[`crate::run_project_capture`] and expose the resulting
+//! engine state (CV/gate) so tests and the debugger UI can inspect what a
+//! script did.
 //!
 //! [`crate::build_vm`]/[`crate::run_project_capture`] install [`crate::NoopHost`]
 //! — fine for compile/print-capture tests, but Output/Gate writes vanish into
@@ -20,12 +20,12 @@ use wren_core::vm::{CWrenVm, DebugStop};
 use crate::drive::DriveEvent;
 use crate::slotapi_wrencore::CoreSlots;
 
-/// Harness Layer 2 (Task 5.1): run `src` under the debug agent breaking at
+/// Run `src` under the debug agent breaking at
 /// `bp_line`, drive a single MIDI note-on (`note`/`vel`) into the VM with the
 /// debugger hook still attached, and return the source line the VM stopped at
 /// — or `-1` if it terminated without stopping.
 ///
-/// This is the payoff test-driver for driven callbacks: `src` registers a
+/// This is the test driver for driven callbacks: `src` registers a
 /// `Midi.onNoteOn` handler at top level, and the note-on fires that handler
 /// via [`deluge_wren_core::midi_rx_impl`] *after* `interpret` returns, so a
 /// breakpoint inside the handler parks the VM thread. After capturing the stop
@@ -66,9 +66,7 @@ pub fn debug_drive_note(src: &str, bp_line: i32, note: u8, vel: u8) -> i32 {
 }
 
 /// Records every CV/gate write in memory; every other [`Host`] effect (MIDI,
-/// LEDs, OLED, audio-graph commands) is a sink. Layer 1 only needs to observe
-/// CV/gate state — later phases can extend this (or add a sibling host) if
-/// the debugger UI needs OLED/LED/audio readouts too.
+/// LEDs, OLED, audio-graph commands) is a sink.
 struct RecordingHost {
     now_ms: u64,
     cv: [f32; CV_CHANNELS],
@@ -113,15 +111,13 @@ impl Host for RecordingHost {
 /// runs never see stale CV/gate/metro state from a previous script.
 pub struct Harness {
     /// The most recently run VM, kept alive so its `WrenSlotApi` can still be
-    /// used (e.g. by a future Layer 2 debug session) after `run_entry`
-    /// returns. `None` before the first run.
+    /// used after `run_entry` returns. `None` before the first run.
     vm: Option<CWrenVm>,
     /// Leaked (`Box::leak`, like `crate::install_noop_host`) alongside
     /// `set_host`; the harness keeps its own pointer so it can read back the
     /// recorded CV/gate state directly, without needing an accessor into
     /// `deluge_wren_core`'s private binding state (`bindings.rs`'s `state()`
-    /// stays crate-private there — see the Task 1.3 report for why this was
-    /// preferred over exposing one).
+    /// stays crate-private).
     host: *mut RecordingHost,
 }
 
@@ -143,7 +139,7 @@ impl Harness {
     /// `main` module (with `modules` importable exactly like
     /// [`crate::run_project_capture`]), then flush CV/gate slew into the host
     /// with one render tick at `dt=0` — the harness runs top-level code only
-    /// (no events/metros yet), and `Output.volts=` sets `target` (and
+    /// (no events/metros), and `Output.volts=` sets `target` (and
     /// `current` immediately, for the common zero-slew case) in
     /// `deluge-wren-core`'s private state, which only reaches the `Host`
     /// (and so `cv`/`gate`) via a render tick. This mirrors how

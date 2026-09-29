@@ -1,14 +1,13 @@
 //! FFI surface to the upstream `wren-lang/wren` C VM (compiler + VM), compiled
 //! stock in `build.rs`.
 //!
-//! M0 scope: the raw embedding ABI ([`WrenConfiguration`] + lifecycle + slot
+//! Provides the raw embedding ABI ([`WrenConfiguration`] + lifecycle + slot
 //! calls), a custom [`WrenReallocateFn`] that routes the VM's heap onto the
-//! Deluge SDRAM, and a thin [`boot`]/[`interpret`] convenience that stands up a
-//! configured VM whose `System.print` / error output is forwarded to two host
-//! hooks ([`wren_host_write`], [`wren_host_error`]) the firmware provides.
-//!
-//! Later milestones add the foreign-object registry (lifted from `wren-rs`'s
-//! `foreign.rs`) to bind native Rust classes (`Osc`, `Output`, …).
+//! Deluge SRAM/SDRAM on device, a foreign-object registry ([`foreign`], lifted from
+//! `wren-rs`) for binding native Rust classes (`Osc`, `Output`, …), and thin
+//! [`boot`]/[`boot_with_foreign`]/[`interpret`] conveniences that stand up a
+//! configured VM whose `System.print` / error output is forwarded to host hooks
+//! ([`wren_host_write`], [`wren_host_error`]) the firmware provides.
 
 #![no_std]
 // `allocator_api` is only used by the device SDRAM heap (`deluge_alloc`); the
@@ -47,10 +46,6 @@ pub type WrenWriteFn = Option<unsafe extern "C" fn(*mut WrenVM, *const c_char)>;
 pub type WrenErrorFn =
     Option<unsafe extern "C" fn(*mut WrenVM, c_int, *const c_char, c_int, *const c_char)>;
 
-/// VM configuration. Field order/types **must** match `WrenConfiguration` in
-/// `wren.h` exactly. The four module/foreign callbacks are unused in M0 and held
-/// as raw pointers (ABI-identical to a function pointer); they are typed
-/// precisely once the foreign registry lands.
 /// `WrenBindForeignMethodFn`: `(vm, module, className, isStatic, signature) ->
 /// WrenForeignMethodFn`.
 pub type WrenBindForeignMethodFn = Option<
@@ -71,6 +66,9 @@ pub type WrenBindForeignClassFn = Option<
     ) -> foreign::WrenForeignClassMethods,
 >;
 
+/// VM configuration. Field order/types **must** match `WrenConfiguration` in
+/// `wren.h` exactly. The module resolve/load callbacks are held as raw pointers
+/// (ABI-identical to a function pointer).
 #[repr(C)]
 pub struct WrenConfiguration {
     pub reallocate_fn: WrenReallocateFn,
@@ -100,7 +98,7 @@ unsafe extern "C" {
     pub fn wrenCollectGarbage(vm: *mut WrenVM);
     pub fn wrenInterpret(vm: *mut WrenVM, module: *const c_char, source: *const c_char) -> c_int;
 
-    // Slot API — declared now, used from the foreign registry in later milestones.
+    // Slot API, used by the foreign registry (`foreign.rs`).
     pub fn wrenGetSlotCount(vm: *mut WrenVM) -> c_int;
     pub fn wrenEnsureSlots(vm: *mut WrenVM, num_slots: c_int);
     pub fn wrenGetSlotType(vm: *mut WrenVM, slot: c_int) -> c_int;
@@ -140,7 +138,7 @@ unsafe extern "C" {
 
 // wasm: wasi-libc provides `time`/`clock_getres` but not `clock()`, which
 // `wren_opt_random` calls once to seed its RNG. A constant is fine for the
-// simulator (deterministic `Random`); a real clock can be wired later.
+// simulator and makes `Random` deterministic.
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 extern "C" fn clock() -> core::ffi::c_longlong {
@@ -155,7 +153,7 @@ unsafe extern "C" {
     fn wren_host_write(text: *const c_char);
     /// Receives a VM error: `line` (-1 when not applicable) + NUL-terminated message.
     fn wren_host_error(module: *const c_char, line: c_int, message: *const c_char);
-    /// Diagnostic numeric trace (M0 bring-up only): `tag` + value. Only the
+    /// Diagnostic numeric trace: `tag` + value. Only the
     /// device SDRAM heap reports through this (runaway-size OOM); unused on host.
     #[cfg(target_os = "none")]
     fn wren_host_debug(tag: c_int, value: usize);
@@ -290,7 +288,7 @@ mod heap {
 
     unsafe fn alloc_block(user: usize) -> *mut c_void {
         if user > MAX_ALLOC {
-            // M0 diagnostic: a request this large means a corrupt/runaway size.
+            // Diagnostic: a request this large means a corrupt/runaway size.
             unsafe { wren_host_debug(1, user) };
             return ptr::null_mut();
         }
@@ -414,8 +412,8 @@ mod heap {
 
 // ── Convenience bring-up ─────────────────────────────────────────────────────
 
-/// Build a [`WrenConfiguration`] wired to the SDRAM allocator and the host
-/// write/error hooks. Module-import and foreign callbacks are left NULL in M0.
+/// Build a [`WrenConfiguration`] wired to the VM heap allocator, the host
+/// write/error/module-load hooks, and the foreign registry's bind callbacks.
 fn make_config() -> WrenConfiguration {
     let mut cfg = WrenConfiguration {
         reallocate_fn: None,

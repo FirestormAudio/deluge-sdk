@@ -1,4 +1,4 @@
-//! Task 3.2: a [`DebugTransport`] backed by a `SharedArrayBuffer` (a region of
+//! A [`DebugTransport`] backed by a `SharedArrayBuffer` (a region of
 //! the wasm32-wasip1-threads shared linear memory), so the *same* [`serve`]
 //! driver loop that runs over an in-process `mpsc` pair in the native tests
 //! (`tests/agent_transport.rs`) runs unchanged in a wasm worker, driven from
@@ -10,11 +10,10 @@
 //! available when the module is compiled with the `atomics` target feature
 //! (i.e. `wasm32-wasip1-threads`). So the whole module is gated on
 //! `all(target_arch = "wasm32", target_feature = "atomics")` (see `lib.rs`):
-//! the native rlib and the single-threaded `wasm32-wasip1` (Task 3.1) build
-//! never see it and are unaffected.
+//! the native rlib and the single-threaded `wasm32-wasip1` build never see it.
 //!
-//! # SAB layout (SHARED CONTRACT with the JS controller — Task 3.3 must match
-//! this byte-for-byte)
+//! # SAB layout (shared contract with the JS controller,
+//! `wren-web/app/src/debug/sab.ts` — must match byte-for-byte)
 //! One contiguous region, base = [`sab_base`] (a zero-initialized `static`,
 //! whose address the host reads via the exported `dbg_sab_ptr`):
 //!
@@ -42,11 +41,9 @@
 //!
 //! # `PAUSE`
 //! Word 6 is reserved for an asynchronous pause request the VM's
-//! `wren_core::vm::Pause` handle would poll (route pause *here*, not as a
-//! `DebugCmd` through `serve`). This task wires the *layout* slot so the 3.3
-//! TS controller and a future paused-VM build agree on the offset; the current
-//! [`debug_run`] builds the session without a `Pause` handle, so nothing polls
-//! it yet. See the task report.
+//! `wren_core::vm::Pause` handle would poll (pause belongs *here*, not as a
+//! `DebugCmd` through `serve`). Only the layout slot exists: [`debug_run`]
+//! builds the session without a `Pause` handle, so nothing polls it.
 //!
 //! [`serve`]: crate::transport::serve
 //! [`DebugTransport`]: crate::transport::DebugTransport
@@ -58,7 +55,7 @@ use core::sync::atomic::{AtomicI32, Ordering};
 
 use crate::transport::{DebugCmd, DebugEvent, DebugTransport};
 
-// ── layout constants (keep in sync with the table above and 3.3's TS) ──
+// ── layout constants (keep in sync with the table above and `sab.ts`) ──
 /// Number of i32 words in the control header.
 pub const HEADER_WORDS: usize = 8;
 const IDX_CMD_SEQ: usize = 0;
@@ -246,7 +243,7 @@ const DRIVE_STEP_MS: u64 = 10;
 /// memory. **Blocks** until the session terminates (the host calls this on a
 /// worker thread; the JS main thread drives the SAB concurrently).
 ///
-/// # Task 5.2 drive scalars
+/// # Drive scalars
 /// After `interpret` (which registers handlers) and BEFORE the debugger detaches,
 /// the VM thread replays a small drive list built from the trailing scalars:
 /// - `note >= 0` → one [`DriveEvent::NoteOn`] with `note` (clamped 0..=127) at
@@ -258,8 +255,8 @@ const DRIVE_STEP_MS: u64 = 10;
 /// handler body) fires in the browser: the note is emitted from host/top-level
 /// context, the fired handler parks the VM thread mid-`vm.call`, and `serve`
 /// reports the `Stopped` over the SAB exactly like a top-level breakpoint. The
-/// wire format is intentionally scalar (MVP); a richer serialized drive list is
-/// a future extension. See [`crate::drive`].
+/// wire format is deliberately scalar rather than a serialized drive list. See
+/// [`crate::drive`].
 ///
 /// # Safety
 /// `entry_ptr[..entry_len]` must be valid UTF-8; `bp_ptr[..bp_count]` a valid
@@ -288,7 +285,7 @@ pub unsafe extern "C" fn dbg_launch(
         lines.iter().copied().collect()
     };
 
-    // Build the launch-time drive list from the scalar params (Task 5.2).
+    // Build the launch-time drive list from the scalar params.
     let mut drive: Vec<crate::drive::DriveEvent> = Vec::new();
     if note >= 0 {
         let n = note.min(127) as u8;
@@ -304,7 +301,7 @@ pub unsafe extern "C" fn dbg_launch(
     }
 
     // Spawn the VM thread (parks at the breakpoint), replaying the drive after
-    // `interpret` — Task 5.1 seam, unchanged.
+    // `interpret`.
     let session = crate::agent::debug_run_driven(&entry, Vec::new(), breakpoints, drive);
     // Drive it over shared memory with the exact same `serve` loop the native
     // `mpsc` test uses — only the transport differs.

@@ -112,8 +112,8 @@ pub trait Host {
 
     /// Register that `node` (a `Kind::StreamPlayer`) should stream from `path`,
     /// with its ring at pool `handle`. Default no-op (hosts with no filesystem /
-    /// prefetch, e.g. tests, ignore it). The firmware host wires it to a prefetch
-    /// task; see the Sa-3b slice-4 design.
+    /// prefetch, e.g. tests, ignore it). The firmware's host (simulator) build
+    /// wires it to a WAV prefetch task.
     fn stream_register(
         &mut self,
         node: flare_graph::NodeId,
@@ -133,11 +133,9 @@ pub trait Host {
 /// to allocate the region and hand it here.
 ///
 /// Uses the IFFT build path (forward FFT + per-level band-limit + inverse
-/// FFT, then per-level decimation to its compact length), ~16× cheaper than
-/// the previous additive (per-harmonic) build; the two are equivalent to f32
-/// rounding.
+/// FFT, then per-level decimation to its compact length), which matches an
+/// additive per-harmonic build to f32 rounding at a fraction of the cost.
 pub fn build_pyramid_into(base: &[f32], region: &mut [f32]) {
-    // IFFT + compact-decimate path (Osc 3c / wavetable-mip-compaction).
     flare_mipgen::build_pyramid_flat_compact(base, region);
 }
 

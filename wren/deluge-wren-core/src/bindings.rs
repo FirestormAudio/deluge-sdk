@@ -6,10 +6,10 @@
 //!
 //! ## Backend-generic bodies
 //! Each foreign method's logic lives in a `*_impl<S: SlotApi>(vm: &S)` function,
-//! so the same body can run against any [`SlotApi`] implementation (today:
-//! `wren_sys::Vm`; later: a second debug-core backend). The registered
-//! `unsafe extern "C" fn` is a thin wrapper — `METHODS`/`CLASSES` still point at
-//! those wrappers, so the sim/device wren ABI is byte-identical to before.
+//! so the same body can run against any [`SlotApi`] implementation
+//! (`wren_sys::Vm`, or `wren-web-debug`'s wren-core backend). For the stock C
+//! VM, the registered `unsafe extern "C" fn` is a thin wrapper, and
+//! `METHODS`/`CLASSES` point at those wrappers.
 //! The wrappers (and everything else that names `wren_sys` types) live behind
 //! the default-on `wren-sys-backend` feature; the generic bodies, the foreign
 //! state structs, and their stored [`Handle`]s are backend-agnostic and stay
@@ -1257,10 +1257,10 @@ pub fn reset() {
 
 /// Like [`reset`], but keeps the running audio graph: the host frees the VM and
 /// re-runs the script as usual, and the engine treats the re-emitted graph as
-/// an incremental update instead of a rebuild (GL2). Pair with [`end_update`].
+/// an incremental update instead of a rebuild. Pair with [`end_update`].
 ///
 /// Use this where a full `reset()` would restart every oscillator and drop
-/// every envelope — the web editor's Run button being the motivating case.
+/// every envelope, e.g. the web editor's Run button.
 pub fn begin_update() {
     clear_vm_state();
     crate::audio::begin_update();

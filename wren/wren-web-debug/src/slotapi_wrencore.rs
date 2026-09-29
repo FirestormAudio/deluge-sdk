@@ -6,9 +6,9 @@
 //! forwards deluge's slot operations to the equivalent wren-core calls.
 //!
 //! ## Handle / call surface
-//! wren-core's [`WrenSlotApi`] trait now exposes a handle/call API
+//! wren-core's [`WrenSlotApi`] trait exposes a handle/call API
 //! (`make_call_handle` / `call` / `get_slot_handle` / `set_slot_handle` /
-//! `release_handle`, added alongside deluge Task 1.1b), mirroring `wren-sys`'s
+//! `release_handle`), mirroring `wren-sys`'s
 //! `Vm` handle surface. This lets the callback-style bindings (`Metro.start`,
 //! `Midi.on*`, `Pads/Buttons/Enc.on*`) work under wren-core too: a foreign
 //! method captures a `Fn` via [`SlotApi::get_handle`], and the host loop
@@ -29,10 +29,8 @@ pub struct CoreSlots {
     api: &'static dyn WrenSlotApi,
     /// Owns strings returned by [`SlotApi::get_str`] so we can hand out a
     /// borrowed `&str`. Fresh per call; entries are never removed, so the boxed
-    /// allocations stay valid for the life of this `CoreSlots`.
-    /// Bounded per foreign-method call (a new `CoreSlots`/`strings` is created
-    /// at each call boundary and dropped at its end), NOT per-VM — this is not
-    /// a latent unbounded-growth leak.
+    /// allocations stay valid for the life of this `CoreSlots`. Growth is
+    /// bounded by one foreign-method call, not the VM's lifetime.
     strings: RefCell<Vec<Box<str>>>,
 }
 
