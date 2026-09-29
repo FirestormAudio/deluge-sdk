@@ -215,7 +215,7 @@ impl TextKeyboardComponent {
             f.paint(Pad::new(QWERTY_HOME_ROW + 1, x), RGB::new(0, 0, 255));
         }
 
-        // New symbol keys filling previously-empty QWERTY slots. '(HOME, 12)'
+        // Symbol keys in otherwise-empty QWERTY slots. '(HOME, 12)'
         // (';') is already lit by the home-row loop; these two are not.
         f.paint(Pad::new(QWERTY_HOME_ROW - 1, 13), RGB::new(10, 10, 10)); // '/'
         f.paint(Pad::new(QWERTY_HOME_ROW + 1, 12), RGB::new(10, 10, 10)); // '\'
@@ -332,7 +332,7 @@ mod tests {
         assert_eq!(ui.grid().get_pad(QWERTY_HOME_ROW, 14), RGB::new(0, 255, 0));
 
         // `show` reads input: pressing the home-row col-3 pad yields 'a'
-        // (unshifted output is now lower-case; see `resolve`).
+        // (unshifted output is lower-case; see `resolve`).
         let mut input = PadInput::new();
         input.press(Pad::new(QWERTY_HOME_ROW, 3));
         let pressed = ui.run(16, input, |f| kb.show(f, false)).painted().unwrap();

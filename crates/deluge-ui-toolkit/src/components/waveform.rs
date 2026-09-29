@@ -37,12 +37,11 @@ impl Drawable for Waveform {
     where
         D: DrawTarget<Color = Self::Color>,
     {
-        // need to find min and max to scale properly
         let min = self.data.iter().cloned().fold(f32::INFINITY, f32::min);
         let max = self.data.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         let abs_max = max.max(min.abs());
 
-        // scale should let us multiply the abs(max, -min) to fit in half the height
+        // The largest magnitude fills half the height (the waveform is centred).
         let scale = if abs_max == 0.0 {
             0.0
         } else {

@@ -1,17 +1,22 @@
 //! `cargo deluge` — build and scaffold Deluge SDK apps.
 //!
 //! A thin host-side cargo subcommand so app authors never touch `-Zbuild-std`,
-//! linker flags, or the embedded target triple. Pure std, no dependencies.
+//! linker flags, or the embedded target triple. Pure std apart from `serialport`
+//! for the USB upload path.
 //!
 //! Subcommands:
 //! - `cargo deluge new <name>`  — scaffold a new app crate.
 //! - `cargo deluge build [--release]` — build the current app → ELF.
 //! - `cargo deluge run [--release] [--port <path>] [--log]` — build, then upload
 //!   the ELF straight to a Deluge over USB (dev mode) and launch it from RAM.
+//! - `cargo deluge upload <path> [--port <path>] [--log]` — upload an
+//!   already-built ELF or appliance image without rebuilding.
 //! - `cargo deluge deploy [--release] [--dest <sd-mount>]` — copy the ELF to a
 //!   mounted Deluge SD card's `/APPS/` instead.
 //! - `cargo deluge log [--port <path>]` — connect to a running app's USB
 //!   serial-log channel (the `usb-log` feature) and stream it to stdout.
+//! - `cargo deluge sim [--release] [--audio-in <wav>] [--audio-out <wav>]
+//!   [--hardware [<port>]]` — build for the host and run in the desktop simulator.
 //! - `cargo deluge linux [--bare] [--profile <base|platform>] [--out <NAME>]
 //!   [--features <list>] [--no-strip] [--run]`
 //!   — build the current app for the Deluge's Linux userland and pack it with

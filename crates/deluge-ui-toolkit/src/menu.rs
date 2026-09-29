@@ -154,10 +154,9 @@ impl MenuState {
 /// `rows_last` is the row/column count drawn on the previous frame; it is never
 /// stale when a `Turn` arrives because the only screen changes (`Press`/`Back`)
 /// consume their input and don't also apply a turn. Clamping the upper bound
-/// here (not only in `end`) keeps a turn past the last row from moving the
-/// cursor off-screen for a frame and then skipping to the second-to-last row on
-/// reverse. Before the first draw (`rows_last == 0`) only the lower bound applies;
-/// `end` re-clamps against the real count as the safety net.
+/// here, not only in `end`, keeps the cursor on-screen during the frame in
+/// which it overshoots. Before the first draw (`rows_last == 0`) only the lower
+/// bound applies; `end` re-clamps against the real count.
 pub(crate) fn apply_turn(cursor: u16, n: i32, rows_last: u16) -> u16 {
     let moved = (cursor as i32 + n).max(0) as u16;
     if rows_last > 0 {
@@ -992,11 +991,8 @@ mod tests {
 
     #[test]
     fn turn_clamps_to_last_row_in_begin() {
-        // Regression: a turn past the last row used to move the cursor
-        // off-screen for a frame (clamped only in `end`), so the selector
-        // vanished and then reappeared on the second-to-last entry on reverse.
-        // With the row count known from last frame, `begin` pins it to the last
-        // row so it stays visible.
+        // A turn past the last row must pin the cursor to that row in `begin`,
+        // so the selector never leaves the screen for a frame.
         assert_eq!(apply_turn(2, 5, 4), 3); // overshoot pinned to last row, not 7
         assert_eq!(apply_turn(3, 1, 4), 3); // holding past the end stays put
         assert_eq!(apply_turn(3, -1, 4), 2); // reverse from a shown last row → 2
@@ -1232,8 +1228,8 @@ mod tests {
 
     #[test]
     fn focused_row_stays_visible_crossing_bottom_edge() {
-        // Regression: moving the cursor past the bottom of the window must scroll
-        // in the *same* frame, so the focused row is drawn highlighted (not off
+        // Moving the cursor past the bottom of the window must scroll in the
+        // *same* frame, so the focused row is drawn highlighted (not off
         // the visible list until the next turn). A state-only check can't catch
         // this — the scroll converges either way — so render and inspect the
         // focused row's highlight bar.

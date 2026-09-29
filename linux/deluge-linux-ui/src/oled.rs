@@ -6,12 +6,8 @@
 //! A set bit is a lit pixel (`BinaryColor::On`). No 5px offset — this is the
 //! visible area already.
 //!
-//! Bit order caveat: MSB-first is a working assumption, not yet confirmed
-//! against the kernel `deluge-oled` fb driver (its source was not available
-//! in this checkout) or on real hardware. If on-device testing later shows
-//! the panel is mirrored within 8px groups, flip `let bit = 7 - (x % 8);` to
-//! `let bit = x % 8;` in `OledTarget::set` and update the tests below
-//! accordingly. Tracked for on-device verification in a later task.
+//! This is the same layout the `deluge` SDK's Linux backend transposes into
+//! (`plat::linux::oled_flush`), which has been validated on hardware.
 
 use deluge_hal_linux::{Deluge, Error};
 use embedded_graphics::{

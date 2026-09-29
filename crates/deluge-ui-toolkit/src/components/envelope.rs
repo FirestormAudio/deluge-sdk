@@ -71,16 +71,9 @@ impl Envelope {
     }
 }
 
-/// Draw an ADSR envelope visualization
-///
-/// # Arguments
-/// * `display` - The display to draw on
-/// * `x` - X coordinate of the envelope area (left edge)
-/// * `y` - Y coordinate of the envelope area (top edge)
-/// * `width` - Width of the envelope drawing area
-/// * `height` - Height of the envelope drawing area
-/// * `params` - ADSR parameters (all 0.0-1.0)
-/// * `selected_stage` - Optional stage to highlight with selection indicator
+/// Draws the envelope inside the component's `position`/`size`: the ADSR
+/// polyline, a dotted marker at each stage boundary, and a square indicator per
+/// stage, filled for the selected stage. Parameters are clamped to 0.0–1.0.
 ///
 /// # Example
 /// ```no_run
@@ -102,13 +95,11 @@ impl Drawable for Envelope {
     where
         D: DrawTarget<Color = Self::Color>,
     {
-        // Clamp parameters to 0.0-1.0
         let attack = self.adsr.attack.clamp(0.0, 1.0);
         let decay = self.adsr.decay.clamp(0.0, 1.0);
         let sustain = self.adsr.sustain.clamp(0.0, 1.0);
         let release = self.adsr.release.clamp(0.0, 1.0);
 
-        // Constants
         let start_x = self.position.x;
         let start_y = self.position.y;
         let end_y = self.position.y + self.size.height as i32;
@@ -116,21 +107,18 @@ impl Drawable for Envelope {
         let draw_height = self.size.height as i32;
         let max_segment_width = draw_width as f32 / 4.0;
 
-        // Calculate widths for each segment
         let attack_width = attack * max_segment_width;
 
         // Apply sigmoid-like curve to decay for visual effect (steep start, gradual end)
         let decay_normalized = sigmoid_like_curve(decay, 1.0, 10.0);
         let decay_width = decay_normalized * max_segment_width;
 
-        // Calculate X positions for stage transitions
         let attack_x = (start_x as f32 + attack_width).round() as i32;
         let decay_x = (attack_x as f32 + decay_width).round() as i32;
         let sustain_x = start_x + (max_segment_width * 3.0) as i32; // Fixed position
         let release_x =
             (sustain_x as f32 + release * (start_x + draw_width - sustain_x) as f32).round() as i32;
 
-        // Calculate Y positions
         let base_y = start_y + draw_height;
         let peak_y = start_y; // Top of attack
         let sustain_y = (base_y as f32 - sustain * draw_height as f32).round() as i32;
@@ -144,7 +132,6 @@ impl Drawable for Envelope {
             Point::new(start_x + draw_width, base_y), // End
         ];
 
-        // Draw envelope lines
         for point_pair in points.windows(2) {
             if let [start, end] = point_pair {
                 Line::new(*start, *end)
@@ -167,7 +154,8 @@ impl Drawable for Envelope {
         )
         .draw(display)?;
 
-        // Only draw sustain vertical line if not at peak or if line is visible
+        // At full sustain the plateau is the top edge, so start the marker there
+        // rather than above it.
         if sustain_y > start_y {
             DottedLine::new(
                 Point::new(sustain_x, start_y - 2),
@@ -184,7 +172,6 @@ impl Drawable for Envelope {
             .draw(display)?;
         }
 
-        // Draw stage transition indicators
         let mut drawn_positions: [(i32, i32); 4] = [(-1, -1); 4];
         let mut drawn_count = 0;
 
@@ -230,8 +217,8 @@ impl Drawable for Envelope {
     }
 }
 
-/// Sigmoid-like curve function for visual smoothing
-/// Maps input from 0-max to 0-1 with configurable steepness
+/// Logistic curve mapping `value` in `0..=max` to roughly `0..1`, with the given
+/// steepness; shapes the decay segment's width.
 fn sigmoid_like_curve(value: f32, max: f32, steepness: f32) -> f32 {
     let normalized = value / max;
     let x = (normalized - 0.5) * steepness;
@@ -250,11 +237,11 @@ fn draw_transition_indicator<D>(
 where
     D: DrawTarget<Color = BinaryColor>,
 {
-    // Check for overlaps with previously drawn indicators
+    // Don't draw an unselected indicator over the selected one (only selected
+    // indicators are recorded in `drawn_positions`).
     if !is_selected {
         for &(prev_x, prev_y) in drawn_positions.iter().take(*drawn_count) {
             if center_x == prev_x && center_y == prev_y {
-                // Overlap detected, skip drawing
                 return Ok(());
             }
         }
@@ -263,16 +250,15 @@ where
     const SQUARE_SIZE: i32 = 2;
     const INNER_SIZE: i32 = SQUARE_SIZE - 1;
 
-    // Clear the inner region
+    // Clear the inner region so the envelope line doesn't show through.
     for dx in -INNER_SIZE..=INNER_SIZE {
         for dy in -INNER_SIZE..=INNER_SIZE {
             Pixel(Point::new(center_x + dx, center_y + dy), BinaryColor::Off).draw(display)?;
         }
     }
 
-    // If selected, invert the inner area for highlight
+    // The selected indicator is filled.
     if is_selected {
-        // For simplicity, we'll draw a filled rectangle for selected state
         Rectangle::new(
             Point::new(center_x - INNER_SIZE, center_y - INNER_SIZE),
             Size::new((INNER_SIZE * 2 + 1) as u32, (INNER_SIZE * 2 + 1) as u32),
@@ -280,14 +266,12 @@ where
         .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
         .draw(display)?;
 
-        // Record this position
         if *drawn_count < 4 {
             drawn_positions[*drawn_count] = (center_x, center_y);
             *drawn_count += 1;
         }
     }
 
-    // Draw the square outline
     Rectangle::new(
         Point::new(center_x - SQUARE_SIZE, center_y - SQUARE_SIZE),
         Size::new((SQUARE_SIZE * 2 + 1) as u32, (SQUARE_SIZE * 2 + 1) as u32),

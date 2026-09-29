@@ -5,11 +5,8 @@ fn main() {
     println!("cargo:rerun-if-changed=wrapper.h");
     // Watch the archive itself, not just the headers. `libdeluge.a` lives
     // outside the cargo tree (it comes from the deluge-ndk build, via the
-    // bundle sysroot), so without this cargo has no reason to relink when it
-    // changes: rebuilding libdeluge and reflashing silently ships the OLD
-    // library, and the device disproves a fix that was never on it. Headers
-    // often don't change when only an implementation does, so `wrapper.h`
-    // alone does not cover this.
+    // bundle sysroot), and an implementation-only change leaves the headers
+    // untouched, so without this cargo keeps linking the stale library.
     println!("cargo:rerun-if-changed={root}/lib/libdeluge.a");
     println!("cargo:rustc-link-lib=deluge");
     // libdeluge is a static archive (libdeluge.a); its ALSA symbol references

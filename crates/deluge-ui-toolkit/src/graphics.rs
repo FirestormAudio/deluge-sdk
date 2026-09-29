@@ -15,7 +15,9 @@ use crate::icons::{IconData, get_bmp_pixel};
 /// Draw an [`IconData`] bitmap at `position` using the given `color`.
 ///
 /// Each lit pixel in the icon is drawn as a single pixel at the corresponding
-/// offset from `position`.
+/// offset from `position`. Only [`IconFormat::Bmp`](crate::icons::IconFormat::Bmp)
+/// icons are drawn; [`primitives::Icon`](crate::primitives::Icon) also handles raw
+/// bitmaps.
 pub fn draw_icon_data<D>(
     display: &mut D,
     icon: &IconData,

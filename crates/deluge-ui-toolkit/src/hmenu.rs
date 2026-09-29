@@ -130,14 +130,13 @@ impl<'a, D: DrawTarget<Color = BinaryColor>> HMenu<'a, D> {
         let mut pending = input;
         match input {
             MenuInput::Turn(n) => {
-                // Clamp to the current column count now (not only in `end`) so a
-                // turn past the last column doesn't move the selection off-screen
-                // for a frame and then skip to the second-to-last on reverse.
+                // Clamp to the current column count now, not only in `end`, so a
+                // turn past the last column never moves the selection off-screen.
                 let cursor = apply_turn(state.cursor() as u16, n, state.rows_last());
                 state.set_cursor(cursor as usize);
                 pending = MenuInput::None;
             }
-            // No drilldown in v1; Edit/Press flow to the focused column.
+            // No drilldown; Edit/Press flow to the focused column.
             MenuInput::Back => pending = MenuInput::None,
             MenuInput::Press | MenuInput::Edit(_) | MenuInput::None => {}
         }

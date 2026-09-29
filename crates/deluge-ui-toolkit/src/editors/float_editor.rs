@@ -116,10 +116,8 @@ impl Drawable for FloatEditor {
             .width;
         let x = (DISPLAY_WIDTH as i32 - text_width as i32) / 2;
 
-        // Center vertically in the space below the header
-        // Header is ~10px, display is 43px, font is 20px
-        // Available space: 43 - 10 = 33px
-        // Center: 10 + (33 - 20) / 2 = 16px
+        // Centre the 20 px font in the 33 px of the 43 px display below the
+        // ~10 px header: 10 + (33 - 20) / 2.
         let y = 16;
 
         Text::new(&text, Point::new(x, y), style).draw(display)?;

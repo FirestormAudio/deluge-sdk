@@ -37,14 +37,9 @@ pub(crate) fn cmd_run(args: &[String]) -> Result<(), String> {
     upload_elf(&stripped_elf, args)
 }
 
-/// Upload an already-built ELF (device-loadable: PT_LOAD segments + entry
-/// point) to a Deluge over USB (dev mode) and launch it from RAM. Shared by
-/// `run` (after stripping a freshly built device ELF) and `linux --run`
-/// (an already segment-only appliance image, no stripping needed).
 /// `cargo deluge upload <path> [--port <p>] [--log]` — stream an already-built
-/// ELF / appliance image straight to the device, skipping the build+pack step.
-/// Used to re-test a packed image without rebuilding (e.g. when the source tree
-/// has moved on but the on-disk image is the one we want on the device).
+/// ELF / appliance image straight to the device, skipping the build+pack step,
+/// e.g. to re-test a packed image without rebuilding it.
 pub(crate) fn cmd_upload(args: &[String]) -> Result<(), String> {
     let mut path = None;
     let mut it = args.iter();
@@ -63,6 +58,10 @@ pub(crate) fn cmd_upload(args: &[String]) -> Result<(), String> {
     upload_elf(Path::new(path), args)
 }
 
+/// Upload an already-built ELF (device-loadable: PT_LOAD segments + entry
+/// point) to a Deluge over USB (dev mode) and launch it from RAM. Shared by
+/// `run` (after stripping a freshly built device ELF) and `linux --run`
+/// (an already segment-only appliance image, no stripping needed).
 pub(crate) fn upload_elf(elf: &Path, args: &[String]) -> Result<(), String> {
     // The Deluge must be sitting on the boot menu with DEV MODE on (its
     // background CDC listener is what we upload to).
@@ -103,9 +102,8 @@ pub(crate) fn upload_elf(elf: &Path, args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// The device streams uploads straight to each segment's load address — there is
-/// no whole-image scratch window anymore — so the only real bound is that the
-/// segments fit in the SDRAM app region (`SDRAM_LO..SDRAM_HI`, `0x0C000000..
+/// The device streams uploads straight to each segment's load address, so the
+/// only real bound is that the segments fit in the SDRAM app region (`SDRAM_LO..SDRAM_HI`, `0x0C000000..
 /// 0x0FD20000`). Catch an absurd image locally with a useful message instead of
 /// streaming megabytes only for the device to reject a segment.
 const MAX_UPLOAD_BYTES: usize = 0x0FD2_0000 - 0x0C00_0000; // SDRAM app-region span
