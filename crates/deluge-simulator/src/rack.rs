@@ -64,6 +64,15 @@ const MIDI_OUT_X: f32 = 1250.0;
 /// Per-frame decay of the MIDI activity flash (so a burst fades over ~0.3 s).
 const MIDI_DECAY: f32 = 0.85;
 
+/// Centre x (SVG space) of the BOOST knob, past the R output scope at the strip's right end.
+const BOOST_X: f32 = 2128.0;
+/// Largest radius (px) of the BOOST knob.
+const BOOST_R: f32 = 15.0;
+/// The knob's sweep: from 0 dB at -135 degrees to the maximum at +135 degrees (0 = straight up).
+const BOOST_SWEEP: f32 = 135.0;
+/// Pixel-scroll distance (trackpads) that counts as one detent, as on the faceplate.
+const PIXEL_THRESHOLD: f32 = 20.0;
+
 /// Strip background (matches the faceplate's near-black back panel).
 const BG: Color = Color::from_rgb(0.04, 0.04, 0.05);
 const BORDER: Color = Color::from_rgb(0.20, 0.20, 0.24);
@@ -98,7 +107,15 @@ pub(crate) struct InstrumentRack {
     expanded: bool,
     /// Collapsed into a thin handle bar. Toggled by the triangle handle.
     collapsed: bool,
+    /// The BOOST knob's setting, in dB (see `audio::Boost`).
+    boost_db: f32,
     cache: canvas::Cache,
+}
+
+/// The strip's input state: trackpad scrolling over the BOOST knob, accumulated until it makes a detent.
+#[derive(Default)]
+pub(crate) struct RackState {
+    scroll: f32,
 }
 
 /// Collapse-handle (triangle) tab geometry: a bottom-left tab, inset from the
@@ -123,6 +140,7 @@ impl InstrumentRack {
             midi_out_level: 0.0,
             expanded: false,
             collapsed: false,
+            boost_db: 0.0,
             cache: canvas::Cache::new(),
         }
     }
@@ -142,6 +160,12 @@ impl InstrumentRack {
     pub(crate) fn push_audio(&mut self, l: f32, r: f32) {
         push_capped(&mut self.audio_l_hist, l, AUDIO_HIST);
         push_capped(&mut self.audio_r_hist, r, AUDIO_HIST);
+    }
+
+    /// Show the BOOST knob at `db`.
+    pub(crate) fn set_boost_db(&mut self, db: f32) {
+        self.boost_db = db;
+        self.cache.clear();
     }
 
     /// Collapse/expand the strip (hide its contents down to the handle, or restore them).
@@ -217,7 +241,7 @@ fn push_capped(buf: &mut VecDeque<f32>, v: f32, cap: usize) {
 }
 
 impl canvas::Program<SimulatorMessage> for InstrumentRack {
-    type State = ();
+    type State = RackState;
 
     fn draw(
         &self,
@@ -316,6 +340,8 @@ impl canvas::Program<SimulatorMessage> for InstrumentRack {
                 self.midi_out_level,
             );
 
+            draw_boost_knob(frame, boost_rect(scale, baseline, well_h), self.boost_db);
+
             // Collapse handle (triangle points up = collapse), bottom-left.
             draw_handle(frame, bounds, true);
         });
@@ -324,14 +350,60 @@ impl canvas::Program<SimulatorMessage> for InstrumentRack {
 
     fn update(
         &self,
-        _state: &mut Self::State,
+        state: &mut Self::State,
         event: &event::Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<SimulatorMessage>> {
+        let knob = (!self.collapsed).then(|| {
+            let baseline = bounds.height - BOTTOM_PAD;
+            boost_rect(
+                bounds.width / SVG_WIDTH,
+                baseline,
+                (baseline - TOP_PAD).max(8.0),
+            )
+        });
+        let over_knob = |pos: Point| knob.is_some_and(|k| k.contains(pos));
+
+        if let event::Event::Mouse(mouse::Event::WheelScrolled { delta }) = event
+            && let Some(pos) = cursor.position_in(bounds)
+            && over_knob(pos)
+        {
+            // The faceplate knobs' mapping: a wheel line is one detent, a trackpad a detent per PIXEL_THRESHOLD, and
+            // scrolling up turns counter-clockwise.
+            let detents = match delta {
+                mouse::ScrollDelta::Lines { y, .. } => {
+                    state.scroll = 0.0;
+                    -(y.signum() as i32)
+                }
+                mouse::ScrollDelta::Pixels { y, .. } => {
+                    state.scroll += y;
+                    if state.scroll > PIXEL_THRESHOLD {
+                        state.scroll -= PIXEL_THRESHOLD;
+                        -1
+                    } else if state.scroll < -PIXEL_THRESHOLD {
+                        state.scroll += PIXEL_THRESHOLD;
+                        1
+                    } else {
+                        0
+                    }
+                }
+            };
+            if detents != 0 {
+                return Some(
+                    canvas::Action::publish(SimulatorMessage::BoostRotated(detents)).and_capture(),
+                );
+            }
+            return Some(canvas::Action::capture());
+        }
+
         if let event::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) = event
             && let Some(pos) = cursor.position_in(bounds)
         {
+            // A click on the knob does nothing: it is turned, not pressed.
+            if over_knob(pos) {
+                return Some(canvas::Action::capture());
+            }
             // The triangle handle collapses/expands; the rest of the strip body
             // toggles meters ⇄ scopes (only meaningful while expanded).
             let msg = if handle_rect(bounds).contains(pos) {
@@ -415,6 +487,56 @@ fn slice(buf: &VecDeque<f32>) -> Vec<f32> {
 
 /// The collapse-handle hit/draw rectangle: a tab at the bottom-left, left of the
 /// faceplate graphic.
+/// The BOOST knob's bounds: a square at [`BOOST_X`], bottom-aligned with the other indicators, with room above for
+/// its label.
+fn boost_rect(scale: f32, baseline: f32, well_h: f32) -> Rectangle {
+    let r = BOOST_R.min(well_h * 0.32);
+    Rectangle::new(
+        Point::new(BOOST_X * scale - r, baseline - 2.0 * r),
+        Size::new(2.0 * r, 2.0 * r),
+    )
+}
+
+/// Draw the BOOST knob: a dial whose pointer sweeps from 0 dB to `audio::MAX_BOOST_DB`, labelled above with its
+/// name, or with its setting and lit while it adds anything.
+fn draw_boost_knob(frame: &mut Frame, area: Rectangle, db: f32) {
+    let r = area.width / 2.0;
+    let centre = area.center();
+    let lit = db > 0.0;
+    frame.fill(&Path::circle(centre, r), WELL);
+    frame.stroke(
+        &Path::circle(centre, r),
+        Stroke::default()
+            .with_color(if lit { AUDIO_COLOR } else { BORDER })
+            .with_width(1.5),
+    );
+    let angle = (-BOOST_SWEEP + 2.0 * BOOST_SWEEP * db / crate::audio::MAX_BOOST_DB).to_radians();
+    let tip = Point::new(
+        centre.x + angle.sin() * r * 0.8,
+        centre.y - angle.cos() * r * 0.8,
+    );
+    frame.stroke(
+        &Path::line(centre, tip),
+        Stroke::default()
+            .with_color(if lit { AUDIO_COLOR } else { LABEL })
+            .with_width(2.0),
+    );
+    frame.fill_text(canvas::Text {
+        // The setting alone while it adds anything: the knob sits near the window's edge.
+        content: if lit {
+            format!("+{db:.0} dB")
+        } else {
+            "BOOST".into()
+        },
+        position: Point::new(centre.x, area.y - 3.0),
+        color: LABEL,
+        size: iced::Pixels(10.0),
+        align_x: iced::widget::text::Alignment::Center,
+        align_y: iced::alignment::Vertical::Bottom,
+        ..Default::default()
+    });
+}
+
 fn handle_rect(bounds: Rectangle) -> Rectangle {
     let hh = HANDLE_H.min(bounds.height);
     Rectangle::new(
