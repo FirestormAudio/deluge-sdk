@@ -125,9 +125,10 @@ pub const SSI_CONFIG: SsiConfig = SsiConfig {
 
 /// SD_OPTION register value for SDHI port 1 on the Deluge board.
 ///
-/// 0x00BD selects a 2^23 SDCLK timeout cycle count and 4-bit bus width.
-/// This is the Deluge C firmware's value, chosen for reliable card detection on
-/// this hardware; it differs from the SDHI reset default.
+/// 0x00BD: 4-bit bus, a data timeout of SD_CLK × 2^24 (TOP = 0xB) and a
+/// card-detect time of P1 × 2^23 (CTOP = 0xD; RZ/A1L TRM §38.2.12). This is
+/// the Deluge C firmware's value, chosen for reliable card detection on this
+/// hardware; it differs from the SDHI reset default.
 pub const SD_OPTION: u16 = 0x00BD;
 
 // ---------------------------------------------------------------------------

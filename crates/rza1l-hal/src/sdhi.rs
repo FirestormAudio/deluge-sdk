@@ -390,8 +390,8 @@ pub unsafe fn init(port: u8, sd_option: u16) {
         reg16(base, OFF_SOFT_RST).write_volatile(SOFT_RST_ASSERT);
         reg16(base, OFF_SOFT_RST).write_volatile(SOFT_RST_DEASSERT);
 
-        // ---- SD_OPTION: NCycle = SDCLK×2^23, 4-bit bus ----
-        // Pass a board-specific value via the sd_option parameter.
+        // ---- SD_OPTION: bus width, data timeout and card-detect time ----
+        // Board-specific; see the caller's `sd_option`.
         reg16(base, OFF_OPTION).write_volatile(sd_option);
 
         // ---- EXT_SWAP: no byte-swap ----

@@ -98,8 +98,9 @@ pub unsafe fn init() {
         // (64 MB, 13-row, 10-col).  Adjust SDCR for any other SDRAM density.
         wr32(SDCR, 0x0011_0912);
 
-        // RTCOR: refresh timer constant — 7.64 µs / 240 ns ≈ 128 cycles.
-        // Written with key 0xA55A in the upper half-word.
+        // RTCOR: 128 counts of CKIO/4 (33.064 MHz, set in RTCSR below), one
+        // refresh every ~3.9 µs, twice as often as the 7.8 µs the SDRAM needs
+        // (8192 rows in 64 ms). Written with key 0xA55A in the upper half-word.
         wr32(RTCOR, 0xA55A_0080);
 
         // RTCSR: initialisation sequence start, clock = B-phy/4, refresh once.
