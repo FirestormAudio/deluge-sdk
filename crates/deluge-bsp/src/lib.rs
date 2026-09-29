@@ -33,6 +33,7 @@ pub mod flash;
 pub mod jacks;
 #[cfg(target_os = "none")]
 pub mod midi_gate;
+pub mod midi_stream;
 pub mod oled;
 pub mod pads;
 pub mod pic;
