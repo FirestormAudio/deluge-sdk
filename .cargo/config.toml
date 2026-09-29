@@ -39,10 +39,7 @@ build-uac            = "build -Zbuild-std=core -Zbuild-std-features=compiler-bui
 build-uac-bin        = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p uac-host-firmware -- -O binary target/armv7a-none-eabihf/release/uac-host-firmware.bin"
 build-app-loader     = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem -p app-loader"
 build-app-loader-bin = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p app-loader -- -O binary target/armv7a-none-eabihf/release/app-loader.bin"
-# Host tools: `--target` overrides the device default.
-# ELF -> UF2 converter. Usage: cargo elf2uf2 firmware.elf [-o out.uf2] [--bin]
-elf2uf2              = "run --manifest-path tools/elf2uf2/Cargo.toml --target x86_64-unknown-linux-gnu --release --"
-# Wren debug harness tests.
+# Wren debug harness tests (`--target` overrides the device default).
 test-wren-debug       = "test --manifest-path wren/wren-web-debug/Cargo.toml --target x86_64-unknown-linux-gnu"
 build-wren           = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem -p wren-firmware"
 build-wren-bin       = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p wren-firmware -- -O binary target/armv7a-none-eabihf/release/wren-firmware.bin"
