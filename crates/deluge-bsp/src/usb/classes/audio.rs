@@ -3,7 +3,7 @@
 //! ## Quick start
 //!
 //! ```rust,no_run
-//! let (mut audio, ep_out, ep_in) = AudioClass::<8>::new(&mut builder, 288);
+//! let (mut audio, ep_out, ep_in) = AudioClass::<2>::new(&mut builder, 288);
 //! builder.handler(&mut audio);
 //! let usb = builder.build();
 //! ```
@@ -109,6 +109,12 @@ impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
     where
         D::EndpointIn: Endpoint,
     {
+        const {
+            assert!(
+                49 * CAPTURE_CH * 3 <= 1024,
+                "capture ISO IN max packet exceeds the 1024-byte high-speed limit"
+            )
+        };
         let mut func = builder.function(USB_CLASS_AUDIO, 0x00, USB_PROTOCOL_IP_02_00);
 
         // ── AudioControl interface ──────────────────────────────────────────
