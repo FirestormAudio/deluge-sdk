@@ -1,6 +1,6 @@
 //! USB-MIDI 1.0 event packets, passed through whole.
 //!
-//! The byte API in [`classes::midi`](super::classes::midi) decodes received
+//! The byte API in `usb::classes::midi` (device builds only) decodes received
 //! packets into 3-byte messages and re-packetises a raw byte stream on the way
 //! out, which suits apps that think in MIDI messages but cannot carry SysEx or
 //! virtual cable numbers. A consumer that already speaks USB-MIDI 1.0 event
@@ -14,8 +14,7 @@
 //! ([`try_recv_packet_from_host`], [`try_send_packet_to_host`],
 //! [`tx_packet_free`], [`tx_packet_pending`]) is what an app calls. The
 //! transport side ([`route_rx_packet`], [`deliver_packet_from_host`],
-//! [`try_deliver_packet_from_host`], [`next_packet_to_host`],
-//! [`drain_packets_to_host`]) is what the USB class's endpoint tasks call;
+//! [`next_packet_to_host`], [`drain_packets_to_host`]) is what the USB class's endpoint tasks call;
 //! it is not tied to the USB driver, so it builds and is tested off-target.
 
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -154,13 +153,6 @@ pub async fn deliver_packet_from_host(packet: Packet) {
     RX_PACKETS.send(packet).await;
 }
 
-/// Queue a packet received from the host without waiting.
-/// Returns `false` (and drops the packet) if the queue is full.
-#[inline]
-pub fn try_deliver_packet_from_host(packet: Packet) -> bool {
-    RX_PACKETS.try_send(packet).is_ok()
-}
-
 /// Wait for the next packet the consumer queued for the host.
 pub async fn next_packet_to_host() -> Packet {
     TX_PACKETS.receive().await
@@ -254,7 +246,7 @@ mod tests {
         // Host → device: what the RX task delivers is what the consumer reads.
         let note_on = [0x09, 0x90, 0x3C, 0x64];
         for p in SYSEX_CABLE2.iter().chain([&note_on]) {
-            assert!(try_deliver_packet_from_host(*p));
+            assert!(RX_PACKETS.try_send(*p).is_ok());
         }
         let received: Vec<Packet> = core::iter::from_fn(try_recv_packet_from_host).collect();
         assert_eq!(
