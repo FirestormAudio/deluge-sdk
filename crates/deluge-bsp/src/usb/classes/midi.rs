@@ -35,6 +35,14 @@
 //!     midi::try_send_to_host_byte(0xF8);
 //! }
 //! ```
+//!
+//! ## Packet mode
+//!
+//! A consumer that speaks USB-MIDI 1.0 event packets calls [`use_packets`]
+//! before spawning the alt-0 tasks, then uses [`try_recv_packet_from_host`] /
+//! [`try_send_packet_to_host`] instead of the byte API. Packets pass through
+//! unchanged in both directions — SysEx and cable numbers included — which the
+//! byte API cannot carry. See [`midi_packets`](crate::usb::midi_packets).
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -44,6 +52,12 @@ use embassy_usb::control::{InResponse, Recipient, Request, RequestType};
 use embassy_usb::driver::{Driver, Endpoint, EndpointError, EndpointIn, EndpointOut};
 use embassy_usb::types::InterfaceNumber;
 use embassy_usb::{Builder, Handler};
+
+use crate::usb::midi_packets::{self, RxRoute};
+pub use crate::usb::midi_packets::{
+    Packet, packets_enabled, try_recv_packet_from_host, try_send_packet_to_host, tx_packet_free,
+    tx_packet_pending, use_packets,
+};
 
 // ============================================================================
 // USB class / descriptor constants
@@ -402,20 +416,6 @@ pub use crate::midi_stream::ump_word_count;
 // USB MIDI 1.0 packet helpers
 // ============================================================================
 
-/// Parse a 4-byte USB MIDI 1.0 event packet → 3-byte MIDI message.
-fn parse_usb_midi_packet(packet: &[u8]) -> Option<[u8; 3]> {
-    if packet.len() < 4 {
-        return None;
-    }
-    let (b1, b2, b3) = (packet[1], packet[2], packet[3]);
-    match packet[0] & 0x0F {
-        0x03 | 0x08 | 0x09 | 0x0A | 0x0B | 0x0E => Some([b1, b2, b3]),
-        0x02 | 0x06 | 0x0C | 0x0D => Some([b1, b2, 0]),
-        0x05 | 0x0F => Some([b1, 0, 0]),
-        _ => None,
-    }
-}
-
 /// Build a 4-byte USB MIDI 1.0 event packet from a 3-byte MIDI message.
 fn build_usb_midi_packet(msg: &[u8; 3]) -> [u8; 4] {
     let cin: u8 = match msg[0] {
@@ -440,8 +440,10 @@ fn build_usb_midi_packet(msg: &[u8; 3]) -> [u8; 4] {
 
 /// Drive the alt-0 bulk OUT endpoint (host → device, MIDI 1.0).
 ///
-/// Reads 4-byte USB MIDI 1.0 event packets and queues the decoded 3-byte
-/// messages for [`try_recv_from_host`].
+/// Reads 4-byte USB MIDI 1.0 event packets. In packet mode ([`use_packets`])
+/// every packet is queued unchanged for [`try_recv_packet_from_host`], waiting
+/// for room so the host is held off rather than a packet lost; otherwise the
+/// decoded 3-byte messages are queued for [`try_recv_from_host`].
 pub async fn run_rx_midi1<'d, D: Driver<'d>>(mut ep_out: D::EndpointOut)
 where
     D::EndpointOut: EndpointOut,
@@ -452,12 +454,15 @@ where
         loop {
             match ep_out.read(&mut buf).await {
                 Ok(n) => {
-                    let mut i = 0;
-                    while i + 4 <= n {
-                        if let Some(msg) = parse_usb_midi_packet(&buf[i..i + 4]) {
-                            let _ = MIDI_RX.try_send(msg);
+                    let packet_mode = packets_enabled();
+                    for packet in midi_packets::packets_in(&buf[..n]) {
+                        match midi_packets::route_rx_packet(packet, packet_mode) {
+                            RxRoute::Packet(p) => midi_packets::deliver_packet_from_host(p).await,
+                            RxRoute::Message(msg) => {
+                                let _ = MIDI_RX.try_send(msg);
+                            }
+                            RxRoute::Drop => {}
                         }
-                        i += 4;
                     }
                 }
                 Err(EndpointError::Disabled) => break,
@@ -471,9 +476,11 @@ where
 
 /// Drive the alt-0 bulk IN endpoint (device → host, MIDI 1.0).
 ///
-/// Reads raw MIDI 1.0 bytes queued by [`try_send_to_host_byte`], assembles
-/// them into 3-byte messages (with running-status and realtime handling), and
-/// writes 4-byte USB MIDI event packets to the host.
+/// In packet mode ([`use_packets`]) writes the packets queued by
+/// [`try_send_packet_to_host`] unchanged, batching up to one 64-byte transfer.
+/// Otherwise reads raw MIDI 1.0 bytes queued by [`try_send_to_host_byte`],
+/// assembles them into 3-byte messages (with running-status and realtime
+/// handling), and writes 4-byte USB MIDI event packets to the host.
 pub async fn run_tx_midi1<'d, D: Driver<'d>>(mut ep_in: D::EndpointIn)
 where
     D::EndpointIn: EndpointIn,
@@ -481,9 +488,21 @@ where
     let mut pending = [0u8; 3];
     let mut pos: usize = 0;
     let mut expected: usize = 0;
+    let mut transfer = [0u8; BULK_MPS_MIDI1 as usize];
 
     loop {
         ep_in.wait_enabled().await;
+        if packets_enabled() {
+            loop {
+                let first = midi_packets::next_packet_to_host().await;
+                transfer[..4].copy_from_slice(&first);
+                let n = 4 + midi_packets::drain_packets_to_host(&mut transfer[4..]);
+                if ep_in.write(&transfer[..n]).await.is_err() {
+                    break;
+                }
+            }
+            continue;
+        }
         loop {
             let byte = MIDI_TX.receive().await;
 

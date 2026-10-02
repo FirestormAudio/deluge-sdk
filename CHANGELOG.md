@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `deluge::oled::{FrameBuffer, draw_str}` for apps that render into their own
   frame buffer, and the `usb-serial` feature's `Deluge::usb_serial` — take USB0
   as a CDC-ACM port under your own VID/PID, no `unsafe`.
+- `deluge_bsp::usb::classes::midi` packet mode: `use_packets()` plus
+  `try_recv_packet_from_host` / `try_send_packet_to_host` / `tx_packet_free` /
+  `tx_packet_pending` pass USB-MIDI 1.0 event packets through unchanged — SysEx
+  and cable numbers included — for consumers that speak packets.
 
 ### Changed
 
