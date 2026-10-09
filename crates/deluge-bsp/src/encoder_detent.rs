@@ -34,7 +34,11 @@ mod tests {
     #[test]
     fn three_confirmed_edges_make_a_detent() {
         let mut acc = 0;
-        assert_eq!(accumulate_detents(2, &mut acc), 0, "half a click: no detent yet");
+        assert_eq!(
+            accumulate_detents(2, &mut acc),
+            0,
+            "half a click: no detent yet"
+        );
         assert_eq!(acc, 2);
         assert_eq!(
             accumulate_detents(1, &mut acc),

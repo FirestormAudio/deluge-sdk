@@ -12,8 +12,8 @@
 //!
 //! ## TSTR (Timer Start Register)
 //! One shared TSTR register at `0xFCFF_0280` controls which channels run.
-//! **Write access to all channel registers is locked at reset** — call
-//! [`enable_write`] once (sets `TRWER = 1`) before touching any channel.
+//! Channels 3 and 4 have a write gate, `TRWER`: it is open at reset, but call
+//! [`enable_write`] once before touching them, in case earlier code closed it.
 //!
 //! ## Usage (free-running counters)
 //! ```rust,no_run
@@ -177,10 +177,12 @@ unsafe fn wr16(addr: usize, val: u16) {
 
 /// Unlock MTU2 register write access.
 ///
-/// The MTU2 write gate (`TRWER`) is cleared at reset, blocking writes to all
-/// channel registers.  Call this once during startup before any other MTU2
-/// function.  The MTU2 clock must already be running (STBCR3 bit 2 = 0,
-/// normally set through [`crate::stb::init`]).
+/// The write gate (`TRWER`) guards channels 3 and 4's control registers and
+/// counters; channels 0–2 have none. It is open at reset (RZ/A1L hardware manual
+/// §10.3.15), but earlier code may have closed it, so call this once during
+/// startup before configuring either channel. The MTU2 clock must already be
+/// running (STBCR3 bit 3, MSTP33, = 0, §42.2.3; normally set through
+/// [`crate::stb::init`]).
 ///
 /// # Safety
 /// Writes to the memory-mapped TRWER register.

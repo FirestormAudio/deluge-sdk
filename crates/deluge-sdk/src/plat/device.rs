@@ -305,18 +305,6 @@ pub(crate) fn input_start_pump(spawner: Spawner) {
     // handler before enabling its source, so it is safe with interrupts enabled.
     unsafe { encoder::irq_init() };
     spawner.spawn(encoder_pump().unwrap());
-    spawner.spawn(encoder_poll().unwrap());
-}
-
-/// Sample the encoder pins every millisecond, for the B-pin transitions the encoder interrupts
-/// can't see. Without it a click that comes to rest on one is reported only when the knob moves on.
-#[embassy_executor::task]
-async fn encoder_poll() {
-    let mut ticker = Ticker::every(Duration::from_millis(1));
-    loop {
-        encoder::poll();
-        ticker.next().await;
-    }
 }
 
 /// Wake on encoder IRQ, drain detent deltas, and enqueue [`crate::input::Event::Encoder`].

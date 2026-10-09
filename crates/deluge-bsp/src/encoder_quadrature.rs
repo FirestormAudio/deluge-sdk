@@ -201,7 +201,17 @@ mod tests {
             total += i32::from(decoder.observe_a_edge(true, true, false)); // 00 → (01) → 11
             total += i32::from(decoder.observe_a_edge(false, false, false)); // 11 → (10) → 00
         }
-        assert_eq!(total, run(&[S00, S01, S11, S10, S00, S01, S11, S10, S00, S01, S11, S10, S00, S01, S11, S10, S00], true, false));
+        assert_eq!(
+            total,
+            run(
+                &[
+                    S00, S01, S11, S10, S00, S01, S11, S10, S00, S01, S11, S10, S00, S01, S11, S10,
+                    S00
+                ],
+                true,
+                false
+            )
+        );
     }
 
     mod properties {
