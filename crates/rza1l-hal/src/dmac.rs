@@ -42,6 +42,8 @@ const CHCTRL_SWRST: u32 = 1 << 3; // Software reset (clears status)
 const CHCTRL_CLRTC: u32 = 1 << 6; // Clear terminal count (TC bit)
 
 // ── CHSTAT bits ──────────────────────────────────────────────────────────────
+/// CHSTAT bit 0: EN — the channel is enabled, i.e. a transfer has been started and not yet ended.
+pub(crate) const CHSTAT_EN: u32 = 1 << 0;
 /// CHSTAT bit 6: TC — Terminal Count flag set when transfer completes.
 pub(crate) const CHSTAT_TC: u32 = 1 << 6;
 
@@ -206,6 +208,18 @@ pub unsafe fn stop(ch: u8) {
         let keep = if ch % 2 == 0 { 0xFFFF_0000 } else { 0x0000_FFFF };
         crate::mmio::write32(dmars, crate::mmio::read32(dmars) & keep);
     }
+}
+
+/// Whether a one-shot transfer started with [`start_transfer`] is still running on channel `ch`:
+/// enabled and not yet at its terminal count. Polls the status register, so it works with
+/// interrupts masked, where [`wait_transfer_complete`] cannot.
+///
+/// # Safety
+/// Reads a memory-mapped DMA register.
+#[inline]
+pub unsafe fn transfer_in_flight(ch: u8) -> bool {
+    let chstat = unsafe { ch_reg(ch, OFF_CHSTAT).read_volatile() };
+    chstat & CHSTAT_EN != 0 && chstat & CHSTAT_TC == 0
 }
 
 /// Read the current DMA **source** address for channel `ch` (`CRSA_n`).
