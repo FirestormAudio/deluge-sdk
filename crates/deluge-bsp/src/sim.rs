@@ -236,7 +236,7 @@ fn next_input_byte() -> Option<u8> {
 }
 
 /// Queue `event` as the PIC's bytes. An encoder turn has no PIC bytes (the encoders are wired to the CPU, not the
-/// PIC): it becomes edges on its accumulator instead, two per detent as the hardware produces them, and wakes the
+/// PIC): it becomes edges on its accumulator instead, four per detent as the decoder counts them, and wakes the
 /// encoder task as the interrupt does.
 fn encode_input(event: InputEvent, bytes: &mut VecDeque<u8>) {
     match event {
@@ -255,7 +255,7 @@ fn encode_input(event: InputEvent, bytes: &mut VecDeque<u8>) {
         InputEvent::Encoder { index, delta } => {
             if let Some(edges) = crate::encoder::ENCODER_DELTAS.get(usize::from(index)) {
                 let _ = edges.try_update(Ordering::Relaxed, Ordering::Relaxed, |e| {
-                    Some(e.saturating_add(delta.saturating_mul(2)))
+                    Some(e.saturating_add(delta.saturating_mul(4)))
                 });
                 crate::encoder::ENCODER_WAKER.wake();
             }
@@ -333,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn an_encoder_turn_adds_two_edges_a_detent() {
+    fn an_encoder_turn_adds_four_edges_a_detent() {
         use crate::encoder::ENCODER_DELTAS;
         ENCODER_DELTAS[3].store(0, Ordering::Relaxed);
         assert!(
@@ -343,7 +343,7 @@ mod tests {
             })
             .is_empty()
         );
-        assert_eq!(ENCODER_DELTAS[3].swap(0, Ordering::Relaxed), -4);
+        assert_eq!(ENCODER_DELTAS[3].swap(0, Ordering::Relaxed), -8);
     }
 
     #[test]

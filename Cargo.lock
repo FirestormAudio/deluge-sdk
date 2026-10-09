@@ -1302,6 +1302,7 @@ dependencies = [
  "embedded-sdmmc",
  "heapless 0.9.3",
  "log",
+ "proptest",
  "rza1l-hal",
 ]
 

@@ -75,5 +75,6 @@ critical-section = { workspace = true, features = ["std"] }
 # and `generic-queue-8` a timer queue for the `sim` input poll.
 embassy-time = { workspace = true, features = ["mock-driver", "generic-queue-8"] }
 embassy-futures = { workspace = true }
+proptest = "1.5"
 
 
