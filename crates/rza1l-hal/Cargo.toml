@@ -39,6 +39,9 @@ log = { workspace = true }
 
 [features]
 rtt = ["dep:rtt-target"]
+# Hand every CPU fault to the application's `deluge_cpu_fault_report` (see `startup.rs`). The
+# application must then define it; without the feature, faults blink the LED.
+app-fault-reporter = []
 unlock-bootloader = []
 
 [dependencies.rtt-target]

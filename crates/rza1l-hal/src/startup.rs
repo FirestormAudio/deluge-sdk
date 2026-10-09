@@ -3,10 +3,14 @@
 //!
 //! The reset handler invalidates caches/TLBs, installs the vector table via
 //! VBAR, parks secondary cores, unlocks retention RAM, enables VFP/NEON, sets
-//! up the per-mode stacks, zeroes BSS and calls `main`.  Fault handlers blink
-//! the P6_7 LED in a repeating pattern (1 = undefined instruction, 2 = SVC,
-//! 3 = prefetch abort, 4 = data abort, 5 = reserved) and, with the `rtt`
-//! feature, first dump the fault registers to RTT channel 0.
+//! up the per-mode stacks, zeroes BSS and calls `main`.
+//!
+//! Every fault vector (undefined instruction, SVC, prefetch abort, data abort, reserved) works out
+//! the address of the faulting instruction and, with the `rtt` feature, first dumps the fault
+//! registers to RTT channel 0. With the `app-fault-reporter` feature it then hands over to the
+//! application's `deluge_cpu_fault_report`; without it, or for a consumer that has no reporter, it
+//! blinks the P6_7 LED in a repeating pattern (1 = undefined instruction, 2 = SVC, 3 = prefetch
+//! abort, 4 = data abort, 5 = reserved).
 
 use core::arch::global_asm;
 
@@ -357,7 +361,17 @@ _boot_fault_loop:
     bl _boot_delay
     b .Lboot_fault_outer
 
-    /* Default exception handlers — halt the core */
+    /* Fault vectors. Each one sets up the same three registers and then goes on to its RTT dump
+     * (when the `rtt` feature has one) and the shared tail `_fault_report`:
+     *   r4 = LED blink count, for when there is no reporter to hand over to
+     *   r5 = fault type passed to the reporter (DelugeCpuFault: 0 undefined, 1 prefetch abort,
+     *        2 data abort, 3 reserved, 0xF SVC)
+     *   r6 = address of the faulting instruction
+     * The LR an exception leaves behind is a fixed distance past that instruction, and for
+     * undefined instructions and SVCs the distance depends on the instruction set it was in
+     * (ARMv7-A ARM B1.9.6-B1.9.8, B1.9.10): undefined/SVC LR = instruction + 4 (ARM) or + 2
+     * (Thumb, SPSR.T set); prefetch abort LR = instruction + 4 and data abort LR = instruction + 8
+     * in either state. */
     .global _undef_handler
     .global _svc_handler
     .global _prefetch_handler
@@ -365,19 +379,38 @@ _boot_fault_loop:
     .global _reserved_handler
     .global _fiq_handler
 _undef_handler:
-    mov r4, #1
-    b    _undef_rtt
+    mov   r4, #1
+    mov   r5, #0
+    mrs   r6, spsr
+    tst   r6, #0x20               /* SPSR.T: faulted in Thumb state */
+    subne r6, lr, #2
+    subeq r6, lr, #4
+    b     _undef_rtt
 _svc_handler:
-    mov r4, #2
-    b _boot_fault_loop
+    /* Not a fault as such, but nothing makes system calls: report the SVC itself. */
+    mov   r4, #2
+    mov   r5, #0xF
+    mrs   r6, spsr
+    tst   r6, #0x20
+    subne r6, lr, #2
+    subeq r6, lr, #4
+    b     _fault_report
 _prefetch_handler:
-    mov r4, #3
-    b    _pabt_rtt
+    mov   r4, #3
+    mov   r5, #1
+    sub   r6, lr, #4
+    b     _pabt_rtt
 _abort_handler:
-    b    _abort_rtt              /* branch to cfg-selected implementation */
+    mov   r4, #4
+    mov   r5, #2
+    sub   r6, lr, #8
+    b     _abort_rtt
 _reserved_handler:
-    mov r4, #5
-    b _boot_fault_loop
+    /* Never taken on the Cortex-A9 (it is the Hyp trap vector); LR is reported as it stands. */
+    mov   r4, #5
+    mov   r5, #3
+    mov   r6, lr
+    b     _fault_report
     /* FIQ handler: return from interrupt.
      * On FIQ entry LR_fiq = interrupted PC + 4; subtract 4 to re-run
      * the interrupted instruction.  SUBS restores CPSR from SPSR_fiq.
@@ -398,7 +431,6 @@ _fiq_handler:       subs pc, lr, #4
 global_asm!(
     r#"
 _abort_rtt:
-    mov  r4, #4
     /* Save scratch registers (we're in ABT mode with banked LR/SP). */
     push {{r5, r6, r7, r8, r9, r10}}
 
@@ -489,23 +521,18 @@ _abort_rtt:
     str  r2, [r0, #0x24]          /* WrOff = updated value         */
 
     pop  {{r5, r6, r7, r8, r9, r10}}
-    b    _boot_fault_loop         /* Blink 4x repeating pattern   */
+    b    _fault_report
 "#
 );
 
-// No-RTT data-abort body: halt immediately.
+// No RTT: nothing to dump, straight on to the report.
 #[cfg(not(feature = "rtt"))]
 global_asm!(
     r#"
 _abort_rtt:
-    mov  r4, #4
-    b    _boot_fault_loop
 _undef_rtt:
-    mov  r4, #1
-    b    _boot_fault_loop
 _pabt_rtt:
-    mov  r4, #3
-    b    _boot_fault_loop
+    b    _fault_report
 "#
 );
 
@@ -523,9 +550,8 @@ _undef_rtt:
        an abort taken while reporting an undefined instruction is unrecoverable anyway.
        Clobbering SP_und is free for the same reason. */
     ldr  sp, =abt_stack_end
-    /* On UNDEF entry: LR_und = faulting PC + 4 (ARM) or +2 (Thumb) */
     push {{r5, r6, r7, r8, r9, r10, r11}}
-    sub  r5, lr, #4               /* faulting PC (ARM; Thumb: #2) */
+    mov  r5, r6                   /* faulting PC, from the vector */
     /* Capture the faulting (SYS/USR) mode SP and LR: USR/SYS share r13/r14, so
        briefly switching to System mode reads the app's stack pointer and its LR —
        the return address of a wild blx, i.e. the call site to symbolize. IRQs
@@ -534,8 +560,6 @@ _undef_rtt:
     mov  r6, sp                   /* r6 = app SP */
     mov  r7, lr                   /* r7 = app LR (wild-call return address) */
     cps  #0x1B                    /* back to Undefined mode */
-    mov  r4, r6                   /* keep the UNMOVED app SP: the STK walk advances r6,
-                                     and handle_cpu_fault below needs the original */
     ldr  r0, =_SEGGER_RTT
     ldr  r1, [r0, #0x1C]          /* buffer base */
     ldr  r2, [r0, #0x24]          /* WrOff */
@@ -603,27 +627,46 @@ _undef_rtt:
     write_char_u #0x0A
     str  r2, [r0, #0x24]
     pop  {{r5, r6, r7, r8, r9, r10, r11}}
-    /* Hand over to the application's crash reporter, which draws the fault pointers
-       onto the pad grid so a crash is legible with no debug probe attached. Weakly
-       referenced: a consumer of this HAL that has no reporter (the SDK examples) links
-       it as 0, so check before branching and fall back to the bare spin. Arguments
-       match handle_cpu_fault(SYSLR, SYSSP, USRLR, USRSP); USR mode is unused here. */
-    ldr  r12, =handle_cpu_fault
-    cmp  r12, #0
-    beq  _boot_fault_loop
-    mov  r0, r7                   /* SYS LR — the wild-call return address */
-    mov  r1, r4                   /* SYS SP — pre-walk, for the stack scan */
-    mov  r2, #0                   /* USR LR (unused) */
-    mov  r3, #0                   /* USR SP (unused) */
+    b    _fault_report
+"#
+);
+
+// The shared tail of every fault vector, entered in the exception's mode with interrupts masked
+// and r4/r5/r6 set up as described at the vectors.
+//
+// With `app-fault-reporter` it calls the application's
+// `deluge_cpu_fault_report(fault_pc, fault_type, sys_lr, sys_sp)`, the pad-grid crash reporter
+// (the Deluge firmware's is in `src/deluge/io/debug/fault_pattern.c`). The reference is strong,
+// so an application that enables the feature without providing the reporter fails to link rather
+// than faulting silently. `sys_lr`/`sys_sp` are the interrupted code's LR and SP, read by briefly
+// switching to System mode, which shares them with User mode: LR is the return address of the
+// call that went wrong, and SP is where the reporter walks for the rest of the call chain. The
+// reporter runs on the abort stack, never the interrupted one, which may be the very thing that
+// overflowed. It does not return.
+#[cfg(feature = "app-fault-reporter")]
+global_asm!(
+    r#"
+_fault_report:
+    ldr  sp, =abt_stack_end       /* terminal: borrowing the abort stack is safe */
+    mrs  r0, cpsr
+    cps  #0x1F                    /* System mode, interrupts still masked */
+    mov  r2, lr                   /* sys_lr */
+    mov  r3, sp                   /* sys_sp */
+    msr  cpsr_c, r0               /* back to the exception's mode and stack */
+    mov  r0, r6                   /* fault_pc */
+    mov  r1, r5                   /* fault_type */
+    ldr  r12, =deluge_cpu_fault_report
     bx   r12
 "#
 );
 
-// `handle_cpu_fault` is the application's pad-grid crash reporter (the C firmware's
-// is in `src/deluge/io/debug/fault_pattern.c`). Weak so this HAL still links for
-// consumers that don't provide one — the UNDEF handler tests for null before branching.
-#[cfg(feature = "rtt")]
-global_asm!(".weak handle_cpu_fault");
+#[cfg(not(feature = "app-fault-reporter"))]
+global_asm!(
+    r#"
+_fault_report:
+    b    _boot_fault_loop
+"#
+);
 
 // RTT-enabled prefetch-abort handler: dumps "PABT\n  PC=XXXXXXXX IFSR=XXXXXXXX\n"
 #[cfg(feature = "rtt")]
