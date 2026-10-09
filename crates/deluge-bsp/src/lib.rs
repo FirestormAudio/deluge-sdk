@@ -20,6 +20,9 @@ pub mod encoder;
 /// Pure quadrature detent accumulation used by the bare-metal `encoder` driver;
 /// non-gated so it unit-tests on the host.
 pub mod encoder_detent;
+/// Pure two-pin quadrature decoding with glitch rejection, used by the `encoder` driver;
+/// non-gated so it unit-tests on the host.
+pub mod encoder_quadrature;
 // `fat` builds on `sd`, and `midi_gate` pulls in `cortex_ar` — both depend on
 // items only available on the bare-metal target, so they are excluded from the
 // host/QEMU test build (the pure-logic modules below still compile there).
