@@ -23,6 +23,8 @@ const GICD_CTLR: usize = GICD_BASE; // Distributor Control
 const GICD_IGROUPR0: usize = GICD_BASE + 0x080; // Interrupt Security (ICDISR0)
 const GICD_ISENABLER0: usize = GICD_BASE + 0x100; // Set-Enable (ICDISER0)
 const GICD_ICENABLER0: usize = GICD_BASE + 0x180; // Clear-Enable (ICDICER0)
+const GICD_ICPENDR0: usize = GICD_BASE + 0x280; // Clear-Pending (ICDICPR0)
+const GICD_ISACTIVER0: usize = GICD_BASE + 0x300; // Active Bit (ICDABR0), read-only on GICv1
 const GICD_IPRIORITYR0: usize = GICD_BASE + 0x400; // Priority (ICDIPR0)
 const GICD_ITARGETSR0: usize = GICD_BASE + 0x800; // Target (ICDIPTR0)
 const GICD_ICFGR0: usize = GICD_BASE + 0xC00; // Configuration (ICDICFR0)
@@ -204,6 +206,17 @@ pub unsafe fn init() {
         let n_iptr = n_ipr; // 147 — ICDIPTR count
         let n_icer = n_isr; // 19  — ICDICER count
 
+        // 0. End what a debugger's reset left active. A probe's halt-only reset restarts the core
+        //    but not the GIC, so an interrupt acknowledged before it stays active and holds the CPU
+        //    interface's running priority at its level: every interrupt at that priority or below
+        //    is then never signalled (the time driver's OSTM among them, so no timer ever fires).
+        //    Read before step 3 rewrites the priorities.
+        end_stale_active(n_isr);
+        let icpendr = GICD_ICPENDR0 as *mut u32;
+        for i in 0..n_isr {
+            icpendr.add(i).write_volatile(0xFFFF_FFFF);
+        }
+
         // 1. Mark all interrupts as secure (Group 0), matching the C driver.
         let igroupr = GICD_IGROUPR0 as *mut u32;
         for i in 0..n_isr {
@@ -253,6 +266,65 @@ pub unsafe fn init() {
         log::debug!("gic: distributor + CPU interface enabled");
     }
 }
+
+/// The most urgent active interrupt in `active` (one bit per interrupt ID, 32 IDs a word, as the
+/// active bit registers hold them), by `priority` (a lower value is more urgent; the lower ID on a
+/// tie), or `None` when none is active.
+fn most_urgent_active(active: &[u32], priority: impl Fn(usize) -> u8) -> Option<usize> {
+    let mut best: Option<(u8, usize)> = None;
+    for (word, &bits) in active.iter().enumerate() {
+        let mut rest = bits;
+        while rest != 0 {
+            let id = word * 32 + rest.trailing_zeros() as usize;
+            rest &= rest - 1;
+            let p = priority(id);
+            if best.is_none_or(|(q, _)| p < q) {
+                best = Some((p, id));
+            }
+        }
+    }
+    best.map(|(_, id)| id)
+}
+
+/// End every interrupt the GIC still holds active, most urgent first: the reverse of the order a
+/// nest of them was acknowledged in, as ICCEOIR expects. GICv1's active bits are read-only, so
+/// ICCEOIR is the only way to end one.
+///
+/// # Safety
+/// Writes to memory-mapped GIC registers; for [`init`] only, with IRQs masked.
+#[cfg(target_os = "none")]
+unsafe fn end_stale_active(n_words: usize) {
+    /// Nested acknowledgements are bounded by the 32 priority levels; more passes than that means
+    /// an EOI is not taking effect, and the loop stops rather than spin.
+    const MAX_ENDS: usize = 32;
+    let mut active = [0u32; INT_ID_TOTAL / 32 + 1];
+    let words = &mut active[..n_words];
+    let mut ended = 0;
+    while ended < MAX_ENDS {
+        for (i, word) in words.iter_mut().enumerate() {
+            // SAFETY: ICDABR0..n_words are readable GIC distributor registers.
+            *word = unsafe { (GICD_ISACTIVER0 as *const u32).add(i).read_volatile() };
+        }
+        // SAFETY: every id below n_words × 32 ≤ INT_ID_TOTAL has an IPRIORITYR byte.
+        let priority =
+            |id: usize| unsafe { (GICD_IPRIORITYR0 as *const u8).add(id).read_volatile() };
+        let Some(id) = most_urgent_active(words, priority) else {
+            break;
+        };
+        log::warn!(
+            "gic: interrupt {} was left active by a reset; ending it",
+            id
+        );
+        // SAFETY: ICCEOIR takes the ID of an active interrupt; this core is CPU 0, the source an
+        // SGI's EOI names.
+        unsafe { (GICC_EOIR_ADDR as *mut u32).write_volatile(id as u32) };
+        ended += 1;
+    }
+}
+
+/// Host stand-in for [`end_stale_active`]: there is no GIC to read.
+#[cfg(not(target_os = "none"))]
+unsafe fn end_stale_active(_n_words: usize) {}
 
 /// Register a Rust function as the handler for interrupt `id`.
 ///
@@ -461,8 +533,45 @@ pub unsafe extern "C" fn gic_dispatch(icciar: u32) {
 mod tests {
     use super::{
         GICC_BASE, GICC_CTLR_ADDR, GICC_EOIR_ADDR, GICC_IAR_ADDR, GICC_PMR_ADDR, GICD_BASE,
-        GICD_CTLR, GICD_ICFGR0, GICD_IPRIORITYR0, GICD_ISENABLER0, ICDICFR_INIT, INT_ID_TOTAL,
+        GICD_CTLR, GICD_ICFGR0, GICD_ICPENDR0, GICD_IPRIORITYR0, GICD_ISACTIVER0, GICD_ISENABLER0,
+        ICDICFR_INIT, INT_ID_TOTAL, most_urgent_active,
     };
+
+    #[test]
+    fn stale_state_register_addresses() {
+        assert_eq!(GICD_ICPENDR0, 0xE820_1280); // ICDICPR0
+        assert_eq!(GICD_ISACTIVER0, 0xE820_1300); // ICDABR0
+    }
+
+    #[test]
+    fn no_active_interrupt_ends_nothing() {
+        assert_eq!(most_urgent_active(&[0; 19], |_| 0), None);
+    }
+
+    #[test]
+    fn the_most_urgent_active_interrupt_ends_first() {
+        // OSTM1 (135) active at priority 14, a DMAINT (51) at 13 nested inside it, SGI 8 at 20.
+        let mut active = [0u32; 19];
+        active[0] = 1 << 8;
+        active[1] = 1 << (51 - 32);
+        active[4] = 1 << (135 - 128);
+        let priority = |id: usize| match id {
+            8 => 20 << 3,
+            51 => 13 << 3,
+            135 => 14 << 3,
+            _ => 31 << 3,
+        };
+        assert_eq!(most_urgent_active(&active, priority), Some(51));
+        active[1] = 0;
+        assert_eq!(most_urgent_active(&active, priority), Some(135));
+        active[4] = 0;
+        assert_eq!(most_urgent_active(&active, priority), Some(8));
+    }
+
+    #[test]
+    fn a_tie_ends_the_lower_id_first() {
+        assert_eq!(most_urgent_active(&[0b1010_0000, 1], |_| 0x70), Some(5));
+    }
 
     #[test]
     fn int_id_total() {
