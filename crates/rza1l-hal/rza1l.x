@@ -100,6 +100,9 @@ SECTIONS {
         __exidx_end = .;
     } > RAM
 
+    /* The end of the image: everything the bootloader must copy. */
+    __image_end = .;
+
     /*
      * Round up to next 64 KB boundary so the bootloader knows how much to
      * copy from SPI flash into SRAM (matches original linker script).
@@ -114,9 +117,16 @@ SECTIONS {
     /* SRAM heap: free space between the image and the stack reservation. The
      * Deluge C++ app gets these bounds via libdeluge/memory.h
      * (deluge_memory_region, FAST_INTERNAL → [__sram_heap_start, __sram_heap_end));
-     * see src/bsp/rust/src/services.rs. */
-    __sram_heap_start = end;
+     * see src/bsp/rust/src/services.rs.
+     *
+     * It starts at the image's end, not at `end`: the 64 KB rounding is only the bootloader's copy
+     * length, and the bytes it adds are free. A firmware whose image ends in data it no longer
+     * needs after boot (a load copy it has moved elsewhere, say) defines `__sram_heap_base` to
+     * hand that tail to the heap too. 16-byte aligned, as TLSF pools require. */
+    __sram_heap_start = DEFINED(__sram_heap_base) ? __sram_heap_base : ALIGN(__image_end, 16);
     __sram_heap_end   = INTERNAL_RAM_END - PROGRAM_STACK_SIZE - ABT_STACK_SIZE - SVC_STACK_SIZE - FIQ_STACK_SIZE - IRQ_STACK_SIZE;
+    ASSERT(__sram_heap_start <= __sram_heap_end,
+           "the image overruns the SRAM heap: it ends past __sram_heap_end")
 
     /*
      * Exception-mode stacks — NOLOAD, placed just below the program stack.
