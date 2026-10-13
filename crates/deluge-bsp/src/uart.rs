@@ -49,6 +49,13 @@ pub fn try_write_midi(data: &[u8]) -> usize {
     unsafe { rza1l_hal::uart::try_write_fifo(MIDI_CH, data) }
 }
 
+/// Free space in the MIDI DIN TX FIFO, in bytes: how many [`try_write_midi`] would take now.
+#[inline]
+pub fn midi_write_space() -> usize {
+    // SAFETY: init_midi must have been called.
+    unsafe { rza1l_hal::uart::tx_fifo_free(MIDI_CH) }
+}
+
 /// Initialise the MIDI DIN UART (SCIF0) with DMA-backed RX.
 ///
 /// MIDI TX uses TXI GIC interrupts; SCIF0 RX uses DMAC channel

@@ -787,6 +787,18 @@ pub unsafe fn try_write_fifo(ch: usize, buf: &[u8]) -> usize {
     to_write
 }
 
+/// Free space in channel `ch`'s TX FIFO, in bytes: how many [`try_write_fifo`] would take now.
+///
+/// Lets a caller hold back a multi-byte message that would not fit whole, rather than have its
+/// tail dropped.
+///
+/// # Safety
+/// `init` must have been called for `ch`.
+pub unsafe fn tx_fifo_free(ch: usize) -> usize {
+    let in_fifo = unsafe { (rr16(base(ch) + SCFDR) >> 8) & 0x1F } as usize;
+    TX_FIFO_SIZE.saturating_sub(in_fifo)
+}
+
 /// Suspend until the TX FIFO has drained below the trigger level (TDFE=1).
 async fn wait_tdfe(ch: usize) {
     let b = base(ch);
