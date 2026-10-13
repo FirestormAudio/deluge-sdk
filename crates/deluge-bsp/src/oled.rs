@@ -5,7 +5,7 @@
 //! |---------------|---------------------------------------------|
 //! | Resolution    | 128 × 48 pixels                             |
 //! | SPI channel   | RSPI0 (shared with CV DAC)                  |
-//! | SPI clock     | 10 MHz, mode 0 (CPHA=0, CPOL=0)            |
+//! | SPI clock     | 4 MHz, mode 0 (CPHA=0, CPOL=0)             |
 //! | CS / DC / RST | Controlled via PIC32 UART (bytes 248–251)   |
 //! | Frame size    | 6 pages × 128 columns = 768 bytes           |
 //!

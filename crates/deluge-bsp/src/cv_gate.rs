@@ -37,8 +37,11 @@ use rza1l_hal::{gpio, rspi};
 /// RSPI channel shared between the CV DAC and the OLED display.
 const SPI_CH: u8 = 0;
 
-/// Target SCK frequency for the MAX5136 (10 MHz, within its 20 MHz maximum).
-const SPI_RATE_HZ: u32 = 10_000_000;
+/// Target SCK frequency for RSPI0, which the MAX5136 CV DAC shares with the OLED.
+///
+/// The OLED sets the limit, not the DAC (good to 20 MHz). The OEL9M0087-W-E datasheet allows 10 MHz (a 100 ns
+/// cycle), but the 2026 batch of these panels, the same model, glitches at 8.5 MHz and above; 4 MHz is safe.
+const SPI_RATE_HZ: u32 = 4_000_000;
 
 /// MAX5136 linearity-init delay in milliseconds (datasheet §8.3).
 const LIN_DELAY_MS: u32 = 10;
@@ -116,7 +119,7 @@ pub unsafe fn init() {
         }
         log::debug!("cv_gate: gate GPIOs ok");
 
-        // ---- Initialise RSPI0 as 10 MHz SPI master ------------------------------
+        // ---- Initialise RSPI0 as 4 MHz SPI master -------------------------------
         rspi::init(SPI_CH, SPI_RATE_HZ);
         log::debug!("cv_gate: RSPI0 init at {} Hz ok", SPI_RATE_HZ);
 
