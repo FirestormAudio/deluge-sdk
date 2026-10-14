@@ -37,6 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dividers and the Embassy time driver derive their rates from it. **Breaking:** `ostm::OSTM_HZ`
   and `mtu2::MTU2_P0_HZ` are removed; use `rza1l_hal::clocks::get().p0_hz()` or
   `deluge_bsp::system::CLOCKS.p0_hz()`.
+  `ClockConfig::new` rejects crystals outside the RZ/A1L's 10–13.33 MHz EXTAL range, its
+  frequency is read with `extal_hz()`, and a second `clocks::init` with a different crystal
+  panics.
+- `rza1l_hal::gic::set_sdram_code_window` lets a board narrow the IRQ dispatcher's
+  handler-address check to the SDRAM it actually fits (default: all of CS2/CS3). The Deluge
+  sets its 64 MB on CS3 (`deluge_bsp::sdram::WINDOW`).
 - **Breaking:** the `app-fault-reporter` hook is now `rza1_cpu_fault_report` (was
   `deluge_cpu_fault_report`).
 - **Breaking:** `deluge` no longer re-exports `rza1l_hal`. Use `deluge::deluge_bsp`, or depend on
