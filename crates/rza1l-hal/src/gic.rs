@@ -16,6 +16,8 @@
 //! handler (with IRQs re-enabled for nesting), then returns so the assembly
 //! can write ICCEOIR.
 
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 // ------- GIC Distributor register addresses (base 0xE820_1000) --------------
 const GICD_BASE: usize = 0xE820_1000;
 
@@ -100,12 +102,39 @@ impl HandlerCell {
     }
 }
 
+/// CS2 + CS3, the SDRAM-capable external areas (64 MB each): the default SDRAM code window.
+const SDRAM_CODE_AREAS: core::ops::Range<usize> = 0x0800_0000..0x1000_0000;
+
+/// The part of [`SDRAM_CODE_AREAS`] that can hold code on this board; see
+/// [`set_sdram_code_window`].
+static SDRAM_CODE_START: AtomicUsize = AtomicUsize::new(SDRAM_CODE_AREAS.start);
+static SDRAM_CODE_END: AtomicUsize = AtomicUsize::new(SDRAM_CODE_AREAS.end);
+
+/// Tell the IRQ dispatcher where this board's SDRAM is, so a corrupted handler slot pointing into
+/// an unpopulated part of CS2/CS3 is caught instead of branched to. Optional: by default all of
+/// CS2/CS3 counts as code. Call once at boot, before enabling interrupts.
+///
+/// # Panics
+/// If `window` is empty or not inside CS2/CS3 (`0x0800_0000..0x1000_0000`).
+pub fn set_sdram_code_window(window: core::ops::Range<usize>) {
+    assert!(
+        window.start < window.end
+            && window.start >= SDRAM_CODE_AREAS.start
+            && window.end <= SDRAM_CODE_AREAS.end,
+        "gic::set_sdram_code_window: {:#x}..{:#x} is empty or outside CS2/CS3",
+        window.start,
+        window.end
+    );
+    SDRAM_CODE_START.store(window.start, Ordering::Relaxed);
+    SDRAM_CODE_END.store(window.end, Ordering::Relaxed);
+}
+
 /// Could `addr` be the entry point of a function in this image?
 ///
 /// Deliberately coarse — the point is to reject a corrupted slot before branching to it, not to
 /// validate a symbol. Code on this part lives in on-chip SRAM (`0x2000_0000`, 3 MB) or in SDRAM on
-/// CS2/CS3 (`0x0800_0000`–`0x0FFF_FFFF`, however much of it the board fits), and the range check
-/// is what actually catches corruption.
+/// CS2/CS3 (all of `0x0800_0000`–`0x0FFF_FFFF` unless the board narrows it with
+/// [`set_sdram_code_window`]), and the range check is what actually catches corruption.
 ///
 /// # Thumb pointers
 ///
@@ -114,11 +143,15 @@ impl HandlerCell {
 /// satisfy. Requiring 4-byte alignment would reject every handler in a Thumb build. Bit 0 is not
 /// treated as evidence either way; the range test is what rejects a corrupted slot.
 fn is_plausible_code_address(addr: usize) -> bool {
+    let sdram = SDRAM_CODE_START.load(Ordering::Relaxed)..SDRAM_CODE_END.load(Ordering::Relaxed);
+    is_plausible_in(addr, sdram)
+}
+
+/// [`is_plausible_code_address`] against an explicit SDRAM window.
+fn is_plausible_in(addr: usize, sdram: core::ops::Range<usize>) -> bool {
     const SRAM: core::ops::Range<usize> = 0x2000_0000..0x2030_0000;
-    // CS2 + CS3, the SDRAM-capable external areas (64 MB each).
-    const SDRAM: core::ops::Range<usize> = 0x0800_0000..0x1000_0000;
     let target = addr & !1; // drop the Thumb interworking bit
-    target % 2 == 0 && (SRAM.contains(&target) || SDRAM.contains(&target))
+    target % 2 == 0 && (SRAM.contains(&target) || sdram.contains(&target))
 }
 
 /// IRQ handler dispatch table — one slot per interrupt ID.
@@ -536,7 +569,8 @@ mod tests {
     use super::{
         GICC_BASE, GICC_CTLR_ADDR, GICC_EOIR_ADDR, GICC_IAR_ADDR, GICC_PMR_ADDR, GICD_BASE,
         GICD_CTLR, GICD_ICFGR0, GICD_ICPENDR0, GICD_IPRIORITYR0, GICD_ISACTIVER0, GICD_ISENABLER0,
-        ICDICFR_INIT, INT_ID_TOTAL, is_plausible_code_address, most_urgent_active,
+        ICDICFR_INIT, INT_ID_TOTAL, SDRAM_CODE_AREAS, is_plausible_code_address, is_plausible_in,
+        most_urgent_active, set_sdram_code_window,
     };
 
     #[test]
@@ -644,5 +678,30 @@ mod tests {
         // Null and CS0/CS1.
         assert!(!is_plausible_code_address(0x0000_0000));
         assert!(!is_plausible_code_address(0x07FF_FFFC));
+    }
+
+    #[test]
+    fn a_board_window_narrows_the_sdram_check() {
+        // A board with SDRAM only on CS3: CS2 is unpopulated there, so a slot pointing into it is
+        // corruption.
+        let cs3_only = 0x0C00_0000..0x1000_0000;
+        assert!(is_plausible_in(0x0C00_0000, cs3_only.clone()));
+        assert!(is_plausible_in(0x0FFF_FFFE, cs3_only.clone()));
+        assert!(!is_plausible_in(0x0800_0000, cs3_only.clone()));
+        assert!(!is_plausible_in(0x0BFF_FFFC, cs3_only.clone()));
+        // SRAM stays plausible whatever the SDRAM window.
+        assert!(is_plausible_in(0x2002_0000, cs3_only));
+    }
+
+    #[test]
+    fn the_default_window_is_all_of_cs2_and_cs3() {
+        assert_eq!(SDRAM_CODE_AREAS, 0x0800_0000..0x1000_0000);
+    }
+
+    #[test]
+    #[should_panic(expected = "outside CS2/CS3")]
+    fn a_window_outside_cs2_cs3_is_rejected() {
+        // Validated before anything is stored, so this doesn't disturb the global window.
+        set_sdram_code_window(0x2000_0000..0x2030_0000);
     }
 }

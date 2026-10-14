@@ -52,6 +52,9 @@ const RTCOR: usize = 0x3FFF_C058;
 const SDRAM_MODE_CS2: usize = 0x3FFF_D040;
 const SDRAM_MODE_CS3: usize = 0x3FFF_E040;
 
+/// The Deluge's SDRAM: one 64 MB part on CS3, `0x0C00_0000..0x1000_0000`. CS2 is unpopulated.
+pub const WINDOW: core::ops::Range<usize> = 0x0C00_0000..0x1000_0000;
+
 /// Initialise SDRAM: configure GPIO pin-mux then set up the BSC.
 ///
 /// After this call, the 64 MB SDRAM window at 0x0C00_0000–0x0FFF_FFFF is

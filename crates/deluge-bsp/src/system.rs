@@ -200,6 +200,7 @@ pub const SD_DMA_MAX_SECTORS: usize = 128;
 /// 1. Basic CPG init (matches DelugeFirmware `CPG_Init`).
 /// 2. CPG module clock enable ([`rza1l_hal::stb::init`] with [`STB_CONFIG`]).
 /// 3. GIC init ([`rza1l_hal::gic::init`]), in the C firmware's `resetprg()` order.
+///    Then narrow its handler-address check to the Deluge's SDRAM ([`crate::sdram::WINDOW`]).
 /// 4. MMU enable ([`rza1l_hal::mmu::init_and_enable`]).
 /// 5. L1 cache enable ([`rza1l_hal::cache::l1_enable`]).
 /// 6. L2 cache init ([`rza1l_hal::cache::l2_init`]).
@@ -230,6 +231,7 @@ pub unsafe fn init_clocks() {
         cpg_basic_init();
         rza1l_hal::stb::init(&STB_CONFIG);
         rza1l_hal::gic::init();
+        rza1l_hal::gic::set_sdram_code_window(crate::sdram::WINDOW);
         rza1l_hal::mmu::init_and_enable();
         rza1l_hal::cache::l1_enable();
         rza1l_hal::cache::l2_init();
@@ -248,5 +250,12 @@ mod tests {
         assert_eq!(CLOCKS.extal_hz(), 13_225_625);
         assert_eq!(CLOCKS.p0_hz(), 33_064_062);
         assert_eq!(CLOCKS.p1_hz(), 66_128_125);
+    }
+
+    #[test]
+    fn sdram_window_is_the_64_mb_part_on_cs3() {
+        let w = crate::sdram::WINDOW;
+        assert_eq!(w, 0x0C00_0000..0x1000_0000);
+        assert_eq!(w.len(), 64 * 1024 * 1024);
     }
 }
