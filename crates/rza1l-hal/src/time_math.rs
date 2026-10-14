@@ -154,7 +154,7 @@ mod tests {
 
     use crate::clocks::{ClockConfig, TEST_CLOCKS};
 
-    const DELUGE: TickRatio = TickRatio::from_clocks(&TEST_CLOCKS);
+    const TEST_RATIO: TickRatio = TickRatio::from_clocks(&TEST_CLOCKS);
     const CRYSTALS: [u32; 4] = [10_000_000, 12_000_000, 13_225_625, 13_333_333];
 
     /// Exact `floor(ticks × den / num)` and saturating `ceil(us × num / den)`, in u128.
@@ -168,25 +168,25 @@ mod tests {
     }
 
     #[test]
-    fn deluge_ratio_is_21161_over_640() {
-        assert_eq!((DELUGE.num, DELUGE.den), (21_161, 640));
-        assert!(DELUGE.is_set());
+    fn test_crystal_ratio_is_21161_over_640() {
+        assert_eq!((TEST_RATIO.num, TEST_RATIO.den), (21_161, 640));
+        assert!(TEST_RATIO.is_set());
     }
 
     #[test]
     fn max_arm_bounds_a_mis_armed_alarm_to_about_100ms() {
-        assert_eq!(DELUGE.max_arm_ticks(), 3_300_000);
+        assert_eq!(TEST_RATIO.max_arm_ticks(), 3_300_000);
         // A full-range arm is u32::MAX ticks = 129.898353 s; the cap must be far below that.
-        let full_range_us = DELUGE.ticks_to_us(u32::MAX as u64);
+        let full_range_us = TEST_RATIO.ticks_to_us(u32::MAX as u64);
         assert!((129_898_000..=129_899_000).contains(&full_range_us), "got {full_range_us}");
-        let capped_us = DELUGE.ticks_to_us(DELUGE.max_arm_ticks() as u64);
+        let capped_us = TEST_RATIO.ticks_to_us(TEST_RATIO.max_arm_ticks() as u64);
         assert!((99_000..=101_000).contains(&capped_us), "got {capped_us}");
-        assert!(DELUGE.max_arm_ticks() < u32::MAX / 1000);
+        assert!(TEST_RATIO.max_arm_ticks() < u32::MAX / 1000);
     }
 
     #[test]
     fn ticks_to_us_uses_the_rational_not_33() {
-        let us = DELUGE.ticks_to_us(33_064_062);
+        let us = TEST_RATIO.ticks_to_us(33_064_062);
         assert!((999_999..=1_000_000).contains(&us), "got {us}");
         // A naive /33 would give 1_001_941 µs, a 0.19% error.
         assert!(us < 1_001_000);
@@ -194,16 +194,16 @@ mod tests {
 
     #[test]
     fn us_to_ticks_rounds_up_so_alarms_never_fire_early() {
-        assert!(DELUGE.us_to_ticks(1) >= 1);
-        assert_eq!(DELUGE.us_to_ticks(640), 21_161);
-        assert!(DELUGE.us_to_ticks(641) > 21_161);
-        assert_eq!(DELUGE.us_to_ticks(0), 0);
+        assert!(TEST_RATIO.us_to_ticks(1) >= 1);
+        assert_eq!(TEST_RATIO.us_to_ticks(640), 21_161);
+        assert!(TEST_RATIO.us_to_ticks(641) > 21_161);
+        assert_eq!(TEST_RATIO.us_to_ticks(0), 0);
     }
 
     #[test]
     fn conversions_round_trip_within_one_us() {
         for &us in &[1u64, 1000, 1_000_000, 5_000_000] {
-            let back = DELUGE.ticks_to_us(DELUGE.us_to_ticks(us));
+            let back = TEST_RATIO.ticks_to_us(TEST_RATIO.us_to_ticks(us));
             assert!(back >= us && back <= us + 1, "us={us} back={back}");
         }
     }
@@ -232,7 +232,7 @@ mod tests {
     fn ticks_to_us_survives_u64_max() {
         // The old single-multiply formula overflowed here; the split one must not panic.
         let _ = TickRatio::from_clocks(&ClockConfig::new(13_333_333)).ticks_to_us(u64::MAX);
-        let _ = DELUGE.ticks_to_us(u64::MAX);
+        let _ = TEST_RATIO.ticks_to_us(u64::MAX);
     }
 
     #[test]
@@ -249,7 +249,7 @@ mod tests {
     #[test]
     fn atomic_ratio_round_trips() {
         let a = AtomicTickRatio::unset();
-        a.store(DELUGE);
-        assert_eq!(a.load(), DELUGE);
+        a.store(TEST_RATIO);
+        assert_eq!(a.load(), TEST_RATIO);
     }
 }

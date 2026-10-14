@@ -109,7 +109,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn deluge_crystal_derives_the_values_the_old_constants_had() {
+    fn test_crystal_derives_the_values_the_old_constants_had() {
         // The removed `rspi::P1_HZ`, `ostm::OSTM_HZ`/`mtu2::MTU2_P0_HZ`, and time_math ratio.
         assert_eq!(TEST_CLOCKS.p1_hz(), 66_128_125);
         assert_eq!(TEST_CLOCKS.p0_hz(), 33_064_062);

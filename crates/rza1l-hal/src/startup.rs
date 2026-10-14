@@ -8,7 +8,7 @@
 //! Every fault vector (undefined instruction, SVC, prefetch abort, data abort, reserved) works out
 //! the address of the faulting instruction and, with the `rtt` feature, first dumps the fault
 //! registers to RTT channel 0. With the `app-fault-reporter` feature it then hands over to the
-//! application's `deluge_cpu_fault_report`; without it, or for a consumer that has no reporter, it
+//! application's `rza1_cpu_fault_report`; without it, or for a consumer that has no reporter, it
 //! blinks the P6_7 LED in a repeating pattern (1 = undefined instruction, 2 = SVC, 3 = prefetch
 //! abort, 4 = data abort, 5 = reserved).
 
@@ -364,7 +364,7 @@ _boot_fault_loop:
     /* Fault vectors. Each one sets up the same three registers and then goes on to its RTT dump
      * (when the `rtt` feature has one) and the shared tail `_fault_report`:
      *   r4 = LED blink count, for when there is no reporter to hand over to
-     *   r5 = fault type passed to the reporter (DelugeCpuFault: 0 undefined, 1 prefetch abort,
+     *   r5 = fault type passed to the reporter (0 undefined, 1 prefetch abort,
      *        2 data abort, 3 reserved, 0xF SVC)
      *   r6 = address of the faulting instruction
      * The LR an exception leaves behind is a fixed distance past that instruction, and for
@@ -635,7 +635,7 @@ _undef_rtt:
 // and r4/r5/r6 set up as described at the vectors.
 //
 // With `app-fault-reporter` it calls the application's
-// `deluge_cpu_fault_report(fault_pc, fault_type, sys_lr, sys_sp)`, the pad-grid crash reporter
+// `rza1_cpu_fault_report(fault_pc, fault_type, sys_lr, sys_sp)`, the pad-grid crash reporter
 // (the Deluge firmware's is in `src/deluge/io/debug/fault_pattern.c`). The reference is strong,
 // so an application that enables the feature without providing the reporter fails to link rather
 // than faulting silently. `sys_lr`/`sys_sp` are the interrupted code's LR and SP, read by briefly
@@ -655,7 +655,7 @@ _fault_report:
     msr  cpsr_c, r0               /* back to the exception's mode and stack */
     mov  r0, r6                   /* fault_pc */
     mov  r1, r5                   /* fault_type */
-    ldr  r12, =deluge_cpu_fault_report
+    ldr  r12, =rza1_cpu_fault_report
     bx   r12
 "#
 );
