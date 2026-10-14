@@ -483,18 +483,24 @@ pub async fn init() {
     log::debug!("oled(host): init (no-op)");
 }
 
-/// Copy `fb` into the host capture surface, standing in for actually driving
-/// the panel, and onto the simulator's panel when there is one (`sim-link`).
-/// Shared by the host [`send_frame`] and [`draw_blocking`].
+/// Copy `fb` into the host capture surface, standing in for actually driving the panel, and onto
+/// the host panel when one is installed ([`crate::host_panel`]). Shared by the host
+/// [`send_frame`] and [`draw_blocking`].
 #[cfg(not(target_os = "none"))]
 fn capture_frame(fb: &FrameBuffer) {
+    capture_frame_via(crate::host_panel::installed(), fb);
+}
+
+#[cfg(not(target_os = "none"))]
+fn capture_frame_via(panel: Option<&dyn crate::host_panel::HostPanel>, fb: &FrameBuffer) {
     let mut captured = CAPTURED_FRAME
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     *captured = fb.clone();
     BOOT_FRAME_CAPTURED.store(true, core::sync::atomic::Ordering::Release);
-    #[cfg(feature = "sim-link")]
-    crate::sim::display(fb.as_bytes());
+    if let Some(panel) = panel {
+        panel.display(fb.as_bytes());
+    }
 }
 
 /// Read back the frame most recently pushed via [`send_frame`]/[`draw_blocking`]
@@ -981,5 +987,20 @@ mod tests {
     fn wait_redraw_resolves() {
         notify_redraw();
         embassy_futures::block_on(wait_redraw());
+    }
+
+    #[test]
+    fn capture_without_a_panel_needs_none() {
+        // No assertion on `captured_frame()`: it is global, and other oled tests capture into it
+        // in parallel. The existing capture tests cover the capture surface itself.
+        capture_frame_via(None, &FrameBuffer::new());
+    }
+
+    #[test]
+    fn capture_forwards_the_frame_to_the_panel() {
+        let panel = crate::host_panel::tests::leak_panel();
+        let fb = FrameBuffer::new();
+        capture_frame_via(Some(panel), &fb);
+        assert_eq!(*panel.frames.lock().unwrap(), [fb.as_bytes().to_vec()]);
     }
 }

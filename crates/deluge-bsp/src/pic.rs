@@ -74,8 +74,8 @@ const PIC_CLK_HZ: u32 = 4_000_000;
 
 const CMD_SET_DEBOUNCE_TIME: u8 = 18;
 const CMD_SET_REFRESH_TIME: u8 = 19;
-pub(crate) const CMD_SET_GOLD_KNOB_0_INDICATORS: u8 = 20;
-pub(crate) const CMD_SET_GOLD_KNOB_1_INDICATORS: u8 = 21;
+pub const CMD_SET_GOLD_KNOB_0_INDICATORS: u8 = 20;
+pub const CMD_SET_GOLD_KNOB_1_INDICATORS: u8 = 21;
 const CMD_RESEND_BUTTON_STATES: u8 = 22;
 const CMD_SET_FLASH_LENGTH: u8 = 23;
 const CMD_SET_UART_SPEED: u8 = 225;
@@ -88,21 +88,21 @@ const CMD_SET_DC_LOW: u8 = 250;
 const CMD_SET_DC_HIGH: u8 = 251;
 
 /// Base command byte for indicator LED off: `CMD_LED_OFF_BASE + id` (id 0–35).
-pub(crate) const CMD_LED_OFF_BASE: u8 = 152;
+pub const CMD_LED_OFF_BASE: u8 = 152;
 /// Base command byte for indicator LED on: `CMD_LED_ON_BASE + id` (id 0–35).
-pub(crate) const CMD_LED_ON_BASE: u8 = 188;
+pub const CMD_LED_ON_BASE: u8 = 188;
 /// Base command byte for setting two-column RGB data: `CMD_SET_COLOUR_FOR_COLS_BASE + pair`
 /// where pair is 0–8.
-pub(crate) const CMD_SET_COLOUR_FOR_COLS_BASE: u8 = 1;
+pub const CMD_SET_COLOUR_FOR_COLS_BASE: u8 = 1;
 /// Sent after all column-pair data to trigger the PIC display refresh.
-pub(crate) const CMD_DONE_SENDING_ROWS: u8 = 240;
+pub const CMD_DONE_SENDING_ROWS: u8 = 240;
 
 /// Smooth-scroll animation opcodes. The PIC keeps its own off-screen framebuffer and smears it to
 /// animate a scroll, so the app sends one colour per row per tick instead of resending the whole
 /// grid with [`set_column_pair_rgb`].
 ///
 /// `SET_SCROLL_ROW` is a base: the row index is ADDED to it (228..=235 for the 8 rows).
-pub(crate) const CMD_SET_SCROLL_ROW_BASE: u8 = 228;
+pub const CMD_SET_SCROLL_ROW_BASE: u8 = 228;
 /// Horizontal-scroll setup is also a base with the app's flag bits ADDED: bit 0 = scrolling
 /// right/positive, bit 1 = the scrolled area includes the sidebar (18 columns rather than 16).
 ///
@@ -110,9 +110,9 @@ pub(crate) const CMD_SET_SCROLL_ROW_BASE: u8 = 228;
 /// named per-combination constants: the C++ header's names for 238/239
 /// (`SET_SCROLL_RIGHT_FULL`/`SET_SCROLL_LEFT_FULL`) are transposed with respect to the flag
 /// encoding, and the PIC's interpretation of `base + flags` is authoritative.
-pub(crate) const CMD_SET_SCROLL_HORIZONTAL_BASE: u8 = 236;
-pub(crate) const CMD_SET_SCROLL_UP: u8 = 241;
-pub(crate) const CMD_SET_SCROLL_DOWN: u8 = 242;
+pub const CMD_SET_SCROLL_HORIZONTAL_BASE: u8 = 236;
+pub const CMD_SET_SCROLL_UP: u8 = 241;
+pub const CMD_SET_SCROLL_DOWN: u8 = 242;
 
 // ── Response byte sentinels ───────────────────────────────────────────────────
 
@@ -344,13 +344,20 @@ async fn tx(bytes: &[u8]) {
     uart::write_bytes(UART_CH, bytes).await;
 }
 
-/// Host/QEMU stand-in for [`tx`]: no PIC UART to drive off-target. With a simulator panel (`sim-link`), the
-/// command is applied to it as the PIC would apply it; otherwise it is logged and dropped. Every outbound helper
-/// funnels through here, one whole command per call. Resolves without ever suspending.
+/// Host/QEMU stand-in for [`tx`]: no PIC UART off-target. With a host panel installed
+/// ([`crate::host_panel`]), the command is applied to it as the PIC would apply it; otherwise it
+/// is logged and dropped. Every outbound helper funnels through here, one whole command per call.
+/// Resolves without ever suspending.
 #[cfg(not(target_os = "none"))]
 async fn tx(bytes: &[u8]) {
-    #[cfg(feature = "sim-link")]
-    crate::sim::pic_command(bytes);
+    tx_via(crate::host_panel::installed(), bytes).await
+}
+
+#[cfg(not(target_os = "none"))]
+async fn tx_via(panel: Option<&dyn crate::host_panel::HostPanel>, bytes: &[u8]) {
+    if let Some(panel) = panel {
+        panel.pic_command(bytes);
+    }
     log::debug!("pic(host): tx {:?}", bytes);
 }
 
@@ -362,17 +369,30 @@ pub async fn read_byte() -> u8 {
     uart::read_byte(UART_CH).await
 }
 
-/// Host: no PIC co-processor. With a simulator panel (`sim-link`), the panel's pad and button input arrives as
-/// the bytes the PIC would send (see [`crate::sim`]). Otherwise no bytes ever arrive and this parks forever — the
-/// pump task stays alive but quiescent. That is a clean idle, not a hang: nothing downstream is waiting on it to
-/// make progress.
+/// Host: no PIC co-processor. With a host panel installed ([`crate::host_panel`]), its input
+/// arrives as the bytes the PIC would send. Otherwise no bytes ever arrive and this parks forever —
+/// the pump task stays alive but quiescent. That is a clean idle, not a hang: nothing downstream is
+/// waiting on it to make progress.
 #[cfg(not(target_os = "none"))]
 pub async fn read_byte() -> u8 {
-    #[cfg(feature = "sim-link")]
-    if crate::sim::panel().is_some() {
-        return crate::sim::read_byte().await;
+    read_byte_via(crate::host_panel::installed()).await
+}
+
+/// How often the host [`read_byte`] looks for panel input when it has none.
+#[cfg(not(target_os = "none"))]
+const HOST_INPUT_POLL_MS: u64 = 1;
+
+#[cfg(not(target_os = "none"))]
+async fn read_byte_via(panel: Option<&dyn crate::host_panel::HostPanel>) -> u8 {
+    let Some(panel) = panel else {
+        return core::future::pending().await;
+    };
+    loop {
+        if let Some(byte) = panel.next_pic_byte() {
+            return byte;
+        }
+        embassy_time::Timer::after_millis(HOST_INPUT_POLL_MS).await;
     }
-    core::future::pending().await
 }
 
 // ── Outbound helpers ──────────────────────────────────────────────────────────
@@ -939,5 +959,25 @@ mod tests {
         let mut cx = Context::from_waker(&waker);
         let fut = pin!(read_byte());
         assert!(matches!(fut.poll(&mut cx), Poll::Pending));
+    }
+
+    #[test]
+    fn tx_without_a_panel_is_a_no_op() {
+        embassy_futures::block_on(tx_via(None, &[1, 2, 3]));
+    }
+
+    #[test]
+    fn tx_forwards_whole_commands_to_the_panel() {
+        let panel = crate::host_panel::tests::leak_panel();
+        embassy_futures::block_on(tx_via(Some(panel), &[1, 2, 3]));
+        assert_eq!(*panel.commands.lock().unwrap(), [vec![1u8, 2, 3]]);
+    }
+
+    #[test]
+    fn read_byte_returns_the_panels_input() {
+        let panel = crate::host_panel::tests::leak_panel();
+        panel.input.lock().unwrap().extend([0x90, 7]);
+        assert_eq!(embassy_futures::block_on(read_byte_via(Some(panel))), 0x90);
+        assert_eq!(embassy_futures::block_on(read_byte_via(Some(panel))), 7);
     }
 }

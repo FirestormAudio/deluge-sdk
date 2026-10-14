@@ -51,9 +51,9 @@ pub mod scux_usb_tx_path;
 /// disk image standing in for the card on host/QEMU. See the module docs.
 pub mod sd;
 pub mod sdram;
-/// The desktop simulator's panel, standing in for the peripherals on a host build.
-#[cfg(all(not(target_os = "none"), feature = "sim-link"))]
-pub mod sim;
+/// Host builds: the hook a simulated front panel plugs into.
+#[cfg(not(target_os = "none"))]
+pub mod host_panel;
 pub mod system;
 #[cfg(target_os = "none")]
 pub mod trigger_clock;

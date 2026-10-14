@@ -1,20 +1,21 @@
-//! The desktop simulator's panel, standing in for the peripherals on a host build (`sim-link`).
+//! The SDK's desktop-simulator backend: the shared panel the simulator window renders, plugged into
+//! the BSP through [`deluge_bsp::host_panel`].
 //!
 //! On the device the PIC co-processor drives the pads and LEDs, and the OLED is on its own SPI bus. On the host
-//! the peripheral modules' host arms land here instead, and this module keeps the shared panel
-//! ([`deluge_sim_link::SharedPanel`]) the simulator window renders:
+//! the BSP's peripheral modules call the installed [`deluge_bsp::host_panel::HostPanel`] instead, and this
+//! module keeps the shared panel ([`deluge_sim_link::SharedPanel`]):
 //!
-//! - every outbound PIC command ([`crate::pic`]'s `tx`) is applied as the PIC would apply it. Pad colours go into
-//!   a virtual PIC framebuffer, which a refresh (`DONE_SENDING_ROWS`) publishes, and the smooth-scroll commands
-//!   shift that framebuffer as the PIC's own does;
-//! - every OLED frame ([`crate::oled`]'s host capture) is copied to the panel;
+//! - every outbound PIC command ([`deluge_bsp::pic`]'s `tx`) is applied as the PIC would apply it. Pad colours go
+//!   into a virtual PIC framebuffer, which a refresh (`DONE_SENDING_ROWS`) publishes, and the smooth-scroll
+//!   commands shift that framebuffer as the PIC's own does;
+//! - every OLED frame ([`deluge_bsp::oled`]'s host capture) is copied to the panel;
 //! - the panel's input comes back as the PIC would send it: pad and button events as PIC bytes through
-//!   [`crate::pic::read_byte`], for the program's own PIC parser, and encoder turns as edges in
-//!   [`crate::encoder::ENCODER_DELTAS`], as the encoder interrupt records them.
+//!   [`deluge_bsp::pic::read_byte`], for the program's own PIC parser, and encoder turns as edges in
+//!   [`deluge_bsp::encoder::ENCODER_DELTAS`], as the encoder interrupt records them.
 //!
-//! So a program on this BSP drives the simulator through the same calls it makes on the device. [`install`] is
-//! called once, by whatever runs the simulator (`deluge_simulator::run_brain`), before the program starts; until
-//! then, and in a host build without a panel, the host arms stay the no-ops they otherwise are.
+//! So a program drives the simulator through the same BSP calls it makes on the device. [`install`] is called
+//! once, by the SDK's host runtime (inside `deluge_simulator::run_brain`), before the program starts; until then
+//! the BSP's host arms stay the no-ops they otherwise are.
 
 use std::collections::VecDeque;
 use std::sync::atomic::Ordering;
@@ -23,16 +24,32 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 use deluge_sim_link::audio::BrainEnds;
 use deluge_sim_link::{InputEvent, SharedPanel};
 
-use crate::rgb::{COLS, ROWS};
+use deluge_bsp::rgb::{COLS, ROWS};
 
 static PANEL: OnceLock<SharedPanel> = OnceLock::new();
 static AUDIO: Mutex<Option<BrainEnds>> = Mutex::new(None);
 
-/// Install the simulator's panel and the program's ends of the audio bridge. Called once, before the program
-/// runs; a second call is ignored.
+/// Install the simulator's panel and the program's ends of the audio bridge, and plug the panel into
+/// [`deluge_bsp::host_panel`]. Called once, before the program runs; a second call is ignored.
 pub fn install(panel: SharedPanel, audio: BrainEnds) {
     if PANEL.set(panel).is_ok() {
         *AUDIO.lock().unwrap_or_else(PoisonError::into_inner) = Some(audio);
+        deluge_bsp::host_panel::install(&SimPanel);
+    }
+}
+
+/// The simulator's side of [`deluge_bsp::host_panel`].
+struct SimPanel;
+
+impl deluge_bsp::host_panel::HostPanel for SimPanel {
+    fn display(&self, frame: &[u8]) {
+        display(frame);
+    }
+    fn pic_command(&self, bytes: &[u8]) {
+        pic_command(bytes);
+    }
+    fn next_pic_byte(&self) -> Option<u8> {
+        next_input_byte()
     }
 }
 
@@ -70,8 +87,8 @@ fn exchange(ends: &mut BrainEnds, render: impl FnOnce(&mut [Sample; BLOCK_FRAMES
     true
 }
 
-/// The OLED's frame, 768 bytes page-major, as [`crate::oled::FrameBuffer::as_bytes`] lays it out.
-pub(crate) fn display(frame: &[u8]) {
+/// The OLED's frame, 768 bytes page-major, as [`deluge_bsp::oled::FrameBuffer::as_bytes`] lays it out.
+fn display(frame: &[u8]) {
     if let Some(panel) = panel() {
         panel.set_display(frame);
     }
@@ -79,7 +96,7 @@ pub(crate) fn display(frame: &[u8]) {
 
 // ── The virtual PIC ───────────────────────────────────────────────────────────
 
-use crate::pic::{
+use deluge_bsp::pic::{
     CMD_DONE_SENDING_ROWS as DONE_SENDING_ROWS, CMD_LED_OFF_BASE as LED_OFF_BASE,
     CMD_LED_ON_BASE as LED_ON_BASE, CMD_SET_COLOUR_FOR_COLS_BASE as COLS_BASE,
     CMD_SET_GOLD_KNOB_0_INDICATORS as GOLD_KNOB_0, CMD_SET_GOLD_KNOB_1_INDICATORS as GOLD_KNOB_1,
@@ -107,7 +124,7 @@ static PIC: Mutex<Pic> = Mutex::new(Pic {
 });
 
 /// Apply one outbound PIC command, as `pic::tx` sends it: exactly one whole command per call.
-pub(crate) fn pic_command(bytes: &[u8]) {
+fn pic_command(bytes: &[u8]) {
     let Some(panel) = panel() else {
         return;
     };
@@ -210,21 +227,9 @@ fn all_pads(grid: &[[[u8; 3]; ROWS]; COLS]) -> [u8; deluge_sim_link::ALL_PADS_BY
 const NEXT_IS_RELEASE: u8 = 252;
 /// Button ids start here in the PIC's byte stream (`pic::Parser`: 144..=179).
 const BUTTON_BASE: u8 = 144;
-/// How often [`read_byte`] looks for panel input when it has none: short enough to feel immediate.
-const INPUT_POLL_MS: u64 = 1;
 
 /// Panel input already encoded as PIC bytes, waiting to be read.
 static INPUT_BYTES: Mutex<VecDeque<u8>> = Mutex::new(VecDeque::new());
-
-/// The next byte the PIC would send, from the panel's input. Waits for input when there is none.
-pub(crate) async fn read_byte() -> u8 {
-    loop {
-        if let Some(byte) = next_input_byte() {
-            return byte;
-        }
-        embassy_time::Timer::after_millis(INPUT_POLL_MS).await;
-    }
-}
 
 fn next_input_byte() -> Option<u8> {
     let panel = panel()?;
@@ -244,7 +249,7 @@ fn encode_input(event: InputEvent, bytes: &mut VecDeque<u8>) {
             if !pressed {
                 bytes.push_back(NEXT_IS_RELEASE);
             }
-            bytes.push_back(crate::pic::pad_id(x, y));
+            bytes.push_back(deluge_bsp::pic::pad_id(x, y));
         }
         InputEvent::Button { id, pressed } => {
             if !pressed {
@@ -253,11 +258,11 @@ fn encode_input(event: InputEvent, bytes: &mut VecDeque<u8>) {
             bytes.push_back(BUTTON_BASE + id);
         }
         InputEvent::Encoder { index, delta } => {
-            if let Some(edges) = crate::encoder::ENCODER_DELTAS.get(usize::from(index)) {
+            if let Some(edges) = deluge_bsp::encoder::ENCODER_DELTAS.get(usize::from(index)) {
                 let _ = edges.try_update(Ordering::Relaxed, Ordering::Relaxed, |e| {
                     Some(e.saturating_add(delta.saturating_mul(4)))
                 });
-                crate::encoder::ENCODER_WAKER.wake();
+                deluge_bsp::encoder::ENCODER_WAKER.wake();
             }
         }
     }
@@ -285,16 +290,16 @@ mod tests {
     }
 
     /// Encode `event` and decode it with the program's own parser.
-    fn round_trip(event: InputEvent) -> Vec<crate::pic::Event> {
+    fn round_trip(event: InputEvent) -> Vec<deluge_bsp::pic::Event> {
         let mut bytes = VecDeque::new();
         encode_input(event, &mut bytes);
-        let mut parser = crate::pic::Parser::new();
+        let mut parser = deluge_bsp::pic::Parser::new();
         bytes.into_iter().filter_map(|b| parser.push(b)).collect()
     }
 
     #[test]
     fn every_pad_press_and_release_decodes_to_its_own_coordinates() {
-        use crate::pic::{Event, pad_coords};
+        use deluge_bsp::pic::{Event, pad_coords};
         for x in 0..18u8 {
             for y in 0..8u8 {
                 for pressed in [true, false] {
@@ -315,7 +320,7 @@ mod tests {
 
     #[test]
     fn a_button_decodes_to_its_id() {
-        use crate::pic::Event;
+        use deluge_bsp::pic::Event;
         assert_eq!(
             round_trip(InputEvent::Button {
                 id: 25,
@@ -334,7 +339,7 @@ mod tests {
 
     #[test]
     fn an_encoder_turn_adds_four_edges_a_detent() {
-        use crate::encoder::ENCODER_DELTAS;
+        use deluge_bsp::encoder::ENCODER_DELTAS;
         ENCODER_DELTAS[3].store(0, Ordering::Relaxed);
         assert!(
             round_trip(InputEvent::Encoder {

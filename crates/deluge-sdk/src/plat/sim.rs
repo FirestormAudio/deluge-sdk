@@ -6,7 +6,7 @@ use deluge_bsp::rgb::{COLS, PadLeds, ROWS};
 use embassy_executor::Spawner;
 use embassy_time::Instant;
 
-/// Host: exchange audio blocks with the simulator through `deluge_bsp::sim`.
+/// Host: exchange audio blocks with the simulator through [`super::sim_panel`].
 ///
 /// The simulator's audio device plays at the device rate, so this loop is paced
 /// by real time without a hardware clock: it renders while the output has room,
@@ -14,7 +14,7 @@ use embassy_time::Instant;
 pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame]) + Send + 'static>(
     mut f: F,
 ) -> ! {
-    use deluge_bsp::sim::{BLOCK_FRAMES, SAMPLE_RATE_HZ};
+    use super::sim_panel::{BLOCK_FRAMES, SAMPLE_RATE_HZ};
     use embassy_time::{Duration, Timer};
 
     let mut block = [crate::audio::StereoFrame::default(); BLOCK_FRAMES];
@@ -22,7 +22,7 @@ pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame]) + Send 
     let wait = Duration::from_micros(period_us / 2);
 
     loop {
-        let rendered = deluge_bsp::sim::render_block(|frames| {
+        let rendered = super::sim_panel::render_block(|frames| {
             for (fr, s) in block.iter_mut().zip(frames.iter()) {
                 fr.l = s[0];
                 fr.r = s[1];

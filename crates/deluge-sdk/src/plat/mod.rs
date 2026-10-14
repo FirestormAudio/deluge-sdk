@@ -12,6 +12,8 @@ pub(crate) use device::*;
 mod sim;
 #[cfg(all(not(target_os = "none"), feature = "sim"))]
 pub(crate) use sim::*;
+#[cfg(all(not(target_os = "none"), feature = "sim"))]
+pub(crate) mod sim_panel;
 
 #[cfg(all(not(target_os = "none"), feature = "linux"))]
 mod linux;

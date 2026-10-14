@@ -1291,7 +1291,6 @@ version = "0.1.0"
 dependencies = [
  "cortex-ar",
  "critical-section",
- "deluge-sim-link",
  "embassy-executor",
  "embassy-futures",
  "embassy-sync",

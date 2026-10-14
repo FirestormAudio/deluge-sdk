@@ -161,9 +161,10 @@ pub fn run_in_process(panel: SharedPanel, gui_audio: GuiEnds) {
 /// down.
 ///
 /// `brain` owns everything else: its executors, its threads, and binding the
-/// ends to its peripherals (a `deluge_bsp` program passes them to
-/// `deluge_bsp::sim::install`). The SDK's host runtime is one such brain; a
-/// program built on the BSP directly is another.
+/// ends to its peripherals. The SDK's host runtime is one such brain: its sim
+/// backend keeps the panel and plugs it into `deluge_bsp::host_panel`. A program
+/// built on the BSP directly is another, and installs its own
+/// `deluge_bsp::host_panel::HostPanel`.
 pub fn run_brain(
     brain: impl FnOnce(SharedPanel, deluge_sim_link::audio::BrainEnds) + Send + 'static,
 ) {

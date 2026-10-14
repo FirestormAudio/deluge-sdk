@@ -38,9 +38,6 @@ embedded-graphics = ["dep:embedded-graphics-core"]
 ## The USB host stack (`usb::host`: class drivers, UAC and MIDI). Opt-in; only
 ## host-role firmware needs it.
 usb-host = ["dep:embassy-usb-host", "usb-classes/host-midi", "usb-classes/host-uac"]
-## Send PIC commands and OLED frames to the desktop simulator's panel
-## (`deluge-sim-link`) instead of dropping them. Host builds only.
-sim-link = ["dep:deluge-sim-link", "dep:embassy-time"]
 
 [dependencies]
 max5136 = { workspace = true }
@@ -67,15 +64,13 @@ embassy-usb = { workspace = true }
 embassy-executor = { workspace = true }
 
 [target.'cfg(not(target_os = "none"))'.dependencies]
-# The desktop simulator's panel (the `sim-link` feature). std-only, like the simulator itself.
-deluge-sim-link = { path = "../deluge-sim-link", optional = true }
-# Polls the simulator's input for `pic::read_byte` (`sim-link`).
-embassy-time = { workspace = true, optional = true }
+# Polls the host panel's input for `pic::read_byte` (`host_panel`).
+embassy-time = { workspace = true }
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
 critical-section = { workspace = true, features = ["std"] }
 # Tests have no executor: `mock-driver` supplies a time driver to link against,
-# and `generic-queue-8` a timer queue for the `sim` input poll.
+# and `generic-queue-8` a timer queue for the host-panel input poll.
 embassy-time = { workspace = true, features = ["mock-driver", "generic-queue-8"] }
 embassy-futures = { workspace = true }
 proptest = "1.5"

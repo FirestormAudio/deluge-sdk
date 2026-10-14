@@ -769,7 +769,7 @@ pub mod __rt {
             // audio ends go to deluge-bsp's simulator link, which the SDK's host
             // backend reads them from.
             deluge_simulator::run_brain(move |panel, brain_audio| {
-                deluge_bsp::sim::install(panel, brain_audio);
+                crate::plat::sim_panel::install(panel, brain_audio);
                 setup();
                 let executor: &'static mut Executor = Box::leak(Box::new(Executor::new()));
                 executor.run(move |spawner| {
