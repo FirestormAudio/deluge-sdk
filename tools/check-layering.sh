@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
 #
-# Layering check: the Wren subsystem consumes the SDK only through the `deluge`
-# facade, never the BSP/HAL crates beneath it, so SDK-internal changes can't
-# silently break it (and it can later move to its own repo).
+# Layering check:
+#   - The Wren subsystem and the bare-metal examples consume the SDK only through
+#     the `deluge` facade, never the BSP/HAL crates beneath it, so SDK-internal
+#     changes can't silently break them (and Wren can later move to its own repo).
+#   - The chip HAL (rza1l-hal) never names the Deluge: board facts live in deluge-bsp.
 #
 # Usage: tools/check-layering.sh
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-WREN_DIRS=(wren)
+# Consumers that must reach the platform only through the `deluge` facade.
+FACADE_ONLY_DIRS=(wren examples/baremetal)
 
 # Code lines only: a `//` comment naming a BSP item for reference is fine.
 code_hits="$(grep -rnE --include='*.rs' --exclude-dir=target --exclude-dir=node_modules \
-  '\b(deluge_bsp|rza1l_hal)\b' "${WREN_DIRS[@]}" \
+  '\b(deluge_bsp|rza1l_hal)\b' "${FACADE_ONLY_DIRS[@]}" \
   | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)"
 
 # Matches every manifest form that can pull in the BSP/HAL: plain `key = …`,
@@ -22,11 +25,11 @@ code_hits="$(grep -rnE --include='*.rs' --exclude-dir=target --exclude-dir=node_
 # and renamed deps (`package = "deluge-bsp"`).
 dep_hits="$(grep -rnE --include='Cargo.toml' --exclude-dir=target --exclude-dir=node_modules \
   '(^[[:space:]]*(deluge-bsp|rza1l-hal)[[:space:]]*[.=])|(\.(deluge-bsp|rza1l-hal)\])|(package[[:space:]]*=[[:space:]]*"(deluge-bsp|rza1l-hal)")' \
-  "${WREN_DIRS[@]}" || true)"
+  "${FACADE_ONLY_DIRS[@]}" || true)"
 
 if [ -n "$code_hits$dep_hits" ]; then
   printf '%s\n' "$code_hits" "$dep_hits" | sed '/^$/d'
-  echo "error: Wren code reaches past the \`deluge\` facade into deluge-bsp/rza1l-hal" >&2
+  echo "error: facade-only code (wren/, examples/baremetal/) reaches past \`deluge\` into deluge-bsp/rza1l-hal" >&2
   exit 1
 fi
 # The chip HAL is board-agnostic: no Deluge names in its code (comments may cite the Deluge as an

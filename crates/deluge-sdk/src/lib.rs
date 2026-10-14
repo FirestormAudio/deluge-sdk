@@ -185,15 +185,13 @@ mod not_send_assertions {
     }
 }
 
-// Re-export the underlying layers so apps can reach functionality the
-// capability API does not cover through the single `deluge` dependency.
-// The allocator and HAL are device-only escape hatches (no host equivalent); an
-// app reaching for them directly won't run in the desktop simulator.
+// Re-export the board layers so apps can reach functionality the capability API does not cover
+// through the single `deluge` dependency. The allocator is a device-only escape hatch (no host
+// equivalent); an app reaching for it won't run in the desktop simulator. The chip HAL is
+// deliberately not re-exported: the board crate is the lowest layer an app should see.
 #[cfg(target_os = "none")]
 pub use deluge_alloc;
 pub use deluge_bsp;
-#[cfg(target_os = "none")]
-pub use rza1l_hal;
 
 /// The app capability handle, passed to `#[deluge::app] async fn main`.
 ///
