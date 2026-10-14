@@ -1,0 +1,15 @@
+[package]
+name = "max5136"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "Platform-agnostic embedded-hal driver for the Maxim MAX5136 quad 16-bit SPI DAC."
+categories = ["embedded", "no-std", "hardware-support"]
+keywords = ["max5136", "dac", "spi", "embedded-hal", "no-std"]
+
+[dependencies]
+embedded-hal = "1"

@@ -20,6 +20,7 @@ members = [
   "crates/deluge-ui-toolkit",
   "crates/deluge-grid-toolkit",
   "crates/deluge-protocol",
+  "drivers/max5136",
   "wren/deluge-wren-core",
   "examples/baremetal/blinky",
   "examples/baremetal/oled_hello",
@@ -108,6 +109,9 @@ fixedpoint = { package = "deluge-fixedpoint", path = "crates/deluge-fixedpoint",
 deluge-fonts = { path = "crates/deluge-fonts", version = "0.1.0" }
 deluge-ui-toolkit = { path = "crates/deluge-ui-toolkit", version = "0.1.0" }
 deluge-grid-toolkit = { path = "crates/deluge-grid-toolkit", version = "0.1.0" }
+
+# Off-chip part drivers, board-agnostic (embedded-hal 1.0).
+max5136 = { path = "drivers/max5136" }
 
 [profile.release]
 opt-level = "s"

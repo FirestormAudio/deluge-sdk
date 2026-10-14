@@ -43,6 +43,7 @@ usb-host = ["dep:embassy-usb-host"]
 sim-link = ["dep:deluge-sim-link", "dep:embassy-time"]
 
 [dependencies]
+max5136 = { workspace = true }
 rza1l-hal = { path = "../rza1l-hal", version = "0.1.0" }
 embedded-sdmmc = { version = "0.9", default-features = false, features = ["log"], optional = true }
 critical-section = { workspace = true }

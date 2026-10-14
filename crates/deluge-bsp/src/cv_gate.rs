@@ -11,14 +11,10 @@
 //! | P6.2     | 3    | MOSI0   | MOSI                             |
 //! | P6.1     | GPIO | SPI_SSL | active-low CS (software-driven)  |
 //!
-//! ## MAX5136 32-bit write frame
-//! ```text
-//! Byte 3: 0x30 | (1 << channel)   — write-to-DAC + channel bitmask
-//! Byte 2: value[15:8]
-//! Byte 1: value[7:0]
-//! Byte 0: 0x00
-//! ```
-//! Linearity init: send `0x0542_0000` (LIN=1), delay ≥10 ms, send `0x0540_0000` (LIN=0).
+//! ## MAX5136 frames
+//! The DAC's command encoding (write-through frames, the linearity-init sequence) lives in the
+//! board-agnostic `max5136` crate. RSPI0 runs in 32-bit mode here, so this module sends its
+//! padded `*_u32` words.
 //!
 //! ## Gate GPIO assignments (V-trig: 0 = ON, 1 = OFF)
 //! | Channel | Port | Pin |
@@ -44,7 +40,7 @@ const SPI_CH: u8 = 0;
 const SPI_RATE_HZ: u32 = 4_000_000;
 
 /// MAX5136 linearity-init delay in milliseconds (datasheet §8.3).
-const LIN_DELAY_MS: u32 = 10;
+const LIN_DELAY_MS: u32 = max5136::LINEARITY_SETTLE_MS;
 
 /// Number of hardware CV channels supported.
 pub const NUM_CV_CHANNELS: usize = 2;
@@ -79,9 +75,11 @@ const GATE_PINS: [(u8, u8); NUM_GATE_CHANNELS] = [(2, 7), (2, 8), (2, 9), (4, 0)
 /// - `ch`: DAC channel (0–3).
 /// - `value`: unsigned 16-bit voltage code (0 = 0 V, 65535 = full-scale).
 ///   Approximately 6552 counts per volt on the Deluge hardware.
+///
+/// The frame encoding lives in the board-agnostic `max5136` crate.
 #[inline]
 fn dac_word(ch: u8, value: u16) -> u32 {
-    ((0x30u32 | (1u32 << ch)) << 24) | ((value as u32) << 8)
+    max5136::write_through_u32(ch, value)
 }
 
 // ── Initialise hardware ───────────────────────────────────────────────────────
@@ -127,7 +125,7 @@ pub unsafe fn init() {
         // Step 1: LIN=1 (linear ramp mode)
         log::debug!("cv_gate: MAX5136 LIN=1");
         gpio::write(CS_PORT, CS_PIN, false);
-        rspi::send32_blocking(SPI_CH, 0x0542_0000);
+        rspi::send32_blocking(SPI_CH, max5136::LINEARITY_ON_U32);
         gpio::write(CS_PORT, CS_PIN, true);
         log::debug!("cv_gate: MAX5136 LIN=1 sent");
 
@@ -138,7 +136,7 @@ pub unsafe fn init() {
 
         // Step 3: LIN=0 (return to normal mode)
         gpio::write(CS_PORT, CS_PIN, false);
-        rspi::send32_blocking(SPI_CH, 0x0540_0000);
+        rspi::send32_blocking(SPI_CH, max5136::LINEARITY_OFF_U32);
         gpio::write(CS_PORT, CS_PIN, true);
         log::debug!("cv_gate: MAX5136 linearity init done");
 
