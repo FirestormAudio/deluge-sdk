@@ -171,6 +171,26 @@ pub unsafe fn delay_ms(ms: u32) {
     unsafe { delay_ticks(ms_to_ticks(crate::clocks::get().p0_hz(), ms)) }
 }
 
+/// OSTM ticks in `ms` milliseconds, or `None` if no clock tree is registered yet.
+fn ms_ticks_if_clocked(clocks: Option<crate::clocks::ClockConfig>, ms: u32) -> Option<u32> {
+    clocks.map(|c| ms_to_ticks(c.p0_hz(), ms))
+}
+
+/// Like [`delay_ms`], but returns `false` without waiting if [`crate::clocks::init`] has not
+/// been called, instead of panicking. For code that must not panic, such as a panic handler.
+///
+/// # Safety
+/// See [`delay_ticks`].
+pub unsafe fn try_delay_ms(ms: u32) -> bool {
+    match ms_ticks_if_clocked(crate::clocks::try_get(), ms) {
+        Some(ticks) => {
+            unsafe { delay_ticks(ticks) };
+            true
+        }
+        None => false,
+    }
+}
+
 /// A `DelayNs` implementation backed by the OSTM0 free-running counter.
 ///
 /// [`start_free_running(0)`](start_free_running) must have been called before
@@ -335,7 +355,7 @@ impl<const N: u8> Ostm<N> {
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
-    use super::{OSTM0_BASE, OSTM1_BASE, base, ms_to_ticks, ns_to_ticks};
+    use super::{OSTM0_BASE, OSTM1_BASE, base, ms_ticks_if_clocked, ms_to_ticks, ns_to_ticks};
     use crate::clocks::TEST_CLOCKS;
 
     #[test]
@@ -368,5 +388,13 @@ mod tests {
         assert_eq!(ns_to_ticks(p0, 1_000), 34);
         // u32::MAX ns ≈ 4.29 s still fits u32.
         assert_eq!(ns_to_ticks(p0, u32::MAX), 142_009_065);
+    }
+
+    /// Before `clocks::init` there is no delay to compute: `try_delay_ms` must report that
+    /// instead of panicking (a panic handler that panics recurses until the stack overflows).
+    #[test]
+    fn no_delay_ticks_before_clocks_are_registered() {
+        assert_eq!(ms_ticks_if_clocked(None, 100), None);
+        assert_eq!(ms_ticks_if_clocked(Some(TEST_CLOCKS), 100), Some(3_306_400));
     }
 }

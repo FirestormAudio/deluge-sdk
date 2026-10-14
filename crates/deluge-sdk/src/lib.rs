@@ -678,14 +678,20 @@ pub mod __rt {
             // SAFETY: interrupts are masked and we are single-threaded here.
             unsafe { deluge_bsp::oled::draw_blocking(&fb) };
 
-            // Always-visible fallback: strobe the SYNC LED forever.
+            // Always-visible fallback: strobe the SYNC LED forever. A panic before the clock tree
+            // is registered can't time the strobe, and must not panic again here (that would
+            // recurse until the stack overflows), so it holds the LED on instead.
             unsafe { rza1l_hal::gpio::set_as_output(6, 7) };
             loop {
                 unsafe {
                     rza1l_hal::gpio::write(6, 7, true);
-                    rza1l_hal::ostm::delay_ms(100);
+                    if !rza1l_hal::ostm::try_delay_ms(100) {
+                        loop {
+                            core::hint::spin_loop();
+                        }
+                    }
                     rza1l_hal::gpio::write(6, 7, false);
-                    rza1l_hal::ostm::delay_ms(100);
+                    rza1l_hal::ostm::try_delay_ms(100);
                 }
             }
         }
