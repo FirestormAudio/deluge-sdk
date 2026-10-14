@@ -245,7 +245,7 @@ mod tests {
 
     #[test]
     fn deluge_crystal_is_13_2256_mhz() {
-        assert_eq!(CLOCKS.extal_hz, 13_225_625);
+        assert_eq!(CLOCKS.extal_hz(), 13_225_625);
         assert_eq!(CLOCKS.p0_hz(), 33_064_062);
         assert_eq!(CLOCKS.p1_hz(), 66_128_125);
     }

@@ -15,15 +15,31 @@ use core::sync::atomic::{AtomicU32, Ordering};
 /// The board's clock source. Everything else in the clock tree is derived from it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ClockConfig {
-    /// EXTAL crystal frequency in Hz.
-    pub extal_hz: u32,
+    /// EXTAL crystal frequency in Hz, in [`EXTAL_RANGE_HZ`]. Private so every value goes
+    /// through [`ClockConfig::new`]'s range check.
+    extal_hz: u32,
 }
+
+/// The EXTAL frequencies the RZ/A1L accepts in clock mode 0: 10 to 13.33 MHz (HW manual §6).
+/// The top end admits 40/3 MHz rounded either way.
+pub const EXTAL_RANGE_HZ: core::ops::RangeInclusive<u32> = 10_000_000..=13_333_334;
 
 impl ClockConfig {
     /// A clock tree driven by an `extal_hz` crystal.
+    ///
+    /// # Panics
+    /// If `extal_hz` is outside [`EXTAL_RANGE_HZ`] (at compile time, for a `const`).
     pub const fn new(extal_hz: u32) -> Self {
-        assert!(extal_hz != 0, "ClockConfig: extal_hz must be non-zero");
+        assert!(
+            extal_hz >= *EXTAL_RANGE_HZ.start() && extal_hz <= *EXTAL_RANGE_HZ.end(),
+            "ClockConfig: extal_hz is outside the RZ/A1L's 10-13.33 MHz EXTAL range"
+        );
         Self { extal_hz }
+    }
+
+    /// The EXTAL crystal frequency in Hz.
+    pub const fn extal_hz(&self) -> u32 {
+        self.extal_hz
     }
 
     /// P1φ in Hz (EXTAL × 30 / 6). Exact.
@@ -56,8 +72,20 @@ impl Store {
         Self(AtomicU32::new(0))
     }
 
+    /// Register `config`. Registering the same crystal again is harmless; a different one
+    /// panics, since the time driver has already cached a tick ratio from the first.
     fn set(&self, config: ClockConfig) {
-        self.0.store(config.extal_hz, Ordering::Relaxed);
+        if let Err(prev) =
+            self.0
+                .compare_exchange(0, config.extal_hz, Ordering::Relaxed, Ordering::Relaxed)
+        {
+            assert!(
+                prev == config.extal_hz,
+                "rza1l_hal::clocks::init called again with a different crystal ({} Hz, was {} Hz)",
+                config.extal_hz,
+                prev
+            );
+        }
     }
 
     fn get(&self) -> Option<ClockConfig> {
@@ -71,6 +99,9 @@ impl Store {
 static STORE: Store = Store::new();
 
 /// Register the board's clock tree. Call once at boot, before any clock-dependent driver.
+///
+/// # Panics
+/// If a different crystal was already registered.
 pub fn init(config: ClockConfig) {
     STORE.set(config);
 }
@@ -150,5 +181,46 @@ mod tests {
         init(TEST_CLOCKS);
         assert_eq!(get(), TEST_CLOCKS);
         assert_eq!(try_get(), Some(TEST_CLOCKS));
+    }
+
+    #[test]
+    fn extal_hz_reads_back_the_crystal() {
+        assert_eq!(TEST_CLOCKS.extal_hz(), 13_225_625);
+    }
+
+    #[test]
+    #[should_panic(expected = "outside the RZ/A1L's 10-13.33 MHz")]
+    fn crystal_below_the_range_is_rejected() {
+        let _ = ClockConfig::new(9_999_999);
+    }
+
+    #[test]
+    #[should_panic(expected = "outside the RZ/A1L's 10-13.33 MHz")]
+    fn crystal_above_the_range_is_rejected() {
+        let _ = ClockConfig::new(13_400_000);
+    }
+
+    #[test]
+    fn range_ends_are_accepted() {
+        let _ = ClockConfig::new(10_000_000);
+        let _ = ClockConfig::new(13_333_334);
+    }
+
+    #[test]
+    fn re_registering_the_same_crystal_is_fine() {
+        let store = Store::new();
+        store.set(TEST_CLOCKS);
+        store.set(TEST_CLOCKS);
+        assert_eq!(store.get(), Some(TEST_CLOCKS));
+    }
+
+    #[test]
+    #[should_panic(expected = "different crystal")]
+    fn re_registering_a_different_crystal_panics() {
+        // The time driver caches its tick ratio at init, so a second crystal would split the
+        // clock tree in two.
+        let store = Store::new();
+        store.set(TEST_CLOCKS);
+        store.set(ClockConfig::new(12_000_000));
     }
 }
