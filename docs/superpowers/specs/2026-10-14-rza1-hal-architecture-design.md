@@ -107,6 +107,11 @@ Each phase leaves every firmware building and every test passing (`tools/test.sh
 **Exit:** layering rules 3 and 4 are enforced; `deluge-bsp` holds only board wiring and drivers
 tied to it.
 
+**Done (2026-10-14 plan):** classes went into one `usb-classes` crate (features per class, unpublished);
+the simulator moved behind `deluge_bsp::host_panel`; MAX5136 became `drivers/max5136`. SPI-NOR needed no
+extraction — `rza1l_hal::spibsc` already holds the generic controller and `FlashMap`, and
+`deluge_bsp::flash` is only the Deluge's part size and flash layout.
+
 ### Phase 3: runtime and memory layout
 
 - New `rza1-rt` crate: `startup.rs`, vectors, `rza1l.x`/`rza1l_rtt.x`, the fault hook and the

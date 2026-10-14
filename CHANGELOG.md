@@ -31,6 +31,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `deluge-bsp` holds only Deluge wiring now:
+  - USB device classes (UAC2, USB-MIDI, MSC), the Bulk-Only Transport engine, the USB-MIDI
+    packet queues and the USB host MIDI/UAC drivers moved to the new board-agnostic
+    `usb-classes` crate (one feature per class). **Breaking:** import them from `usb_classes::…`.
+    The SD-backed `SdBlock` is now `deluge_bsp::usb::sd_block::SdBlock`. `bot::run`/`run_until`
+    are generic over any `embassy_usb_driver` endpoints. `Uac::try_register` takes the sample
+    rate to negotiate.
+  - The MAX5136 CV DAC protocol is the new `max5136` embedded-hal driver crate.
+  - The SCUX DVU/SRC path recipes are in `rza1l_hal::scux::{dvu_path, src_path, usb_tx_path}`,
+    taking their DMA channels; `deluge_bsp::scux_*_path` keep their old API on the Deluge's
+    channels.
+  - The desktop-simulator backend moved into `deluge-sdk`; the BSP exposes
+    `deluge_bsp::host_panel` for it. **Breaking:** the `deluge-bsp/sim-link` feature and
+    `deluge_bsp::sim` are gone. The PIC command constants the simulator uses
+    (`deluge_bsp::pic::CMD_*`) are now public.
 - `rza1l-hal` is now board-agnostic. The board registers its crystal with
   `rza1l_hal::clocks::init(ClockConfig::new(extal_hz))` (the Deluge's is
   `deluge_bsp::system::CLOCKS`, registered by `init_clocks`). OSTM delays, the RSPI and SCIF baud

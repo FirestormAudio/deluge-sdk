@@ -188,6 +188,8 @@ compile-proves all of them on the firmware target).
 | `crates/deluge-bsp` | `deluge-bsp` | board support: peripherals, PIC, OLED, SD, … |
 | `crates/rza1l-hal` | `rza1l-hal` | RZ/A1L hardware abstraction layer |
 | `crates/deluge-alloc` | `deluge-alloc` | SRAM / SDRAM heap allocators |
+| `usb/usb-classes` | `usb-classes` | board-agnostic Embassy USB classes: UAC2, USB-MIDI, MSC + Bulk-Only Transport, host MIDI/UAC |
+| `drivers/max5136` | `max5136` | board-agnostic embedded-hal driver for the MAX5136 CV DAC |
 | `crates/deluge-image` | `deluge-image` | firmware-image format logic shared by the app-loader and `cargo deluge` |
 | `crates/deluge-fixedpoint` (imported as `fixedpoint`), `crates/armv7-dsp-intrinsics` | | fixed-point DSP math + ARMv7 intrinsics |
 | `crates/deluge-simulator`, `crates/deluge-sim-link`, `crates/deluge-protocol` | | the desktop simulator and its link/wire protocol |

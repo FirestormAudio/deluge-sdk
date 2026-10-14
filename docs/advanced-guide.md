@@ -594,7 +594,7 @@ and `x86_64-unknown-linux-gnu` for pure-logic crates. Run everything with
 | `dmac` | 16-channel DMA, link-descriptor mode |
 | `rspi` | SPI master (RSPI0 = OLED + CV DAC) |
 | `ssi` | I²S audio (SSI0), uncached TX/RX rings |
-| `scux` | sample-rate conversion / DVU / mixer |
+| `scux` | sample-rate conversion / DVU / mixer, and the `dvu_path` / `src_path` / `usb_tx_path` recipes |
 | `sdhi` | SD host interface (async) |
 | `uart` | SCIF (async, DMA) |
 | `mmu` / `cache` / `stb` / `bsc` | MMU table, L1/L2 cache, clock gating, bus controller |
@@ -622,9 +622,9 @@ The SRAM/SDRAM heaps are in the separate `deluge_alloc` crate.
 | `pads` / `rgb` | RGB pad matrix + colour conversions |
 | `sdram` | SDRAM controller init |
 | `encoder` | encoder IRQ accumulators + waker |
-| `usb` | USB classes (UAC2, MIDI, MSC) and, with `usb-host`, host-side drivers |
+| `usb` | the Deluge's USB identities, the SD-backed MSC medium (`sd_block`) and, with `usb-host`, the host-role supervisor; the classes are in the `usb-classes` crate |
 | `flash` | SPI-NOR chip profile + board flash map (`flash` feature) |
-| `scux_*_path` / `battery` / `uart` | SCUX audio paths, battery sense, SCIF (MIDI + PIC) |
+| `scux_*_path` / `battery` / `uart` | SCUX audio paths (the HAL's `scux::*_path` on the Deluge's DMA channels), battery sense, SCIF (MIDI + PIC) |
 | `sample_fmt` / `encoder_detent` | pure (host-testable) conversion + quadrature logic |
 
 See the [getting started guide](getting-started.md) for the friendly capability API
