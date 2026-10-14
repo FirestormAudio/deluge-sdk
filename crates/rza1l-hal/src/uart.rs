@@ -73,12 +73,10 @@ const ER: u16 = 1 << 7; // Receive Error
 // TX FIFO depth
 const TX_FIFO_SIZE: usize = 16;
 
-// Peripheral clock P1φ: XTAL(13,225,625 Hz) × 5 = 66,128,125 Hz exactly.
-// Used for SCBRR calculation with BGDM=1 (double-speed mode):
-//   SCBRR = round(P_CLK / (16 × baud)) − 1
-// BGDM=1 (SCEMR bit 7) doubles the effective clock to the BRG, so the
-// oversampling ratio stays at 16× against the nominal SCBRR formula.
-const P_CLK: u32 = 66_128_125;
+// The SCIF baud-rate generator runs from P1φ (see `crate::clocks`). SCBRR is computed with
+// BGDM=1 (double-speed mode): SCBRR = round(P1φ / (16 × baud)) − 1. BGDM=1 (SCEMR bit 7)
+// doubles the effective clock to the BRG, so the oversampling ratio stays at 16× against the
+// nominal SCBRR formula.
 
 /// Number of SCIF channels on RZ/A1L.
 pub const NUM_CHANNELS: usize = 5;
@@ -245,12 +243,12 @@ fn base(ch: usize) -> usize {
 // Baud rate calculation
 // ---------------------------------------------------------------------------
 
-/// Compute SCBRR value for the given baud rate.
+/// Compute SCBRR value for `baud` at P1φ = `p1_hz`.
 ///
-/// With BGDM=1 (double-speed mode): SCBRR = round(P_CLK / (16 × baud)) − 1.
-/// Integer rounding: (P_CLK + 8 × baud) / (16 × baud) − 1.
-fn scbrr(baud: u32) -> u8 {
-    (((P_CLK + 8 * baud) / (16 * baud)) - 1) as u8
+/// With BGDM=1 (double-speed mode): SCBRR = round(P1φ / (16 × baud)) − 1.
+/// Integer rounding: (P1φ + 8 × baud) / (16 × baud) − 1.
+fn scbrr(p1_hz: u32, baud: u32) -> u8 {
+    (((p1_hz + 8 * baud) / (16 * baud)) - 1) as u8
 }
 
 // ---------------------------------------------------------------------------
@@ -265,17 +263,16 @@ fn scbrr(baud: u32) -> u8 {
 ///
 /// Must be called before [`register_txi_for`] and with global IRQ disabled.
 ///
+/// # Panics
+/// If [`crate::clocks::init`] has not been called.
+///
 /// # Safety
 /// Writes to memory-mapped SCIF registers. Caller must ensure `ch` < [`NUM_CHANNELS`].
 pub unsafe fn init(ch: usize, baud_rate: u32) {
     unsafe {
         debug_assert!(ch < NUM_CHANNELS);
-        log::debug!(
-            "uart: ch{} init at {} bps (SCBRR={})",
-            ch,
-            baud_rate,
-            scbrr(baud_rate)
-        );
+        let brr = scbrr(crate::clocks::get().p1_hz(), baud_rate);
+        log::debug!("uart: ch{} init at {} bps (SCBRR={})", ch, baud_rate, brr);
         let b = base(ch);
 
         // 1. Stop all SCIF operations.
@@ -301,7 +298,7 @@ pub unsafe fn init(ch: usize, baud_rate: u32) {
         wr16(b + SCEMR, 0x0080);
 
         // 8. Baud rate.
-        wr8(b + SCBRR, scbrr(baud_rate));
+        wr8(b + SCBRR, brr);
 
         // 9. Release FIFO resets.  TX trigger=8 (TTRG=00), RX trigger=1 (RTRG=00).
         wr16(b + SCFCR, 0x0000);
@@ -327,6 +324,9 @@ pub unsafe fn init(ch: usize, baud_rate: u32) {
 /// currently being shifted out will be lost; the caller must ensure the TX
 /// FIFO has drained (e.g. via `Timer::after_millis`) before calling this.
 ///
+/// # Panics
+/// If [`crate::clocks::init`] has not been called.
+///
 /// # Safety
 /// Writes to memory-mapped SCIF registers. Caller must ensure `ch` < [`NUM_CHANNELS`].
 pub unsafe fn set_baud(ch: usize, baud_rate: u32) {
@@ -335,7 +335,7 @@ pub unsafe fn set_baud(ch: usize, baud_rate: u32) {
         let b = base(ch);
         // Stop TE/RE so the baud rate change takes effect cleanly.
         wr16(b + SCSCR, 0x0000);
-        wr8(b + SCBRR, scbrr(baud_rate));
+        wr8(b + SCBRR, scbrr(crate::clocks::get().p1_hz(), baud_rate));
         // Clear any accumulated error flags from the previous baud rate.  The TRM
         // states that ORER (overrun) is NOT cleared by toggling RE, so stale errors
         // from e.g. the baud-switch transition window must be cleared explicitly;
@@ -897,7 +897,8 @@ impl<const CH: usize> embedded_io_async::Write for ScifUart<CH> {
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
-    use super::{NUM_CHANNELS, P_CLK, RXI_BASE, TXI_BASE, base, scbrr};
+    use super::{NUM_CHANNELS, RXI_BASE, TXI_BASE, base, scbrr};
+    use crate::clocks::TEST_CLOCKS;
 
     // SCIF0 base = 0xE800_7000, stride 0x800 per channel.
     #[test]
@@ -916,12 +917,12 @@ mod tests {
 
     /// MIDI baud rate (31250 bps).
     ///
-    /// SCBRR = round(P_CLK / (16 × 31250)) − 1
+    /// SCBRR = round(P1φ / (16 × 31250)) − 1
     ///       = round(66128125 / 500000) − 1
     ///       = round(132.256) − 1 = 132 − 1 = 131
     #[test]
     fn scbrr_midi_31250() {
-        assert_eq!(scbrr(31_250), 131);
+        assert_eq!(scbrr(TEST_CLOCKS.p1_hz(), 31_250), 131);
     }
 
     /// 115200 bps (debug serial).
@@ -929,14 +930,15 @@ mod tests {
     /// SCBRR = round(66128125 / 1843200) − 1 = round(35.88) − 1 = 36 − 1 = 35
     #[test]
     fn scbrr_115200() {
-        assert_eq!(scbrr(115_200), 35);
+        assert_eq!(scbrr(TEST_CLOCKS.p1_hz(), 115_200), 35);
     }
 
     /// Spot-check that the resulting baud rate error is within ±2% for MIDI.
     #[test]
     fn scbrr_midi_accuracy() {
-        let divisor = scbrr(31_250) as u32 + 1;
-        let actual_baud = P_CLK / (16 * divisor);
+        let p1 = TEST_CLOCKS.p1_hz();
+        let divisor = scbrr(p1, 31_250) as u32 + 1;
+        let actual_baud = p1 / (16 * divisor);
         let error_ppm = (actual_baud as i64 - 31_250) * 1_000_000 / 31_250;
         assert!(
             error_ppm.abs() < 20_000,

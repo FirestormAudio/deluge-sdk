@@ -1,7 +1,7 @@
 //! OS Timer (OSTM) driver for the RZ/A1L.
 //!
-//! The RZ/A1L has two OSTM channels, each a 32-bit timer clocked by P0
-//! (33.33 MHz = CPU / 12).
+//! The RZ/A1L has two OSTM channels, each a 32-bit timer clocked by P0φ
+//! (see [`crate::clocks`]).
 //!
 //! Two operating modes (OSTMnCTL bits):
 //!   - Interval timer (CTL = 0x00): counts down from CMP, fires interrupt at 0
@@ -10,21 +10,15 @@
 //! ## Usage
 //! ```rust,no_run
 //! # use rza1l_hal::ostm;
-//! # use rza1l_hal::ostm::OSTM_HZ;
+//! # use rza1l_hal::clocks;
 //! unsafe {
 //!     ostm::enable_clock();          // ungate OSTM0+OSTM1 in CPG
 //!     ostm::start_free_running(0);   // start OSTM0 in free-running mode
 //!     let t0 = ostm::count(0);
 //!     // ... wait ~1 s ...
-//!     while ostm::count(0).wrapping_sub(t0) < OSTM_HZ {}
+//!     while ostm::count(0).wrapping_sub(t0) < clocks::get().p0_hz() {}
 //! }
 //! ```
-
-/// OSTM P0 clock frequency (Hz).
-///
-/// The Deluge board uses a 13.2256 MHz EXTAL crystal (not the RZ/A1L maximum
-/// of 13.33 MHz): P0φ = 13,225,625 × 30 / 12 = 33,064,062.5 Hz, truncated.
-pub const OSTM_HZ: u32 = 33_064_062;
 
 // ------- Peripheral base addresses -------------------------------------------
 const OSTM0_BASE: usize = 0xFCFE_C000;
@@ -142,6 +136,17 @@ pub unsafe fn count(n: u8) -> u32 {
     }
 }
 
+/// OSTM ticks in `ms` milliseconds at `p0_hz`.
+fn ms_to_ticks(p0_hz: u32, ms: u32) -> u32 {
+    ms * (p0_hz / 1000)
+}
+
+/// OSTM ticks in `ns` nanoseconds at `p0_hz`, rounded up so a delay is never short.
+/// Fits u32 for any `ns`: u32::MAX ns ≈ 4.3 s ≈ 143 M ticks.
+fn ns_to_ticks(p0_hz: u32, ns: u32) -> u32 {
+    (ns as u64 * p0_hz as u64).div_ceil(1_000_000_000) as u32
+}
+
 /// Busy-wait for approximately `ticks` OSTM counts (~30 ns each at P0).
 ///
 /// Uses OSTM channel 0. [`start_free_running`]`(0)` must have been called first.
@@ -157,13 +162,13 @@ pub unsafe fn delay_ticks(ticks: u32) {
 
 /// Busy-wait for approximately `ms` milliseconds using OSTM channel 0.
 ///
+/// # Panics
+/// If [`crate::clocks::init`] has not been called.
+///
 /// # Safety
 /// See [`delay_ticks`].
 pub unsafe fn delay_ms(ms: u32) {
-    unsafe {
-        // OSTM_HZ / 1000 = 33_064 ticks per millisecond
-        delay_ticks(ms * (OSTM_HZ / 1000));
-    }
+    unsafe { delay_ticks(ms_to_ticks(crate::clocks::get().p0_hz(), ms)) }
 }
 
 /// A `DelayNs` implementation backed by the OSTM0 free-running counter.
@@ -189,10 +194,7 @@ impl Default for Delay {
 
 impl embedded_hal::delay::DelayNs for Delay {
     fn delay_ns(&mut self, ns: u32) {
-        // OSTM_HZ = 33_064_062 ticks/s → 1 tick ≈ 30 ns.
-        // ticks = ceil(ns * OSTM_HZ / 1_000_000_000)
-        // Use u64 to avoid overflow: max ns = u32::MAX ≈ 4.3 s → 143 M ticks, fits u32.
-        let ticks = (ns as u64 * OSTM_HZ as u64).div_ceil(1_000_000_000) as u32;
+        let ticks = ns_to_ticks(crate::clocks::get().p0_hz(), ns);
         unsafe { delay_ticks(ticks) };
     }
 }
@@ -333,13 +335,8 @@ impl<const N: u8> Ostm<N> {
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
-    use super::{OSTM_HZ, OSTM0_BASE, OSTM1_BASE, base};
-
-    #[test]
-    fn ostm_hz_is_p0_frequency() {
-        // P0φ = EXTAL × 30 / 12 with the Deluge 13.2256 MHz crystal
-        assert_eq!(OSTM_HZ, 33_064_062);
-    }
+    use super::{OSTM0_BASE, OSTM1_BASE, base, ms_to_ticks, ns_to_ticks};
+    use crate::clocks::TEST_CLOCKS;
 
     #[test]
     fn ostm_base_addresses() {
@@ -354,9 +351,22 @@ mod tests {
         assert_eq!(base(1), OSTM1_BASE);
     }
 
-    /// 1 ms in OSTM ticks: OSTM_HZ / 1000 = 33_064.
+    /// 1 ms at the Deluge's P0φ = 33_064 ticks, as with the old `OSTM_HZ / 1000`.
     #[test]
     fn one_ms_ticks() {
-        assert_eq!(OSTM_HZ / 1000, 33_064);
+        assert_eq!(ms_to_ticks(TEST_CLOCKS.p0_hz(), 1), 33_064);
+        assert_eq!(ms_to_ticks(TEST_CLOCKS.p0_hz(), 100), 3_306_400);
+    }
+
+    /// `delay_ns` rounds up, so a short delay is never shorter than asked.
+    #[test]
+    fn ns_ticks_round_up() {
+        let p0 = TEST_CLOCKS.p0_hz();
+        assert_eq!(ns_to_ticks(p0, 0), 0);
+        assert_eq!(ns_to_ticks(p0, 1), 1);
+        // 1 µs = 33.064 ticks → 34.
+        assert_eq!(ns_to_ticks(p0, 1_000), 34);
+        // u32::MAX ns ≈ 4.29 s still fits u32.
+        assert_eq!(ns_to_ticks(p0, u32::MAX), 142_009_065);
     }
 }

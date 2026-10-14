@@ -113,10 +113,11 @@ const SPCMD0_8BIT: u16 = 0b0000_0111_0000_0000;
 /// BRDV[1:0] (bits 3:2) = 0b00  → base bit rate / 1.
 const SPCMD0_32BIT: u16 = 0b0000_0011_0000_0000;
 
-// ── P1 clock frequency ────────────────────────────────────────────────────────
-/// P1φ = EXTAL × 30 / 6 = 13,225,625 × 5 = 66,128,125 Hz (Deluge 13.2256 MHz
-/// crystal — not the 66.67 MHz the manual's nominal-maximum figures suggest).
-const P1_HZ: u32 = 66_128_125;
+/// SPBR for `bit_rate` at `p1_hz`: `ceil(P1 / (2 × bit_rate)) - 1`, so the actual rate
+/// `P1 / (2 × (SPBR + 1))` never exceeds the request.
+fn spbr_for(p1_hz: u32, bit_rate: u32) -> u8 {
+    p1_hz.div_ceil(bit_rate * 2).saturating_sub(1) as u8
+}
 
 // ── GIC interrupt ID base for RSPI ────────────────────────────────────────────
 /// SPEI0 = 270; each channel adds 3: SPEI_n = 270 + 3n, SPRI_n = 271 + 3n, SPTI_n = 272 + 3n
@@ -168,6 +169,9 @@ pub fn irq_spri(ch: u8) -> u16 {
 /// Mirrors `R_RSPI_Create()` + `R_RSPI_Start()` from the C firmware (apart
 /// from the SPI mode; see `SPCMD0_*`).
 ///
+/// # Panics
+/// If [`crate::clocks::init`] has not been called.
+///
 /// # Safety
 /// Writes to memory-mapped RSPI registers; must be called once before any
 /// SPI transfers on channel `ch`.
@@ -178,7 +182,7 @@ pub unsafe fn init(ch: u8, bit_rate: u32) {
         let _ = reg8(ch, OFF_SPPCR).read();
 
         // SPBR: baud rate divisor. SPBR = ceil(P1/(bitRate×2)) - 1
-        let spbr = P1_HZ.div_ceil(bit_rate * 2).saturating_sub(1) as u8;
+        let spbr = spbr_for(crate::clocks::get().p1_hz(), bit_rate);
         reg8(ch, OFF_SPBR).write(spbr);
         let _ = reg8(ch, OFF_SPBR).read();
 
@@ -620,20 +624,19 @@ mod tests {
     }
 
     #[test]
-    fn rspi_spbr_10mhz() {
-        // ceil(66_128_125 / (10_000_000 × 2)) - 1 = ceil(3.306) - 1 = 4 - 1 = 3
-        let bit_rate: u32 = 10_000_000;
-        let spbr = ((P1_HZ + bit_rate * 2 - 1) / (bit_rate * 2)).saturating_sub(1) as u8;
-        assert_eq!(spbr, 3);
-        // Actual rate: 66_128_125 / (2 × (3+1)) = 8.266 MHz (within ±20% of 10 MHz)
-        let actual_hz = P1_HZ / (2 * (spbr as u32 + 1));
-        assert!(actual_hz >= 8_000_000 && actual_hz <= 11_000_000);
+    fn spbr_matches_the_old_hardcoded_p1() {
+        let p1 = crate::clocks::TEST_CLOCKS.p1_hz();
+        // ceil(66_128_125 / 20_000_000) - 1 = 3 → 8.27 MHz actual.
+        assert_eq!(spbr_for(p1, 10_000_000), 3);
+        // The 4 MHz OLED rate: ceil(8.27) - 1 = 8 → 3.67 MHz actual.
+        assert_eq!(spbr_for(p1, 4_000_000), 8);
     }
 
     /// `init` programs the master-mode SPI config through the seam: verify the
     /// key registers end up with the expected values for a 10 MHz CV-DAC setup.
     #[test]
     fn init_programs_master_mode_config() {
+        crate::clocks::init(crate::clocks::TEST_CLOCKS);
         use crate::mmio;
         mmio::test::reset();
         let ch = 0u8;
