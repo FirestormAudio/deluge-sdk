@@ -5,44 +5,100 @@
 //! and installs the `embassy_time_driver` impl), so that this arithmetic is always compiled and
 //! unit-tested on the host.
 
-/// OSTM0 ticks per Embassy tick (1 µs), as an exact rational.
-///
-/// P0φ on the Deluge is 13,225,625 Hz × 30 / 12 = 33,064,062.5 Hz, so
-/// ticks-per-µs = 33,064,062.5 / 1e6 = 21,161 / 640 exactly.  Using the
-/// rational avoids the ~0.2% drift of truncating to 33 ticks/µs.
-/// Effective resolution: 1 OSTM tick ≈ 30 ns, rounded to 1 µs at output.
-pub(crate) const OSTM_PER_US_NUM: u64 = 21_161;
-pub(crate) const OSTM_PER_US_DEN: u64 = 640;
+use core::sync::atomic::{AtomicU32, Ordering};
 
-/// Convert a raw OSTM0 tick count to Embassy µs ticks (`ticks × 640 / 21161`).
-/// The multiply overflows u64 only after ~28 years of uptime at 33.064 MHz.
-#[inline]
-pub(crate) fn ostm_ticks_to_us(ticks: u64) -> u64 {
-    ticks * OSTM_PER_US_DEN / OSTM_PER_US_NUM
+use crate::clocks::ClockConfig;
+
+/// OSTM0 ticks per Embassy tick (1 µs), as an exact reduced rational `num / den`.
+///
+/// Taken from [`ClockConfig::p0_ticks_per_us`]: 21161/640 on the Deluge (P0φ = 33,064,062.5 Hz),
+/// which avoids the ~0.2% drift of truncating to 33 ticks/µs. `num` < 2^27 and `den` < 2^21.
+/// The all-zero value means "not set yet" (before `time_driver::init`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TickRatio {
+    num: u64,
+    den: u64,
 }
 
-/// Convert an Embassy µs delta to OSTM0 ticks, rounding **up** so a short
-/// alarm never fires early (`ceil(delta_us × 21161 / 640)`). Saturating to
-/// avoid overflow; callers clamp the result to the OSTM 32-bit counter range.
-#[inline]
-pub(crate) fn us_to_ostm_ticks(delta_us: u64) -> u64 {
-    delta_us
-        .saturating_mul(OSTM_PER_US_NUM)
-        .div_ceil(OSTM_PER_US_DEN)
+impl TickRatio {
+    pub(crate) const fn from_clocks(c: &ClockConfig) -> Self {
+        let (num, den) = c.p0_ticks_per_us();
+        Self {
+            num: num as u64,
+            den: den as u64,
+        }
+    }
+
+    pub(crate) const fn is_set(&self) -> bool {
+        self.num != 0
+    }
+
+    /// Raw OSTM0 ticks to Embassy µs, `floor(ticks × den / num)`, without overflow for any
+    /// `ticks`: with `ticks = q·num + r`, `q·den` never exceeds the result, and
+    /// `r·den < num·den < 2^48`. Reads 0 while unset.
+    #[inline]
+    pub(crate) const fn ticks_to_us(&self, ticks: u64) -> u64 {
+        if self.num == 0 {
+            return 0;
+        }
+        let q = ticks / self.num;
+        let r = ticks % self.num;
+        q * self.den + r * self.den / self.num
+    }
+
+    /// Embassy µs to OSTM0 ticks, rounded **up** so a short alarm never fires early:
+    /// `ceil(us × num / den)`, saturating at `u64::MAX`. Callers clamp it to the 32-bit counter.
+    #[inline]
+    pub(crate) const fn us_to_ticks(&self, us: u64) -> u64 {
+        if self.num == 0 {
+            return 0;
+        }
+        let q = us / self.den;
+        let r = us % self.den;
+        q.saturating_mul(self.num)
+            .saturating_add((r * self.num).div_ceil(self.den))
+    }
+
+    /// Longest OSTM1 alarm this driver will program at once (~100 ms), rather than the counter's
+    /// full u32 range (~129.9 s).
+    ///
+    /// Capping costs no accuracy: a farther deadline is re-armed when the intermediate alarm fires
+    /// (`ostm1_alarm_isr` re-reads the queue every time), at the cost of at most ~10 timer
+    /// interrupts per second on an idle system. It bounds the damage of any error in the
+    /// `at - now` computation: a miscalculated alarm self-heals within 100 ms.
+    pub(crate) const fn max_arm_ticks(&self) -> u32 {
+        (self.num / self.den) as u32 * 100_000
+    }
 }
 
-/// Longest OSTM1 alarm this driver will program at once (~100 ms), rather than the counter's full
-/// u32 range (~129.9 s).
-///
-/// Capping costs no accuracy: a farther deadline is re-armed when the intermediate alarm fires
-/// (`ostm1_alarm_isr` re-reads the queue every time), at the cost of at most ~10 timer interrupts
-/// per second on an idle system.
-///
-/// It bounds the damage of any error in the `at - now` computation: instead of stalling every
-/// timer-driven task for up to 129.9 s, a miscalculated alarm self-heals within 100 ms. This is
-/// defence in depth; the wrap extension ([`extend`]) is what keeps `now()` monotonic.
-pub(crate) const MAX_ARM_OSTM_TICKS: u32 =
-    (OSTM_PER_US_NUM as u32 / OSTM_PER_US_DEN as u32) * 100_000;
+/// A [`TickRatio`] the time driver sets once at init and reads on every `now()`.
+pub(crate) struct AtomicTickRatio {
+    num: AtomicU32,
+    den: AtomicU32,
+}
+
+impl AtomicTickRatio {
+    pub(crate) const fn unset() -> Self {
+        Self {
+            num: AtomicU32::new(0),
+            den: AtomicU32::new(0),
+        }
+    }
+
+    pub(crate) fn store(&self, r: TickRatio) {
+        // `den` first: a reader that sees a non-zero `num` then sees its `den` (single core;
+        // set once, before interrupts are enabled).
+        self.den.store(r.den as u32, Ordering::Relaxed);
+        self.num.store(r.num as u32, Ordering::Release);
+    }
+
+    #[inline]
+    pub(crate) fn load(&self) -> TickRatio {
+        let num = self.num.load(Ordering::Acquire) as u64;
+        let den = self.den.load(Ordering::Relaxed) as u64;
+        TickRatio { num, den }
+    }
+}
 
 /// Extend a fresh 32-bit `cnt` against the previously published 64-bit `last`.
 ///
@@ -96,60 +152,104 @@ mod tests {
         assert_eq!(last >> 32, 3);
     }
 
-    #[test]
-    fn max_arm_bounds_a_mis_armed_alarm_to_about_100ms() {
-        // A full-range arm is u32::MAX ticks = 129.898353 s; the cap must be far below that.
-        let full_range_us = ostm_ticks_to_us(u32::MAX as u64);
-        assert!(
-            (129_898_000..=129_899_000).contains(&full_range_us),
-            "full-range arm should be ~129.8984 s, got {full_range_us} us"
-        );
-        let capped_us = ostm_ticks_to_us(MAX_ARM_OSTM_TICKS as u64);
-        assert!(
-            (99_000..=101_000).contains(&capped_us),
-            "cap should be ~100 ms, got {capped_us} us"
-        );
-        assert!(MAX_ARM_OSTM_TICKS < u32::MAX / 1000);
+    use crate::clocks::{ClockConfig, TEST_CLOCKS};
+
+    const DELUGE: TickRatio = TickRatio::from_clocks(&TEST_CLOCKS);
+    const CRYSTALS: [u32; 4] = [10_000_000, 12_000_000, 13_225_625, 13_333_333];
+
+    /// Exact `floor(ticks × den / num)` and saturating `ceil(us × num / den)`, in u128.
+    fn ref_ticks_to_us(r: TickRatio, ticks: u64) -> u64 {
+        (ticks as u128 * r.den as u128 / r.num as u128) as u64
+    }
+    fn ref_us_to_ticks(r: TickRatio, us: u64) -> u64 {
+        (us as u128 * r.num as u128)
+            .div_ceil(r.den as u128)
+            .min(u64::MAX as u128) as u64
     }
 
     #[test]
-    fn tick_ratio_reflects_deluge_p0_clock() {
-        // P0phi = 33,064,062.5 Hz => 21161/640 OSTM ticks per microsecond.
-        assert_eq!(OSTM_PER_US_NUM, 21_161);
-        assert_eq!(OSTM_PER_US_DEN, 640);
-        // The rational is 33.0640625 ticks/us — verify to 4 dp.
-        let ratio = OSTM_PER_US_NUM as f64 / OSTM_PER_US_DEN as f64;
-        assert!((ratio - 33.0640625).abs() < 1e-9);
+    fn deluge_ratio_is_21161_over_640() {
+        assert_eq!((DELUGE.num, DELUGE.den), (21_161, 640));
+        assert!(DELUGE.is_set());
+    }
+
+    #[test]
+    fn max_arm_bounds_a_mis_armed_alarm_to_about_100ms() {
+        assert_eq!(DELUGE.max_arm_ticks(), 3_300_000);
+        // A full-range arm is u32::MAX ticks = 129.898353 s; the cap must be far below that.
+        let full_range_us = DELUGE.ticks_to_us(u32::MAX as u64);
+        assert!((129_898_000..=129_899_000).contains(&full_range_us), "got {full_range_us}");
+        let capped_us = DELUGE.ticks_to_us(DELUGE.max_arm_ticks() as u64);
+        assert!((99_000..=101_000).contains(&capped_us), "got {capped_us}");
+        assert!(DELUGE.max_arm_ticks() < u32::MAX / 1000);
     }
 
     #[test]
     fn ticks_to_us_uses_the_rational_not_33() {
-        // One second of OSTM ticks = 33,064,062 (floor) -> ~1e6 us.
-        let one_second_ticks = 33_064_062u64;
-        let us = ostm_ticks_to_us(one_second_ticks);
-        // Within 1 us of a million (floor division).
+        let us = DELUGE.ticks_to_us(33_064_062);
         assert!((999_999..=1_000_000).contains(&us), "got {us}");
-        // A naive /33 would give 1_001_941 us — a 0.19% error we must avoid.
+        // A naive /33 would give 1_001_941 µs, a 0.19% error.
         assert!(us < 1_001_000);
     }
 
     #[test]
     fn us_to_ticks_rounds_up_so_alarms_never_fire_early() {
-        // 1 us must round up to at least 1 tick, never 0.
-        assert!(us_to_ostm_ticks(1) >= 1);
-        // ceil: 640 us = exactly 21161 ticks; 641 us strictly more.
-        assert_eq!(us_to_ostm_ticks(640), 21_161);
-        assert!(us_to_ostm_ticks(641) > 21_161);
-        // 0 us -> 0 ticks.
-        assert_eq!(us_to_ostm_ticks(0), 0);
+        assert!(DELUGE.us_to_ticks(1) >= 1);
+        assert_eq!(DELUGE.us_to_ticks(640), 21_161);
+        assert!(DELUGE.us_to_ticks(641) > 21_161);
+        assert_eq!(DELUGE.us_to_ticks(0), 0);
     }
 
     #[test]
     fn conversions_round_trip_within_one_us() {
         for &us in &[1u64, 1000, 1_000_000, 5_000_000] {
-            let ticks = us_to_ostm_ticks(us);
-            let back = ostm_ticks_to_us(ticks);
+            let back = DELUGE.ticks_to_us(DELUGE.us_to_ticks(us));
             assert!(back >= us && back <= us + 1, "us={us} back={back}");
         }
+    }
+
+    #[test]
+    fn ticks_to_us_matches_u128_reference_across_crystals() {
+        for extal in CRYSTALS {
+            let r = TickRatio::from_clocks(&ClockConfig::new(extal));
+            for ticks in [0, 1, r.num - 1, r.num, r.num + 1, 1 << 32, 1 << 50, 1 << 62, u64::MAX] {
+                assert_eq!(r.ticks_to_us(ticks), ref_ticks_to_us(r, ticks), "extal {extal} ticks {ticks}");
+            }
+        }
+    }
+
+    #[test]
+    fn us_to_ticks_matches_u128_reference_across_crystals() {
+        for extal in CRYSTALS {
+            let r = TickRatio::from_clocks(&ClockConfig::new(extal));
+            for us in [0, 1, r.den - 1, r.den, r.den + 1, 1 << 32, 1 << 50, u64::MAX] {
+                assert_eq!(r.us_to_ticks(us), ref_us_to_ticks(r, us), "extal {extal} us {us}");
+            }
+        }
+    }
+
+    #[test]
+    fn ticks_to_us_survives_u64_max() {
+        // The old single-multiply formula overflowed here; the split one must not panic.
+        let _ = TickRatio::from_clocks(&ClockConfig::new(13_333_333)).ticks_to_us(u64::MAX);
+        let _ = DELUGE.ticks_to_us(u64::MAX);
+    }
+
+    #[test]
+    fn unset_ratio_is_not_set() {
+        assert!(!AtomicTickRatio::unset().load().is_set());
+    }
+
+    #[test]
+    fn unset_ratio_reads_zero_time() {
+        // `Instant::now()` before `time_driver::init` reads 0 instead of dividing by zero.
+        assert_eq!(AtomicTickRatio::unset().load().ticks_to_us(123_456), 0);
+    }
+
+    #[test]
+    fn atomic_ratio_round_trips() {
+        let a = AtomicTickRatio::unset();
+        a.store(DELUGE);
+        assert_eq!(a.load(), DELUGE);
     }
 }

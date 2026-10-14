@@ -9,9 +9,9 @@
 //!
 //! ## Clock and tick rate
 //!
-//! OSTM0 runs at P0φ = 33,064,062.5 Hz on the Deluge. The Embassy tick rate is
-//! 1 MHz (1 µs per tick); `now()` converts OSTM0 ticks with the exact 21161/640
-//! ticks-per-µs rational from [`crate::time_math`].
+//! OSTM0 runs at P0φ (see [`crate::clocks`]). The Embassy tick rate is 1 MHz (1 µs per tick);
+//! `now()` converts OSTM0 ticks with the exact ticks-per-µs rational from
+//! [`crate::time_math::TickRatio`] (21161/640 on the Deluge).
 //!
 //! ## Overflow handling for `now()`
 //!
@@ -36,7 +36,7 @@ use core::task::Waker;
 use critical_section::{CriticalSection, Mutex};
 use embassy_time_driver::Driver;
 
-use crate::time_math::{MAX_ARM_OSTM_TICKS, extend, ostm_ticks_to_us, us_to_ostm_ticks};
+use crate::time_math::{AtomicTickRatio, TickRatio, extend};
 use embassy_time_queue_utils::Queue;
 
 use crate::gic;
@@ -70,6 +70,9 @@ const OSTM_IRQ_PRIORITY: u8 = 14;
 /// time loses an epoch. Satisfied structurally — the audio render path reads it continuously — and
 /// guaranteed regardless by [`ostm0_overflow_isr`], which exists only to force one read per wrap.
 static LAST_RAW: AtomicU64 = AtomicU64::new(0);
+
+/// OSTM0 ticks per µs, from the registered clock tree. Set by [`init`].
+static RATIO: AtomicTickRatio = AtomicTickRatio::unset();
 
 // ---------------------------------------------------------------------------
 // Driver struct + timer queue
@@ -123,9 +126,16 @@ impl OstmDriver {
         }
         // Convert delta from Embassy µs ticks to OSTM0 ticks.
         let delta_us = at - now;
-        // Clamp to MAX_ARM_OSTM_TICKS; a farther alarm is re-armed when that intermediate ISR
+        let ratio = RATIO.load();
+        assert!(
+            ratio.is_set(),
+            "embassy-time alarm armed before rza1l_hal::time_driver::init"
+        );
+        // Clamp to max_arm_ticks; a farther alarm is re-armed when that intermediate ISR
         // fires, so capping only costs wakeups, never accuracy.
-        let delta_ostm = us_to_ostm_ticks(delta_us).min(MAX_ARM_OSTM_TICKS as u64) as u32;
+        let delta_ostm = ratio
+            .us_to_ticks(delta_us)
+            .min(ratio.max_arm_ticks() as u64) as u32;
 
         if delta_ostm == 0 {
             return false;
@@ -142,9 +152,8 @@ impl OstmDriver {
 
 impl Driver for OstmDriver {
     fn now(&self) -> u64 {
-        // ticks × 640 / 21161; the multiply overflows u64 only after ~28
-        // years of uptime at 33.064 MHz.
-        ostm_ticks_to_us(Self::raw_ostm_ticks())
+        // Overflow-free for any uptime; reads 0 before `init` (see `TickRatio::ticks_to_us`).
+        RATIO.load().ticks_to_us(Self::raw_ostm_ticks())
     }
 
     fn schedule_wake(&self, at: u64, waker: &Waker) {
@@ -207,9 +216,11 @@ fn ostm1_alarm_isr() {
 /// # Safety
 /// Must be called once, after [`gic::init`] and [`ostm::enable_clock`],
 /// but before `cpsie i`. OSTM0 must NOT already be started (this function
-/// re-starts it in the required mode).
+/// re-starts it in the required mode). [`crate::clocks::init`] must have been called.
 pub unsafe fn init() {
     unsafe {
+        RATIO.store(TickRatio::from_clocks(&crate::clocks::get()));
+
         // OSTM0: free-running with CMP=0 interrupt (fires at wrap to 0).
         //
         // `start_free_running_cmp(0, 0)` stops the channel, sets CMP=0, sets
