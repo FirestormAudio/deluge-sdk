@@ -19,6 +19,8 @@ pub mod adc;
 pub mod bsc;
 #[cfg(target_os = "none")]
 pub mod cache;
+/// The clock tree, derived from the board's crystal (set once at boot by the BSP).
+pub mod clocks;
 pub mod dmac;
 pub mod gic;
 /// Pure memory-system math (cache-line ranges + MMU section table) used by the
