@@ -1,0 +1,50 @@
+[package]
+name = "usb-classes"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "Board-agnostic embassy-usb device classes (UAC2, USB-MIDI, MSC + Bulk-Only Transport) and embassy-usb-host class drivers (USB-MIDI, UAC)."
+categories = ["embedded", "no-std", "hardware-support"]
+keywords = ["usb", "embassy", "uac2", "midi", "msc"]
+
+[package.metadata.docs.rs]
+default-target = "armv7a-none-eabihf"
+
+[lib]
+# Unit tests run on the host / QEMU target; the test harness needs std.
+test = false
+
+[features]
+default = []
+## UAC2 audio device class.
+device-audio = []
+## USB-MIDI device class and the packet-mode queues behind it.
+device-midi = []
+## Mass Storage device class and the Bulk-Only Transport / SCSI engine.
+device-msc = []
+## USB-MIDI host class driver.
+host-midi = ["dep:embassy-usb-host"]
+## UAC host class driver (capture + playback).
+host-uac = ["dep:embassy-usb-host"]
+
+[dependencies]
+critical-section = { workspace = true }
+embassy-sync = { workspace = true }
+embassy-usb-driver = { workspace = true }
+embassy-usb-host = { workspace = true, optional = true }
+heapless = "0.9"
+log = { workspace = true }
+
+[target.'cfg(target_os = "none")'.dependencies]
+embassy-futures = { workspace = true }
+embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
+embassy-usb = { workspace = true }
+
+[target.'cfg(not(target_os = "none"))'.dev-dependencies]
+critical-section = { workspace = true, features = ["std"] }
+embassy-futures = { workspace = true }
+embassy-time = { workspace = true, features = ["mock-driver", "generic-queue-8"] }

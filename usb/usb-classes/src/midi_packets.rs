@@ -175,11 +175,38 @@ pub fn drain_packets_to_host(buf: &mut [u8]) -> usize {
     n
 }
 
+/// Return the number of 32-bit words in a UMP message.
+///
+/// Based on UMP spec (M2-104-UM) Table 2-1 — Message Type (bits 31–28).
+#[inline]
+pub fn ump_word_count(first_word: u32) -> usize {
+    match (first_word >> 28) as u8 {
+        // 32-bit (1 word): Utility, SysRT/SysCommon, MIDI 1.0 CV, reserved 6/7
+        0x0..=0x2 | 0x6 | 0x7 => 1,
+        // 64-bit (2 words): Sysex7, MIDI 2.0 CV, reserved 8–A
+        0x3 | 0x4 | 0x8..=0xA => 2,
+        // 96-bit (3 words): reserved B–C
+        0xB | 0xC => 3,
+        // 128-bit (4 words): Sysex8/MixedData, FlexData, reserved E, UMP Stream
+        _ => 4,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
     use super::*;
     use std::vec::Vec;
+
+    #[test]
+    fn ump_word_counts_match_the_message_type_table() {
+        // UMP spec (M2-104-UM) message type sizes, in 32-bit words.
+        let words = [1, 1, 1, 2, 2, 4, 1, 1, 2, 2, 2, 3, 3, 4, 4, 4];
+        for (mt, &want) in words.iter().enumerate() {
+            let first = (mt as u32) << 28;
+            assert_eq!(super::ump_word_count(first), want, "message type {mt:#X}");
+        }
+    }
 
     /// `F0 00 21 7B 01 02 03 F7` as a USB-MIDI SysEx stream on cable 2:
     /// start/continue (CIN 4) packets, then a 2-byte end (CIN 6).

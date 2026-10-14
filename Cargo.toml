@@ -21,6 +21,7 @@ members = [
   "crates/deluge-grid-toolkit",
   "crates/deluge-protocol",
   "drivers/max5136",
+  "usb/usb-classes",
   "wren/deluge-wren-core",
   "examples/baremetal/blinky",
   "examples/baremetal/oled_hello",
@@ -112,6 +113,9 @@ deluge-grid-toolkit = { path = "crates/deluge-grid-toolkit", version = "0.1.0" }
 
 # Off-chip part drivers, board-agnostic (embedded-hal 1.0).
 max5136 = { path = "drivers/max5136" }
+
+# Board-agnostic USB classes (publish = false until the API settles).
+usb-classes = { path = "usb/usb-classes" }
 
 [profile.release]
 opt-level = "s"

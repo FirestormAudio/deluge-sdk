@@ -8,8 +8,6 @@
 //! - [`classes`]: UAC2 audio, USB-MIDI, and MSC class implementations
 //!   (generic over any `embassy_usb::driver::Driver`).
 //! - [`bot`]: USB Mass Storage Bulk-Only Transport engine.
-//! - [`midi_packets`]: the USB-MIDI 1.0 packet-mode queues behind
-//!   [`classes::midi`], for consumers that speak event packets.
 //! - `host` (feature `usb-host`): **host**-side class drivers for devices the
 //!   Deluge hosts (generic over any `embassy_usb_driver::host::UsbHostAllocator`).
 //!
@@ -28,6 +26,3 @@ pub mod classes;
 #[cfg(feature = "usb-host")]
 pub mod host;
 pub mod ids;
-// The USB-MIDI packet queues and routing are driver-independent, so they build
-// and are tested off-target.
-pub mod midi_packets;

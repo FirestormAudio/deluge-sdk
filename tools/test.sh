@@ -44,6 +44,7 @@ cargo test --target "$QEMU" -p armv7-dsp-intrinsics --features nightly --lib
 cargo test --target "$QEMU" -p deluge-fixedpoint
 cargo test --target "$QEMU" -p rza1l-hal --lib
 cargo test --target "$QEMU" -p deluge-bsp --features usb-host --lib
+cargo test --target "$QEMU" -p usb-classes --features device-midi,host-midi,host-uac --lib
 cargo test --target "$QEMU" -p deluge-fonts --lib
 # The audio engine (flare-kernels, flare-graph, flare-fft) lives in its own
 # repo and is tested by that repo's tools/test.sh, which runs its own
