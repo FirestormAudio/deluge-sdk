@@ -31,6 +31,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `rza1l-hal` is now board-agnostic. The board registers its crystal with
+  `rza1l_hal::clocks::init(ClockConfig::new(extal_hz))` (the Deluge's is
+  `deluge_bsp::system::CLOCKS`, registered by `init_clocks`). OSTM delays, the RSPI and SCIF baud
+  dividers and the Embassy time driver derive their rates from it. **Breaking:** `ostm::OSTM_HZ`
+  and `mtu2::MTU2_P0_HZ` are removed; use `rza1l_hal::clocks::get().p0_hz()` or
+  `deluge_bsp::system::CLOCKS.p0_hz()`.
+- **Breaking:** the `app-fault-reporter` hook is now `rza1_cpu_fault_report` (was
+  `deluge_cpu_fault_report`).
+- **Breaking:** `deluge` no longer re-exports `rza1l_hal`. Use `deluge::deluge_bsp`, or depend on
+  `rza1l-hal` directly.
+- The Embassy time driver's µs conversion no longer overflows on long uptimes for crystals other
+  than the Deluge's.
 - Repository layout: the Wren subsystem now lives under `wren/`, the Linux
   backend crates under `linux/`, the app-loader under `firmwares/`, hardware
   probes under `hw-tests/`, the desktop simulator under `crates/`, and examples
