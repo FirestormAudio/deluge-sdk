@@ -42,7 +42,7 @@
 //! before spawning the alt-0 tasks, then uses [`try_recv_packet_from_host`] /
 //! [`try_send_packet_to_host`] instead of the byte API. Packets pass through
 //! unchanged in both directions — SysEx and cable numbers included — which the
-//! byte API cannot carry. See [`midi_packets`](usb_classes::midi_packets).
+//! byte API cannot carry. See [`midi_packets`](crate::midi_packets).
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -53,8 +53,8 @@ use embassy_usb::driver::{Driver, Endpoint, EndpointError, EndpointIn, EndpointO
 use embassy_usb::types::InterfaceNumber;
 use embassy_usb::{Builder, Handler};
 
-use usb_classes::midi_packets::{self, RxRoute};
-pub use usb_classes::midi_packets::{
+use crate::midi_packets::{self, RxRoute};
+pub use crate::midi_packets::{
     Packet, packets_enabled, try_recv_packet_from_host, try_send_packet_to_host, tx_packet_free,
     tx_packet_pending, use_packets,
 };
@@ -410,7 +410,7 @@ pub fn build<'d, D: Driver<'d>>(
 // UMP helpers
 // ============================================================================
 
-pub use usb_classes::midi_packets::ump_word_count;
+pub use crate::midi_packets::ump_word_count;
 
 // ============================================================================
 // USB MIDI 1.0 packet helpers

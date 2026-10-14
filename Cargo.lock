@@ -224,6 +224,7 @@ dependencies = [
  "log",
  "rtt-target",
  "rza1l-hal",
+ "usb-classes",
 ]
 
 [[package]]
@@ -1325,6 +1326,7 @@ dependencies = [
  "log",
  "rtt-target",
  "rza1l-hal",
+ "usb-classes",
 ]
 
 [[package]]
@@ -1483,6 +1485,7 @@ dependencies = [
  "log",
  "rtt-target",
  "rza1l-hal",
+ "usb-classes",
 ]
 
 [[package]]
@@ -3392,6 +3395,7 @@ dependencies = [
  "log",
  "rtt-target",
  "rza1l-hal",
+ "usb-classes",
 ]
 
 [[package]]

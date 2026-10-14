@@ -58,6 +58,7 @@ embassy-usb-driver = { workspace = true }
 embassy-usb-host = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "none")'.dependencies]
+usb-classes = { workspace = true, features = ["device-msc"] }
 cortex-ar = { workspace = true }
 embassy-futures = { workspace = true }
 embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }

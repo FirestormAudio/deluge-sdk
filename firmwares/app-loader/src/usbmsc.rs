@@ -17,8 +17,9 @@ use embassy_time::{Duration, Timer};
 use log::info;
 
 use deluge_bsp::oled::{self, text};
-use deluge_bsp::usb::bot::{self, BlockDevice, SdBlock};
-use deluge_bsp::usb::classes::msc::MscClass;
+use deluge_bsp::usb::sd_block::SdBlock;
+use usb_classes::bot::{self, BlockDevice};
+use usb_classes::msc::MscClass;
 use rza1l_hal::gic;
 use rza1l_hal::usb::{
     Rusb1Driver, Rusb1EndpointIn, Rusb1EndpointOut, dcd_int_handler, disconnect, init_device_mode,

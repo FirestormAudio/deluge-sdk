@@ -4,7 +4,7 @@ use embassy_usb::driver::{Endpoint as _, EndpointIn as _};
 use log::info;
 use rza1l_hal::ssi;
 
-use deluge_bsp::usb::classes::audio::{USB_BITS_PER_SAMPLE, USB_CAPTURE_BITS_PER_SAMPLE};
+use usb_classes::audio::{USB_BITS_PER_SAMPLE, USB_CAPTURE_BITS_PER_SAMPLE};
 
 /// `true` while the host is actively sending UAC2 speaker data.
 ///

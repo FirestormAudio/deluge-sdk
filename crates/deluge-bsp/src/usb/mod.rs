@@ -1,28 +1,24 @@
-//! USB class layer for the Deluge.
+//! The Deluge's USB layer.
 //!
 //! The chip-level RUSB1 device/host drivers (register map, FIFO/pipe layers,
 //! `embassy-usb-driver` implementations, `init_device_mode` /
-//! `init_host_mode`) live in [`rza1l_hal::usb`].  This module holds only the
-//! board/class layer on top:
+//! `init_host_mode`) live in [`rza1l_hal::usb`], and the board-agnostic class
+//! layer (UAC2, USB-MIDI, MSC + Bulk-Only Transport, host MIDI/UAC drivers) in
+//! the `usb-classes` crate. This module keeps what is specific to the Deluge:
 //!
-//! - [`classes`]: UAC2 audio, USB-MIDI, and MSC class implementations
-//!   (generic over any `embassy_usb::driver::Driver`).
-//! - [`bot`]: USB Mass Storage Bulk-Only Transport engine.
-//! - `host` (feature `usb-host`): **host**-side class drivers for devices the
-//!   Deluge hosts (generic over any `embassy_usb_driver::host::UsbHostAllocator`).
+//! - [`ids`]: the Deluge's USB vendor/product identities.
+//! - `sd_block`: the SD card as a Mass Storage medium for `usb_classes::bot`.
+//! - `host` (feature `usb-host`): the host-role supervisor and the hosted-MIDI
+//!   device registry.
 //!
 //! See [`rza1l_hal::usb`] for the quick-start examples (device mode, host
 //! mode, ISR wiring).
 
-// Device-side pieces need `embassy-usb`, which is only a dependency on the
-// bare-metal target.
-#[cfg(target_os = "none")]
-pub mod bot;
-#[cfg(target_os = "none")]
-pub mod classes;
-// Host-side class drivers are generic over `UsbHostAllocator` and build (and
-// are tested) on the QEMU ARM target too — see `tools/test.sh`. Opt-in via
-// the `usb-host` feature (only host-role firmwares need `embassy-usb-host`).
+// Host-role supervisor; opt-in via the `usb-host` feature (only host-role
+// firmwares need `embassy-usb-host`).
 #[cfg(feature = "usb-host")]
 pub mod host;
 pub mod ids;
+/// The SD card as a Mass Storage medium for `usb_classes::bot`.
+#[cfg(target_os = "none")]
+pub mod sd_block;

@@ -1,18 +1,19 @@
 //! MSC task: exposes the inserted SD card as a USB Mass Storage block device.
 //!
-//! The Bulk-Only Transport / SCSI protocol and the SD-card
-//! [`BlockDevice`](deluge_bsp::usb::bot::BlockDevice) backing both live in [`deluge_bsp::usb::bot`]; this file only initialises the
-//! card and starts the transport loop.
+//! The Bulk-Only Transport / SCSI protocol lives in [`usb_classes::bot`] and the SD-card
+//! [`BlockDevice`](usb_classes::bot::BlockDevice) backing in [`deluge_bsp::usb::sd_block`]; this
+//! file only initialises the card and starts the transport loop.
 //!
 //! Throughput counters for the OLED display are re-exported from the BOT module.
 
 use log::{info, warn};
 
 use deluge_bsp::sd;
-use deluge_bsp::usb::bot::{self, SdBlock};
+use deluge_bsp::usb::sd_block::SdBlock;
+use usb_classes::bot;
 use rza1l_hal::usb::{Rusb1EndpointIn, Rusb1EndpointOut};
 
-pub use deluge_bsp::usb::bot::{RX_BYTES, TX_BYTES};
+pub use usb_classes::bot::{RX_BYTES, TX_BYTES};
 
 /// Bulk-Only Transport / SCSI command loop bridged to the SD card.
 #[embassy_executor::task]

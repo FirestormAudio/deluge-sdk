@@ -23,9 +23,8 @@ use embassy_time::{Duration, Instant, Timer};
 use log::{error, info, warn};
 
 use embassy_usb_driver::{Endpoint, EndpointIn, EndpointOut};
-use rza1l_hal::usb::{Rusb1EndpointIn, Rusb1EndpointOut};
 
-use crate::usb::classes::msc::take_reset;
+use crate::msc::take_reset;
 
 // ── Throughput counters (read by an OLED/status task) ──────────────────────────
 
@@ -134,60 +133,13 @@ pub trait BlockDevice {
     }
 }
 
-// ── Ready-made SD-card backing ────────────────────────────────────────────────
-
-/// [`BlockDevice`] backed by the inserted SD card ([`crate::sd`]).  Shared by the
-/// MSC firmware and the bootloader's DATA TRANSFER mode.
-pub struct SdBlock;
-
-impl BlockDevice for SdBlock {
-    fn block_count(&self) -> u32 {
-        crate::sd::total_sectors()
-    }
-
-    fn is_ready(&self) -> bool {
-        crate::sd::is_ready()
-    }
-
-    async fn ensure_ready(&mut self) -> bool {
-        if !crate::sd::is_ready() {
-            let _ = crate::sd::init().await;
-        }
-        crate::sd::is_ready()
-    }
-
-    async fn read(&mut self, lba: u32, count: u32, buf: &mut [u8]) -> Result<(), ()> {
-        crate::sd::read_sectors(lba, count, buf)
-            .await
-            .map_err(|_| ())
-    }
-
-    async fn write(&mut self, lba: u32, count: u32, buf: &[u8]) -> Result<(), ()> {
-        crate::sd::write_sectors(lba, count, buf)
-            .await
-            .map_err(|_| ())
-    }
-
-    fn inquiry(&self) -> Inquiry {
-        Inquiry {
-            vendor: *b"Synthstm",
-            product: *b"Deluge SD Card  ",
-            revision: *b"1.00",
-        }
-    }
-
-    fn is_write_protected(&self) -> bool {
-        crate::sd::is_write_protected()
-    }
-}
-
 // ── Transport loop ──────────────────────────────────────────────────────────
 
 /// An exit flag that is never set — used by [`run`] to mean "run forever".
 static NEVER_EXIT: AtomicBool = AtomicBool::new(false);
 
 /// Run the Bulk-Only Transport / SCSI command loop against `dev`.  Never returns.
-pub async fn run<B: BlockDevice>(dev: B, ep_in: Rusb1EndpointIn, ep_out: Rusb1EndpointOut) -> ! {
+pub async fn run<B: BlockDevice, EI: EndpointIn, EO: EndpointOut>(dev: B, ep_in: EI, ep_out: EO) -> ! {
     run_until(dev, ep_in, ep_out, &NEVER_EXIT).await;
     // `NEVER_EXIT` is never set, so `run_until` never returns.
     unreachable!()
@@ -211,10 +163,10 @@ async fn wait_exit(exit: &AtomicBool) {
 /// which both tears the on-disk FAT structures and leaves the card stuck so the
 /// next `sd::init` times out.  So the exit flag races only the CBW read; once a
 /// command is accepted it runs to completion uninterrupted.
-pub async fn run_until<B: BlockDevice>(
+pub async fn run_until<B: BlockDevice, EI: EndpointIn, EO: EndpointOut>(
     mut dev: B,
-    mut ep_in: Rusb1EndpointIn,
-    mut ep_out: Rusb1EndpointOut,
+    mut ep_in: EI,
+    mut ep_out: EO,
     exit: &AtomicBool,
 ) {
     // Clear any stale request so a press during the menu doesn't bail out before
@@ -282,13 +234,13 @@ pub async fn run_until<B: BlockDevice>(
 // sense/ejected state are all irreducibly distinct inputs to the dispatch; there
 // is no natural sub-grouping that wouldn't just be a tuple in disguise.
 #[allow(clippy::too_many_arguments)]
-async fn handle_command<B: BlockDevice>(
+async fn handle_command<B: BlockDevice, EI: EndpointIn, EO: EndpointOut>(
     dev: &mut B,
     cdb: &[u8],
     data_len: u32,
     dir_in: bool,
-    ep_in: &mut Rusb1EndpointIn,
-    ep_out: &mut Rusb1EndpointOut,
+    ep_in: &mut EI,
+    ep_out: &mut EO,
     sense: &mut Sense,
     ejected: &mut bool,
 ) -> (u8, u32) {
@@ -453,7 +405,7 @@ async fn handle_command<B: BlockDevice>(
 /// Read and discard a host data-out phase of `data_len` bytes, keeping the bulk
 /// pipe in sync when a command is rejected without committing the data (e.g. an
 /// unsupported opcode, or a WRITE to a write-protected medium).
-async fn drain_data_out(ep_out: &mut Rusb1EndpointOut, data_len: u32) {
+async fn drain_data_out<EO: EndpointOut>(ep_out: &mut EO, data_len: u32) {
     if data_len == 0 {
         return;
     }
@@ -469,7 +421,7 @@ async fn drain_data_out(ep_out: &mut Rusb1EndpointOut, data_len: u32) {
 }
 
 /// Send a short data-in response (≤ `data_len` bytes), returning `(status, residue)`.
-async fn send_data_in(ep_in: &mut Rusb1EndpointIn, data: &[u8], data_len: u32) -> (u8, u32) {
+async fn send_data_in<EI: EndpointIn>(ep_in: &mut EI, data: &[u8], data_len: u32) -> (u8, u32) {
     let len = (data.len()).min(data_len as usize);
     if len > 0 && ep_in.write(&data[..len]).await.is_err() {
         return (CSW_STATUS_FAILED, data_len);
@@ -482,9 +434,9 @@ async fn send_data_in(ep_in: &mut Rusb1EndpointIn, data: &[u8], data_len: u32) -
 }
 
 /// Stream `blocks` sectors from the device to the host (SCSI READ).
-async fn read_blocks<B: BlockDevice>(
+async fn read_blocks<B: BlockDevice, EI: EndpointIn>(
     dev: &mut B,
-    ep_in: &mut Rusb1EndpointIn,
+    ep_in: &mut EI,
     lba: u32,
     blocks: u32,
     data_len: u32,
@@ -566,9 +518,9 @@ async fn read_blocks<B: BlockDevice>(
 }
 
 /// Stream `blocks` sectors from the host to the device (SCSI WRITE).
-async fn write_blocks<B: BlockDevice>(
+async fn write_blocks<B: BlockDevice, EO: EndpointOut>(
     dev: &mut B,
-    ep_out: &mut Rusb1EndpointOut,
+    ep_out: &mut EO,
     lba: u32,
     blocks: u32,
     data_len: u32,
@@ -676,8 +628,8 @@ fn log_throughput(op: &str, bytes: u32, total_us: u64) {
 }
 
 /// Build and send the 13-byte Command Status Wrapper.
-async fn send_csw(
-    ep_in: &mut Rusb1EndpointIn,
+async fn send_csw<EI: EndpointIn>(
+    ep_in: &mut EI,
     tag: u32,
     residue: u32,
     status: u8,

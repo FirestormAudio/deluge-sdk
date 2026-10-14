@@ -63,7 +63,7 @@ static mut USB_BOS_DESC: [u8; 64] = [0; 64];
 static mut USB_MSOS_DESC: [u8; 0] = [];
 static mut USB_CONTROL_BUF: [u8; 64] = [0; 64];
 /// Backing storage for the MSC class handler (must be `'static`).
-static mut MSC_CLASS_BUF: MaybeUninit<deluge_bsp::usb::classes::msc::MscClass> =
+static mut MSC_CLASS_BUF: MaybeUninit<usb_classes::msc::MscClass> =
     MaybeUninit::uninit();
 
 static mut EXECUTOR: MaybeUninit<Executor> = MaybeUninit::uninit();
@@ -155,7 +155,7 @@ pub extern "C" fn main() -> ! {
         // Single MSC interface with one bulk IN + bulk OUT endpoint pair.
         // 512-byte bulk endpoints: the RUSB1 PHY always negotiates high speed,
         // and USB 2.0 requires HS bulk endpoints to use wMaxPacketSize 512.
-        let (msc, ep_out, ep_in) = deluge_bsp::usb::classes::msc::MscClass::new(&mut builder, 512);
+        let (msc, ep_out, ep_in) = usb_classes::msc::MscClass::new(&mut builder, 512);
         let msc_ref = (&mut *core::ptr::addr_of_mut!(MSC_CLASS_BUF)).write(msc);
         builder.handler(msc_ref);
 
