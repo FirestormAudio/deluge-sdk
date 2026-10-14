@@ -67,11 +67,11 @@ unsafe fn cpg_basic_init() {
 // Board-specific configuration constants
 // ---------------------------------------------------------------------------
 
-/// CPG clock-gate configuration for the Deluge board.
 /// The Deluge's EXTAL crystal: 13.2256 MHz (13,225,625 Hz), not the RZ/A1L's 13.33 MHz maximum.
 /// Every peripheral clock derives from it (P0φ = 33,064,062.5 Hz, P1φ = 66,128,125 Hz).
 pub const CLOCKS: ClockConfig = ClockConfig::new(13_225_625);
 
+/// CPG clock-gate configuration for the Deluge board.
 ///
 /// Enables exactly the module clocks required by the Deluge firmware.
 /// All other module clocks are left stopped (gated) to minimise power and
