@@ -39,6 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     are generic over any `embassy_usb_driver` endpoints. `Uac::try_register` takes the sample
     rate to negotiate.
   - The MAX5136 CV DAC protocol is the new `max5136` embedded-hal driver crate.
+    `deluge_bsp::cv_gate::cv_set` (and so `deluge::Cv::set`) now ignores, with a warning, a
+    channel the Deluge doesn't wire (anything but 0–1) instead of sending the DAC a wrong command.
   - The SCUX DVU/SRC path recipes are in `rza1l_hal::scux::{dvu_path, src_path, usb_tx_path}`,
     taking their DMA channels; `deluge_bsp::scux_*_path` keep their old API on the Deluge's
     channels.

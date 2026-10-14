@@ -76,10 +76,12 @@ const GATE_PINS: [(u8, u8); NUM_GATE_CHANNELS] = [(2, 7), (2, 8), (2, 9), (4, 0)
 /// - `value`: unsigned 16-bit voltage code (0 = 0 V, 65535 = full-scale).
 ///   Approximately 6552 counts per volt on the Deluge hardware.
 ///
-/// The frame encoding lives in the board-agnostic `max5136` crate.
+/// The frame encoding lives in the board-agnostic `max5136` crate. `None` for a channel the
+/// Deluge doesn't wire (`ch >= NUM_CV_CHANNELS`): the write is dropped rather than sent to the
+/// DAC as a wrong command byte.
 #[inline]
-fn dac_word(ch: u8, value: u16) -> u32 {
-    max5136::write_through_u32(ch, value)
+fn dac_word(ch: u8, value: u16) -> Option<u32> {
+    ((ch as usize) < NUM_CV_CHANNELS).then(|| max5136::write_through_u32(ch, value))
 }
 
 // ── Initialise hardware ───────────────────────────────────────────────────────
@@ -169,13 +171,16 @@ pub unsafe fn init() {
 /// DAC word. Use this instead of [`cv_set_blocking`] once the executor is
 /// running.
 ///
-/// - `ch`: 0 or 1 (hardware supports 0–1 on the Deluge).
+/// - `ch`: 0 or 1 (hardware supports 0–1 on the Deluge). Other channels are ignored.
 /// - `value`: 16-bit DAC code.  ~6552 counts ≈ 1 V.
 #[cfg(target_os = "none")]
 pub async fn cv_set(ch: u8, value: u16) {
+    let Some(word) = dac_word(ch, value) else {
+        log::warn!("cv_gate: ignoring write to unwired CV channel {ch}");
+        return;
+    };
     let mut bus = crate::bus::lock_rspi0().await;
     bus.enter_32bit();
-    let word = dac_word(ch, value);
     // SAFETY: we hold the RSPI0 bus guard, so no concurrent transfer; CS GPIO is
     // owned by cv_gate.
     unsafe {
@@ -187,7 +192,7 @@ pub async fn cv_set(ch: u8, value: u16) {
 
 /// Write a voltage code to CV channel `ch` without acquiring the RSPI0 bus.
 ///
-/// - `ch`: 0 or 1 (hardware supports 0–1 on the Deluge).
+/// - `ch`: 0 or 1 (hardware supports 0–1 on the Deluge). Other channels are ignored.
 /// - `value`: 16-bit DAC code.  ~6552 counts ≈ 1 V.
 ///
 /// # Safety
@@ -197,8 +202,11 @@ pub async fn cv_set(ch: u8, value: u16) {
 /// calling this concurrently with an OLED transfer corrupts both. Writes RSPI0
 /// and CS GPIO registers.
 pub unsafe fn cv_set_blocking(ch: u8, value: u16) {
+    let Some(word) = dac_word(ch, value) else {
+        log::warn!("cv_gate: ignoring write to unwired CV channel {ch}");
+        return;
+    };
     unsafe {
-        let word = dac_word(ch, value);
         gpio::write(CS_PORT, CS_PIN, false);
         rspi::send32_blocking(SPI_CH, word);
         gpio::write(CS_PORT, CS_PIN, true);
@@ -232,7 +240,7 @@ mod tests {
     #[test]
     fn dac_word_channel_0_zero_volts() {
         // ch=0, value=0 → (0x30 | 0x01) << 24 | 0 = 0x3100_0000
-        assert_eq!(dac_word(0, 0), 0x3100_0000);
+        assert_eq!(dac_word(0, 0), Some(0x3100_0000));
     }
 
     #[test]
@@ -240,16 +248,16 @@ mod tests {
         // ch=1, value=0xFFFF → (0x30 | 0x02) << 24 | (0xFFFF << 8)
         // = 0x32_00_00_00 | 0x00_FF_FF_00
         // = 0x32FF_FF00
-        assert_eq!(dac_word(1, 0xFFFF), 0x32FF_FF00);
+        assert_eq!(dac_word(1, 0xFFFF), Some(0x32FF_FF00));
     }
 
     #[test]
-    fn dac_word_channel_2_one_volt() {
+    fn dac_word_channel_1_one_volt() {
         // ~1 V ≈ 6552 = 0x1998
-        // ch=2 → 0x30 | 0x04 = 0x34
-        // word = 0x34_19_98_00
-        let word = dac_word(2, 6552);
-        assert_eq!(word >> 24, 0x34);
+        // ch=1 → 0x30 | 0x02 = 0x32
+        // word = 0x32_19_98_00
+        let word = dac_word(1, 6552).unwrap();
+        assert_eq!(word >> 24, 0x32);
         assert_eq!((word >> 8) & 0xFFFF, 6552);
         assert_eq!(word & 0xFF, 0);
     }
@@ -274,6 +282,21 @@ mod tests {
                 gate_set(ch, true);
                 gate_set(ch, false);
             }
+        }
+    }
+
+    #[test]
+    fn dac_word_encodes_the_wired_channels() {
+        assert_eq!(super::dac_word(0, 0xABCD), Some(0x31AB_CD00));
+        assert_eq!(super::dac_word(1, 0x1234), Some(0x3212_3400));
+    }
+
+    #[test]
+    fn dac_word_refuses_channels_the_board_does_not_wire() {
+        // Only CV 0-1 are wired. A bad channel from an app must be dropped, not reach the
+        // MAX5136 as a wrong command byte (ch 4-31) or panic in the frame encoder.
+        for ch in [2u8, 3, 4, 31, 32, 255] {
+            assert_eq!(super::dac_word(ch, 0x8000), None, "ch {ch}");
         }
     }
 }
