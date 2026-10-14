@@ -103,8 +103,9 @@ impl HandlerCell {
 /// Could `addr` be the entry point of a function in this image?
 ///
 /// Deliberately coarse — the point is to reject a corrupted slot before branching to it, not to
-/// validate a symbol. Code on this part lives in on-chip SRAM (`0x2000_0000`, 3 MB) or SDRAM
-/// (`0x0C00_0000`, 64 MB), and the range check is what actually catches corruption.
+/// validate a symbol. Code on this part lives in on-chip SRAM (`0x2000_0000`, 3 MB) or in SDRAM on
+/// CS2/CS3 (`0x0800_0000`–`0x0FFF_FFFF`, however much of it the board fits), and the range check
+/// is what actually catches corruption.
 ///
 /// # Thumb pointers
 ///
@@ -114,7 +115,8 @@ impl HandlerCell {
 /// treated as evidence either way; the range test is what rejects a corrupted slot.
 fn is_plausible_code_address(addr: usize) -> bool {
     const SRAM: core::ops::Range<usize> = 0x2000_0000..0x2030_0000;
-    const SDRAM: core::ops::Range<usize> = 0x0C00_0000..0x1000_0000;
+    // CS2 + CS3, the SDRAM-capable external areas (64 MB each).
+    const SDRAM: core::ops::Range<usize> = 0x0800_0000..0x1000_0000;
     let target = addr & !1; // drop the Thumb interworking bit
     target % 2 == 0 && (SRAM.contains(&target) || SDRAM.contains(&target))
 }
@@ -534,7 +536,7 @@ mod tests {
     use super::{
         GICC_BASE, GICC_CTLR_ADDR, GICC_EOIR_ADDR, GICC_IAR_ADDR, GICC_PMR_ADDR, GICD_BASE,
         GICD_CTLR, GICD_ICFGR0, GICD_ICPENDR0, GICD_IPRIORITYR0, GICD_ISACTIVER0, GICD_ISENABLER0,
-        ICDICFR_INIT, INT_ID_TOTAL, most_urgent_active,
+        ICDICFR_INIT, INT_ID_TOTAL, is_plausible_code_address, most_urgent_active,
     };
 
     #[test]
@@ -626,5 +628,21 @@ mod tests {
     #[test]
     fn gicd_ipriorityr_base_address() {
         assert_eq!(GICD_IPRIORITYR0, GICD_BASE + 0x400);
+    }
+
+    #[test]
+    fn plausible_code_addresses_cover_sram_and_the_cs2_cs3_sdram_window() {
+        // On-chip SRAM, ARM and Thumb entry points.
+        assert!(is_plausible_code_address(0x2002_0000));
+        assert!(is_plausible_code_address(0x2002_0001));
+        assert!(!is_plausible_code_address(0x2030_0000));
+        // CS2 and CS3 (SDRAM-capable areas), whatever size the board fits.
+        assert!(is_plausible_code_address(0x0800_0000));
+        assert!(is_plausible_code_address(0x0C00_0000));
+        assert!(is_plausible_code_address(0x0FFF_FFFE));
+        assert!(!is_plausible_code_address(0x1000_0000));
+        // Null and CS0/CS1.
+        assert!(!is_plausible_code_address(0x0000_0000));
+        assert!(!is_plausible_code_address(0x07FF_FFFC));
     }
 }
