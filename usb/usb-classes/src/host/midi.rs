@@ -373,7 +373,7 @@ mod tests {
 
     // --- MidiHost ---
 
-    use crate::usb::host::mock::{MockAlloc, MockState};
+    use crate::host::mock::{MockAlloc, MockState};
     use embassy_usb_driver::host::HostError;
 
     fn bidir_cfg() -> heapless::Vec<u8, 128> {

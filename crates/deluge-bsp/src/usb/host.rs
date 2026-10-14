@@ -1,22 +1,11 @@
-//! USB **host**-side class drivers.
+//! The Deluge's USB **host** role: the bus supervisor and the hosted-MIDI device registry.
 //!
-//! The device-side classes live in [`super::classes`]. This module is the
-//! mirror image: drivers for devices the Deluge *hosts*, built on
-//! `embassy-usb-host` and the RUSB1 host driver in [`rza1l_hal::usb`].
-//!
-//! Class drivers here are generic over [`UsbHostAllocator`], so they are unit
-//! tested against [`mock::MockAlloc`] under QEMU — see `tools/test.sh`.
-//!
-//! [`UsbHostAllocator`]: embassy_usb_driver::host::UsbHostAllocator
+//! The class drivers it runs (USB-MIDI, UAC) are board-agnostic and live in
+//! `usb_classes::host`. This module wires them to the RUSB1 host driver in
+//! [`rza1l_hal::usb`] and to the Deluge's pipe budget and engine sample rate.
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
-
-pub mod midi;
-pub mod uac;
-
-#[cfg(all(test, not(target_os = "none")))]
-pub(crate) mod mock;
 
 /// Maximum concurrently hosted MIDI devices.
 ///
@@ -148,7 +137,7 @@ mod runtime {
     use rza1l_hal::usb::{Rusb1Allocator, Rusb1HostDriver};
 
     use super::{DeviceId, MAX_MIDI_DEVICES, MIDI_RX, MIDI_TX};
-    use crate::usb::host::midi::MidiHost;
+    use usb_classes::host::midi::MidiHost;
 
     /// The allocator the class drivers are actually parameterised by.
     ///
@@ -229,10 +218,10 @@ mod runtime {
         dev_info: &embassy_usb_host::handler::EnumerationInfo,
         cfg: &ConfigurationDescriptor<'_>,
     ) -> bool {
-        use crate::usb::host::uac::Uac;
+        use usb_classes::host::uac::Uac;
 
         let addr = dev_info.device_address;
-        match embassy_futures::block_on(Uac::try_register(handle, addr, dev_info.split(), cfg)) {
+        match embassy_futures::block_on(Uac::try_register(handle, addr, dev_info.split(), cfg, crate::audio_block::SAMPLE_RATE_HZ)) {
             Ok(host) => {
                 info!(
                     "usb_host: UAC capture device VID={:04x} PID={:04x} addr={} channels={}",
@@ -252,9 +241,9 @@ mod runtime {
                 match uac_capture_task(host) {
                     Ok(token) => {
                         spawner.spawn(token);
-                        super::uac::shared::begin(ch);
+                        usb_classes::host::uac::shared::begin(ch);
                         if play_ch > 0 {
-                            super::uac::shared::playback_begin(play_ch);
+                            usb_classes::host::uac::shared::playback_begin(play_ch);
                         }
                         true
                     }
@@ -274,10 +263,10 @@ mod runtime {
     /// Services one hosted UAC2 capture device until it errors or detaches.
     ///
     /// Owns the pipes, so they drop — and the hardware pipes free — the moment
-    /// this exits. Publishes decoded frames into [`super::uac::shared`], the
+    /// this exits. Publishes decoded frames into [`usb_classes::host::uac::shared`], the
     /// cross-task bridge the engine drains via `capture_read`.
     #[embassy_executor::task]
-    async fn uac_capture_task(mut host: crate::usb::host::uac::Uac<'static, HostAlloc>) {
+    async fn uac_capture_task(mut host: usb_classes::host::uac::Uac<'static, HostAlloc>) {
         // BadResponse is the HAL's detach signal AND a transient iso-fault signal.
         // Absorb transient faults; treat only sustained failure as a real detach.
         // 24 consecutive microframe failures ~= 3 ms of no data, far beyond any
@@ -295,8 +284,8 @@ mod runtime {
                 }
             }
         }
-        super::uac::shared::end();
-        super::uac::shared::playback_end();
+        usb_classes::host::uac::shared::end();
+        usb_classes::host::uac::shared::playback_end();
         // `host` drops here → pipes drop → address reclaimed.
     }
 

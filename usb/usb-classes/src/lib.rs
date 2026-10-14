@@ -20,3 +20,6 @@
 
 #[cfg(feature = "device-midi")]
 pub mod midi_packets;
+
+#[cfg(any(feature = "host-midi", feature = "host-uac"))]
+pub mod host;

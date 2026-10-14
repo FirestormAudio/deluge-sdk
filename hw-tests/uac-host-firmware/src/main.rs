@@ -1,7 +1,7 @@
 //! Deluge UAC host **validation** firmware.
 //!
 //! Brings USB0 up in host mode, runs `usb_host_supervisor` (which auto-binds the
-//! `deluge_bsp::usb::host::uac` driver on connect), and loops captured audio back
+//! `usb_classes::host::uac` driver on connect), and loops captured audio back
 //! to playback, exercising the host UAC capture + playback stack on hardware.
 
 #![no_std]

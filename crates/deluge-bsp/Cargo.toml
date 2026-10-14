@@ -37,7 +37,7 @@ flash = []
 embedded-graphics = ["dep:embedded-graphics-core"]
 ## The USB host stack (`usb::host`: class drivers, UAC and MIDI). Opt-in; only
 ## host-role firmware needs it.
-usb-host = ["dep:embassy-usb-host"]
+usb-host = ["dep:embassy-usb-host", "usb-classes/host-midi", "usb-classes/host-uac"]
 ## Send PIC commands and OLED frames to the desktop simulator's panel
 ## (`deluge-sim-link`) instead of dropping them. Host builds only.
 sim-link = ["dep:deluge-sim-link", "dep:embassy-time"]

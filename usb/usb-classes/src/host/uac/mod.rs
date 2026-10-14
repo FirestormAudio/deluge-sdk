@@ -27,14 +27,6 @@ use self::out::{PlaybackResampler, encode_s24le};
 use self::resample::{PiController, Resampler};
 use self::ring::SampleRing;
 
-// `crate::audio_block` is gated to the bare-metal target (`target_os =
-// "none"`), but this module also builds under the host/QEMU test target (see
-// `usb/mod.rs`). Reuse the canonical engine sample rate on-device; mirror its
-// value locally for host tests so there is only one non-test source of truth.
-#[cfg(target_os = "none")]
-use crate::audio_block::SAMPLE_RATE_HZ;
-#[cfg(not(target_os = "none"))]
-const SAMPLE_RATE_HZ: u32 = 44_100;
 
 /// Errors from the host UAC capture driver.
 #[derive(Debug)]
@@ -43,7 +35,7 @@ pub enum UacError {
     NoInputInterface,
     /// Found capture, but not Type-I 24-bit PCM (our only supported format).
     UnsupportedFormat,
-    /// The device cannot run 44.1 kHz.
+    /// The device cannot run the requested sample rate.
     UnsupportedRate,
     /// A required pipe could not be allocated.
     NoPipe(HostError),
@@ -245,12 +237,14 @@ impl<'d, A: UsbHostAllocator<'d>> Uac<'d, A> {
         self.playback.as_ref().map(|p| p.channels).unwrap_or(0)
     }
 
-    /// Match, claim pipes, negotiate 44.1 kHz, and select the streaming alt.
+    /// Match, claim pipes, negotiate `sample_rate_hz` on the clock source, and select the
+    /// streaming alt.
     pub async fn try_register(
         alloc: &A,
         addr: u8,
         split: Option<SplitInfo>,
         cfg: &ConfigurationDescriptor<'_>,
+        sample_rate_hz: u32,
     ) -> Result<Self, UacError> {
         let m = find_uac_capture(cfg)?;
 
@@ -271,19 +265,19 @@ impl<'d, A: UsbHostAllocator<'d>> Uac<'d, A> {
             .alloc_pipe::<pipe::Isochronous, pipe::In>(addr, &m.endpoint.into(), split)
             .map_err(UacError::NoPipe)?;
 
-        // Negotiate 44.1 kHz on the clock-source entity.
+        // Negotiate `sample_rate_hz` on the clock-source entity.
         let cur = Self::get_sampling_freq(&mut control, m.ac_interface, m.clock_source_id).await?;
-        if cur != SAMPLE_RATE_HZ {
+        if cur != sample_rate_hz {
             Self::set_sampling_freq(
                 &mut control,
                 m.ac_interface,
                 m.clock_source_id,
-                SAMPLE_RATE_HZ,
+                sample_rate_hz,
             )
             .await?;
             let now =
                 Self::get_sampling_freq(&mut control, m.ac_interface, m.clock_source_id).await?;
-            if now != SAMPLE_RATE_HZ {
+            if now != sample_rate_hz {
                 return Err(UacError::UnsupportedRate);
             }
         }
@@ -570,7 +564,7 @@ impl<'d, A: UsbHostAllocator<'d>> Uac<'d, A> {
 /// sense once there is a real interrupt-driven executor. Host tests exercise
 /// the correctness reference (`pump_once` + `self.ring`) directly instead.
 #[cfg(target_os = "none")]
-pub(crate) mod shared {
+pub mod shared {
     use core::cell::RefCell;
 
     use embassy_sync::blocking_mutex::Mutex;
@@ -593,7 +587,7 @@ pub(crate) mod shared {
         }));
 
     /// Called by the capture task when a device is registered.
-    pub(crate) fn begin(channels: u8) {
+    pub fn begin(channels: u8) {
         CAPTURE.lock(|c| {
             let mut c = c.borrow_mut();
             let channels = channels.clamp(1, MAX_CHANNELS as u8);
@@ -604,7 +598,7 @@ pub(crate) mod shared {
     }
 
     /// Called by the capture task on detach.
-    pub(crate) fn end() {
+    pub fn end() {
         CAPTURE.lock(|c| {
             let mut c = c.borrow_mut();
             c.active = false;
@@ -614,7 +608,7 @@ pub(crate) mod shared {
     }
 
     /// Push captured interleaved frames from the task.
-    pub(crate) fn push(samples: &[f32], channels: usize) {
+    pub fn push(samples: &[f32], channels: usize) {
         CAPTURE.lock(|c| {
             let mut c = c.borrow_mut();
             for frame in samples.chunks_exact(channels) {
@@ -624,7 +618,7 @@ pub(crate) mod shared {
     }
 
     /// Frames currently buffered — the PI controller's single source of truth.
-    pub(crate) fn fill_frames() -> usize {
+    pub fn fill_frames() -> usize {
         CAPTURE.lock(|c| c.borrow().ring.fill_frames())
     }
 
@@ -654,7 +648,7 @@ pub(crate) mod shared {
         }));
 
     /// Called by the capture task when a full-duplex device is registered.
-    pub(crate) fn playback_begin(channels: u8) {
+    pub fn playback_begin(channels: u8) {
         PLAYBACK.lock(|c| {
             let mut c = c.borrow_mut();
             let channels = channels.clamp(1, MAX_CHANNELS as u8);
@@ -665,7 +659,7 @@ pub(crate) mod shared {
     }
 
     /// Called by the capture task on detach.
-    pub(crate) fn playback_end() {
+    pub fn playback_end() {
         PLAYBACK.lock(|c| {
             let mut c = c.borrow_mut();
             c.active = false;
@@ -678,7 +672,7 @@ pub(crate) mod shared {
     /// (the pump's local staging ring) under ONE short critical section
     /// (bounded by ring capacity, no await). The resampler then pulls from
     /// `dst` outside the lock.
-    pub(crate) fn playback_drain(dst: &mut SampleRing) {
+    pub fn playback_drain(dst: &mut SampleRing) {
         PLAYBACK.lock(|c| {
             let mut c = c.borrow_mut();
             let ch = c.channels.max(1) as usize;
@@ -815,7 +809,7 @@ mod tests {
         let raw = uac2_full_duplex_cfg(3, 2, 2);
         let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
 
-        let host = block_on(Uac::try_register(&alloc, 1, None, &cfg)).expect("register");
+        let host = block_on(Uac::try_register(&alloc, 1, None, &cfg, 44_100)).expect("register");
         assert_eq!(host.channels(), 2); // capture
         assert_eq!(host.playback_channels(), 2); // playback opened
         // control + iso IN + iso OUT = 3 pipes.
@@ -840,7 +834,7 @@ mod tests {
         let raw = uac2_mic_cfg(3, 2);
         let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
 
-        let host = block_on(Uac::try_register(&alloc, 1, None, &cfg)).expect("register");
+        let host = block_on(Uac::try_register(&alloc, 1, None, &cfg, 44_100)).expect("register");
         assert_eq!(host.playback_channels(), 0);
         assert_eq!(state.allocs.borrow().len(), 2); // control + iso IN only
     }
@@ -861,7 +855,7 @@ mod tests {
         let alloc = MockAlloc::new(state);
         let raw = uac2_full_duplex_cfg(3, 1, 1); // mono cap + mono play
         let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
-        let mut host = block_on(Uac::try_register(&alloc, 1, None, &cfg)).unwrap();
+        let mut host = block_on(Uac::try_register(&alloc, 1, None, &cfg, 44_100)).unwrap();
 
         // App-side playback data: known engine frames.
         host.push_playback_frame(&[0.5]);
@@ -889,7 +883,7 @@ mod tests {
         let alloc = MockAlloc::new(state);
         let raw = uac2_mic_cfg(3, 1);
         let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
-        let mut host = block_on(Uac::try_register(&alloc, 1, None, &cfg)).unwrap();
+        let mut host = block_on(Uac::try_register(&alloc, 1, None, &cfg, 44_100)).unwrap();
 
         block_on(host.pump_once()).expect("pump");
         assert!(
@@ -1011,7 +1005,7 @@ mod tests {
 
     // --- Uac::try_register negotiation ---
 
-    use crate::usb::host::mock::{MockAlloc, MockState};
+    use crate::host::mock::{MockAlloc, MockState};
     use embassy_futures::block_on;
 
     #[test]
@@ -1027,7 +1021,7 @@ mod tests {
         let raw = uac2_mic_cfg(3, 2);
         let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
 
-        let host = block_on(Uac::try_register(&alloc, 1, None, &cfg)).expect("register");
+        let host = block_on(Uac::try_register(&alloc, 1, None, &cfg, 44_100)).expect("register");
         assert_eq!(host.channels(), 2);
         // Two pipes claimed: control (EP0) + iso IN (0x81).
         assert_eq!(state.allocs.borrow().len(), 2);
@@ -1055,7 +1049,7 @@ mod tests {
         let raw = uac2_mic_cfg(3, 1);
         let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
 
-        let host = block_on(Uac::try_register(&alloc, 1, None, &cfg)).expect("register");
+        let host = block_on(Uac::try_register(&alloc, 1, None, &cfg, 44_100)).expect("register");
         assert_eq!(host.channels(), 1);
         // The SET_CUR data stage carried 44100 LE.
         assert_eq!(
@@ -1091,7 +1085,7 @@ mod tests {
         let alloc = MockAlloc::new(state);
         let raw = uac2_mic_cfg(3, 1);
         let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
-        let mut host = block_on(Uac::try_register(&alloc, 1, None, &cfg)).unwrap();
+        let mut host = block_on(Uac::try_register(&alloc, 1, None, &cfg, 44_100)).unwrap();
 
         block_on(host.pump_once()).expect("pump");
         // At r≈1.0 the resampler emits ~one frame per input frame after priming;
@@ -1110,14 +1104,14 @@ mod tests {
             .borrow_mut()
             .push(heapless::Vec::from_slice(&44_100u32.to_le_bytes()).unwrap())
             .unwrap();
-        *state.script.borrow_mut() = crate::usb::host::mock::Script {
+        *state.script.borrow_mut() = crate::host::mock::Script {
             reads: Default::default(),
             read_err: Some(embassy_usb_driver::host::PipeError::Timeout),
         };
         let alloc = MockAlloc::new(state);
         let raw = uac2_mic_cfg(3, 1);
         let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
-        let mut host = block_on(Uac::try_register(&alloc, 1, None, &cfg)).unwrap();
+        let mut host = block_on(Uac::try_register(&alloc, 1, None, &cfg, 44_100)).unwrap();
 
         // A failed iso transfer must NOT error out — the stream survives.
         block_on(host.pump_once()).expect("iso error is absorbed, not fatal");
@@ -1136,14 +1130,14 @@ mod tests {
             .borrow_mut()
             .push(heapless::Vec::from_slice(&44_100u32.to_le_bytes()).unwrap())
             .unwrap();
-        *state.script.borrow_mut() = crate::usb::host::mock::Script {
+        *state.script.borrow_mut() = crate::host::mock::Script {
             reads: Default::default(),
             read_err: Some(embassy_usb_driver::host::PipeError::BadResponse),
         };
         let alloc = MockAlloc::new(state);
         let raw = uac2_mic_cfg(3, 1);
         let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
-        let mut host = block_on(Uac::try_register(&alloc, 1, None, &cfg)).unwrap();
+        let mut host = block_on(Uac::try_register(&alloc, 1, None, &cfg, 44_100)).unwrap();
 
         let err = block_on(host.pump_once()).expect_err("detach must be propagated, not absorbed");
         assert!(matches!(err, UacError::Transfer(PipeError::BadResponse)));
@@ -1168,9 +1162,49 @@ mod tests {
         let alloc = MockAlloc::new(state);
         let raw = uac2_mic_cfg(3, 1);
         let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
-        let mut host = block_on(Uac::try_register(&alloc, 1, None, &cfg)).unwrap();
+        let mut host = block_on(Uac::try_register(&alloc, 1, None, &cfg, 44_100)).unwrap();
 
         // Must not panic on the non-multiple-of-frame_bytes packet length.
         block_on(host.pump_once()).expect("torn trailing sample is silently dropped, not fatal");
+    }
+
+    /// UAC2 `SET CUR` on a clock source: class request, interface recipient, host-to-device.
+    fn is_set_cur(setup: &[u8]) -> bool {
+        setup[0] == 0x21 && setup[1] == 0x01
+    }
+
+    #[test]
+    fn register_at_the_requested_rate_skips_set_cur() {
+        let state = MockState::leak();
+        state
+            .control_reads
+            .borrow_mut()
+            .push(Vec::from_slice(&48_000u32.to_le_bytes()).unwrap())
+            .unwrap();
+        let alloc = MockAlloc::new(state);
+        let raw = uac2_mic_cfg(3, 2);
+        let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
+
+        block_on(Uac::try_register(&alloc, 1, None, &cfg, 48_000)).expect("register at 48 kHz");
+        assert!(!state.setups.borrow().iter().any(|s| is_set_cur(s)), "no SET CUR expected");
+    }
+
+    #[test]
+    fn register_rejects_a_device_that_will_not_switch() {
+        // Asked for 44.1 kHz, the device reports 48 kHz before and after SET CUR.
+        let state = MockState::leak();
+        for _ in 0..2 {
+            state
+                .control_reads
+                .borrow_mut()
+                .push(Vec::from_slice(&48_000u32.to_le_bytes()).unwrap())
+                .unwrap();
+        }
+        let alloc = MockAlloc::new(state);
+        let raw = uac2_mic_cfg(3, 2);
+        let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
+
+        let err = block_on(Uac::try_register(&alloc, 1, None, &cfg, 44_100)).err();
+        assert!(matches!(err, Some(UacError::UnsupportedRate)), "got {err:?}");
     }
 }

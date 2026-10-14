@@ -9,7 +9,7 @@ use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use embassy_time::{Instant, Timer};
 use log::info;
 
-use deluge_bsp::usb::host::uac;
+use usb_classes::host::uac;
 
 // ── Shared status (read by the OLED task) ────────────────────────────────
 pub(crate) const STAGE_WAITING: u8 = 0;

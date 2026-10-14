@@ -10,6 +10,7 @@ name = "uac-host-firmware"
 test = false
 
 [dependencies]
+usb-classes = { workspace = true, features = ["host-uac"] }
 rza1l-hal = { path = "../../crates/rza1l-hal" }
 deluge-bsp = { path = "../../crates/deluge-bsp", features = ["usb-host"] }
 deluge-alloc = { path = "../../crates/deluge-alloc" }
