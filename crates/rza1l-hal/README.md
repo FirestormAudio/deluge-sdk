@@ -30,6 +30,7 @@ at runtime rather than compiled in.
 | `startup`     | ARM vector table and reset handler (`_start`). Includes the bootloader signature words at fixed offsets so the Deluge boot ROM accepts the image. |
 | `mmu`         | Flat-map L1 Translation Table (VA = PA, 1 MB sections) covering the full 4 GB address space with correct cache attributes per region (SRAM cached, I/O strongly-ordered, uncached mirror at +0x4000_0000). |
 | `cache`       | L1 D/I-cache + Cortex-A9 branch predictor enable; PL310 L2 cache init. Call `mmu::init_and_enable` first. |
+| `clocks`      | The clock tree, from the board's EXTAL crystal: `clocks::init(ClockConfig::new(extal_hz))` once at boot, then P0φ/P1φ (and the exact P0 ticks-per-µs ratio) are derived for every driver. Call it first. |
 | `stb`         | CPG Standby Control Register (STBCR2–STBCR12) init — ungate module clocks for all required peripherals via a `StbConfig` struct. |
 | `gic`         | ARM GIC-400 (GICD/GICC) driver. `gic::init` → `gic::register(id, handler)` → `gic::enable(id)`. The IRQ assembly shim calls `gic::dispatch`. |
 | `bsc`         | Bus State Controller CS0/CS1 timing (NOR flash). |
@@ -50,7 +51,7 @@ without explicit cache maintenance.
 
 | Module        | Description |
 |---------------|-------------|
-| `ostm`        | OS Timer — two 32-bit channels clocked from P0φ (33.064 MHz on the Deluge). Supports free-running and interval modes. Used as the Embassy time-driver tick source. |
+| `ostm`        | OS Timer — two 32-bit channels clocked from P0φ = EXTAL × 2.5 (see `clocks`; 33.064 MHz on the Deluge). Supports free-running and interval modes. Used as the Embassy time-driver tick source. |
 | `time_driver`  | Embassy `time-driver` implementation backed by OSTM0 (free-running) + OSTM1 (alarm). |
 | `time_math`   | Pure tick/µs conversion and wrap arithmetic behind `time_driver` (host-testable). |
 | `mtu2`        | Multi-Function Timer Pulse Unit 2 — five 16-bit channels. Used for bare-metal timing where OSTM is unavailable. |
@@ -101,6 +102,8 @@ Minimal bare-metal init sequence:
 ```rust,ignore
 #[no_mangle]
 unsafe extern "C" fn board_init() {
+    // 0. Register the board's crystal; every peripheral clock derives from it
+    rza1l_hal::clocks::init(rza1l_hal::clocks::ClockConfig::new(MY_EXTAL_HZ));
     // 1. Ungate peripheral clocks
     rza1l_hal::stb::init(&MY_STB_CONFIG);
     // 2. MMU + caches

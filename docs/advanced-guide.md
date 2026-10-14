@@ -44,25 +44,36 @@ flowchart TD
 `deluge-bsp` holds the board drivers (OLED, PIC, audio, SD, …); `rza1l-hal` is the
 register-level HAL (GIC, DMAC, SSI, …).
 
-The `deluge` facade **re-exports both lower layers**, so you reach everything through
-one dependency:
+The `deluge` facade **re-exports the board layer**, so most apps need only one
+dependency:
 
 ```rust
 use deluge::prelude::*;
-use deluge::{deluge_bsp, rza1l_hal};   // re-exported
+use deluge::deluge_bsp;                // re-exported
 use deluge::fixed;                     // = the `fixedpoint` crate (Q31/Q16 DSP math)
 use deluge::deluge_alloc;              // SRAM / SDRAM heaps
 ```
 
-`deluge_bsp` is re-exported on every target; `rza1l_hal` and `deluge_alloc` only on
-the device (`target_os = "none"`), so an app that uses them directly won't build
-for the desktop simulator.
+`deluge_bsp` is re-exported on every target; `deluge_alloc` only on the device
+(`target_os = "none"`), so an app that uses it directly won't build for the desktop
+simulator.
+
+The chip HAL is **not** re-exported: the board crate is the lowest layer the facade
+exposes. To use `rza1l_hal` directly (GIC, raw MMIO, …), add it as a dependency of
+your app alongside `deluge`:
+
+```toml
+[dependencies]
+rza1l-hal = "0.1"
+```
+
+Like `deluge_alloc`, it only builds for the device.
 
 There is **no svd2rust PAC** — the HAL does raw, typed MMIO (see
 [§7](#writing-a-peripheral-driver)). That keeps it small and host-testable.
 
 The friendly `Deluge` accessors (`oled()`, `audio()`, …) are thin wrappers; when you
-need something they don't expose, drop straight to `deluge_bsp::*` / `rza1l_hal::*`.
+need something they don't expose, drop straight to `deluge_bsp::*`, or to `rza1l_hal::*` with the direct dependency above.
 Mixing the two is fine, but remember the SDK's take-once handles assume they own
 their hardware — don't drive the same peripheral from both a capability handle and a
 raw HAL call.
@@ -266,7 +277,7 @@ The interrupt controller is a GIC-400 with 587 sources, wrapped in
 `fn()` (`type Handler = fn()`). All entry points are `unsafe`:
 
 ```rust
-use deluge::rza1l_hal::gic;
+use rza1l_hal::gic;   // direct dependency, see §1
 
 unsafe {
     gic::register(id, my_isr);   // install handler in the dispatch table
@@ -394,7 +405,7 @@ There's no PAC — use the typed MMIO seam in
 shadow memory + access log so your driver is unit-testable.
 
 ```rust
-use deluge::rza1l_hal::mmio::{self, Reg32};
+use rza1l_hal::mmio::{self, Reg32};   // direct dependency, see §1
 
 const MYDEV_CTRL: Reg32 = Reg32(0xE8XX_X000);
 unsafe {
