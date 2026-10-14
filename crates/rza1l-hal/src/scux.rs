@@ -80,6 +80,12 @@ use crate::dmac;
 use crate::UNCACHED_MIRROR_OFFSET;
 
 mod regs;
+/// CPU → SCUX DVU → SSI0 output path (hardware volume, ramps, zero-cross mute).
+pub mod dvu_path;
+/// CPU → SCUX async SRC → CPU path, for bridging two clock domains.
+pub mod src_path;
+/// Engine ↔ USB-rate async SRC path (2SRC1/0).
+pub mod usb_tx_path;
 use regs::*;
 // Re-export the public SCUX register/API constants as `scux::NAME`.
 pub use regs::{
