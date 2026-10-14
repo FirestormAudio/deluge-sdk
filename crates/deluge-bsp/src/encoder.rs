@@ -156,7 +156,9 @@ const POLL_PRESCALER: u16 = 64;
 /// One millisecond of P0φ/64 ticks: often enough that a click coming to rest on a B transition is
 /// reported at once, rather than when the knob next moves.
 #[cfg(target_os = "none")]
-const POLL_TICKS: u16 = (rza1l_hal::mtu2::MTU2_P0_HZ / POLL_PRESCALER as u32 / 1000) as u16;
+const POLL_TICKS: u16 = (crate::system::CLOCKS.p0_hz() / POLL_PRESCALER as u32 / 1000) as u16;
+#[cfg(target_os = "none")]
+const _: () = assert!(POLL_TICKS == 516, "encoder poll period changed");
 
 /// The poll's compare-match interrupt. The channel clears its counter on the match, so leaving it
 /// armed makes it fire every period.

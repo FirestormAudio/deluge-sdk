@@ -17,8 +17,8 @@
 //! 4. Disarms the timer (stops ch2, masks GIC ID 150).
 //!
 //! ## Tick frequency
-//! `MTU2_P0_HZ` (33.333 MHz) / 64 = **520 833 Hz** → 1 tick ≈ **1.92 µs**.
-//! Maximum one-shot delay: 65535 ticks ≈ **125.9 ms**.
+//! P0φ (33.064 MHz) / 64 = **516 625 Hz** → 1 tick ≈ **1.94 µs**.
+//! Maximum one-shot delay: 65535 ticks ≈ **126.9 ms**.
 //!
 //! ## Usage
 //! ```rust,no_run
@@ -154,8 +154,9 @@ pub unsafe fn cancel() {
     }
 }
 
-/// Tick frequency of the one-shot timer (Hz): P0 / 64.
+/// Tick frequency of the one-shot timer (Hz): P0φ / 64 = 516,625 Hz.
 ///
 /// Use this to convert a duration to ticks:
 /// `ticks = duration_us * TICK_HZ / 1_000_000`
-pub const TICK_HZ: u32 = rza1l_hal::mtu2::MTU2_P0_HZ / PRESCALER as u32;
+pub const TICK_HZ: u32 = crate::system::CLOCKS.p0_hz() / PRESCALER as u32;
+const _: () = assert!(TICK_HZ == 516_625, "MIDI gate tick rate changed");

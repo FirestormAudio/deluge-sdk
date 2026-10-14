@@ -1,7 +1,7 @@
 //! Multi-Function Timer Pulse Unit 2 (MTU2) driver for the RZ/A1L.
 //!
 //! The RZ/A1L MTU2 has five 16-bit timer channels (0–4), all clocked by P0φ
-//! (33.064 MHz on the Deluge; see [`MTU2_P0_HZ`]).  Channels can run as
+//! (see [`crate::clocks::ClockConfig::p0_hz`]).  Channels can run as
 //! free-running counters or be configured for one-shot compare-match use.
 //!
 //! ## Register layout peculiarity
@@ -110,11 +110,6 @@ const CST: [u8; 5] = [0x01, 0x02, 0x04, 0x40, 0x80];
 // ---------------------------------------------------------------------------
 // Public constants
 // ---------------------------------------------------------------------------
-
-/// P0 clock frequency driving MTU2 (Hz).
-///
-/// Deluge 13.2256 MHz EXTAL: P0φ = 13,225,625 × 30 / 12 = 33,064,062.5 Hz.
-pub const MTU2_P0_HZ: u32 = 33_064_062;
 
 /// GIC interrupt IDs for the compare-match-A (TGInA) interrupt on channels 0–4.
 /// Source: `devdrv_intc.h`.
@@ -431,9 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn p0_clock_matches_deluge_extal() {
-        // 13.2256 MHz EXTAL -> P0phi = 13_225_625 * 30 / 12 = 33_064_062.5 Hz.
-        assert_eq!(MTU2_P0_HZ, 33_064_062);
+    fn tgia_irq_table_covers_all_five_channels() {
         assert_eq!(TGIA_IRQ.len(), 5);
     }
 

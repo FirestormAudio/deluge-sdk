@@ -25,6 +25,7 @@
 //! | STBCR11  | 0b11011111 | SSIF0                                        |
 //! | STBCR12  | 0b11111011 | SDHI01                                       |
 
+use rza1l_hal::clocks::ClockConfig;
 use rza1l_hal::ssi::SsiConfig;
 use rza1l_hal::stb::StbConfig;
 
@@ -67,6 +68,10 @@ unsafe fn cpg_basic_init() {
 // ---------------------------------------------------------------------------
 
 /// CPG clock-gate configuration for the Deluge board.
+/// The Deluge's EXTAL crystal: 13.2256 MHz (13,225,625 Hz), not the RZ/A1L's 13.33 MHz maximum.
+/// Every peripheral clock derives from it (P0φ = 33,064,062.5 Hz, P1φ = 66,128,125 Hz).
+pub const CLOCKS: ClockConfig = ClockConfig::new(13_225_625);
+
 ///
 /// Enables exactly the module clocks required by the Deluge firmware.
 /// All other module clocks are left stopped (gated) to minimise power and
@@ -190,6 +195,8 @@ pub const SD_DMA_MAX_SECTORS: usize = 128;
 /// the async executor starts.
 ///
 /// Performs, in order:
+/// 0. Clock-tree registration ([`rza1l_hal::clocks::init`] with [`CLOCKS`]), so every
+///    clock-dependent driver below sees the Deluge's crystal.
 /// 1. Basic CPG init (matches DelugeFirmware `CPG_Init`).
 /// 2. CPG module clock enable ([`rza1l_hal::stb::init`] with [`STB_CONFIG`]).
 /// 3. GIC init ([`rza1l_hal::gic::init`]), in the C firmware's `resetprg()` order.
@@ -219,6 +226,7 @@ pub const SD_DMA_MAX_SECTORS: usize = 128;
 #[cfg(target_os = "none")]
 pub unsafe fn init_clocks() {
     unsafe {
+        rza1l_hal::clocks::init(CLOCKS);
         cpg_basic_init();
         rza1l_hal::stb::init(&STB_CONFIG);
         rza1l_hal::gic::init();
@@ -228,5 +236,17 @@ pub unsafe fn init_clocks() {
         crate::sdram::init();
         rza1l_hal::ostm::enable_clock();
         rza1l_hal::time_driver::init();
+    }
+}
+
+#[cfg(all(test, not(target_os = "none")))]
+mod tests {
+    use super::CLOCKS;
+
+    #[test]
+    fn deluge_crystal_is_13_2256_mhz() {
+        assert_eq!(CLOCKS.extal_hz, 13_225_625);
+        assert_eq!(CLOCKS.p0_hz(), 33_064_062);
+        assert_eq!(CLOCKS.p1_hz(), 66_128_125);
     }
 }
