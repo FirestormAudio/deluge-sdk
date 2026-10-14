@@ -5,7 +5,7 @@
 //! and installs the `embassy_time_driver` impl), so that this arithmetic is always compiled and
 //! unit-tested on the host.
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::clocks::ClockConfig;
 
@@ -72,31 +72,27 @@ impl TickRatio {
 }
 
 /// A [`TickRatio`] the time driver sets once at init and reads on every `now()`.
-pub(crate) struct AtomicTickRatio {
-    num: AtomicU32,
-    den: AtomicU32,
-}
+///
+/// Packed into one word (`num << 32 | den`) so a reader always sees a consistent pair from a
+/// single relaxed load: no barrier on the `now()` path, and no torn num/den.
+pub(crate) struct AtomicTickRatio(AtomicU64);
 
 impl AtomicTickRatio {
     pub(crate) const fn unset() -> Self {
-        Self {
-            num: AtomicU32::new(0),
-            den: AtomicU32::new(0),
-        }
+        Self(AtomicU64::new(0))
     }
 
     pub(crate) fn store(&self, r: TickRatio) {
-        // `den` first: a reader that sees a non-zero `num` then sees its `den` (single core;
-        // set once, before interrupts are enabled).
-        self.den.store(r.den as u32, Ordering::Relaxed);
-        self.num.store(r.num as u32, Ordering::Release);
+        self.0.store((r.num << 32) | r.den, Ordering::Relaxed);
     }
 
     #[inline]
     pub(crate) fn load(&self) -> TickRatio {
-        let num = self.num.load(Ordering::Acquire) as u64;
-        let den = self.den.load(Ordering::Relaxed) as u64;
-        TickRatio { num, den }
+        let packed = self.0.load(Ordering::Relaxed);
+        TickRatio {
+            num: packed >> 32,
+            den: packed & 0xFFFF_FFFF,
+        }
     }
 }
 
@@ -251,5 +247,14 @@ mod tests {
         let a = AtomicTickRatio::unset();
         a.store(TEST_RATIO);
         assert_eq!(a.load(), TEST_RATIO);
+    }
+
+    #[test]
+    fn atomic_ratio_round_trips_the_largest_ratio() {
+        // num < 2^27 and den < 2^21 for any accepted crystal (ClockConfig::p0_ticks_per_us).
+        let big = TickRatio { num: (1 << 27) - 1, den: (1 << 21) - 1 };
+        let a = AtomicTickRatio::unset();
+        a.store(big);
+        assert_eq!(a.load(), big);
     }
 }
