@@ -31,6 +31,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Phase 4 is complete: every `rza1l-hal` driver is built from its peripheral singleton and a typed
+  interrupt binding. **Breaking:** `sdhi::Sdhi::new(Peri<SDHIn>, tx, rx, Irqs, sd_option)` replaces
+  the port-numbered SDHI functions; `ssi::init*` take `Peri<SSIF0>` and typed DMA channels
+  (`SsiConfig` is gone); the SCUX FIFO and path inits take `dmac::Dma`; `usb::init_device_mode` /
+  `init_host_mode` / `disconnect` take the port singleton and a `DeviceInterruptHandler`,
+  `HostInterruptHandler` or `DualRoleInterruptHandler` binding; `dmac::raw` and `gic::register` are
+  no longer public (bind handlers with `bind_interrupts!`; drivers hold typed `Dma` handles). New:
+  `Dma::new_without_interrupt` for polled rings, `dmac::BlockDma` + `BlockInterruptHandler` for
+  per-block rings, typelevel `IRQ0`–`IRQ7` and SDHI interrupts. `usb::Rusb1Driver<'d>` and
+  `Rusb1HostDriver<'d>` borrow their port, so a firmware type is `Rusb1Driver<'static>`.
+- `deluge_bsp::Board` also hands out SDHI1 (`sd_card`) and SSIF0 (`audio_ssi`). **Breaking:**
+  `sd::init_hw(card, tx, rx)` brings the SD slot up once (`sd::init` now runs only the card
+  protocol); `audio::init(ssi, tx, rx)` and `audio::init_with_scux(ssi, rx, ffd0)` take their
+  parts; `system::SSI_CONFIG` is `system::SSICR`. `deluge::parts` gains the SD, audio and (when the
+  SDK doesn't own it) USB0 peripherals.
 - `rza1l-hal` drivers are built from their peripheral singletons. **Breaking:** `rspi::Rspi::new`,
   `uart::Uart::new` (split into `UartRx`/`UartTx`), `mtu2::OneShot::new` and
   `time_driver::init(OSTM0, OSTM1, Irqs)` replace the channel-number functions, which are now

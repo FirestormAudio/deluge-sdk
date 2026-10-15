@@ -272,27 +272,37 @@ SD I/O) coordinating through atomics, shared buffers, and signals.
 ## 5. Interrupts & the GIC
 
 The interrupt controller is a GIC-400 with 587 sources, wrapped in
-[`crates/rza1l-hal/src/gic.rs`](../crates/rza1l-hal/src/gic.rs). Handlers are plain
-`fn()` (`type Handler = fn()`). All entry points are `unsafe`:
+[`crates/rza1l-hal/src/gic.rs`](../crates/rza1l-hal/src/gic.rs). A handler is a type that
+implements `interrupt::Handler` for one typed interrupt; `bind_interrupts!` names the pairing and
+`interrupt::bind` installs it. Priority and enable stay `unsafe` GIC calls:
 
 ```rust
+use rza1l_hal::interrupt::{self, Handler, Interrupt, typelevel};
 use rza1l_hal::gic;   // direct dependency, see §1
 
+struct MyHandler;
+impl Handler<typelevel::IRQ5> for MyHandler {
+    unsafe fn on_interrupt() { /* IRQ context: no .await, no allocation; wake a task */ }
+}
+rza1l_hal::bind_interrupts!(struct Irqs { IRQ5 => MyHandler; });
+
+let id = typelevel::IRQ5::ID;
+interrupt::bind(Irqs);           // install the handler in the dispatch table
 unsafe {
-    gic::register(id, my_isr);   // install handler in the dispatch table
     gic::set_priority(id, 16);   // 0 = highest, 31 = disabled — set < 31 BEFORE enable
     gic::enable(id);             // unmask in GICD_ISENABLER
 }
-
-fn my_isr() { /* runs in IRQ context: no .await, no allocation; wake a task */ }
 ```
+
+HAL drivers take their binding as an argument (`Dma::new(p.DMA_CH3, Irqs)`,
+`usb::init_device_mode(p.USB0, Irqs)`) and do this themselves.
 
 For the external IRQ pins there are edge-config helpers:
 `gic::set_irq_both_edges(n)`, `gic::set_irq_falling_edge(n)`, `gic::clear_irq_pending(n)`.
 
 ### The `setup` window
 
-`gic::register`/`enable` and most GIC source configuration **must happen with IRQs
+`interrupt::bind`/`gic::enable` and most GIC source configuration **must happen with IRQs
 masked**, before the executor enables them. That's exactly what the macro's `setup`
 hook is for:
 
@@ -301,11 +311,11 @@ hook is for:
 async fn main(dlg: Deluge) { /* IRQs on, executor running */ }
 
 fn setup() {
-    // IRQs masked here. Register your ISRs and configure GIC sources.
+    // IRQs masked here. Bind your handlers and configure GIC sources.
+    interrupt::bind(Irqs);
     unsafe {
-        gic::register(my_id, my_isr);
-        gic::set_priority(my_id, 16);
-        gic::enable(my_id);
+        gic::set_priority(typelevel::IRQ5::ID, 16);
+        gic::enable(typelevel::IRQ5::ID);
     }
 }
 ```
@@ -627,7 +637,7 @@ table and bootloader metadata in [`rza1-rt`](../crates/rza1-rt/README.md).
 
 | Module | What |
 |--------|------|
-| `system` | `BOARD_CONFIG` (the chip config for `rza1l_hal::init`); board `StbConfig`/`SsiConfig` |
+| `system` | `BOARD_CONFIG` (the chip config for `rza1l_hal::init`); board `StbConfig` and `SSICR` |
 | `board` | `Board::new(rza1l_hal::init(BOARD_CONFIG))`: the rest of bring-up, then the peripherals by role |
 | `bus` | RSPI0 ownership guard (`init`, `lock_rspi0`, `enter_8bit/32bit`, `steal_rspi0`) |
 | `pic` | PIC co-processor: parser, `Event`, handshakes |

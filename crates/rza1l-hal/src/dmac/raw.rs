@@ -15,7 +15,7 @@ use super::*;
 /// - `descriptor` must point to a valid, 32-byte-aligned 8-word link
 ///   descriptor whose lifetime extends past the end of the DMA operation.
 /// - Must be called before [`channel_start`] for the same channel.
-pub unsafe fn init_with_link_descriptor(ch: u8, descriptor: *const u32, dmars_val: u32) {
+pub(super) unsafe fn init_with_link_descriptor(ch: u8, descriptor: *const u32, dmars_val: u32) {
     unsafe {
         log::trace!(
             "dmac: ch{} init, desc={:#010x}, dmars={:#06x}",
@@ -59,7 +59,7 @@ pub unsafe fn init_with_link_descriptor(ch: u8, descriptor: *const u32, dmars_va
 ///
 /// # Safety
 /// The channel must have been initialised with [`init_with_link_descriptor`].
-pub unsafe fn channel_start(ch: u8) {
+pub(super) unsafe fn channel_start(ch: u8) {
     unsafe {
         log::trace!("dmac: ch{} start (SWRST + SETEN)", ch);
         let chctrl = ch_reg(ch, OFF_CHCTRL);
@@ -85,7 +85,7 @@ pub unsafe fn channel_start(ch: u8) {
 ///
 /// # Safety
 /// Writes the channel's `CHCTRL` and DMARS registers.
-pub unsafe fn stop(ch: u8) {
+pub(super) unsafe fn stop(ch: u8) {
     unsafe {
         let chctrl = ch_reg(ch, OFF_CHCTRL).0;
         crate::mmio::write32(chctrl, CHCTRL_CLREN);
@@ -113,7 +113,7 @@ pub unsafe fn stop(ch: u8) {
 /// # Safety
 /// Reads a memory-mapped DMA register.
 #[inline]
-pub unsafe fn transfer_in_flight(ch: u8) -> bool {
+pub(super) unsafe fn transfer_in_flight(ch: u8) -> bool {
     let chstat = unsafe { ch_reg(ch, OFF_CHSTAT).read() };
     chstat & CHSTAT_EN != 0 && chstat & CHSTAT_TC == 0
 }
@@ -125,7 +125,7 @@ pub unsafe fn transfer_in_flight(ch: u8) -> bool {
 /// # Safety
 /// Reads a memory-mapped DMA register.
 #[inline]
-pub unsafe fn current_src(ch: u8) -> u32 {
+pub(super) unsafe fn current_src(ch: u8) -> u32 {
     unsafe { ch_reg(ch, OFF_CRSA).read() }
 }
 
@@ -136,7 +136,7 @@ pub unsafe fn current_src(ch: u8) -> u32 {
 /// # Safety
 /// Reads a memory-mapped DMA register.
 #[inline]
-pub unsafe fn current_dst(ch: u8) -> u32 {
+pub(super) unsafe fn current_dst(ch: u8) -> u32 {
     unsafe { ch_reg(ch, OFF_CRDA).read() }
 }
 
@@ -150,13 +150,12 @@ pub unsafe fn current_dst(ch: u8) -> u32 {
 /// 4. Software-resets the channel (clears `TC`).
 /// 5. Programs the DMARS resource selector.
 ///
-/// The channel is left idle.  Call [`start_transfer`] for each block.  Call
-/// [`register_completion_irq`] separately to receive a GIC interrupt on
-/// transfer end.
+/// The channel is left idle.  Call [`start_transfer`] for each block; `Dma::new` binds the
+/// completion interrupt.
 ///
 /// # Safety
 /// Writes to DMAC registers.  Must be called before the channel is used.
-pub unsafe fn init_register_mode(ch: u8, chcfg: u32, dst: u32, dmars: u32) {
+pub(super) unsafe fn init_register_mode(ch: u8, chcfg: u32, dst: u32, dmars: u32) {
     unsafe {
         log::debug!(
             "dmac: ch{} register-mode init, chcfg={:#010x}, dst={:#010x}, dmars={:#06x}",
@@ -196,28 +195,10 @@ pub unsafe fn init_register_mode(ch: u8, chcfg: u32, dst: u32, dmars: u32) {
     }
 }
 
-/// Register the DMAC completion (DMAINT) GIC interrupt for channel `ch`.
-///
-/// The ISR calls [`on_dma_int`] which wakes any task awaiting
-/// [`wait_transfer_complete`].
-///
-/// # Safety
-/// Writes to GIC registers. Call after [`crate::gic::init`] and before IRQs
-/// are enabled.
-pub unsafe fn register_completion_irq(ch: u8) {
-    unsafe {
-        use crate::gic;
-        let id = DMAINT_BASE + ch as u16;
-        gic::register(id, DMA_INT_HANDLERS[ch as usize]);
-        gic::set_priority(id, DMAC_IRQ_PRIORITY);
-        gic::enable(id);
-    }
-}
-
 /// Call from the DMAINT completion ISR for channel `ch`.
 ///
 /// Wakes any Embassy task waiting in [`wait_transfer_complete`].
-pub fn on_dma_int(ch: u8) {
+pub(super) fn on_dma_int(ch: u8) {
     DMAC_WAKERS[ch as usize].wake();
 }
 
@@ -231,7 +212,7 @@ pub fn on_dma_int(ch: u8) {
 ///
 /// # Safety
 /// Writes to DMAC registers.  Must be called before the channel is used.
-pub unsafe fn init_register_mode_rx(ch: u8, chcfg: u32, src: u32, dmars: u32) {
+pub(super) unsafe fn init_register_mode_rx(ch: u8, chcfg: u32, src: u32, dmars: u32) {
     unsafe {
         log::debug!(
             "dmac: ch{} register-mode-rx init, chcfg={:#010x}, src={:#010x}, dmars={:#06x}",
@@ -277,7 +258,7 @@ pub unsafe fn init_register_mode_rx(ch: u8, chcfg: u32, src: u32, dmars: u32) {
 /// # Safety
 /// The destination region `[dst, dst+count)` must be uncached memory (or have
 /// had its cache lines invalidated) so the CPU reads the DMAC-written data.
-pub unsafe fn start_transfer_rx(ch: u8, dst: u32, count: u32) {
+pub(super) unsafe fn start_transfer_rx(ch: u8, dst: u32, count: u32) {
     unsafe {
         log::trace!(
             "dmac: ch{} start_transfer_rx dst={:#010x} count={}",
@@ -301,7 +282,7 @@ pub unsafe fn start_transfer_rx(ch: u8, dst: u32, count: u32) {
 /// # Safety
 /// The source data at `[src, src+count)` must be in uncached memory (or have
 /// had its cache lines flushed) so the DMAC reads the correct bytes.
-pub unsafe fn start_transfer(ch: u8, src: u32, count: u32) {
+pub(super) unsafe fn start_transfer(ch: u8, src: u32, count: u32) {
     unsafe {
         log::trace!(
             "dmac: ch{} start_transfer src={:#010x} count={}",
@@ -319,10 +300,9 @@ pub unsafe fn start_transfer(ch: u8, src: u32, count: u32) {
 
 /// Suspend until the DMA transfer on channel `ch` completes.
 ///
-/// Completion is signalled by the DMAINT GIC interrupt (registered via
-/// [`register_completion_irq`]).  This function must be called **after**
+/// Completion is signalled by the DMAINT GIC interrupt (bound by `Dma::new`).  This function must be called **after**
 /// [`start_transfer`] has kicked the channel.
-pub async fn wait_transfer_complete(ch: u8) {
+pub(super) async fn wait_transfer_complete(ch: u8) {
     poll_fn(|cx| {
         DMAC_WAKERS[ch as usize].register(cx.waker());
         // Check TC flag (CHSTAT.TC = bit 6) directly to avoid missing a
@@ -338,26 +318,9 @@ pub async fn wait_transfer_complete(ch: u8) {
     .await
 }
 
-/// Register the GIC handler for a channel running a **descriptor ring** with
-/// per-descriptor END interrupts. The handler clears TC each block (re-arming the
-/// running ring) and signals [`wait_block`].
-///
-/// # Safety
-/// Writes the GIC handler table / distributor; the channel must use a ring whose
-/// descriptors have the END interrupt enabled (DEM=0).
-pub unsafe fn register_block_irq(ch: u8) {
-    unsafe {
-        use crate::gic;
-        let id = DMAINT_BASE + ch as u16;
-        gic::register(id, DMA_BLOCK_HANDLERS[ch as usize]);
-        gic::set_priority(id, DMAC_IRQ_PRIORITY);
-        gic::enable(id);
-    }
-}
-
-/// Await the next per-block END interrupt on a ring channel (see
-/// [`register_block_irq`]). Recurring: call it in a loop.
-pub async fn wait_block(ch: u8) {
+/// Await the next per-block END interrupt on a ring channel (bound by `BlockDma::new`).
+/// Recurring: call it in a loop.
+pub(super) async fn wait_block(ch: u8) {
     poll_fn(|cx| {
         DMAC_WAKERS[ch as usize].register(cx.waker());
         if DMAC_BLOCK_READY[ch as usize].swap(false, Ordering::AcqRel) {

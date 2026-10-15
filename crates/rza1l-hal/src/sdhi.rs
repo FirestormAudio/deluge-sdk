@@ -111,7 +111,7 @@ pub const INFO1_CD_LEVEL: u16 = 0x0020;
 /// Write-protect — SD_WP level (INFO7).  Per the TRM the bit reflects the pin:
 /// 1 = SD_WP held low, 0 = SD_WP high.  The mapping from that level to "write
 /// protected" is board-specific — on the Deluge it is inverted (see
-/// [`card_write_protected`]).
+/// [`Sdhi::card_write_protected`]).
 pub const INFO1_WP: u16 = 0x0080;
 
 // ---------------------------------------------------------------------------

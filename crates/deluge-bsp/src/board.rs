@@ -54,9 +54,8 @@ pub type AudioSsi = SSIF0;
 
 /// Every DMA channel, by the role the Deluge gives it.
 ///
-/// Each driver takes the channels its role names: the OLED's by `bus::init`, the PIC's and MIDI's
-/// by `uart::init_*`, the SD card's by `sd::init_hw`, SSI's by `audio::init` and SCUX's by
-/// `audio::init_with_scux` and the `scux_*_path` modules.
+/// Each role's driver takes its channel (`bus::init`, `uart::init_*`, `sd::init_hw`, `audio::init*`);
+/// a channel the board's firmware doesn't use stays here, unused.
 pub struct BoardDma {
     pub scux_ffd0: Peri<'static, ScuxFfd0Dma>,
     pub scux_ffu0: Peri<'static, ScuxFfu0Dma>,

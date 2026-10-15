@@ -115,10 +115,11 @@ fn dmars_reg(ch: u8) -> crate::mmio::Reg32 {
 // again.  Completion is signalled via a GIC interrupt (DMAINT_n, GIC IDs
 // 41–56 for channels 0–15).
 
-#[doc(hidden)]
-pub mod raw;
+/// The DMAC by channel number: `Dma`'s implementation.
+mod raw;
 
-// The table handlers and tests below call the channel-number functions by name.
+// The tests below call the channel-number functions by name.
+#[cfg(all(test, not(target_os = "none")))]
 use raw::*;
 
 use core::future::poll_fn;
@@ -187,7 +188,7 @@ impl<'d> Dma<'d> {
         irq: impl Binding<C::Interrupt, InterruptHandler<C>> + 'd,
     ) -> Self {
         interrupt::bind(irq);
-        // SAFETY: this channel's own interrupt, at the DMAC priority raw::register_completion_irq uses.
+        // SAFETY: this channel's own interrupt, at the DMAC priority.
         unsafe {
             crate::gic::set_priority(C::Interrupt::ID, DMAC_IRQ_PRIORITY);
             crate::gic::enable(C::Interrupt::ID);
@@ -236,7 +237,9 @@ impl<'d> Dma<'d> {
         unsafe { crate::gic::disable(DMAINT_BASE + self.ch as u16) }
     }
 
-    /// See [`raw::init_register_mode`].
+    /// Set the channel up in register mode for memory→peripheral block transfers to the fixed
+    /// address `dst`, and leave it idle: each [`start_transfer`](Self::start_transfer) sends one
+    /// block.
     ///
     /// # Safety
     /// `dst` is the bus address every transfer writes to.
@@ -244,7 +247,9 @@ impl<'d> Dma<'d> {
         unsafe { raw::init_register_mode(self.ch, chcfg, dst, dmars) }
     }
 
-    /// See [`raw::init_register_mode_rx`].
+    /// Set the channel up in register mode for peripheral→memory block transfers from the fixed
+    /// address `src`, and leave it idle: each [`start_transfer_rx`](Self::start_transfer_rx)
+    /// receives one block.
     ///
     /// # Safety
     /// `src` is the bus address every transfer reads from.
@@ -252,7 +257,8 @@ impl<'d> Dma<'d> {
         unsafe { raw::init_register_mode_rx(self.ch, chcfg, src, dmars) }
     }
 
-    /// See [`raw::init_with_link_descriptor`].
+    /// Set the channel up in link-descriptor mode: `CHCFG` from word 4 of `descriptor`, then the
+    /// DMARS selector and `NXLA`. [`channel_start`](Self::channel_start) runs it.
     ///
     /// # Safety
     /// `descriptor` is the bus address of a 32-byte-aligned, 8-word link descriptor that stays
@@ -261,7 +267,7 @@ impl<'d> Dma<'d> {
         unsafe { raw::init_with_link_descriptor(self.ch, descriptor, dmars) }
     }
 
-    /// See [`raw::channel_start`].
+    /// Start the channel's descriptor chain: software reset, then set-enable.
     ///
     /// # Safety
     /// [`init_with_link_descriptor`](Self::init_with_link_descriptor) has run, and its
@@ -270,7 +276,7 @@ impl<'d> Dma<'d> {
         unsafe { raw::channel_start(self.ch) }
     }
 
-    /// See [`raw::start_transfer`].
+    /// Send one block of `count` bytes from `src` on a channel in register mode.
     ///
     /// # Safety
     /// `src..src + count` must stay valid and unaliased until the transfer completes.
@@ -278,7 +284,7 @@ impl<'d> Dma<'d> {
         unsafe { raw::start_transfer(self.ch, src, count) }
     }
 
-    /// See [`raw::start_transfer_rx`].
+    /// Receive one block of `count` bytes to `dst` on a channel in register mode.
     ///
     /// # Safety
     /// `dst..dst + count` must stay valid and unaliased until the transfer completes.
@@ -412,62 +418,6 @@ static DMAC_WAKERS: [AtomicWaker; 16] = [
     AtomicWaker::new(),
 ];
 
-// Per-channel ISR dispatch table (16 entries; only populated channels matter).
-fn dma_int_0() {
-    on_dma_int(0);
-}
-fn dma_int_1() {
-    on_dma_int(1);
-}
-fn dma_int_2() {
-    on_dma_int(2);
-}
-fn dma_int_3() {
-    on_dma_int(3);
-}
-fn dma_int_4() {
-    on_dma_int(4);
-}
-fn dma_int_5() {
-    on_dma_int(5);
-}
-fn dma_int_6() {
-    on_dma_int(6);
-}
-fn dma_int_7() {
-    on_dma_int(7);
-}
-fn dma_int_8() {
-    on_dma_int(8);
-}
-fn dma_int_9() {
-    on_dma_int(9);
-}
-fn dma_int_10() {
-    on_dma_int(10);
-}
-fn dma_int_11() {
-    on_dma_int(11);
-}
-fn dma_int_12() {
-    on_dma_int(12);
-}
-fn dma_int_13() {
-    on_dma_int(13);
-}
-fn dma_int_14() {
-    on_dma_int(14);
-}
-fn dma_int_15() {
-    on_dma_int(15);
-}
-
-type HandlerFn = fn();
-static DMA_INT_HANDLERS: [HandlerFn; 16] = [
-    dma_int_0, dma_int_1, dma_int_2, dma_int_3, dma_int_4, dma_int_5, dma_int_6, dma_int_7,
-    dma_int_8, dma_int_9, dma_int_10, dma_int_11, dma_int_12, dma_int_13, dma_int_14, dma_int_15,
-];
-
 // ── Recurring per-block (descriptor-ring) interrupt support ────────────────────
 //
 // For a channel running a ring of link descriptors (e.g. the SSI RX block ring),
@@ -488,31 +438,6 @@ fn on_block_int(ch: u8) {
     DMAC_BLOCK_READY[ch as usize].store(true, Ordering::Release);
     DMAC_WAKERS[ch as usize].wake();
 }
-
-macro_rules! block_handlers {
-    ($($name:ident = $ch:literal),* $(,)?) => {
-        $( fn $name() { on_block_int($ch); } )*
-        static DMA_BLOCK_HANDLERS: [HandlerFn; 16] = [ $($name),* ];
-    };
-}
-block_handlers!(
-    dbi_0 = 0,
-    dbi_1 = 1,
-    dbi_2 = 2,
-    dbi_3 = 3,
-    dbi_4 = 4,
-    dbi_5 = 5,
-    dbi_6 = 6,
-    dbi_7 = 7,
-    dbi_8 = 8,
-    dbi_9 = 9,
-    dbi_10 = 10,
-    dbi_11 = 11,
-    dbi_12 = 12,
-    dbi_13 = 13,
-    dbi_14 = 14,
-    dbi_15 = 15,
-);
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
@@ -689,8 +614,7 @@ mod typed_tests {
         let dma = Dma::new(unsafe { DMA_CH4::steal() }, Irqs);
         assert_eq!(dma.number(), 4);
         assert!(crate::gic::handler(45).is_some(), "DMAINT4 has a handler");
-        // Priority 13 into IPRIORITYR11 lane 1, then ISENABLER1 bit 13: what
-        // raw::register_completion_irq(4) writes.
+        // Priority 13 into IPRIORITYR11 lane 1, then ISENABLER1 bit 13.
         assert_eq!(
             test::writes(),
             [(0xE820_142C, (13 << 3) << 8), (0xE820_1104, 1 << 13)]

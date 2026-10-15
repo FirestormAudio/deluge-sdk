@@ -173,6 +173,13 @@ also brings RSPI0 up for an OLED-only app (it had relied on the boot loader). Es
 `Dma::steal`, `dmac::stop_all`, `Rspi::steal`, `time_driver::stop`. Phase 4c migrates SDHI,
 SSI+SCUX and USB, deletes `dmac::raw` and `gic::register`, and migrates DelugeFirmware#next.
 
+**4c done (2026-10-15 plans 4c-1, 4c-2):** DelugeFirmware#next builds on the owned API (4c-1, with
+a shared-position `UartRx::steal` for its fault paths). SDHI (`Sdhi`), SSI and SCUX (typed DMA,
+masked polled rings, typed block ring), USB (singleton + device/host/dual-role binding) and the
+GPIO IRQs and SGIs are typed. Every HAL driver holds its typed DMA handles; `dmac::raw` is
+private to `dmac` and `gic::register` is gone. The USB drivers borrow their port. No public
+`unsafe fn new()` remains, which with 4a's USB0 exclusivity meets the Phase 4 exit.
+
 ### Phase 5: PAC
 
 - Generate `rza1-pac` with chiptool from `vendor/rza1.svd`, fixing the SVD with YAML transforms.

@@ -99,7 +99,7 @@ const SSITDMR_OFF: usize = 0x20; // TDM mode register
 //   - CKDV=0010 (7:4)  : AUDIO_X1 ÷ 4 = 5.6448 MHz BCLK
 //
 // The Deluge value is 0x002B_C020 (DWL bits [21:19] = 0b101 = 24-bit; DWL=0b111
-// is prohibited), held in `deluge_bsp::system::SSI_CONFIG.ssicr`.
+// is prohibited), held in `deluge_bsp::system::SSICR`.
 
 /// SSIFCR bit positions (verified against vendor/rbsp ssif.h SSIF_FCR_SHIFT_*).
 const SSIFCR_RFRST: u32 = 1 << 0; // RX FIFO reset (active high)
