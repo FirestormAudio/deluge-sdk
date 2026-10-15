@@ -80,6 +80,17 @@ use crate::dmac;
 use crate::UNCACHED_MIRROR_OFFSET;
 
 mod regs;
+
+/// Load the DMA channel a path's `init` recorded in `slot`.
+///
+/// Each path starts with `u8::MAX` in its channel slots. Reading a DMA position
+/// before `init` would otherwise read the registers of a channel that doesn't
+/// exist, so this panics instead.
+fn recorded_dma_channel(slot: &core::sync::atomic::AtomicU8) -> u8 {
+    let ch = slot.load(core::sync::atomic::Ordering::Relaxed);
+    assert!(ch != u8::MAX, "scux path used before init");
+    ch
+}
 /// CPU → SCUX DVU → SSI0 output path (hardware volume, ramps, zero-cross mute).
 pub mod dvu_path;
 /// CPU → SCUX async SRC → CPU path, for bridging two clock domains.
@@ -1274,5 +1285,38 @@ mod tests {
             depth: BitDepth::B24,
         };
         assert_eq!(mono.to_reg() & 0xFFFF, 1);
+    }
+
+    // No test in this binary calls a path's `init`, so every path is in its
+    // never-initialised state here. Reading the pointer then must panic
+    // rather than read DMA registers at channel `u8::MAX`.
+    #[test]
+    #[should_panic(expected = "scux path used before init")]
+    fn dvu_tx_current_ptr_before_init_panics() {
+        let _ = super::dvu_path::tx_current_ptr();
+    }
+
+    #[test]
+    #[should_panic(expected = "scux path used before init")]
+    fn src_rx_current_ptr_before_init_panics() {
+        let _ = super::src_path::rx_current_ptr();
+    }
+
+    #[test]
+    #[should_panic(expected = "scux path used before init")]
+    fn src_tx_current_ptr_before_init_panics() {
+        let _ = super::src_path::tx_current_ptr();
+    }
+
+    #[test]
+    #[should_panic(expected = "scux path used before init")]
+    fn usb_tx_rx_current_ptr_before_init_panics() {
+        let _ = super::usb_tx_path::rx_current_ptr();
+    }
+
+    #[test]
+    #[should_panic(expected = "scux path used before init")]
+    fn usb_tx_tx_current_ptr_before_init_panics() {
+        let _ = super::usb_tx_path::tx_current_ptr();
     }
 }

@@ -344,7 +344,7 @@ pub fn tx_buf_end() -> *mut i32 {
 /// Mirrors `crate::ssi::tx_current_ptr` in signature and semantics — write
 /// audio samples *ahead of* this pointer.
 pub fn tx_current_ptr() -> *mut i32 {
-    let crsa = unsafe { crate::dmac::current_src(FFD_DMA_CH.load(Ordering::Relaxed)) };
+    let crsa = unsafe { crate::dmac::current_src(scux::recorded_dma_channel(&FFD_DMA_CH)) };
     let aligned = crsa & !7u32;
     (aligned as usize + UNCACHED_MIRROR_OFFSET) as *mut i32
 }

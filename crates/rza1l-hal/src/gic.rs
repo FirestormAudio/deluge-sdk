@@ -568,7 +568,7 @@ pub unsafe extern "C" fn gic_dispatch(icciar: u32) {
 mod tests {
     use super::{
         GICC_BASE, GICC_CTLR_ADDR, GICC_EOIR_ADDR, GICC_IAR_ADDR, GICC_PMR_ADDR, GICD_BASE,
-        GICD_CTLR, GICD_ICFGR0, GICD_ICPENDR0, GICD_IPRIORITYR0, GICD_ISACTIVER0, GICD_ISENABLER0,
+        GICD_ICFGR0, GICD_ICPENDR0, GICD_IPRIORITYR0, GICD_ISACTIVER0, GICD_ISENABLER0,
         ICDICFR_INIT, INT_ID_TOTAL, SDRAM_CODE_AREAS, is_plausible_code_address, is_plausible_in,
         most_urgent_active, set_sdram_code_window,
     };
