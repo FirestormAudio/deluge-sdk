@@ -283,8 +283,6 @@ Expected: errors for the missing `common` module and `chips/rza1l.rs`.
 `crates/rza1-pac/src/common.rs`:
 
 ```rust
-
-```rust
 //! The register handle the generated code uses (chiptool `--common-module crate::common`).
 //!
 //! chiptool's built-in handle with one change: every read and write goes through
@@ -767,8 +765,6 @@ sys.exit(1 if errors else 0)
 `tools/pac-postprocess.py`:
 
 ```python
-
-```python
 #!/usr/bin/env python3
 """Strip chiptool's Cortex-M device glue from a rustfmt'd lib.rs (tools/gen-pac.sh).
 
@@ -923,7 +919,6 @@ Expected: `ok`, with the same count as before (190). The HAL's `crate::mmio::…
 
 `tools/check-register-tables.sh`:
 
-```bash
 
 ```bash
 #!/usr/bin/env bash

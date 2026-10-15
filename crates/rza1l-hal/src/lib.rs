@@ -26,6 +26,12 @@ pub(crate) fn uncached<T>(p: *mut T) -> *mut T {
 }
 
 pub use embassy_hal_internal::{Peri, PeripheralType};
+/// The RZ/A1L's registers, generated from the vendor SVD and checked against the RZ/A1L manual
+/// ([`rza1_pac`], built with its `rza1l` feature).
+pub use rza1_pac as pac;
+/// The MMIO seam every register access goes through (real volatile on the device, a shadow with
+/// an access log under host tests).
+pub use rza1_pac::mmio;
 
 embassy_hal_internal::peripherals! {
     OSTM0, OSTM1,
@@ -94,9 +100,6 @@ pub mod interrupt;
 /// Pure memory-system math (cache-line ranges + MMU section table) used by the
 /// bare-metal-only `cache`/`mmu` modules; non-gated so it unit-tests on host.
 pub mod memmap;
-/// MMIO seam: real volatile access on firmware, a shadow + access log under
-/// test, so register write *sequences* can be asserted on the host.
-pub mod mmio;
 #[cfg(target_os = "none")]
 pub mod mmu;
 pub mod mtu2;

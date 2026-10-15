@@ -1,0 +1,12 @@
+# The RZ/A1L PAC: the RZ/A1H SVD minus what the RZ/A1L lacks (absent.yaml, generated from the
+# manual), plus what it has that the SVD omits, then the shapes both chips share.
+includes:
+  - absent.yaml
+  - gpio.yaml
+  - ether.yaml
+  - ../common/intc.yaml
+  - ../common/names.yaml
+  - ../common/rspi.yaml
+  - ../common/adc.yaml
+transforms:
+  - !Sanitize {}

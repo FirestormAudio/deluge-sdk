@@ -28,6 +28,14 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 tools/check-layering.sh
+tools/check-register-tables.sh
+# The checked-in PAC must match its SVD, transforms and the RZ/A1L manual. Needs the pinned
+# chiptool, which tools/gen-pac.sh installs under target/ on first use.
+if [ -x target/chiptool-bcf538a2e7b8584ae874ee9ab72efb1576fc6152/bin/chiptool ]; then
+  tools/gen-pac.sh --check
+else
+  echo "  (skipped rza1-pac drift and manual check: run tools/gen-pac.sh once to install chiptool)"
+fi
 
 QEMU=armv7-unknown-linux-gnueabihf
 HOST=x86_64-unknown-linux-gnu
@@ -42,6 +50,8 @@ cargo test --target "$QEMU" -p armv7-dsp-intrinsics --features nightly --lib
 # here because the FFT crate (flare-fft) is in its own repo and must not
 # dev-depend on the SDK.
 cargo test --target "$QEMU" -p deluge-fixedpoint
+cargo test --target "$QEMU" -p rza1-pac --features rza1l --lib
+cargo test --target "$QEMU" -p rza1-pac --features rza1h --lib
 cargo test --target "$QEMU" -p rza1l-hal --lib
 cargo test --target "$QEMU" -p deluge-bsp --features usb-host --lib
 cargo test --target "$QEMU" -p usb-classes --features device-midi,host-midi,host-uac --lib

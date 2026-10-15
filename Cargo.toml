@@ -10,6 +10,7 @@ members = [
   "crates/rza1l-hal",
   "crates/rza1-rt",
   "crates/rza1-alloc",
+  "crates/rza1-pac",
   "crates/deluge-bsp",
   "firmwares/app-loader",
   "crates/deluge-sdk",

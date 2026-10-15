@@ -1,0 +1,10 @@
+transforms:
+  # Ethernet TSU registers the RZ/A1L manual lists (Table 46.1) and the SVD omits.
+  - !AddRegisters
+    block: '^ETHER::ETHER$'
+    registers:
+      - {name: TSU_FWSLC, byte_offset: 0x1838}
+      - {name: TSU_POST1, byte_offset: 0x1870}
+      - {name: TSU_POST2, byte_offset: 0x1874}
+      - {name: TSU_POST3, byte_offset: 0x1878}
+      - {name: TSU_POST4, byte_offset: 0x187C}
