@@ -114,6 +114,15 @@ const WIRING: [Wiring; NUM_ENCODERS] = [
 /// Every encoder's decoder. Shared by the encoder interrupts and the poll interrupt, which run at the
 /// same priority and so never preempt one another; the critical section only states that, as
 /// interrupts are already masked in a handler.
+// Each encoder's A pin is bound to the typed interrupt below; its GIC ID must agree.
+#[cfg(target_os = "none")]
+const _: () = {
+    use rza1l_hal::interrupt::{Interrupt, typelevel::*};
+    assert!(WIRING[0].gic_id == IRQ3::ID && WIRING[1].gic_id == IRQ2::ID);
+    assert!(WIRING[2].gic_id == IRQ4::ID && WIRING[3].gic_id == IRQ1::ID);
+    assert!(WIRING[4].gic_id == IRQ0::ID && WIRING[5].gic_id == IRQ7::ID);
+};
+
 #[cfg(target_os = "none")]
 static DECODERS: critical_section::Mutex<core::cell::RefCell<[QuadratureDecoder; NUM_ENCODERS]>> =
     critical_section::Mutex::new(core::cell::RefCell::new(
@@ -195,6 +204,36 @@ fn poll() {
     });
 }
 
+/// Encoder `I`'s A-pin interrupt.
+#[cfg(target_os = "none")]
+struct EncoderHandler<const I: usize>;
+
+#[cfg(target_os = "none")]
+macro_rules! encoder_handlers {
+    ($($i:literal => $irq:ident),* $(,)?) => {$(
+        impl rza1l_hal::interrupt::Handler<rza1l_hal::interrupt::typelevel::$irq>
+            for EncoderHandler<$i>
+        {
+            unsafe fn on_interrupt() {
+                enc_irq_handler($i);
+            }
+        }
+    )*};
+}
+
+#[cfg(target_os = "none")]
+encoder_handlers!(0 => IRQ3, 1 => IRQ2, 2 => IRQ4, 3 => IRQ1, 4 => IRQ0, 5 => IRQ7);
+
+#[cfg(target_os = "none")]
+rza1l_hal::bind_interrupts!(struct EncoderIrqs {
+    IRQ3 => EncoderHandler<0>;
+    IRQ2 => EncoderHandler<1>;
+    IRQ4 => EncoderHandler<2>;
+    IRQ1 => EncoderHandler<3>;
+    IRQ0 => EncoderHandler<4>;
+    IRQ7 => EncoderHandler<5>;
+});
+
 /// One-time encoder GPIO + GIC edge-IRQ bring-up. Device only — the host has no
 /// front-panel encoders; deltas simply never accumulate (see the host no-op).
 ///
@@ -225,12 +264,13 @@ pub unsafe fn irq_init(poll_timer: rza1l_hal::Peri<'static, crate::board::Encode
             rza1l_hal::gic::set_irq_both_edges(w.irq_num);
         }
 
-        rza1l_hal::gic::register(WIRING[0].gic_id, || enc_irq_handler(0));
-        rza1l_hal::gic::register(WIRING[1].gic_id, || enc_irq_handler(1));
-        rza1l_hal::gic::register(WIRING[2].gic_id, || enc_irq_handler(2));
-        rza1l_hal::gic::register(WIRING[3].gic_id, || enc_irq_handler(3));
-        rza1l_hal::gic::register(WIRING[4].gic_id, || enc_irq_handler(4));
-        rza1l_hal::gic::register(WIRING[5].gic_id, || enc_irq_handler(5));
+        use rza1l_hal::interrupt::{self, typelevel::*};
+        interrupt::bind::<IRQ3, EncoderHandler<0>>(EncoderIrqs);
+        interrupt::bind::<IRQ2, EncoderHandler<1>>(EncoderIrqs);
+        interrupt::bind::<IRQ4, EncoderHandler<2>>(EncoderIrqs);
+        interrupt::bind::<IRQ1, EncoderHandler<3>>(EncoderIrqs);
+        interrupt::bind::<IRQ0, EncoderHandler<4>>(EncoderIrqs);
+        interrupt::bind::<IRQ7, EncoderHandler<5>>(EncoderIrqs);
 
         for w in &WIRING {
             rza1l_hal::gic::set_priority(w.gic_id, ENCODER_PRIORITY);
