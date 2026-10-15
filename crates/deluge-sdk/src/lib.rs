@@ -53,7 +53,7 @@ pub use deluge_macros::app;
 ///
 /// SRAM (not SDRAM) backs the global heap on purpose: the large external SDRAM
 /// is reserved for bulk audio buffers (samples, delay lines), which apps allocate
-/// explicitly via [`deluge_alloc::SDRAM`]. The default SDK stays
+/// explicitly via [`rza1_alloc::SDRAM`]. The default SDK stays
 /// allocator-free and apps choose the arena per allocation.
 #[cfg(all(feature = "alloc", target_os = "none"))]
 mod global_alloc {
@@ -62,11 +62,11 @@ mod global_alloc {
 
     struct SramGlobal;
 
-    // SAFETY: delegates to `deluge_alloc::SRAM`, a critical-section
+    // SAFETY: delegates to `rza1_alloc::SRAM`, a critical-section
     // guarded heap initialised once during platform bring-up.
     unsafe impl GlobalAlloc for SramGlobal {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            match deluge_alloc::SRAM.allocate(layout) {
+            match rza1_alloc::SRAM.allocate(layout) {
                 Ok(p) => p.as_ptr().cast(),
                 Err(_) => ptr::null_mut(),
             }
@@ -75,7 +75,7 @@ mod global_alloc {
         unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
             if let Some(nn) = NonNull::new(ptr) {
                 // SAFETY: `ptr`/`layout` come from a prior `alloc` on this heap.
-                unsafe { deluge_alloc::SRAM.deallocate(nn, layout) };
+                unsafe { rza1_alloc::SRAM.deallocate(nn, layout) };
             }
         }
     }
@@ -189,8 +189,9 @@ mod not_send_assertions {
 // through the single `deluge` dependency. The allocator is a device-only escape hatch (no host
 // equivalent); an app reaching for it won't run in the desktop simulator. The chip HAL is
 // deliberately not re-exported: the board crate is the lowest layer an app should see.
+// It stays `deluge::deluge_alloc` for apps; the crate is `rza1-alloc`.
 #[cfg(target_os = "none")]
-pub use deluge_alloc;
+pub use rza1_alloc as deluge_alloc;
 pub use deluge_bsp;
 
 /// The app capability handle, passed to `#[deluge::app] async fn main`.
@@ -592,13 +593,13 @@ pub mod __rt {
                 // SRAM heap (internal RAM) — initialise before any allocation.
                 let start = core::ptr::addr_of!(__sram_heap_start) as *mut u8;
                 let size = core::ptr::addr_of!(__sram_heap_end) as usize - start as usize;
-                deluge_alloc::SRAM.init(start, size);
+                rza1_alloc::SRAM.init(start, size);
 
                 // Module clocks, MMU, caches, SDRAM controller, GIC, OSTM time driver.
                 deluge_bsp::system::init_clocks();
 
                 // SDRAM heap — now that the SDRAM window is accessible.
-                deluge_alloc::SDRAM.init(SDRAM_BASE as *mut u8, SDRAM_SIZE);
+                rza1_alloc::SDRAM.init(SDRAM_BASE as *mut u8, SDRAM_SIZE);
             }
         }
 

@@ -16,7 +16,7 @@ use core::panic::PanicInfo;
 use embassy_executor::{Executor, Spawner};
 use log::{error, info};
 
-use deluge_alloc as allocator;
+use rza1_alloc as allocator;
 use deluge_bsp::{cv_gate, uart as bsp_uart};
 use rza1l_hal::gic;
 use rza1l_hal::usb::{hcd_int_handler, init_host_mode};

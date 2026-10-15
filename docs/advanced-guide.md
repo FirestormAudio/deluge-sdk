@@ -51,7 +51,7 @@ dependency:
 use deluge::prelude::*;
 use deluge::deluge_bsp;                // re-exported
 use deluge::fixed;                     // = the `fixedpoint` crate (Q31/Q16 DSP math)
-use deluge::deluge_alloc;              // SRAM / SDRAM heaps
+use deluge::deluge_alloc;              // SRAM / SDRAM heaps (the rza1-alloc crate)
 ```
 
 `deluge_bsp` is re-exported on every target; `deluge_alloc` only on the device
@@ -89,9 +89,9 @@ this sequence:
 
 1. **Logging** — initialise the RTT or USB-CDC logger (feature-gated; one global logger).
 2. **`init_platform()`** (interrupts masked):
-   - `deluge_alloc::SRAM.init(...)` from the linker symbols `__sram_heap_start` / `__sram_heap_end`.
+   - `rza1_alloc::SRAM.init(...)` from the linker symbols `__sram_heap_start` / `__sram_heap_end`.
    - `deluge_bsp::system::init_clocks()` — CPG/PLL, MMU, L1+L2 caches, SDRAM controller, GIC, and the OSTM embassy-time driver.
-   - `deluge_alloc::SDRAM.init(0x0C00_0000, 64 MiB)`.
+   - `rza1_alloc::SDRAM.init(0x0C00_0000, 64 MiB)`.
    - With `usb-serial` enabled: register the USB0 device ISR, still masked, before `setup()` runs (the device itself is built later, when the app calls `Deluge::usb_serial`).
 3. **`setup()`** — your optional `#[deluge::app(setup = …)]` hook, still with **IRQs masked** (see [§5](#the-setup-window)).
 4. **USB-debug bring-up** (only with `usb-log`): register the USB0 ISR and start the controller while IRQs are still masked, the same ordering the controller firmware uses.
@@ -343,7 +343,7 @@ never fight the D-cache for hardware-visible memory.
 ### Two heaps
 
 Both are `allocator-api` `Allocator`s (critical-section guarded) in the
-[`deluge-alloc`](../crates/deluge-alloc/README.md) crate:
+[`rza1-alloc`](../crates/rza1-alloc/README.md) crate, reached through `deluge::deluge_alloc`:
 
 - **`deluge_alloc::SRAM`** — fast on-chip RAM. The `alloc` feature registers
   it as the `#[global_allocator]`, so `Box`/`Vec`/`String`/`format!` work. Keep this
@@ -605,7 +605,7 @@ and `x86_64-unknown-linux-gnu` for pure-logic crates. Run everything with
 | `usb` | RUSB1 device + host drivers (`embassy-usb-driver`) |
 | `startup` | reset/boot assembly, vector table, bootloader metadata |
 
-The SRAM/SDRAM heaps are in the separate `deluge_alloc` crate.
+The SRAM/SDRAM heaps are in the separate `rza1_alloc` crate.
 
 **`deluge_bsp`** ([`crates/deluge-bsp/src/lib.rs`](../crates/deluge-bsp/src/lib.rs)):
 

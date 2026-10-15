@@ -40,7 +40,7 @@ use log::{debug, error, info};
 use embassy_executor::{Executor, Spawner};
 
 use core::sync::atomic::{AtomicBool, Ordering};
-use deluge_alloc as allocator;
+use rza1_alloc as allocator;
 use deluge_bsp::cv_gate;
 use deluge_bsp::uart as bsp_uart;
 use rza1l_hal::gic;

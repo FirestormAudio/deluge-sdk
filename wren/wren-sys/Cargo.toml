@@ -9,7 +9,7 @@ description = "FFI bindings + cc build of the upstream wren-lang/wren C VM (comp
 test = false
 
 [dependencies]
-deluge-alloc = { path = "../../crates/deluge-alloc" }
+rza1-alloc = { path = "../../crates/rza1-alloc" }
 
 [build-dependencies]
 cc = "1"

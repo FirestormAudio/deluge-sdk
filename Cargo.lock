@@ -213,7 +213,6 @@ name = "app-loader"
 version = "0.1.0"
 dependencies = [
  "cortex-ar",
- "deluge-alloc",
  "deluge-bsp",
  "deluge-image",
  "embassy-executor",
@@ -223,6 +222,7 @@ dependencies = [
  "embassy-usb",
  "log",
  "rtt-target",
+ "rza1-alloc",
  "rza1l-hal",
  "usb-classes",
 ]
@@ -1278,14 +1278,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "deluge-alloc"
-version = "0.1.0"
-dependencies = [
- "critical-section",
- "rlsf",
-]
-
-[[package]]
 name = "deluge-bsp"
 version = "0.1.0"
 dependencies = [
@@ -1314,7 +1306,6 @@ name = "deluge-controller"
 version = "0.1.0"
 dependencies = [
  "cortex-ar",
- "deluge-alloc",
  "deluge-bsp",
  "embassy-executor",
  "embassy-futures",
@@ -1325,6 +1316,7 @@ dependencies = [
  "embassy-usb-host",
  "log",
  "rtt-target",
+ "rza1-alloc",
  "rza1l-hal",
  "usb-classes",
 ]
@@ -1379,7 +1371,6 @@ version = "0.1.0"
 dependencies = [
  "cortex-ar",
  "critical-section",
- "deluge-alloc",
  "deluge-bsp",
  "deluge-fixedpoint",
  "deluge-hal-linux",
@@ -1396,6 +1387,7 @@ dependencies = [
  "libc",
  "log",
  "rtt-target",
+ "rza1-alloc",
  "rza1l-hal",
 ]
 
@@ -3384,7 +3376,6 @@ name = "msc-firmware"
 version = "0.1.0"
 dependencies = [
  "cortex-ar",
- "deluge-alloc",
  "deluge-bsp",
  "embassy-executor",
  "embassy-futures",
@@ -3394,6 +3385,7 @@ dependencies = [
  "embassy-usb-driver",
  "log",
  "rtt-target",
+ "rza1-alloc",
  "rza1l-hal",
  "usb-classes",
 ]
@@ -4868,6 +4860,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rza1-alloc"
+version = "0.1.0"
+dependencies = [
+ "critical-section",
+ "rlsf",
+]
+
+[[package]]
 name = "rza1-rt"
 version = "0.1.0"
 
@@ -4927,7 +4927,6 @@ name = "sd-bench"
 version = "0.1.0"
 dependencies = [
  "cortex-ar",
- "deluge-alloc",
  "deluge-bsp",
  "embassy-executor",
  "embassy-futures",
@@ -4935,6 +4934,7 @@ dependencies = [
  "embassy-time",
  "log",
  "rtt-target",
+ "rza1-alloc",
  "rza1l-hal",
 ]
 
@@ -5695,7 +5695,6 @@ name = "uac-host-firmware"
 version = "0.1.0"
 dependencies = [
  "cortex-ar",
- "deluge-alloc",
  "deluge-bsp",
  "embassy-executor",
  "embassy-futures",
@@ -5703,6 +5702,7 @@ dependencies = [
  "embassy-time",
  "log",
  "rtt-target",
+ "rza1-alloc",
  "rza1l-hal",
  "usb-classes",
 ]
@@ -5933,7 +5933,6 @@ name = "vbus-probe"
 version = "0.1.0"
 dependencies = [
  "cortex-ar",
- "deluge-alloc",
  "deluge-bsp",
  "embassy-executor",
  "embassy-futures",
@@ -5941,6 +5940,7 @@ dependencies = [
  "embassy-time",
  "log",
  "rtt-target",
+ "rza1-alloc",
  "rza1l-hal",
 ]
 
@@ -6813,7 +6813,6 @@ name = "wp-probe"
 version = "0.1.0"
 dependencies = [
  "cortex-ar",
- "deluge-alloc",
  "deluge-bsp",
  "embassy-executor",
  "embassy-futures",
@@ -6821,6 +6820,7 @@ dependencies = [
  "embassy-time",
  "log",
  "rtt-target",
+ "rza1-alloc",
  "rza1l-hal",
 ]
 
@@ -6847,7 +6847,7 @@ name = "wren-sys"
 version = "0.1.0"
 dependencies = [
  "cc",
- "deluge-alloc",
+ "rza1-alloc",
 ]
 
 [[package]]

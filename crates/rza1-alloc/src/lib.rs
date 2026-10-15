@@ -23,7 +23,7 @@
 //!
 //! ```rust,ignore
 //! #![feature(allocator_api)]
-//! use deluge_alloc::{SRAM, SDRAM};
+//! use rza1_alloc::{SRAM, SDRAM};
 //!
 //! let buf: Box<[u8; 4096], _> = Box::new_in([0u8; 4096], &SDRAM);
 //! let vec: Vec<u32, _>        = Vec::new_in(&SRAM);
@@ -219,7 +219,7 @@ unsafe impl Allocator for CsHeap {
 /// A two-tier allocator that serves from a fast `primary` arena until it is
 /// full, then spills to a larger `fallback` arena.
 ///
-/// Built for the Deluge's split memory: allocate from on-chip [`SRAM`] first
+/// Built for split memory like the Deluge's: allocate from on-chip [`SRAM`] first
 /// (small, fast) and fall back to external [`SDRAM`] (large, slow), so hot/young
 /// allocations land in fast RAM. Deallocation routes each pointer back to the
 /// arena it came from by address ([`CsHeap::contains`]), which works because the
@@ -230,7 +230,7 @@ unsafe impl Allocator for CsHeap {
 /// free through this allocator) are correct, so they need no override.
 ///
 /// ```rust,ignore
-/// use deluge_alloc::{Spill, SRAM, SDRAM};
+/// use rza1_alloc::{Spill, SRAM, SDRAM};
 /// static HEAP: Spill = Spill::new(&SRAM, &SDRAM);
 /// ```
 ///

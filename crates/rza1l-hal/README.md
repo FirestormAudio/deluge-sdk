@@ -39,7 +39,7 @@ at runtime rather than compiled in.
 ### Memory
 
 The SRAM and SDRAM heaps live in the separate
-[`deluge-alloc`](../deluge-alloc/README.md) crate.
+[`rza1-alloc`](../rza1-alloc/README.md) crate.
 
 The RZ/A1L provides **uncached mirror aliases** of SRAM and SDRAM at
 `physical_address + 0x4000_0000` (see `UNCACHED_MIRROR_OFFSET`). DMA-shared

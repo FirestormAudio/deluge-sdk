@@ -37,14 +37,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "790eea4361631c5e7d22598ecd5723ff611904e3344ce8720784c93e3d83d40b"
 
 [[package]]
-name = "deluge-alloc"
-version = "0.1.0"
-dependencies = [
- "critical-section",
- "rlsf",
-]
-
-[[package]]
 name = "deluge-wren-core"
 version = "0.1.0"
 dependencies = [
@@ -139,6 +131,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
+name = "rza1-alloc"
+version = "0.1.0"
+dependencies = [
+ "critical-section",
+ "rlsf",
+]
+
+[[package]]
 name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -185,7 +185,7 @@ name = "wren-sys"
 version = "0.1.0"
 dependencies = [
  "cc",
- "deluge-alloc",
+ "rza1-alloc",
 ]
 
 [[package]]

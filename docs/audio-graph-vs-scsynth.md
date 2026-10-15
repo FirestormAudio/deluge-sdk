@@ -305,7 +305,7 @@ one.
 **Why it is not a `Cmd` variant.** `Cmd::ScheduleAt { at, cmd: Cmd }` cannot
 exist — a `Cmd` nesting a `Cmd` is infinitely sized. Boxing would make `Cmd`
 non-`Copy` (it is passed by value at ~14 sites) *and* put a `dealloc` in the
-render path, since `deluge-alloc` runs every alloc and free inside
+render path, since `rza1-alloc` runs every alloc and free inside
 `critical_section::with` with interrupts off. So scheduling is expressed as a
 property of delivery: `Host::audio_cmd_at` alongside `audio_cmd`.
 

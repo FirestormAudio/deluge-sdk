@@ -56,7 +56,7 @@ pub(crate) static BACK_PRESSED: AtomicBool = AtomicBool::new(false);
 pub(crate) static LOAD_SEEN: AtomicBool = AtomicBool::new(false);
 use core::panic::PanicInfo;
 
-use deluge_alloc as allocator;
+use rza1_alloc as allocator;
 use embassy_executor::{Executor, Spawner};
 use log::{error, info, warn};
 

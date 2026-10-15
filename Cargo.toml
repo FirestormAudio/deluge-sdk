@@ -9,7 +9,7 @@ members = [
   "hw-tests/uac-host-firmware",
   "crates/rza1l-hal",
   "crates/rza1-rt",
-  "crates/deluge-alloc",
+  "crates/rza1-alloc",
   "crates/deluge-bsp",
   "firmwares/app-loader",
   "crates/deluge-sdk",

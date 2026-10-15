@@ -13,7 +13,7 @@ test = false
 usb-classes = { workspace = true, features = ["host-uac"] }
 rza1l-hal = { path = "../../crates/rza1l-hal" }
 deluge-bsp = { path = "../../crates/deluge-bsp", features = ["usb-host"] }
-deluge-alloc = { path = "../../crates/deluge-alloc" }
+rza1-alloc = { path = "../../crates/rza1-alloc" }
 cortex-ar = { workspace = true }
 embassy-executor = { workspace = true, features = ["nightly", "platform-cortex-ar", "executor-thread"] }
 embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }

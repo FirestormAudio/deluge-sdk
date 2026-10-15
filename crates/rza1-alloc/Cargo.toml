@@ -1,5 +1,5 @@
 [package]
-name = "deluge-alloc"
+name = "rza1-alloc"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme = "README.md"
-description = "Critical-section-guarded SRAM/SDRAM heap allocators for the Deluge (RZ/A1L)."
+description = "Critical-section-guarded SRAM/SDRAM heap allocators for the Renesas RZ/A1L."
 categories = ["embedded", "no-std", "memory-management"]
 keywords = ["rza1", "allocator", "heap", "no-std", "embedded"]
 

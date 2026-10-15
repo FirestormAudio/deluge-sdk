@@ -19,7 +19,7 @@ use log::{error, info};
 
 use embassy_executor::{Executor, Spawner};
 
-use deluge_alloc as allocator;
+use rza1_alloc as allocator;
 use deluge_bsp::uart as bsp_uart;
 
 unsafe extern "C" {

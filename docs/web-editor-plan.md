@@ -187,7 +187,7 @@ linter, no JS parser. This complements (does not replace) the static analyzer in
 §6.
 
 **The C-to-wasm hurdle — RESOLVED by spike S1 (§9).** The C VM needs an allocator
-(already supplied via `deluge-alloc`/`wrenReallocate`) plus a little libc. The
+(already supplied via `rza1-alloc`/`wrenReallocate`) plus a little libc. The
 spike settled the approach empirically:
 
 - The wren C is **wasm-clean**: no inline asm, no syscall headers, no

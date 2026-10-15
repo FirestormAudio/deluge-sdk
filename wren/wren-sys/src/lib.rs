@@ -10,7 +10,7 @@
 //! ([`wren_host_write`], [`wren_host_error`]) the firmware provides.
 
 #![no_std]
-// `allocator_api` is only used by the device SDRAM heap (`deluge_alloc`); the
+// `allocator_api` is only used by the device SDRAM heap (`rza1_alloc`); the
 // host build routes the VM through the C runtime allocator and doesn't need it.
 #![cfg_attr(target_os = "none", feature(allocator_api))]
 
@@ -210,7 +210,7 @@ unsafe extern "C" fn error_trampoline(
 // ── VM heap ──────────────────────────────────────────────────────────────────
 //
 // The VM allocates exclusively through `wren_reallocate`. On the device the heap
-// is tiered (`deluge_alloc::Spill`): allocations come from the fast on-chip SRAM
+// is tiered (`rza1_alloc::Spill`): allocations come from the fast on-chip SRAM
 // until it is full, then spill to the large 64 MB external SDRAM — so hot/young
 // objects land in fast RAM. On the host (desktop simulator) there is no
 // SRAM/SDRAM split, so it routes to the C runtime allocator instead. `heap` is
@@ -225,7 +225,7 @@ pub use heap::{peak_sdram_bytes, peak_sram_bytes, sdram_bytes, sram_bytes};
 
 #[cfg(target_os = "none")]
 mod heap {
-    //! Device VM heap: SRAM-first, SDRAM-spill (`deluge_alloc::Spill`). A 16-byte
+    //! Device VM heap: SRAM-first, SDRAM-spill (`rza1_alloc::Spill`). A 16-byte
     //! header stores the user size and keeps the returned pointer 16-aligned. The
     //! tier each block landed in is recovered by address (`CsHeap::contains`) for
     //! accounting and on free, so no tier tag is stored in the header.
@@ -235,7 +235,7 @@ mod heap {
     use core::ptr::{self, NonNull};
     use core::sync::atomic::{AtomicUsize, Ordering};
 
-    use deluge_alloc::{SDRAM, SRAM, Spill};
+    use rza1_alloc::{SDRAM, SRAM, Spill};
 
     use super::wren_host_debug;
 

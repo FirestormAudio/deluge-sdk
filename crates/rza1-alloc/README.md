@@ -1,7 +1,7 @@
-# deluge-alloc
+# rza1-alloc
 
-Critical-section-guarded heap allocators for the Synthstrom Deluge (Renesas
-RZ/A1L, ARM Cortex-A9).
+Critical-section-guarded heap allocators for the Renesas RZ/A1L (ARM Cortex-A9),
+as used in the Synthstrom Deluge.
 
 Provides two independent allocation arenas as nightly `Allocator`-trait heaps:
 
@@ -13,7 +13,7 @@ Each is a `CsHeap`: a `linked_list_allocator::Heap` wrapped in
 
 ```rust,ignore
 #![feature(allocator_api)]
-use deluge_alloc::{SRAM, SDRAM};
+use rza1_alloc::{SRAM, SDRAM};
 
 // Initialise once at startup, before any allocation in that arena.
 unsafe { SRAM.init(heap_start, heap_size) };
