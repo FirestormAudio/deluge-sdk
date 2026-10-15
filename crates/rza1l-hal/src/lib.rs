@@ -42,9 +42,13 @@ pub struct Config {
 /// Bring up the chip and hand out its peripherals: record the clock tree, program the CPG,
 /// start the module clocks, and initialise the GIC, in that order.
 ///
+/// Device-only: the GIC bring-up writes real registers, which a host build doesn't have.
+///
 /// # Panics
 /// If called more than once (the peripherals are taken before any register is written).
+#[cfg(target_os = "none")]
 pub fn init(config: Config) -> Peripherals {
+    // Take first: a second call must panic here, before it reprograms any clock or the GIC.
     let peripherals = Peripherals::take();
     // SAFETY: `take` succeeded, so this is the one bring-up.
     unsafe {
