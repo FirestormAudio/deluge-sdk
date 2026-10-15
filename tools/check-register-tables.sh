@@ -18,8 +18,9 @@ status=0
 while IFS= read -r f; do
   m="${f#crates/rza1l-hal/src/}"
   for e in "${EXEMPT[@]}"; do [ "$m" = "$e" ] && continue 2; done
-  # Everything before the first host-test module; comment lines skipped.
-  hits="$(awk '/^#\[cfg\(all\(test/{exit} {print FILENAME":"NR": "$0}' "$f" \
+  # Everything before the first host-test module (a `#[cfg(all(test…` line followed by `mod`; the
+  # same cfg on a `use` doesn't end the scan); comment lines skipped.
+  hits="$(awk '/^#\[cfg\(all\(test/{c=1; next} c && /^mod /{exit} {c=0; print FILENAME":"NR": "$0}' "$f" \
     | grep -vE '^[^:]+:[0-9]+: *(//|\*)' \
     | grep -E 'const +(OFF_[A-Z0-9_]+|[A-Z0-9_]*_BASE) *: *usize|0[xX]([Ee]8|[Ff][Cc]|3[Ff])[0-9A-Fa-f]{2}_?[0-9A-Fa-f]{4}' || true)"
   if [ -n "$hits" ]; then
