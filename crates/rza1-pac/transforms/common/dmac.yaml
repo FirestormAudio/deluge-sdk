@@ -1,0 +1,25 @@
+transforms:
+  # The SVD names DMAC's per-channel registers by channel (`N0SA_3`): gather each channel's into
+  # a block, then index the blocks by channel. Channels 8–15 sit 0x200 above where a uniform stride
+  # would put them, so the array is cursed (explicit offsets).
+  - !MakeBlock
+    blocks: '^DMAC::DMAC$'
+    from: '^(N0SA|N0DA|N0TB|N1SA|N1DA|N1TB|CRSA|CRDA|CRTB|CHSTAT|CHCTRL|CHCFG|CHITVL|CHEXT|NXLA|CRLA)_(\d+)$'
+    to_outer: 'CH$2'
+    to_block: 'DMAC::CH'
+    to_inner: '$1'
+  - !MakeRegisterArray
+    blocks: '^DMAC::DMAC$'
+    from: '^CH\d+$'
+    to: CH
+    mode: Cursed
+  # The two channel groups' control and status registers (channels 0–7, 8–15), and the eight
+  # resource selectors (one per channel pair).
+  - !MakeRegisterArray
+    blocks: '^DMAC::DMAC$'
+    from: '^(DCTRL|DSTAT_EN|DSTAT_ER|DSTAT_END|DSTAT_TC|DSTAT_SUS)_\d+_\d+$'
+    to: '$1'
+  - !MakeRegisterArray
+    blocks: '^DMAC::DMAC$'
+    from: '^DMARS\d+$'
+    to: DMARS

@@ -40,6 +40,8 @@ pub const MLB: mlb::Mlb = unsafe { mlb::Mlb::from_ptr(0xe803_4000usize as _) };
 pub const RSCAN0: rscan::Rscan = unsafe { rscan::Rscan::from_ptr(0xe803_a000usize as _) };
 #[doc = "MMC"]
 pub const MMC: mmc::Mmc = unsafe { mmc::Mmc::from_ptr(0xe804_c800usize as _) };
+pub const SDHI0: sdhi::Sdhi = unsafe { sdhi::Sdhi::from_ptr(0xe804_e000usize as _) };
+pub const SDHI1: sdhi::Sdhi = unsafe { sdhi::Sdhi::from_ptr(0xe804_e800usize as _) };
 #[doc = "DMAC"]
 pub const DMAC: dmac::Dmac = unsafe { dmac::Dmac::from_ptr(0xe820_0000usize as _) };
 #[doc = "INTC"]
@@ -5496,6 +5498,102 @@ pub mod disc {
     }
 }
 pub mod dmac {
+    #[derive(Copy, Clone, Eq, PartialEq)]
+    pub struct Ch {
+        ptr: *mut u8,
+    }
+    unsafe impl Send for Ch {}
+    unsafe impl Sync for Ch {}
+    impl Ch {
+        #[inline(always)]
+        pub const unsafe fn from_ptr(ptr: *mut ()) -> Self {
+            Self { ptr: ptr as _ }
+        }
+        #[inline(always)]
+        pub const fn as_ptr(&self) -> *mut () {
+            self.ptr as _
+        }
+        #[doc = "N0SA_9."]
+        #[inline(always)]
+        pub const fn n0sa(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0usize) as _) }
+        }
+        #[doc = "N0DA_9."]
+        #[inline(always)]
+        pub const fn n0da(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04usize) as _) }
+        }
+        #[doc = "N0TB_9."]
+        #[inline(always)]
+        pub const fn n0tb(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x08usize) as _) }
+        }
+        #[doc = "N1SA_9."]
+        #[inline(always)]
+        pub const fn n1sa(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0cusize) as _) }
+        }
+        #[doc = "N1DA_9."]
+        #[inline(always)]
+        pub const fn n1da(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x10usize) as _) }
+        }
+        #[doc = "N1TB_9."]
+        #[inline(always)]
+        pub const fn n1tb(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x14usize) as _) }
+        }
+        #[doc = "CRSA_9."]
+        #[inline(always)]
+        pub const fn crsa(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x18usize) as _) }
+        }
+        #[doc = "CRDA_9."]
+        #[inline(always)]
+        pub const fn crda(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1cusize) as _) }
+        }
+        #[doc = "CRTB_9."]
+        #[inline(always)]
+        pub const fn crtb(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x20usize) as _) }
+        }
+        #[doc = "CHSTAT_9."]
+        #[inline(always)]
+        pub const fn chstat(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x24usize) as _) }
+        }
+        #[doc = "CHCTRL_9."]
+        #[inline(always)]
+        pub const fn chctrl(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x28usize) as _) }
+        }
+        #[doc = "CHCFG_9."]
+        #[inline(always)]
+        pub const fn chcfg(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x2cusize) as _) }
+        }
+        #[doc = "CHITVL_9."]
+        #[inline(always)]
+        pub const fn chitvl(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x30usize) as _) }
+        }
+        #[doc = "CHEXT_9."]
+        #[inline(always)]
+        pub const fn chext(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x34usize) as _) }
+        }
+        #[doc = "NXLA_9."]
+        #[inline(always)]
+        pub const fn nxla(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x38usize) as _) }
+        }
+        #[doc = "CRLA_9."]
+        #[inline(always)]
+        pub const fn crla(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x3cusize) as _) }
+        }
+    }
     #[doc = "DMAC."]
     #[derive(Copy, Clone, Eq, PartialEq)]
     pub struct Dmac {
@@ -5512,1385 +5610,77 @@ pub mod dmac {
         pub const fn as_ptr(&self) -> *mut () {
             self.ptr as _
         }
-        #[doc = "N0SA_0."]
         #[inline(always)]
-        pub const fn n0sa_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0usize) as _) }
-        }
-        #[doc = "N0DA_0."]
-        #[inline(always)]
-        pub const fn n0da_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04usize) as _) }
-        }
-        #[doc = "N0TB_0."]
-        #[inline(always)]
-        pub const fn n0tb_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x08usize) as _) }
-        }
-        #[doc = "N1SA_0."]
-        #[inline(always)]
-        pub const fn n1sa_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0cusize) as _) }
-        }
-        #[doc = "N1DA_0."]
-        #[inline(always)]
-        pub const fn n1da_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x10usize) as _) }
-        }
-        #[doc = "N1TB_0."]
-        #[inline(always)]
-        pub const fn n1tb_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x14usize) as _) }
-        }
-        #[doc = "CRSA_0."]
-        #[inline(always)]
-        pub const fn crsa_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x18usize) as _) }
-        }
-        #[doc = "CRDA_0."]
-        #[inline(always)]
-        pub const fn crda_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1cusize) as _) }
-        }
-        #[doc = "CRTB_0."]
-        #[inline(always)]
-        pub const fn crtb_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x20usize) as _) }
-        }
-        #[doc = "CHSTAT_0."]
-        #[inline(always)]
-        pub const fn chstat_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x24usize) as _) }
-        }
-        #[doc = "CHCTRL_0."]
-        #[inline(always)]
-        pub const fn chctrl_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x28usize) as _) }
-        }
-        #[doc = "CHCFG_0."]
-        #[inline(always)]
-        pub const fn chcfg_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x2cusize) as _) }
-        }
-        #[doc = "CHITVL_0."]
-        #[inline(always)]
-        pub const fn chitvl_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x30usize) as _) }
-        }
-        #[doc = "CHEXT_0."]
-        #[inline(always)]
-        pub const fn chext_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x34usize) as _) }
-        }
-        #[doc = "NXLA_0."]
-        #[inline(always)]
-        pub const fn nxla_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x38usize) as _) }
-        }
-        #[doc = "CRLA_0."]
-        #[inline(always)]
-        pub const fn crla_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x3cusize) as _) }
-        }
-        #[doc = "N0SA_1."]
-        #[inline(always)]
-        pub const fn n0sa_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x40usize) as _) }
-        }
-        #[doc = "N0DA_1."]
-        #[inline(always)]
-        pub const fn n0da_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x44usize) as _) }
-        }
-        #[doc = "N0TB_1."]
-        #[inline(always)]
-        pub const fn n0tb_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x48usize) as _) }
-        }
-        #[doc = "N1SA_1."]
-        #[inline(always)]
-        pub const fn n1sa_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x4cusize) as _) }
-        }
-        #[doc = "N1DA_1."]
-        #[inline(always)]
-        pub const fn n1da_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x50usize) as _) }
-        }
-        #[doc = "N1TB_1."]
-        #[inline(always)]
-        pub const fn n1tb_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x54usize) as _) }
-        }
-        #[doc = "CRSA_1."]
-        #[inline(always)]
-        pub const fn crsa_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x58usize) as _) }
-        }
-        #[doc = "CRDA_1."]
-        #[inline(always)]
-        pub const fn crda_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x5cusize) as _) }
-        }
-        #[doc = "CRTB_1."]
-        #[inline(always)]
-        pub const fn crtb_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x60usize) as _) }
-        }
-        #[doc = "CHSTAT_1."]
-        #[inline(always)]
-        pub const fn chstat_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x64usize) as _) }
-        }
-        #[doc = "CHCTRL_1."]
-        #[inline(always)]
-        pub const fn chctrl_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x68usize) as _) }
-        }
-        #[doc = "CHCFG_1."]
-        #[inline(always)]
-        pub const fn chcfg_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x6cusize) as _) }
-        }
-        #[doc = "CHITVL_1."]
-        #[inline(always)]
-        pub const fn chitvl_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x70usize) as _) }
-        }
-        #[doc = "CHEXT_1."]
-        #[inline(always)]
-        pub const fn chext_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x74usize) as _) }
-        }
-        #[doc = "NXLA_1."]
-        #[inline(always)]
-        pub const fn nxla_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x78usize) as _) }
-        }
-        #[doc = "CRLA_1."]
-        #[inline(always)]
-        pub const fn crla_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x7cusize) as _) }
-        }
-        #[doc = "N0SA_2."]
-        #[inline(always)]
-        pub const fn n0sa_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x80usize) as _) }
-        }
-        #[doc = "N0DA_2."]
-        #[inline(always)]
-        pub const fn n0da_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x84usize) as _) }
-        }
-        #[doc = "N0TB_2."]
-        #[inline(always)]
-        pub const fn n0tb_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x88usize) as _) }
-        }
-        #[doc = "N1SA_2."]
-        #[inline(always)]
-        pub const fn n1sa_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x8cusize) as _) }
-        }
-        #[doc = "N1DA_2."]
-        #[inline(always)]
-        pub const fn n1da_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x90usize) as _) }
-        }
-        #[doc = "N1TB_2."]
-        #[inline(always)]
-        pub const fn n1tb_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x94usize) as _) }
-        }
-        #[doc = "CRSA_2."]
-        #[inline(always)]
-        pub const fn crsa_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x98usize) as _) }
-        }
-        #[doc = "CRDA_2."]
-        #[inline(always)]
-        pub const fn crda_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x9cusize) as _) }
-        }
-        #[doc = "CRTB_2."]
-        #[inline(always)]
-        pub const fn crtb_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xa0usize) as _) }
-        }
-        #[doc = "CHSTAT_2."]
-        #[inline(always)]
-        pub const fn chstat_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xa4usize) as _) }
-        }
-        #[doc = "CHCTRL_2."]
-        #[inline(always)]
-        pub const fn chctrl_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xa8usize) as _) }
-        }
-        #[doc = "CHCFG_2."]
-        #[inline(always)]
-        pub const fn chcfg_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xacusize) as _) }
-        }
-        #[doc = "CHITVL_2."]
-        #[inline(always)]
-        pub const fn chitvl_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xb0usize) as _) }
-        }
-        #[doc = "CHEXT_2."]
-        #[inline(always)]
-        pub const fn chext_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xb4usize) as _) }
-        }
-        #[doc = "NXLA_2."]
-        #[inline(always)]
-        pub const fn nxla_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xb8usize) as _) }
-        }
-        #[doc = "CRLA_2."]
-        #[inline(always)]
-        pub const fn crla_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xbcusize) as _) }
-        }
-        #[doc = "N0SA_3."]
-        #[inline(always)]
-        pub const fn n0sa_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xc0usize) as _) }
-        }
-        #[doc = "N0DA_3."]
-        #[inline(always)]
-        pub const fn n0da_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xc4usize) as _) }
-        }
-        #[doc = "N0TB_3."]
-        #[inline(always)]
-        pub const fn n0tb_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xc8usize) as _) }
-        }
-        #[doc = "N1SA_3."]
-        #[inline(always)]
-        pub const fn n1sa_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xccusize) as _) }
-        }
-        #[doc = "N1DA_3."]
-        #[inline(always)]
-        pub const fn n1da_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xd0usize) as _) }
-        }
-        #[doc = "N1TB_3."]
-        #[inline(always)]
-        pub const fn n1tb_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xd4usize) as _) }
-        }
-        #[doc = "CRSA_3."]
-        #[inline(always)]
-        pub const fn crsa_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xd8usize) as _) }
-        }
-        #[doc = "CRDA_3."]
-        #[inline(always)]
-        pub const fn crda_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xdcusize) as _) }
-        }
-        #[doc = "CRTB_3."]
-        #[inline(always)]
-        pub const fn crtb_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xe0usize) as _) }
-        }
-        #[doc = "CHSTAT_3."]
-        #[inline(always)]
-        pub const fn chstat_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xe4usize) as _) }
-        }
-        #[doc = "CHCTRL_3."]
-        #[inline(always)]
-        pub const fn chctrl_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xe8usize) as _) }
-        }
-        #[doc = "CHCFG_3."]
-        #[inline(always)]
-        pub const fn chcfg_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xecusize) as _) }
-        }
-        #[doc = "CHITVL_3."]
-        #[inline(always)]
-        pub const fn chitvl_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xf0usize) as _) }
-        }
-        #[doc = "CHEXT_3."]
-        #[inline(always)]
-        pub const fn chext_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xf4usize) as _) }
-        }
-        #[doc = "NXLA_3."]
-        #[inline(always)]
-        pub const fn nxla_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xf8usize) as _) }
-        }
-        #[doc = "CRLA_3."]
-        #[inline(always)]
-        pub const fn crla_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xfcusize) as _) }
-        }
-        #[doc = "N0SA_4."]
-        #[inline(always)]
-        pub const fn n0sa_4(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0100usize) as _) }
-        }
-        #[doc = "N0DA_4."]
-        #[inline(always)]
-        pub const fn n0da_4(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0104usize) as _) }
-        }
-        #[doc = "N0TB_4."]
-        #[inline(always)]
-        pub const fn n0tb_4(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0108usize) as _) }
-        }
-        #[doc = "N1SA_4."]
-        #[inline(always)]
-        pub const fn n1sa_4(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x010cusize) as _) }
-        }
-        #[doc = "N1DA_4."]
-        #[inline(always)]
-        pub const fn n1da_4(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0110usize) as _) }
-        }
-        #[doc = "N1TB_4."]
-        #[inline(always)]
-        pub const fn n1tb_4(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0114usize) as _) }
-        }
-        #[doc = "CRSA_4."]
-        #[inline(always)]
-        pub const fn crsa_4(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0118usize) as _) }
-        }
-        #[doc = "CRDA_4."]
-        #[inline(always)]
-        pub const fn crda_4(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x011cusize) as _) }
-        }
-        #[doc = "CRTB_4."]
-        #[inline(always)]
-        pub const fn crtb_4(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0120usize) as _) }
-        }
-        #[doc = "CHSTAT_4."]
-        #[inline(always)]
-        pub const fn chstat_4(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0124usize) as _) }
-        }
-        #[doc = "CHCTRL_4."]
-        #[inline(always)]
-        pub const fn chctrl_4(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0128usize) as _) }
-        }
-        #[doc = "CHCFG_4."]
-        #[inline(always)]
-        pub const fn chcfg_4(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x012cusize) as _) }
-        }
-        #[doc = "CHITVL_4."]
-        #[inline(always)]
-        pub const fn chitvl_4(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0130usize) as _) }
-        }
-        #[doc = "CHEXT_4."]
-        #[inline(always)]
-        pub const fn chext_4(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0134usize) as _) }
-        }
-        #[doc = "NXLA_4."]
-        #[inline(always)]
-        pub const fn nxla_4(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0138usize) as _) }
-        }
-        #[doc = "CRLA_4."]
-        #[inline(always)]
-        pub const fn crla_4(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x013cusize) as _) }
-        }
-        #[doc = "N0SA_5."]
-        #[inline(always)]
-        pub const fn n0sa_5(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0140usize) as _) }
-        }
-        #[doc = "N0DA_5."]
-        #[inline(always)]
-        pub const fn n0da_5(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0144usize) as _) }
-        }
-        #[doc = "N0TB_5."]
-        #[inline(always)]
-        pub const fn n0tb_5(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0148usize) as _) }
-        }
-        #[doc = "N1SA_5."]
-        #[inline(always)]
-        pub const fn n1sa_5(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x014cusize) as _) }
-        }
-        #[doc = "N1DA_5."]
-        #[inline(always)]
-        pub const fn n1da_5(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0150usize) as _) }
-        }
-        #[doc = "N1TB_5."]
-        #[inline(always)]
-        pub const fn n1tb_5(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0154usize) as _) }
-        }
-        #[doc = "CRSA_5."]
-        #[inline(always)]
-        pub const fn crsa_5(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0158usize) as _) }
-        }
-        #[doc = "CRDA_5."]
-        #[inline(always)]
-        pub const fn crda_5(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x015cusize) as _) }
-        }
-        #[doc = "CRTB_5."]
-        #[inline(always)]
-        pub const fn crtb_5(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0160usize) as _) }
-        }
-        #[doc = "CHSTAT_5."]
-        #[inline(always)]
-        pub const fn chstat_5(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0164usize) as _) }
-        }
-        #[doc = "CHCTRL_5."]
-        #[inline(always)]
-        pub const fn chctrl_5(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0168usize) as _) }
-        }
-        #[doc = "CHCFG_5."]
-        #[inline(always)]
-        pub const fn chcfg_5(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x016cusize) as _) }
-        }
-        #[doc = "CHITVL_5."]
-        #[inline(always)]
-        pub const fn chitvl_5(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0170usize) as _) }
-        }
-        #[doc = "CHEXT_5."]
-        #[inline(always)]
-        pub const fn chext_5(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0174usize) as _) }
-        }
-        #[doc = "NXLA_5."]
-        #[inline(always)]
-        pub const fn nxla_5(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0178usize) as _) }
-        }
-        #[doc = "CRLA_5."]
-        #[inline(always)]
-        pub const fn crla_5(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x017cusize) as _) }
-        }
-        #[doc = "N0SA_6."]
-        #[inline(always)]
-        pub const fn n0sa_6(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0180usize) as _) }
-        }
-        #[doc = "N0DA_6."]
-        #[inline(always)]
-        pub const fn n0da_6(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0184usize) as _) }
-        }
-        #[doc = "N0TB_6."]
-        #[inline(always)]
-        pub const fn n0tb_6(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0188usize) as _) }
-        }
-        #[doc = "N1SA_6."]
-        #[inline(always)]
-        pub const fn n1sa_6(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x018cusize) as _) }
-        }
-        #[doc = "N1DA_6."]
-        #[inline(always)]
-        pub const fn n1da_6(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0190usize) as _) }
-        }
-        #[doc = "N1TB_6."]
-        #[inline(always)]
-        pub const fn n1tb_6(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0194usize) as _) }
-        }
-        #[doc = "CRSA_6."]
-        #[inline(always)]
-        pub const fn crsa_6(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0198usize) as _) }
-        }
-        #[doc = "CRDA_6."]
-        #[inline(always)]
-        pub const fn crda_6(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x019cusize) as _) }
-        }
-        #[doc = "CRTB_6."]
-        #[inline(always)]
-        pub const fn crtb_6(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x01a0usize) as _) }
-        }
-        #[doc = "CHSTAT_6."]
-        #[inline(always)]
-        pub const fn chstat_6(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x01a4usize) as _) }
-        }
-        #[doc = "CHCTRL_6."]
-        #[inline(always)]
-        pub const fn chctrl_6(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x01a8usize) as _) }
-        }
-        #[doc = "CHCFG_6."]
-        #[inline(always)]
-        pub const fn chcfg_6(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x01acusize) as _) }
-        }
-        #[doc = "CHITVL_6."]
-        #[inline(always)]
-        pub const fn chitvl_6(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x01b0usize) as _) }
-        }
-        #[doc = "CHEXT_6."]
-        #[inline(always)]
-        pub const fn chext_6(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x01b4usize) as _) }
-        }
-        #[doc = "NXLA_6."]
-        #[inline(always)]
-        pub const fn nxla_6(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x01b8usize) as _) }
-        }
-        #[doc = "CRLA_6."]
-        #[inline(always)]
-        pub const fn crla_6(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x01bcusize) as _) }
-        }
-        #[doc = "N0SA_7."]
-        #[inline(always)]
-        pub const fn n0sa_7(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x01c0usize) as _) }
-        }
-        #[doc = "N0DA_7."]
-        #[inline(always)]
-        pub const fn n0da_7(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x01c4usize) as _) }
-        }
-        #[doc = "N0TB_7."]
-        #[inline(always)]
-        pub const fn n0tb_7(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x01c8usize) as _) }
-        }
-        #[doc = "N1SA_7."]
-        #[inline(always)]
-        pub const fn n1sa_7(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x01ccusize) as _) }
-        }
-        #[doc = "N1DA_7."]
-        #[inline(always)]
-        pub const fn n1da_7(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x01d0usize) as _) }
-        }
-        #[doc = "N1TB_7."]
-        #[inline(always)]
-        pub const fn n1tb_7(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x01d4usize) as _) }
-        }
-        #[doc = "CRSA_7."]
-        #[inline(always)]
-        pub const fn crsa_7(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x01d8usize) as _) }
-        }
-        #[doc = "CRDA_7."]
-        #[inline(always)]
-        pub const fn crda_7(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x01dcusize) as _) }
-        }
-        #[doc = "CRTB_7."]
-        #[inline(always)]
-        pub const fn crtb_7(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x01e0usize) as _) }
-        }
-        #[doc = "CHSTAT_7."]
-        #[inline(always)]
-        pub const fn chstat_7(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x01e4usize) as _) }
-        }
-        #[doc = "CHCTRL_7."]
-        #[inline(always)]
-        pub const fn chctrl_7(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x01e8usize) as _) }
-        }
-        #[doc = "CHCFG_7."]
-        #[inline(always)]
-        pub const fn chcfg_7(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x01ecusize) as _) }
-        }
-        #[doc = "CHITVL_7."]
-        #[inline(always)]
-        pub const fn chitvl_7(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x01f0usize) as _) }
-        }
-        #[doc = "CHEXT_7."]
-        #[inline(always)]
-        pub const fn chext_7(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x01f4usize) as _) }
-        }
-        #[doc = "NXLA_7."]
-        #[inline(always)]
-        pub const fn nxla_7(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x01f8usize) as _) }
-        }
-        #[doc = "CRLA_7."]
-        #[inline(always)]
-        pub const fn crla_7(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x01fcusize) as _) }
+        pub const fn ch(self, n: usize) -> Ch {
+            assert!(n < 16usize);
+            unsafe {
+                Ch::from_ptr(self.ptr.wrapping_add(
+                    0x0usize
+                        + ([
+                            0usize, 64usize, 128usize, 192usize, 256usize, 320usize, 384usize,
+                            448usize, 1024usize, 1088usize, 1152usize, 1216usize, 1280usize,
+                            1344usize, 1408usize, 1472usize,
+                        ][n] as usize),
+                ) as _)
+            }
         }
         #[doc = "DCTRL_0_7."]
         #[inline(always)]
-        pub const fn dctrl_0_7(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0300usize) as _) }
+        pub const fn dctrl(self, n: usize) -> crate::common::Reg<u32, crate::common::RW> {
+            assert!(n < 2usize);
+            unsafe {
+                crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0300usize + n * 1024usize) as _)
+            }
         }
         #[doc = "DSTAT_EN_0_7."]
         #[inline(always)]
-        pub const fn dstat_en_0_7(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0310usize) as _) }
+        pub const fn dstat_en(self, n: usize) -> crate::common::Reg<u32, crate::common::RW> {
+            assert!(n < 2usize);
+            unsafe {
+                crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0310usize + n * 1024usize) as _)
+            }
         }
         #[doc = "DSTAT_ER_0_7."]
         #[inline(always)]
-        pub const fn dstat_er_0_7(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0314usize) as _) }
+        pub const fn dstat_er(self, n: usize) -> crate::common::Reg<u32, crate::common::RW> {
+            assert!(n < 2usize);
+            unsafe {
+                crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0314usize + n * 1024usize) as _)
+            }
         }
         #[doc = "DSTAT_END_0_7."]
         #[inline(always)]
-        pub const fn dstat_end_0_7(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0318usize) as _) }
+        pub const fn dstat_end(self, n: usize) -> crate::common::Reg<u32, crate::common::RW> {
+            assert!(n < 2usize);
+            unsafe {
+                crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0318usize + n * 1024usize) as _)
+            }
         }
         #[doc = "DSTAT_TC_0_7."]
         #[inline(always)]
-        pub const fn dstat_tc_0_7(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x031cusize) as _) }
+        pub const fn dstat_tc(self, n: usize) -> crate::common::Reg<u32, crate::common::RW> {
+            assert!(n < 2usize);
+            unsafe {
+                crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x031cusize + n * 1024usize) as _)
+            }
         }
         #[doc = "DSTAT_SUS_0_7."]
         #[inline(always)]
-        pub const fn dstat_sus_0_7(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0320usize) as _) }
-        }
-        #[doc = "N0SA_8."]
-        #[inline(always)]
-        pub const fn n0sa_8(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0400usize) as _) }
-        }
-        #[doc = "N0DA_8."]
-        #[inline(always)]
-        pub const fn n0da_8(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0404usize) as _) }
-        }
-        #[doc = "N0TB_8."]
-        #[inline(always)]
-        pub const fn n0tb_8(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0408usize) as _) }
-        }
-        #[doc = "N1SA_8."]
-        #[inline(always)]
-        pub const fn n1sa_8(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x040cusize) as _) }
-        }
-        #[doc = "N1DA_8."]
-        #[inline(always)]
-        pub const fn n1da_8(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0410usize) as _) }
-        }
-        #[doc = "N1TB_8."]
-        #[inline(always)]
-        pub const fn n1tb_8(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0414usize) as _) }
-        }
-        #[doc = "CRSA_8."]
-        #[inline(always)]
-        pub const fn crsa_8(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0418usize) as _) }
-        }
-        #[doc = "CRDA_8."]
-        #[inline(always)]
-        pub const fn crda_8(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x041cusize) as _) }
-        }
-        #[doc = "CRTB_8."]
-        #[inline(always)]
-        pub const fn crtb_8(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0420usize) as _) }
-        }
-        #[doc = "CHSTAT_8."]
-        #[inline(always)]
-        pub const fn chstat_8(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0424usize) as _) }
-        }
-        #[doc = "CHCTRL_8."]
-        #[inline(always)]
-        pub const fn chctrl_8(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0428usize) as _) }
-        }
-        #[doc = "CHCFG_8."]
-        #[inline(always)]
-        pub const fn chcfg_8(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x042cusize) as _) }
-        }
-        #[doc = "CHITVL_8."]
-        #[inline(always)]
-        pub const fn chitvl_8(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0430usize) as _) }
-        }
-        #[doc = "CHEXT_8."]
-        #[inline(always)]
-        pub const fn chext_8(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0434usize) as _) }
-        }
-        #[doc = "NXLA_8."]
-        #[inline(always)]
-        pub const fn nxla_8(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0438usize) as _) }
-        }
-        #[doc = "CRLA_8."]
-        #[inline(always)]
-        pub const fn crla_8(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x043cusize) as _) }
-        }
-        #[doc = "N0SA_9."]
-        #[inline(always)]
-        pub const fn n0sa_9(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0440usize) as _) }
-        }
-        #[doc = "N0DA_9."]
-        #[inline(always)]
-        pub const fn n0da_9(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0444usize) as _) }
-        }
-        #[doc = "N0TB_9."]
-        #[inline(always)]
-        pub const fn n0tb_9(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0448usize) as _) }
-        }
-        #[doc = "N1SA_9."]
-        #[inline(always)]
-        pub const fn n1sa_9(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x044cusize) as _) }
-        }
-        #[doc = "N1DA_9."]
-        #[inline(always)]
-        pub const fn n1da_9(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0450usize) as _) }
-        }
-        #[doc = "N1TB_9."]
-        #[inline(always)]
-        pub const fn n1tb_9(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0454usize) as _) }
-        }
-        #[doc = "CRSA_9."]
-        #[inline(always)]
-        pub const fn crsa_9(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0458usize) as _) }
-        }
-        #[doc = "CRDA_9."]
-        #[inline(always)]
-        pub const fn crda_9(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x045cusize) as _) }
-        }
-        #[doc = "CRTB_9."]
-        #[inline(always)]
-        pub const fn crtb_9(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0460usize) as _) }
-        }
-        #[doc = "CHSTAT_9."]
-        #[inline(always)]
-        pub const fn chstat_9(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0464usize) as _) }
-        }
-        #[doc = "CHCTRL_9."]
-        #[inline(always)]
-        pub const fn chctrl_9(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0468usize) as _) }
-        }
-        #[doc = "CHCFG_9."]
-        #[inline(always)]
-        pub const fn chcfg_9(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x046cusize) as _) }
-        }
-        #[doc = "CHITVL_9."]
-        #[inline(always)]
-        pub const fn chitvl_9(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0470usize) as _) }
-        }
-        #[doc = "CHEXT_9."]
-        #[inline(always)]
-        pub const fn chext_9(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0474usize) as _) }
-        }
-        #[doc = "NXLA_9."]
-        #[inline(always)]
-        pub const fn nxla_9(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0478usize) as _) }
-        }
-        #[doc = "CRLA_9."]
-        #[inline(always)]
-        pub const fn crla_9(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x047cusize) as _) }
-        }
-        #[doc = "N0SA_10."]
-        #[inline(always)]
-        pub const fn n0sa_10(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0480usize) as _) }
-        }
-        #[doc = "N0DA_10."]
-        #[inline(always)]
-        pub const fn n0da_10(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0484usize) as _) }
-        }
-        #[doc = "N0TB_10."]
-        #[inline(always)]
-        pub const fn n0tb_10(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0488usize) as _) }
-        }
-        #[doc = "N1SA_10."]
-        #[inline(always)]
-        pub const fn n1sa_10(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x048cusize) as _) }
-        }
-        #[doc = "N1DA_10."]
-        #[inline(always)]
-        pub const fn n1da_10(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0490usize) as _) }
-        }
-        #[doc = "N1TB_10."]
-        #[inline(always)]
-        pub const fn n1tb_10(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0494usize) as _) }
-        }
-        #[doc = "CRSA_10."]
-        #[inline(always)]
-        pub const fn crsa_10(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0498usize) as _) }
-        }
-        #[doc = "CRDA_10."]
-        #[inline(always)]
-        pub const fn crda_10(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x049cusize) as _) }
-        }
-        #[doc = "CRTB_10."]
-        #[inline(always)]
-        pub const fn crtb_10(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04a0usize) as _) }
-        }
-        #[doc = "CHSTAT_10."]
-        #[inline(always)]
-        pub const fn chstat_10(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04a4usize) as _) }
-        }
-        #[doc = "CHCTRL_10."]
-        #[inline(always)]
-        pub const fn chctrl_10(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04a8usize) as _) }
-        }
-        #[doc = "CHCFG_10."]
-        #[inline(always)]
-        pub const fn chcfg_10(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04acusize) as _) }
-        }
-        #[doc = "CHITVL_10."]
-        #[inline(always)]
-        pub const fn chitvl_10(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04b0usize) as _) }
-        }
-        #[doc = "CHEXT_10."]
-        #[inline(always)]
-        pub const fn chext_10(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04b4usize) as _) }
-        }
-        #[doc = "NXLA_10."]
-        #[inline(always)]
-        pub const fn nxla_10(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04b8usize) as _) }
-        }
-        #[doc = "CRLA_10."]
-        #[inline(always)]
-        pub const fn crla_10(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04bcusize) as _) }
-        }
-        #[doc = "N0SA_11."]
-        #[inline(always)]
-        pub const fn n0sa_11(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04c0usize) as _) }
-        }
-        #[doc = "N0DA_11."]
-        #[inline(always)]
-        pub const fn n0da_11(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04c4usize) as _) }
-        }
-        #[doc = "N0TB_11."]
-        #[inline(always)]
-        pub const fn n0tb_11(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04c8usize) as _) }
-        }
-        #[doc = "N1SA_11."]
-        #[inline(always)]
-        pub const fn n1sa_11(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04ccusize) as _) }
-        }
-        #[doc = "N1DA_11."]
-        #[inline(always)]
-        pub const fn n1da_11(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04d0usize) as _) }
-        }
-        #[doc = "N1TB_11."]
-        #[inline(always)]
-        pub const fn n1tb_11(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04d4usize) as _) }
-        }
-        #[doc = "CRSA_11."]
-        #[inline(always)]
-        pub const fn crsa_11(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04d8usize) as _) }
-        }
-        #[doc = "CRDA_11."]
-        #[inline(always)]
-        pub const fn crda_11(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04dcusize) as _) }
-        }
-        #[doc = "CRTB_11."]
-        #[inline(always)]
-        pub const fn crtb_11(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04e0usize) as _) }
-        }
-        #[doc = "CHSTAT_11."]
-        #[inline(always)]
-        pub const fn chstat_11(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04e4usize) as _) }
-        }
-        #[doc = "CHCTRL_11."]
-        #[inline(always)]
-        pub const fn chctrl_11(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04e8usize) as _) }
-        }
-        #[doc = "CHCFG_11."]
-        #[inline(always)]
-        pub const fn chcfg_11(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04ecusize) as _) }
-        }
-        #[doc = "CHITVL_11."]
-        #[inline(always)]
-        pub const fn chitvl_11(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04f0usize) as _) }
-        }
-        #[doc = "CHEXT_11."]
-        #[inline(always)]
-        pub const fn chext_11(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04f4usize) as _) }
-        }
-        #[doc = "NXLA_11."]
-        #[inline(always)]
-        pub const fn nxla_11(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04f8usize) as _) }
-        }
-        #[doc = "CRLA_11."]
-        #[inline(always)]
-        pub const fn crla_11(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04fcusize) as _) }
-        }
-        #[doc = "N0SA_12."]
-        #[inline(always)]
-        pub const fn n0sa_12(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0500usize) as _) }
-        }
-        #[doc = "N0DA_12."]
-        #[inline(always)]
-        pub const fn n0da_12(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0504usize) as _) }
-        }
-        #[doc = "N0TB_12."]
-        #[inline(always)]
-        pub const fn n0tb_12(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0508usize) as _) }
-        }
-        #[doc = "N1SA_12."]
-        #[inline(always)]
-        pub const fn n1sa_12(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x050cusize) as _) }
-        }
-        #[doc = "N1DA_12."]
-        #[inline(always)]
-        pub const fn n1da_12(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0510usize) as _) }
-        }
-        #[doc = "N1TB_12."]
-        #[inline(always)]
-        pub const fn n1tb_12(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0514usize) as _) }
-        }
-        #[doc = "CRSA_12."]
-        #[inline(always)]
-        pub const fn crsa_12(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0518usize) as _) }
-        }
-        #[doc = "CRDA_12."]
-        #[inline(always)]
-        pub const fn crda_12(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x051cusize) as _) }
-        }
-        #[doc = "CRTB_12."]
-        #[inline(always)]
-        pub const fn crtb_12(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0520usize) as _) }
-        }
-        #[doc = "CHSTAT_12."]
-        #[inline(always)]
-        pub const fn chstat_12(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0524usize) as _) }
-        }
-        #[doc = "CHCTRL_12."]
-        #[inline(always)]
-        pub const fn chctrl_12(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0528usize) as _) }
-        }
-        #[doc = "CHCFG_12."]
-        #[inline(always)]
-        pub const fn chcfg_12(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x052cusize) as _) }
-        }
-        #[doc = "CHITVL_12."]
-        #[inline(always)]
-        pub const fn chitvl_12(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0530usize) as _) }
-        }
-        #[doc = "CHEXT_12."]
-        #[inline(always)]
-        pub const fn chext_12(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0534usize) as _) }
-        }
-        #[doc = "NXLA_12."]
-        #[inline(always)]
-        pub const fn nxla_12(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0538usize) as _) }
-        }
-        #[doc = "CRLA_12."]
-        #[inline(always)]
-        pub const fn crla_12(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x053cusize) as _) }
-        }
-        #[doc = "N0SA_13."]
-        #[inline(always)]
-        pub const fn n0sa_13(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0540usize) as _) }
-        }
-        #[doc = "N0DA_13."]
-        #[inline(always)]
-        pub const fn n0da_13(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0544usize) as _) }
-        }
-        #[doc = "N0TB_13."]
-        #[inline(always)]
-        pub const fn n0tb_13(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0548usize) as _) }
-        }
-        #[doc = "N1SA_13."]
-        #[inline(always)]
-        pub const fn n1sa_13(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x054cusize) as _) }
-        }
-        #[doc = "N1DA_13."]
-        #[inline(always)]
-        pub const fn n1da_13(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0550usize) as _) }
-        }
-        #[doc = "N1TB_13."]
-        #[inline(always)]
-        pub const fn n1tb_13(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0554usize) as _) }
-        }
-        #[doc = "CRSA_13."]
-        #[inline(always)]
-        pub const fn crsa_13(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0558usize) as _) }
-        }
-        #[doc = "CRDA_13."]
-        #[inline(always)]
-        pub const fn crda_13(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x055cusize) as _) }
-        }
-        #[doc = "CRTB_13."]
-        #[inline(always)]
-        pub const fn crtb_13(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0560usize) as _) }
-        }
-        #[doc = "CHSTAT_13."]
-        #[inline(always)]
-        pub const fn chstat_13(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0564usize) as _) }
-        }
-        #[doc = "CHCTRL_13."]
-        #[inline(always)]
-        pub const fn chctrl_13(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0568usize) as _) }
-        }
-        #[doc = "CHCFG_13."]
-        #[inline(always)]
-        pub const fn chcfg_13(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x056cusize) as _) }
-        }
-        #[doc = "CHITVL_13."]
-        #[inline(always)]
-        pub const fn chitvl_13(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0570usize) as _) }
-        }
-        #[doc = "CHEXT_13."]
-        #[inline(always)]
-        pub const fn chext_13(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0574usize) as _) }
-        }
-        #[doc = "NXLA_13."]
-        #[inline(always)]
-        pub const fn nxla_13(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0578usize) as _) }
-        }
-        #[doc = "CRLA_13."]
-        #[inline(always)]
-        pub const fn crla_13(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x057cusize) as _) }
-        }
-        #[doc = "N0SA_14."]
-        #[inline(always)]
-        pub const fn n0sa_14(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0580usize) as _) }
-        }
-        #[doc = "N0DA_14."]
-        #[inline(always)]
-        pub const fn n0da_14(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0584usize) as _) }
-        }
-        #[doc = "N0TB_14."]
-        #[inline(always)]
-        pub const fn n0tb_14(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0588usize) as _) }
-        }
-        #[doc = "N1SA_14."]
-        #[inline(always)]
-        pub const fn n1sa_14(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x058cusize) as _) }
-        }
-        #[doc = "N1DA_14."]
-        #[inline(always)]
-        pub const fn n1da_14(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0590usize) as _) }
-        }
-        #[doc = "N1TB_14."]
-        #[inline(always)]
-        pub const fn n1tb_14(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0594usize) as _) }
-        }
-        #[doc = "CRSA_14."]
-        #[inline(always)]
-        pub const fn crsa_14(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0598usize) as _) }
-        }
-        #[doc = "CRDA_14."]
-        #[inline(always)]
-        pub const fn crda_14(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x059cusize) as _) }
-        }
-        #[doc = "CRTB_14."]
-        #[inline(always)]
-        pub const fn crtb_14(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x05a0usize) as _) }
-        }
-        #[doc = "CHSTAT_14."]
-        #[inline(always)]
-        pub const fn chstat_14(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x05a4usize) as _) }
-        }
-        #[doc = "CHCTRL_14."]
-        #[inline(always)]
-        pub const fn chctrl_14(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x05a8usize) as _) }
-        }
-        #[doc = "CHCFG_14."]
-        #[inline(always)]
-        pub const fn chcfg_14(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x05acusize) as _) }
-        }
-        #[doc = "CHITVL_14."]
-        #[inline(always)]
-        pub const fn chitvl_14(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x05b0usize) as _) }
-        }
-        #[doc = "CHEXT_14."]
-        #[inline(always)]
-        pub const fn chext_14(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x05b4usize) as _) }
-        }
-        #[doc = "NXLA_14."]
-        #[inline(always)]
-        pub const fn nxla_14(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x05b8usize) as _) }
-        }
-        #[doc = "CRLA_14."]
-        #[inline(always)]
-        pub const fn crla_14(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x05bcusize) as _) }
-        }
-        #[doc = "N0SA_15."]
-        #[inline(always)]
-        pub const fn n0sa_15(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x05c0usize) as _) }
-        }
-        #[doc = "N0DA_15."]
-        #[inline(always)]
-        pub const fn n0da_15(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x05c4usize) as _) }
-        }
-        #[doc = "N0TB_15."]
-        #[inline(always)]
-        pub const fn n0tb_15(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x05c8usize) as _) }
-        }
-        #[doc = "N1SA_15."]
-        #[inline(always)]
-        pub const fn n1sa_15(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x05ccusize) as _) }
-        }
-        #[doc = "N1DA_15."]
-        #[inline(always)]
-        pub const fn n1da_15(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x05d0usize) as _) }
-        }
-        #[doc = "N1TB_15."]
-        #[inline(always)]
-        pub const fn n1tb_15(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x05d4usize) as _) }
-        }
-        #[doc = "CRSA_15."]
-        #[inline(always)]
-        pub const fn crsa_15(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x05d8usize) as _) }
-        }
-        #[doc = "CRDA_15."]
-        #[inline(always)]
-        pub const fn crda_15(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x05dcusize) as _) }
-        }
-        #[doc = "CRTB_15."]
-        #[inline(always)]
-        pub const fn crtb_15(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x05e0usize) as _) }
-        }
-        #[doc = "CHSTAT_15."]
-        #[inline(always)]
-        pub const fn chstat_15(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x05e4usize) as _) }
-        }
-        #[doc = "CHCTRL_15."]
-        #[inline(always)]
-        pub const fn chctrl_15(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x05e8usize) as _) }
-        }
-        #[doc = "CHCFG_15."]
-        #[inline(always)]
-        pub const fn chcfg_15(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x05ecusize) as _) }
-        }
-        #[doc = "CHITVL_15."]
-        #[inline(always)]
-        pub const fn chitvl_15(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x05f0usize) as _) }
-        }
-        #[doc = "CHEXT_15."]
-        #[inline(always)]
-        pub const fn chext_15(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x05f4usize) as _) }
-        }
-        #[doc = "NXLA_15."]
-        #[inline(always)]
-        pub const fn nxla_15(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x05f8usize) as _) }
-        }
-        #[doc = "CRLA_15."]
-        #[inline(always)]
-        pub const fn crla_15(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x05fcusize) as _) }
-        }
-        #[doc = "DCTRL_8_15."]
-        #[inline(always)]
-        pub const fn dctrl_8_15(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0700usize) as _) }
-        }
-        #[doc = "DSTAT_EN_8_15."]
-        #[inline(always)]
-        pub const fn dstat_en_8_15(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0710usize) as _) }
-        }
-        #[doc = "DSTAT_ER_8_15."]
-        #[inline(always)]
-        pub const fn dstat_er_8_15(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0714usize) as _) }
-        }
-        #[doc = "DSTAT_END_8_15."]
-        #[inline(always)]
-        pub const fn dstat_end_8_15(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0718usize) as _) }
-        }
-        #[doc = "DSTAT_TC_8_15."]
-        #[inline(always)]
-        pub const fn dstat_tc_8_15(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x071cusize) as _) }
-        }
-        #[doc = "DSTAT_SUS_8_15."]
-        #[inline(always)]
-        pub const fn dstat_sus_8_15(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0720usize) as _) }
+        pub const fn dstat_sus(self, n: usize) -> crate::common::Reg<u32, crate::common::RW> {
+            assert!(n < 2usize);
+            unsafe {
+                crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0320usize + n * 1024usize) as _)
+            }
         }
         #[doc = "DMARS0."]
         #[inline(always)]
-        pub const fn dmars0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x14de_1000usize) as _) }
-        }
-        #[doc = "DMARS1."]
-        #[inline(always)]
-        pub const fn dmars1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x14de_1004usize) as _) }
-        }
-        #[doc = "DMARS2."]
-        #[inline(always)]
-        pub const fn dmars2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x14de_1008usize) as _) }
-        }
-        #[doc = "DMARS3."]
-        #[inline(always)]
-        pub const fn dmars3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x14de_100cusize) as _) }
-        }
-        #[doc = "DMARS4."]
-        #[inline(always)]
-        pub const fn dmars4(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x14de_1010usize) as _) }
-        }
-        #[doc = "DMARS5."]
-        #[inline(always)]
-        pub const fn dmars5(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x14de_1014usize) as _) }
-        }
-        #[doc = "DMARS6."]
-        #[inline(always)]
-        pub const fn dmars6(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x14de_1018usize) as _) }
-        }
-        #[doc = "DMARS7."]
-        #[inline(always)]
-        pub const fn dmars7(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x14de_101cusize) as _) }
+        pub const fn dmars(self, n: usize) -> crate::common::Reg<u32, crate::common::RW> {
+            assert!(n < 8usize);
+            unsafe {
+                crate::common::Reg::from_ptr(
+                    self.ptr.wrapping_add(0x14de_1000usize + n * 4usize) as _
+                )
+            }
         }
     }
 }
@@ -51750,6 +50540,315 @@ pub mod scim {
     }
 }
 pub mod scux {
+    #[derive(Copy, Clone, Eq, PartialEq)]
+    pub struct Dvu {
+        ptr: *mut u8,
+    }
+    unsafe impl Send for Dvu {}
+    unsafe impl Sync for Dvu {}
+    impl Dvu {
+        #[inline(always)]
+        pub const unsafe fn from_ptr(ptr: *mut ()) -> Self {
+            Self { ptr: ptr as _ }
+        }
+        #[inline(always)]
+        pub const fn as_ptr(&self) -> *mut () {
+            self.ptr as _
+        }
+        #[doc = "DVUIR_DVU0_3."]
+        #[inline(always)]
+        pub const fn dvuir(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0usize) as _) }
+        }
+        #[doc = "VADIR_DVU0_3."]
+        #[inline(always)]
+        pub const fn vadir(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04usize) as _) }
+        }
+        #[doc = "DVUBR_DVU0_3."]
+        #[inline(always)]
+        pub const fn dvubr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x08usize) as _) }
+        }
+        #[doc = "DVUCR_DVU0_3."]
+        #[inline(always)]
+        pub const fn dvucr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0cusize) as _) }
+        }
+        #[doc = "ZCMCR_DVU0_3."]
+        #[inline(always)]
+        pub const fn zcmcr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x10usize) as _) }
+        }
+        #[doc = "VRCTR_DVU0_3."]
+        #[inline(always)]
+        pub const fn vrctr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x14usize) as _) }
+        }
+        #[doc = "VRPDR_DVU0_3."]
+        #[inline(always)]
+        pub const fn vrpdr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x18usize) as _) }
+        }
+        #[doc = "VRDBR_DVU0_3."]
+        #[inline(always)]
+        pub const fn vrdbr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1cusize) as _) }
+        }
+        #[doc = "VRWTR_DVU0_3."]
+        #[inline(always)]
+        pub const fn vrwtr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x20usize) as _) }
+        }
+        #[doc = "VOL0R_DVU0_3."]
+        #[inline(always)]
+        pub const fn volr(self, n: usize) -> crate::common::Reg<u32, crate::common::RW> {
+            assert!(n < 8usize);
+            unsafe {
+                crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x24usize + n * 4usize) as _)
+            }
+        }
+        #[doc = "DVUER_DVU0_3."]
+        #[inline(always)]
+        pub const fn dvuer(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x44usize) as _) }
+        }
+        #[doc = "DVUSR_DVU0_3."]
+        #[inline(always)]
+        pub const fn dvusr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x48usize) as _) }
+        }
+        #[doc = "VEVMR_DVU0_3."]
+        #[inline(always)]
+        pub const fn vevmr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x4cusize) as _) }
+        }
+        #[doc = "VEVCR_DVU0_3."]
+        #[inline(always)]
+        pub const fn vevcr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x54usize) as _) }
+        }
+    }
+    #[derive(Copy, Clone, Eq, PartialEq)]
+    pub struct Ffd {
+        ptr: *mut u8,
+    }
+    unsafe impl Send for Ffd {}
+    unsafe impl Sync for Ffd {}
+    impl Ffd {
+        #[inline(always)]
+        pub const unsafe fn from_ptr(ptr: *mut ()) -> Self {
+            Self { ptr: ptr as _ }
+        }
+        #[inline(always)]
+        pub const fn as_ptr(&self) -> *mut () {
+            self.ptr as _
+        }
+        #[doc = "FFDIR_FFD0_3."]
+        #[inline(always)]
+        pub const fn ffdir(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0usize) as _) }
+        }
+        #[doc = "FDAIR_FFD0_3."]
+        #[inline(always)]
+        pub const fn fdair(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04usize) as _) }
+        }
+        #[doc = "DRQSR_FFD0_3."]
+        #[inline(always)]
+        pub const fn drqsr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x08usize) as _) }
+        }
+        #[doc = "FFDPR_FFD0_3."]
+        #[inline(always)]
+        pub const fn ffdpr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0cusize) as _) }
+        }
+        #[doc = "FFDBR_FFD0_3."]
+        #[inline(always)]
+        pub const fn ffdbr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x10usize) as _) }
+        }
+        #[doc = "DEVMR_FFD0_3."]
+        #[inline(always)]
+        pub const fn devmr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x14usize) as _) }
+        }
+        #[doc = "DEVCR_FFD0_3."]
+        #[inline(always)]
+        pub const fn devcr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1cusize) as _) }
+        }
+    }
+    #[derive(Copy, Clone, Eq, PartialEq)]
+    pub struct Ffu {
+        ptr: *mut u8,
+    }
+    unsafe impl Send for Ffu {}
+    unsafe impl Sync for Ffu {}
+    impl Ffu {
+        #[inline(always)]
+        pub const unsafe fn from_ptr(ptr: *mut ()) -> Self {
+            Self { ptr: ptr as _ }
+        }
+        #[inline(always)]
+        pub const fn as_ptr(&self) -> *mut () {
+            self.ptr as _
+        }
+        #[doc = "FFUIR_FFU0_3."]
+        #[inline(always)]
+        pub const fn ffuir(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0usize) as _) }
+        }
+        #[doc = "FUAIR_FFU0_3."]
+        #[inline(always)]
+        pub const fn fuair(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04usize) as _) }
+        }
+        #[doc = "URQSR_FFU0_3."]
+        #[inline(always)]
+        pub const fn urqsr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x08usize) as _) }
+        }
+        #[doc = "FFUPR_FFU0_3."]
+        #[inline(always)]
+        pub const fn ffupr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0cusize) as _) }
+        }
+        #[doc = "UEVMR_FFU0_3."]
+        #[inline(always)]
+        pub const fn uevmr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x10usize) as _) }
+        }
+        #[doc = "UEVCR_FFU0_3."]
+        #[inline(always)]
+        pub const fn uevcr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x18usize) as _) }
+        }
+    }
+    #[derive(Copy, Clone, Eq, PartialEq)]
+    pub struct Ipc {
+        ptr: *mut u8,
+    }
+    unsafe impl Send for Ipc {}
+    unsafe impl Sync for Ipc {}
+    impl Ipc {
+        #[inline(always)]
+        pub const unsafe fn from_ptr(ptr: *mut ()) -> Self {
+            Self { ptr: ptr as _ }
+        }
+        #[inline(always)]
+        pub const fn as_ptr(&self) -> *mut () {
+            self.ptr as _
+        }
+        #[doc = "IPCIR_IPC0_3."]
+        #[inline(always)]
+        pub const fn ipcir(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0usize) as _) }
+        }
+        #[doc = "IPSLR_IPC0_3."]
+        #[inline(always)]
+        pub const fn ipslr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04usize) as _) }
+        }
+    }
+    #[derive(Copy, Clone, Eq, PartialEq)]
+    pub struct Mix {
+        ptr: *mut u8,
+    }
+    unsafe impl Send for Mix {}
+    unsafe impl Sync for Mix {}
+    impl Mix {
+        #[inline(always)]
+        pub const unsafe fn from_ptr(ptr: *mut ()) -> Self {
+            Self { ptr: ptr as _ }
+        }
+        #[inline(always)]
+        pub const fn as_ptr(&self) -> *mut () {
+            self.ptr as _
+        }
+        #[doc = "MIXIR_MIX0_0."]
+        #[inline(always)]
+        pub const fn mixir(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0usize) as _) }
+        }
+        #[doc = "MADIR_MIX0_0."]
+        #[inline(always)]
+        pub const fn madir(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04usize) as _) }
+        }
+        #[doc = "MIXBR_MIX0_0."]
+        #[inline(always)]
+        pub const fn mixbr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x08usize) as _) }
+        }
+        #[doc = "MIXMR_MIX0_0."]
+        #[inline(always)]
+        pub const fn mixmr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0cusize) as _) }
+        }
+        #[doc = "MVPDR_MIX0_0."]
+        #[inline(always)]
+        pub const fn mvpdr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x10usize) as _) }
+        }
+        #[doc = "MDBAR_MIX0_0."]
+        #[inline(always)]
+        pub const fn mdbar(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x14usize) as _) }
+        }
+        #[doc = "MDBBR_MIX0_0."]
+        #[inline(always)]
+        pub const fn mdbbr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x18usize) as _) }
+        }
+        #[doc = "MDBCR_MIX0_0."]
+        #[inline(always)]
+        pub const fn mdbcr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1cusize) as _) }
+        }
+        #[doc = "MDBDR_MIX0_0."]
+        #[inline(always)]
+        pub const fn mdbdr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x20usize) as _) }
+        }
+        #[doc = "MDBER_MIX0_0."]
+        #[inline(always)]
+        pub const fn mdber(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x24usize) as _) }
+        }
+        #[doc = "MIXSR_MIX0_0."]
+        #[inline(always)]
+        pub const fn mixsr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x28usize) as _) }
+        }
+    }
+    #[derive(Copy, Clone, Eq, PartialEq)]
+    pub struct Opc {
+        ptr: *mut u8,
+    }
+    unsafe impl Send for Opc {}
+    unsafe impl Sync for Opc {}
+    impl Opc {
+        #[inline(always)]
+        pub const unsafe fn from_ptr(ptr: *mut ()) -> Self {
+            Self { ptr: ptr as _ }
+        }
+        #[inline(always)]
+        pub const fn as_ptr(&self) -> *mut () {
+            self.ptr as _
+        }
+        #[doc = "OPCIR_OPC0_3."]
+        #[inline(always)]
+        pub const fn opcir(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0usize) as _) }
+        }
+        #[doc = "OPSLR_OPC0_3."]
+        #[inline(always)]
+        pub const fn opslr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04usize) as _) }
+        }
+    }
     #[doc = "SCUX."]
     #[derive(Copy, Clone, Eq, PartialEq)]
     pub struct Scux {
@@ -51766,1070 +50865,53 @@ pub mod scux {
         pub const fn as_ptr(&self) -> *mut () {
             self.ptr as _
         }
-        #[doc = "IPCIR_IPC0_0."]
         #[inline(always)]
-        pub const fn ipcir_ipc0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0usize) as _) }
+        pub const fn ipc(self, n: usize) -> Ipc {
+            assert!(n < 4usize);
+            unsafe { Ipc::from_ptr(self.ptr.wrapping_add(0x0usize + n * 256usize) as _) }
         }
-        #[doc = "IPSLR_IPC0_0."]
         #[inline(always)]
-        pub const fn ipslr_ipc0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04usize) as _) }
+        pub const fn opc(self, n: usize) -> Opc {
+            assert!(n < 4usize);
+            unsafe { Opc::from_ptr(self.ptr.wrapping_add(0x0400usize + n * 256usize) as _) }
         }
-        #[doc = "IPCIR_IPC0_1."]
         #[inline(always)]
-        pub const fn ipcir_ipc0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0100usize) as _) }
+        pub const fn ffd(self, n: usize) -> Ffd {
+            assert!(n < 4usize);
+            unsafe { Ffd::from_ptr(self.ptr.wrapping_add(0x0800usize + n * 256usize) as _) }
         }
-        #[doc = "IPSLR_IPC0_1."]
         #[inline(always)]
-        pub const fn ipslr_ipc0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0104usize) as _) }
+        pub const fn ffu(self, n: usize) -> Ffu {
+            assert!(n < 4usize);
+            unsafe { Ffu::from_ptr(self.ptr.wrapping_add(0x0c00usize + n * 256usize) as _) }
         }
-        #[doc = "IPCIR_IPC0_2."]
         #[inline(always)]
-        pub const fn ipcir_ipc0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0200usize) as _) }
-        }
-        #[doc = "IPSLR_IPC0_2."]
-        #[inline(always)]
-        pub const fn ipslr_ipc0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0204usize) as _) }
-        }
-        #[doc = "IPCIR_IPC0_3."]
-        #[inline(always)]
-        pub const fn ipcir_ipc0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0300usize) as _) }
-        }
-        #[doc = "IPSLR_IPC0_3."]
-        #[inline(always)]
-        pub const fn ipslr_ipc0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0304usize) as _) }
-        }
-        #[doc = "OPCIR_OPC0_0."]
-        #[inline(always)]
-        pub const fn opcir_opc0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0400usize) as _) }
-        }
-        #[doc = "OPSLR_OPC0_0."]
-        #[inline(always)]
-        pub const fn opslr_opc0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0404usize) as _) }
-        }
-        #[doc = "OPCIR_OPC0_1."]
-        #[inline(always)]
-        pub const fn opcir_opc0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0500usize) as _) }
-        }
-        #[doc = "OPSLR_OPC0_1."]
-        #[inline(always)]
-        pub const fn opslr_opc0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0504usize) as _) }
-        }
-        #[doc = "OPCIR_OPC0_2."]
-        #[inline(always)]
-        pub const fn opcir_opc0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0600usize) as _) }
-        }
-        #[doc = "OPSLR_OPC0_2."]
-        #[inline(always)]
-        pub const fn opslr_opc0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0604usize) as _) }
-        }
-        #[doc = "OPCIR_OPC0_3."]
-        #[inline(always)]
-        pub const fn opcir_opc0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0700usize) as _) }
-        }
-        #[doc = "OPSLR_OPC0_3."]
-        #[inline(always)]
-        pub const fn opslr_opc0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0704usize) as _) }
-        }
-        #[doc = "FFDIR_FFD0_0."]
-        #[inline(always)]
-        pub const fn ffdir_ffd0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0800usize) as _) }
-        }
-        #[doc = "FDAIR_FFD0_0."]
-        #[inline(always)]
-        pub const fn fdair_ffd0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0804usize) as _) }
-        }
-        #[doc = "DRQSR_FFD0_0."]
-        #[inline(always)]
-        pub const fn drqsr_ffd0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0808usize) as _) }
-        }
-        #[doc = "FFDPR_FFD0_0."]
-        #[inline(always)]
-        pub const fn ffdpr_ffd0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x080cusize) as _) }
-        }
-        #[doc = "FFDBR_FFD0_0."]
-        #[inline(always)]
-        pub const fn ffdbr_ffd0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0810usize) as _) }
-        }
-        #[doc = "DEVMR_FFD0_0."]
-        #[inline(always)]
-        pub const fn devmr_ffd0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0814usize) as _) }
-        }
-        #[doc = "DEVCR_FFD0_0."]
-        #[inline(always)]
-        pub const fn devcr_ffd0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x081cusize) as _) }
-        }
-        #[doc = "FFDIR_FFD0_1."]
-        #[inline(always)]
-        pub const fn ffdir_ffd0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0900usize) as _) }
-        }
-        #[doc = "FDAIR_FFD0_1."]
-        #[inline(always)]
-        pub const fn fdair_ffd0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0904usize) as _) }
-        }
-        #[doc = "DRQSR_FFD0_1."]
-        #[inline(always)]
-        pub const fn drqsr_ffd0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0908usize) as _) }
-        }
-        #[doc = "FFDPR_FFD0_1."]
-        #[inline(always)]
-        pub const fn ffdpr_ffd0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x090cusize) as _) }
-        }
-        #[doc = "FFDBR_FFD0_1."]
-        #[inline(always)]
-        pub const fn ffdbr_ffd0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0910usize) as _) }
-        }
-        #[doc = "DEVMR_FFD0_1."]
-        #[inline(always)]
-        pub const fn devmr_ffd0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0914usize) as _) }
-        }
-        #[doc = "DEVCR_FFD0_1."]
-        #[inline(always)]
-        pub const fn devcr_ffd0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x091cusize) as _) }
-        }
-        #[doc = "FFDIR_FFD0_2."]
-        #[inline(always)]
-        pub const fn ffdir_ffd0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0a00usize) as _) }
-        }
-        #[doc = "FDAIR_FFD0_2."]
-        #[inline(always)]
-        pub const fn fdair_ffd0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0a04usize) as _) }
-        }
-        #[doc = "DRQSR_FFD0_2."]
-        #[inline(always)]
-        pub const fn drqsr_ffd0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0a08usize) as _) }
-        }
-        #[doc = "FFDPR_FFD0_2."]
-        #[inline(always)]
-        pub const fn ffdpr_ffd0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0a0cusize) as _) }
-        }
-        #[doc = "FFDBR_FFD0_2."]
-        #[inline(always)]
-        pub const fn ffdbr_ffd0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0a10usize) as _) }
-        }
-        #[doc = "DEVMR_FFD0_2."]
-        #[inline(always)]
-        pub const fn devmr_ffd0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0a14usize) as _) }
-        }
-        #[doc = "DEVCR_FFD0_2."]
-        #[inline(always)]
-        pub const fn devcr_ffd0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0a1cusize) as _) }
-        }
-        #[doc = "FFDIR_FFD0_3."]
-        #[inline(always)]
-        pub const fn ffdir_ffd0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0b00usize) as _) }
-        }
-        #[doc = "FDAIR_FFD0_3."]
-        #[inline(always)]
-        pub const fn fdair_ffd0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0b04usize) as _) }
-        }
-        #[doc = "DRQSR_FFD0_3."]
-        #[inline(always)]
-        pub const fn drqsr_ffd0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0b08usize) as _) }
-        }
-        #[doc = "FFDPR_FFD0_3."]
-        #[inline(always)]
-        pub const fn ffdpr_ffd0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0b0cusize) as _) }
-        }
-        #[doc = "FFDBR_FFD0_3."]
-        #[inline(always)]
-        pub const fn ffdbr_ffd0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0b10usize) as _) }
-        }
-        #[doc = "DEVMR_FFD0_3."]
-        #[inline(always)]
-        pub const fn devmr_ffd0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0b14usize) as _) }
-        }
-        #[doc = "DEVCR_FFD0_3."]
-        #[inline(always)]
-        pub const fn devcr_ffd0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0b1cusize) as _) }
-        }
-        #[doc = "FFUIR_FFU0_0."]
-        #[inline(always)]
-        pub const fn ffuir_ffu0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0c00usize) as _) }
-        }
-        #[doc = "FUAIR_FFU0_0."]
-        #[inline(always)]
-        pub const fn fuair_ffu0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0c04usize) as _) }
-        }
-        #[doc = "URQSR_FFU0_0."]
-        #[inline(always)]
-        pub const fn urqsr_ffu0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0c08usize) as _) }
-        }
-        #[doc = "FFUPR_FFU0_0."]
-        #[inline(always)]
-        pub const fn ffupr_ffu0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0c0cusize) as _) }
-        }
-        #[doc = "UEVMR_FFU0_0."]
-        #[inline(always)]
-        pub const fn uevmr_ffu0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0c10usize) as _) }
-        }
-        #[doc = "UEVCR_FFU0_0."]
-        #[inline(always)]
-        pub const fn uevcr_ffu0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0c18usize) as _) }
-        }
-        #[doc = "FFUIR_FFU0_1."]
-        #[inline(always)]
-        pub const fn ffuir_ffu0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0d00usize) as _) }
-        }
-        #[doc = "FUAIR_FFU0_1."]
-        #[inline(always)]
-        pub const fn fuair_ffu0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0d04usize) as _) }
-        }
-        #[doc = "URQSR_FFU0_1."]
-        #[inline(always)]
-        pub const fn urqsr_ffu0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0d08usize) as _) }
-        }
-        #[doc = "FFUPR_FFU0_1."]
-        #[inline(always)]
-        pub const fn ffupr_ffu0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0d0cusize) as _) }
-        }
-        #[doc = "UEVMR_FFU0_1."]
-        #[inline(always)]
-        pub const fn uevmr_ffu0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0d10usize) as _) }
-        }
-        #[doc = "UEVCR_FFU0_1."]
-        #[inline(always)]
-        pub const fn uevcr_ffu0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0d18usize) as _) }
-        }
-        #[doc = "FFUIR_FFU0_2."]
-        #[inline(always)]
-        pub const fn ffuir_ffu0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0e00usize) as _) }
-        }
-        #[doc = "FUAIR_FFU0_2."]
-        #[inline(always)]
-        pub const fn fuair_ffu0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0e04usize) as _) }
-        }
-        #[doc = "URQSR_FFU0_2."]
-        #[inline(always)]
-        pub const fn urqsr_ffu0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0e08usize) as _) }
-        }
-        #[doc = "FFUPR_FFU0_2."]
-        #[inline(always)]
-        pub const fn ffupr_ffu0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0e0cusize) as _) }
-        }
-        #[doc = "UEVMR_FFU0_2."]
-        #[inline(always)]
-        pub const fn uevmr_ffu0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0e10usize) as _) }
-        }
-        #[doc = "UEVCR_FFU0_2."]
-        #[inline(always)]
-        pub const fn uevcr_ffu0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0e18usize) as _) }
-        }
-        #[doc = "FFUIR_FFU0_3."]
-        #[inline(always)]
-        pub const fn ffuir_ffu0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0f00usize) as _) }
-        }
-        #[doc = "FUAIR_FFU0_3."]
-        #[inline(always)]
-        pub const fn fuair_ffu0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0f04usize) as _) }
-        }
-        #[doc = "URQSR_FFU0_3."]
-        #[inline(always)]
-        pub const fn urqsr_ffu0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0f08usize) as _) }
-        }
-        #[doc = "FFUPR_FFU0_3."]
-        #[inline(always)]
-        pub const fn ffupr_ffu0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0f0cusize) as _) }
-        }
-        #[doc = "UEVMR_FFU0_3."]
-        #[inline(always)]
-        pub const fn uevmr_ffu0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0f10usize) as _) }
-        }
-        #[doc = "UEVCR_FFU0_3."]
-        #[inline(always)]
-        pub const fn uevcr_ffu0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0f18usize) as _) }
-        }
-        #[doc = "SRCIR0_2SRC0_0."]
-        #[inline(always)]
-        pub const fn srcir0_2src0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1000usize) as _) }
-        }
-        #[doc = "SADIR0_2SRC0_0."]
-        #[inline(always)]
-        pub const fn sadir0_2src0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1004usize) as _) }
-        }
-        #[doc = "SRCBR0_2SRC0_0."]
-        #[inline(always)]
-        pub const fn srcbr0_2src0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1008usize) as _) }
-        }
-        #[doc = "IFSCR0_2SRC0_0."]
-        #[inline(always)]
-        pub const fn ifscr0_2src0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x100cusize) as _) }
-        }
-        #[doc = "IFSVR0_2SRC0_0."]
-        #[inline(always)]
-        pub const fn ifsvr0_2src0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1010usize) as _) }
-        }
-        #[doc = "SRCCR0_2SRC0_0."]
-        #[inline(always)]
-        pub const fn srccr0_2src0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1014usize) as _) }
-        }
-        #[doc = "MNFSR0_2SRC0_0."]
-        #[inline(always)]
-        pub const fn mnfsr0_2src0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1018usize) as _) }
-        }
-        #[doc = "BFSSR0_2SRC0_0."]
-        #[inline(always)]
-        pub const fn bfssr0_2src0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x101cusize) as _) }
-        }
-        #[doc = "SC2SR0_2SRC0_0."]
-        #[inline(always)]
-        pub const fn sc2sr0_2src0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1020usize) as _) }
-        }
-        #[doc = "WATSR0_2SRC0_0."]
-        #[inline(always)]
-        pub const fn watsr0_2src0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1024usize) as _) }
-        }
-        #[doc = "SEVMR0_2SRC0_0."]
-        #[inline(always)]
-        pub const fn sevmr0_2src0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1028usize) as _) }
-        }
-        #[doc = "SEVCR0_2SRC0_0."]
-        #[inline(always)]
-        pub const fn sevcr0_2src0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1030usize) as _) }
-        }
-        #[doc = "SRCIR1_2SRC0_0."]
-        #[inline(always)]
-        pub const fn srcir1_2src0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1034usize) as _) }
-        }
-        #[doc = "SADIR1_2SRC0_0."]
-        #[inline(always)]
-        pub const fn sadir1_2src0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1038usize) as _) }
-        }
-        #[doc = "SRCBR1_2SRC0_0."]
-        #[inline(always)]
-        pub const fn srcbr1_2src0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x103cusize) as _) }
-        }
-        #[doc = "IFSCR1_2SRC0_0."]
-        #[inline(always)]
-        pub const fn ifscr1_2src0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1040usize) as _) }
-        }
-        #[doc = "IFSVR1_2SRC0_0."]
-        #[inline(always)]
-        pub const fn ifsvr1_2src0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1044usize) as _) }
-        }
-        #[doc = "SRCCR1_2SRC0_0."]
-        #[inline(always)]
-        pub const fn srccr1_2src0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1048usize) as _) }
-        }
-        #[doc = "MNFSR1_2SRC0_0."]
-        #[inline(always)]
-        pub const fn mnfsr1_2src0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x104cusize) as _) }
-        }
-        #[doc = "BFSSR1_2SRC0_0."]
-        #[inline(always)]
-        pub const fn bfssr1_2src0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1050usize) as _) }
-        }
-        #[doc = "SC2SR1_2SRC0_0."]
-        #[inline(always)]
-        pub const fn sc2sr1_2src0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1054usize) as _) }
-        }
-        #[doc = "WATSR1_2SRC0_0."]
-        #[inline(always)]
-        pub const fn watsr1_2src0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1058usize) as _) }
-        }
-        #[doc = "SEVMR1_2SRC0_0."]
-        #[inline(always)]
-        pub const fn sevmr1_2src0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x105cusize) as _) }
-        }
-        #[doc = "SEVCR1_2SRC0_0."]
-        #[inline(always)]
-        pub const fn sevcr1_2src0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1064usize) as _) }
+        pub const fn src(self, n: usize) -> Src {
+            assert!(n < 4usize);
+            unsafe {
+                Src::from_ptr(
+                    self.ptr.wrapping_add(
+                        0x1000usize + ([0usize, 52usize, 256usize, 308usize][n] as usize),
+                    ) as _,
+                )
+            }
         }
         #[doc = "SRCIRR_2SRC0_0."]
         #[inline(always)]
-        pub const fn srcirr_2src0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1068usize) as _) }
+        pub const fn srcirr(self, n: usize) -> crate::common::Reg<u32, crate::common::RW> {
+            assert!(n < 2usize);
+            unsafe {
+                crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1068usize + n * 256usize) as _)
+            }
         }
-        #[doc = "SRCIR0_2SRC0_1."]
         #[inline(always)]
-        pub const fn srcir0_2src0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1100usize) as _) }
+        pub const fn dvu(self, n: usize) -> Dvu {
+            assert!(n < 4usize);
+            unsafe { Dvu::from_ptr(self.ptr.wrapping_add(0x1200usize + n * 256usize) as _) }
         }
-        #[doc = "SADIR0_2SRC0_1."]
         #[inline(always)]
-        pub const fn sadir0_2src0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1104usize) as _) }
-        }
-        #[doc = "SRCBR0_2SRC0_1."]
-        #[inline(always)]
-        pub const fn srcbr0_2src0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1108usize) as _) }
-        }
-        #[doc = "IFSCR0_2SRC0_1."]
-        #[inline(always)]
-        pub const fn ifscr0_2src0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x110cusize) as _) }
-        }
-        #[doc = "IFSVR0_2SRC0_1."]
-        #[inline(always)]
-        pub const fn ifsvr0_2src0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1110usize) as _) }
-        }
-        #[doc = "SRCCR0_2SRC0_1."]
-        #[inline(always)]
-        pub const fn srccr0_2src0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1114usize) as _) }
-        }
-        #[doc = "MNFSR0_2SRC0_1."]
-        #[inline(always)]
-        pub const fn mnfsr0_2src0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1118usize) as _) }
-        }
-        #[doc = "BFSSR0_2SRC0_1."]
-        #[inline(always)]
-        pub const fn bfssr0_2src0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x111cusize) as _) }
-        }
-        #[doc = "SC2SR0_2SRC0_1."]
-        #[inline(always)]
-        pub const fn sc2sr0_2src0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1120usize) as _) }
-        }
-        #[doc = "WATSR0_2SRC0_1."]
-        #[inline(always)]
-        pub const fn watsr0_2src0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1124usize) as _) }
-        }
-        #[doc = "SEVMR0_2SRC0_1."]
-        #[inline(always)]
-        pub const fn sevmr0_2src0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1128usize) as _) }
-        }
-        #[doc = "SEVCR0_2SRC0_1."]
-        #[inline(always)]
-        pub const fn sevcr0_2src0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1130usize) as _) }
-        }
-        #[doc = "SRCIR1_2SRC0_1."]
-        #[inline(always)]
-        pub const fn srcir1_2src0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1134usize) as _) }
-        }
-        #[doc = "SADIR1_2SRC0_1."]
-        #[inline(always)]
-        pub const fn sadir1_2src0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1138usize) as _) }
-        }
-        #[doc = "SRCBR1_2SRC0_1."]
-        #[inline(always)]
-        pub const fn srcbr1_2src0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x113cusize) as _) }
-        }
-        #[doc = "IFSCR1_2SRC0_1."]
-        #[inline(always)]
-        pub const fn ifscr1_2src0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1140usize) as _) }
-        }
-        #[doc = "IFSVR1_2SRC0_1."]
-        #[inline(always)]
-        pub const fn ifsvr1_2src0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1144usize) as _) }
-        }
-        #[doc = "SRCCR1_2SRC0_1."]
-        #[inline(always)]
-        pub const fn srccr1_2src0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1148usize) as _) }
-        }
-        #[doc = "MNFSR1_2SRC0_1."]
-        #[inline(always)]
-        pub const fn mnfsr1_2src0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x114cusize) as _) }
-        }
-        #[doc = "BFSSR1_2SRC0_1."]
-        #[inline(always)]
-        pub const fn bfssr1_2src0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1150usize) as _) }
-        }
-        #[doc = "SC2SR1_2SRC0_1."]
-        #[inline(always)]
-        pub const fn sc2sr1_2src0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1154usize) as _) }
-        }
-        #[doc = "WATSR1_2SRC0_1."]
-        #[inline(always)]
-        pub const fn watsr1_2src0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1158usize) as _) }
-        }
-        #[doc = "SEVMR1_2SRC0_1."]
-        #[inline(always)]
-        pub const fn sevmr1_2src0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x115cusize) as _) }
-        }
-        #[doc = "SEVCR1_2SRC0_1."]
-        #[inline(always)]
-        pub const fn sevcr1_2src0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1164usize) as _) }
-        }
-        #[doc = "SRCIRR_2SRC0_1."]
-        #[inline(always)]
-        pub const fn srcirr_2src0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1168usize) as _) }
-        }
-        #[doc = "DVUIR_DVU0_0."]
-        #[inline(always)]
-        pub const fn dvuir_dvu0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1200usize) as _) }
-        }
-        #[doc = "VADIR_DVU0_0."]
-        #[inline(always)]
-        pub const fn vadir_dvu0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1204usize) as _) }
-        }
-        #[doc = "DVUBR_DVU0_0."]
-        #[inline(always)]
-        pub const fn dvubr_dvu0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1208usize) as _) }
-        }
-        #[doc = "DVUCR_DVU0_0."]
-        #[inline(always)]
-        pub const fn dvucr_dvu0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x120cusize) as _) }
-        }
-        #[doc = "ZCMCR_DVU0_0."]
-        #[inline(always)]
-        pub const fn zcmcr_dvu0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1210usize) as _) }
-        }
-        #[doc = "VRCTR_DVU0_0."]
-        #[inline(always)]
-        pub const fn vrctr_dvu0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1214usize) as _) }
-        }
-        #[doc = "VRPDR_DVU0_0."]
-        #[inline(always)]
-        pub const fn vrpdr_dvu0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1218usize) as _) }
-        }
-        #[doc = "VRDBR_DVU0_0."]
-        #[inline(always)]
-        pub const fn vrdbr_dvu0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x121cusize) as _) }
-        }
-        #[doc = "VRWTR_DVU0_0."]
-        #[inline(always)]
-        pub const fn vrwtr_dvu0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1220usize) as _) }
-        }
-        #[doc = "VOL0R_DVU0_0."]
-        #[inline(always)]
-        pub const fn vol0r_dvu0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1224usize) as _) }
-        }
-        #[doc = "VOL1R_DVU0_0."]
-        #[inline(always)]
-        pub const fn vol1r_dvu0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1228usize) as _) }
-        }
-        #[doc = "VOL2R_DVU0_0."]
-        #[inline(always)]
-        pub const fn vol2r_dvu0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x122cusize) as _) }
-        }
-        #[doc = "VOL3R_DVU0_0."]
-        #[inline(always)]
-        pub const fn vol3r_dvu0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1230usize) as _) }
-        }
-        #[doc = "VOL4R_DVU0_0."]
-        #[inline(always)]
-        pub const fn vol4r_dvu0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1234usize) as _) }
-        }
-        #[doc = "VOL5R_DVU0_0."]
-        #[inline(always)]
-        pub const fn vol5r_dvu0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1238usize) as _) }
-        }
-        #[doc = "VOL6R_DVU0_0."]
-        #[inline(always)]
-        pub const fn vol6r_dvu0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x123cusize) as _) }
-        }
-        #[doc = "VOL7R_DVU0_0."]
-        #[inline(always)]
-        pub const fn vol7r_dvu0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1240usize) as _) }
-        }
-        #[doc = "DVUER_DVU0_0."]
-        #[inline(always)]
-        pub const fn dvuer_dvu0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1244usize) as _) }
-        }
-        #[doc = "DVUSR_DVU0_0."]
-        #[inline(always)]
-        pub const fn dvusr_dvu0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1248usize) as _) }
-        }
-        #[doc = "VEVMR_DVU0_0."]
-        #[inline(always)]
-        pub const fn vevmr_dvu0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x124cusize) as _) }
-        }
-        #[doc = "VEVCR_DVU0_0."]
-        #[inline(always)]
-        pub const fn vevcr_dvu0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1254usize) as _) }
-        }
-        #[doc = "DVUIR_DVU0_1."]
-        #[inline(always)]
-        pub const fn dvuir_dvu0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1300usize) as _) }
-        }
-        #[doc = "VADIR_DVU0_1."]
-        #[inline(always)]
-        pub const fn vadir_dvu0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1304usize) as _) }
-        }
-        #[doc = "DVUBR_DVU0_1."]
-        #[inline(always)]
-        pub const fn dvubr_dvu0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1308usize) as _) }
-        }
-        #[doc = "DVUCR_DVU0_1."]
-        #[inline(always)]
-        pub const fn dvucr_dvu0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x130cusize) as _) }
-        }
-        #[doc = "ZCMCR_DVU0_1."]
-        #[inline(always)]
-        pub const fn zcmcr_dvu0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1310usize) as _) }
-        }
-        #[doc = "VRCTR_DVU0_1."]
-        #[inline(always)]
-        pub const fn vrctr_dvu0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1314usize) as _) }
-        }
-        #[doc = "VRPDR_DVU0_1."]
-        #[inline(always)]
-        pub const fn vrpdr_dvu0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1318usize) as _) }
-        }
-        #[doc = "VRDBR_DVU0_1."]
-        #[inline(always)]
-        pub const fn vrdbr_dvu0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x131cusize) as _) }
-        }
-        #[doc = "VRWTR_DVU0_1."]
-        #[inline(always)]
-        pub const fn vrwtr_dvu0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1320usize) as _) }
-        }
-        #[doc = "VOL0R_DVU0_1."]
-        #[inline(always)]
-        pub const fn vol0r_dvu0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1324usize) as _) }
-        }
-        #[doc = "VOL1R_DVU0_1."]
-        #[inline(always)]
-        pub const fn vol1r_dvu0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1328usize) as _) }
-        }
-        #[doc = "VOL2R_DVU0_1."]
-        #[inline(always)]
-        pub const fn vol2r_dvu0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x132cusize) as _) }
-        }
-        #[doc = "VOL3R_DVU0_1."]
-        #[inline(always)]
-        pub const fn vol3r_dvu0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1330usize) as _) }
-        }
-        #[doc = "VOL4R_DVU0_1."]
-        #[inline(always)]
-        pub const fn vol4r_dvu0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1334usize) as _) }
-        }
-        #[doc = "VOL5R_DVU0_1."]
-        #[inline(always)]
-        pub const fn vol5r_dvu0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1338usize) as _) }
-        }
-        #[doc = "VOL6R_DVU0_1."]
-        #[inline(always)]
-        pub const fn vol6r_dvu0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x133cusize) as _) }
-        }
-        #[doc = "VOL7R_DVU0_1."]
-        #[inline(always)]
-        pub const fn vol7r_dvu0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1340usize) as _) }
-        }
-        #[doc = "DVUER_DVU0_1."]
-        #[inline(always)]
-        pub const fn dvuer_dvu0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1344usize) as _) }
-        }
-        #[doc = "DVUSR_DVU0_1."]
-        #[inline(always)]
-        pub const fn dvusr_dvu0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1348usize) as _) }
-        }
-        #[doc = "VEVMR_DVU0_1."]
-        #[inline(always)]
-        pub const fn vevmr_dvu0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x134cusize) as _) }
-        }
-        #[doc = "VEVCR_DVU0_1."]
-        #[inline(always)]
-        pub const fn vevcr_dvu0_1(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1354usize) as _) }
-        }
-        #[doc = "DVUIR_DVU0_2."]
-        #[inline(always)]
-        pub const fn dvuir_dvu0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1400usize) as _) }
-        }
-        #[doc = "VADIR_DVU0_2."]
-        #[inline(always)]
-        pub const fn vadir_dvu0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1404usize) as _) }
-        }
-        #[doc = "DVUBR_DVU0_2."]
-        #[inline(always)]
-        pub const fn dvubr_dvu0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1408usize) as _) }
-        }
-        #[doc = "DVUCR_DVU0_2."]
-        #[inline(always)]
-        pub const fn dvucr_dvu0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x140cusize) as _) }
-        }
-        #[doc = "ZCMCR_DVU0_2."]
-        #[inline(always)]
-        pub const fn zcmcr_dvu0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1410usize) as _) }
-        }
-        #[doc = "VRCTR_DVU0_2."]
-        #[inline(always)]
-        pub const fn vrctr_dvu0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1414usize) as _) }
-        }
-        #[doc = "VRPDR_DVU0_2."]
-        #[inline(always)]
-        pub const fn vrpdr_dvu0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1418usize) as _) }
-        }
-        #[doc = "VRDBR_DVU0_2."]
-        #[inline(always)]
-        pub const fn vrdbr_dvu0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x141cusize) as _) }
-        }
-        #[doc = "VRWTR_DVU0_2."]
-        #[inline(always)]
-        pub const fn vrwtr_dvu0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1420usize) as _) }
-        }
-        #[doc = "VOL0R_DVU0_2."]
-        #[inline(always)]
-        pub const fn vol0r_dvu0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1424usize) as _) }
-        }
-        #[doc = "VOL1R_DVU0_2."]
-        #[inline(always)]
-        pub const fn vol1r_dvu0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1428usize) as _) }
-        }
-        #[doc = "VOL2R_DVU0_2."]
-        #[inline(always)]
-        pub const fn vol2r_dvu0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x142cusize) as _) }
-        }
-        #[doc = "VOL3R_DVU0_2."]
-        #[inline(always)]
-        pub const fn vol3r_dvu0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1430usize) as _) }
-        }
-        #[doc = "VOL4R_DVU0_2."]
-        #[inline(always)]
-        pub const fn vol4r_dvu0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1434usize) as _) }
-        }
-        #[doc = "VOL5R_DVU0_2."]
-        #[inline(always)]
-        pub const fn vol5r_dvu0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1438usize) as _) }
-        }
-        #[doc = "VOL6R_DVU0_2."]
-        #[inline(always)]
-        pub const fn vol6r_dvu0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x143cusize) as _) }
-        }
-        #[doc = "VOL7R_DVU0_2."]
-        #[inline(always)]
-        pub const fn vol7r_dvu0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1440usize) as _) }
-        }
-        #[doc = "DVUER_DVU0_2."]
-        #[inline(always)]
-        pub const fn dvuer_dvu0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1444usize) as _) }
-        }
-        #[doc = "DVUSR_DVU0_2."]
-        #[inline(always)]
-        pub const fn dvusr_dvu0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1448usize) as _) }
-        }
-        #[doc = "VEVMR_DVU0_2."]
-        #[inline(always)]
-        pub const fn vevmr_dvu0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x144cusize) as _) }
-        }
-        #[doc = "VEVCR_DVU0_2."]
-        #[inline(always)]
-        pub const fn vevcr_dvu0_2(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1454usize) as _) }
-        }
-        #[doc = "DVUIR_DVU0_3."]
-        #[inline(always)]
-        pub const fn dvuir_dvu0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1500usize) as _) }
-        }
-        #[doc = "VADIR_DVU0_3."]
-        #[inline(always)]
-        pub const fn vadir_dvu0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1504usize) as _) }
-        }
-        #[doc = "DVUBR_DVU0_3."]
-        #[inline(always)]
-        pub const fn dvubr_dvu0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1508usize) as _) }
-        }
-        #[doc = "DVUCR_DVU0_3."]
-        #[inline(always)]
-        pub const fn dvucr_dvu0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x150cusize) as _) }
-        }
-        #[doc = "ZCMCR_DVU0_3."]
-        #[inline(always)]
-        pub const fn zcmcr_dvu0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1510usize) as _) }
-        }
-        #[doc = "VRCTR_DVU0_3."]
-        #[inline(always)]
-        pub const fn vrctr_dvu0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1514usize) as _) }
-        }
-        #[doc = "VRPDR_DVU0_3."]
-        #[inline(always)]
-        pub const fn vrpdr_dvu0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1518usize) as _) }
-        }
-        #[doc = "VRDBR_DVU0_3."]
-        #[inline(always)]
-        pub const fn vrdbr_dvu0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x151cusize) as _) }
-        }
-        #[doc = "VRWTR_DVU0_3."]
-        #[inline(always)]
-        pub const fn vrwtr_dvu0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1520usize) as _) }
-        }
-        #[doc = "VOL0R_DVU0_3."]
-        #[inline(always)]
-        pub const fn vol0r_dvu0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1524usize) as _) }
-        }
-        #[doc = "VOL1R_DVU0_3."]
-        #[inline(always)]
-        pub const fn vol1r_dvu0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1528usize) as _) }
-        }
-        #[doc = "VOL2R_DVU0_3."]
-        #[inline(always)]
-        pub const fn vol2r_dvu0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x152cusize) as _) }
-        }
-        #[doc = "VOL3R_DVU0_3."]
-        #[inline(always)]
-        pub const fn vol3r_dvu0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1530usize) as _) }
-        }
-        #[doc = "VOL4R_DVU0_3."]
-        #[inline(always)]
-        pub const fn vol4r_dvu0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1534usize) as _) }
-        }
-        #[doc = "VOL5R_DVU0_3."]
-        #[inline(always)]
-        pub const fn vol5r_dvu0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1538usize) as _) }
-        }
-        #[doc = "VOL6R_DVU0_3."]
-        #[inline(always)]
-        pub const fn vol6r_dvu0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x153cusize) as _) }
-        }
-        #[doc = "VOL7R_DVU0_3."]
-        #[inline(always)]
-        pub const fn vol7r_dvu0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1540usize) as _) }
-        }
-        #[doc = "DVUER_DVU0_3."]
-        #[inline(always)]
-        pub const fn dvuer_dvu0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1544usize) as _) }
-        }
-        #[doc = "DVUSR_DVU0_3."]
-        #[inline(always)]
-        pub const fn dvusr_dvu0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1548usize) as _) }
-        }
-        #[doc = "VEVMR_DVU0_3."]
-        #[inline(always)]
-        pub const fn vevmr_dvu0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x154cusize) as _) }
-        }
-        #[doc = "VEVCR_DVU0_3."]
-        #[inline(always)]
-        pub const fn vevcr_dvu0_3(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1554usize) as _) }
-        }
-        #[doc = "MIXIR_MIX0_0."]
-        #[inline(always)]
-        pub const fn mixir_mix0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1600usize) as _) }
-        }
-        #[doc = "MADIR_MIX0_0."]
-        #[inline(always)]
-        pub const fn madir_mix0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1604usize) as _) }
-        }
-        #[doc = "MIXBR_MIX0_0."]
-        #[inline(always)]
-        pub const fn mixbr_mix0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1608usize) as _) }
-        }
-        #[doc = "MIXMR_MIX0_0."]
-        #[inline(always)]
-        pub const fn mixmr_mix0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x160cusize) as _) }
-        }
-        #[doc = "MVPDR_MIX0_0."]
-        #[inline(always)]
-        pub const fn mvpdr_mix0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1610usize) as _) }
-        }
-        #[doc = "MDBAR_MIX0_0."]
-        #[inline(always)]
-        pub const fn mdbar_mix0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1614usize) as _) }
-        }
-        #[doc = "MDBBR_MIX0_0."]
-        #[inline(always)]
-        pub const fn mdbbr_mix0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1618usize) as _) }
-        }
-        #[doc = "MDBCR_MIX0_0."]
-        #[inline(always)]
-        pub const fn mdbcr_mix0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x161cusize) as _) }
-        }
-        #[doc = "MDBDR_MIX0_0."]
-        #[inline(always)]
-        pub const fn mdbdr_mix0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1620usize) as _) }
-        }
-        #[doc = "MDBER_MIX0_0."]
-        #[inline(always)]
-        pub const fn mdber_mix0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1624usize) as _) }
-        }
-        #[doc = "MIXSR_MIX0_0."]
-        #[inline(always)]
-        pub const fn mixsr_mix0_0(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1628usize) as _) }
+        pub const fn mix(self) -> Mix {
+            unsafe { Mix::from_ptr(self.ptr.wrapping_add(0x1600usize) as _) }
         }
         #[doc = "SWRSR_CIM."]
         #[inline(always)]
@@ -52843,43 +50925,19 @@ pub mod scux {
         }
         #[doc = "DMATD0_CIM."]
         #[inline(always)]
-        pub const fn dmatd0_cim(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1708usize) as _) }
-        }
-        #[doc = "DMATD1_CIM."]
-        #[inline(always)]
-        pub const fn dmatd1_cim(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x170cusize) as _) }
-        }
-        #[doc = "DMATD2_CIM."]
-        #[inline(always)]
-        pub const fn dmatd2_cim(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1710usize) as _) }
-        }
-        #[doc = "DMATD3_CIM."]
-        #[inline(always)]
-        pub const fn dmatd3_cim(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1714usize) as _) }
+        pub const fn dmatd(self, n: usize) -> crate::common::Reg<u32, crate::common::RW> {
+            assert!(n < 4usize);
+            unsafe {
+                crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1708usize + n * 4usize) as _)
+            }
         }
         #[doc = "DMATU0_CIM."]
         #[inline(always)]
-        pub const fn dmatu0_cim(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1718usize) as _) }
-        }
-        #[doc = "DMATU1_CIM."]
-        #[inline(always)]
-        pub const fn dmatu1_cim(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x171cusize) as _) }
-        }
-        #[doc = "DMATU2_CIM."]
-        #[inline(always)]
-        pub const fn dmatu2_cim(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1720usize) as _) }
-        }
-        #[doc = "DMATU3_CIM."]
-        #[inline(always)]
-        pub const fn dmatu3_cim(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1724usize) as _) }
+        pub const fn dmatu(self, n: usize) -> crate::common::Reg<u32, crate::common::RW> {
+            assert!(n < 4usize);
+            unsafe {
+                crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1718usize + n * 4usize) as _)
+            }
         }
         #[doc = "SSIRSEL_CIM."]
         #[inline(always)]
@@ -52888,43 +50946,19 @@ pub mod scux {
         }
         #[doc = "FDTSEL0_CIM."]
         #[inline(always)]
-        pub const fn fdtsel0_cim(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x173cusize) as _) }
-        }
-        #[doc = "FDTSEL1_CIM."]
-        #[inline(always)]
-        pub const fn fdtsel1_cim(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1740usize) as _) }
-        }
-        #[doc = "FDTSEL2_CIM."]
-        #[inline(always)]
-        pub const fn fdtsel2_cim(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1744usize) as _) }
-        }
-        #[doc = "FDTSEL3_CIM."]
-        #[inline(always)]
-        pub const fn fdtsel3_cim(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1748usize) as _) }
+        pub const fn fdtsel(self, n: usize) -> crate::common::Reg<u32, crate::common::RW> {
+            assert!(n < 4usize);
+            unsafe {
+                crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x173cusize + n * 4usize) as _)
+            }
         }
         #[doc = "FUTSEL0_CIM."]
         #[inline(always)]
-        pub const fn futsel0_cim(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x174cusize) as _) }
-        }
-        #[doc = "FUTSEL1_CIM."]
-        #[inline(always)]
-        pub const fn futsel1_cim(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1750usize) as _) }
-        }
-        #[doc = "FUTSEL2_CIM."]
-        #[inline(always)]
-        pub const fn futsel2_cim(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1754usize) as _) }
-        }
-        #[doc = "FUTSEL3_CIM."]
-        #[inline(always)]
-        pub const fn futsel3_cim(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1758usize) as _) }
+        pub const fn futsel(self, n: usize) -> crate::common::Reg<u32, crate::common::RW> {
+            assert!(n < 4usize);
+            unsafe {
+                crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x174cusize + n * 4usize) as _)
+            }
         }
         #[doc = "SSIPMD_CIM."]
         #[inline(always)]
@@ -52938,28 +50972,92 @@ pub mod scux {
         }
         #[doc = "SRCRSEL0_CIM."]
         #[inline(always)]
-        pub const fn srcrsel0_cim(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1764usize) as _) }
-        }
-        #[doc = "SRCRSEL1_CIM."]
-        #[inline(always)]
-        pub const fn srcrsel1_cim(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1768usize) as _) }
-        }
-        #[doc = "SRCRSEL2_CIM."]
-        #[inline(always)]
-        pub const fn srcrsel2_cim(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x176cusize) as _) }
-        }
-        #[doc = "SRCRSEL3_CIM."]
-        #[inline(always)]
-        pub const fn srcrsel3_cim(self) -> crate::common::Reg<u32, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1770usize) as _) }
+        pub const fn srcrsel(self, n: usize) -> crate::common::Reg<u32, crate::common::RW> {
+            assert!(n < 4usize);
+            unsafe {
+                crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1764usize + n * 4usize) as _)
+            }
         }
         #[doc = "MIXRSEL_CIM."]
         #[inline(always)]
         pub const fn mixrsel_cim(self) -> crate::common::Reg<u32, crate::common::RW> {
             unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1774usize) as _) }
+        }
+    }
+    #[derive(Copy, Clone, Eq, PartialEq)]
+    pub struct Src {
+        ptr: *mut u8,
+    }
+    unsafe impl Send for Src {}
+    unsafe impl Sync for Src {}
+    impl Src {
+        #[inline(always)]
+        pub const unsafe fn from_ptr(ptr: *mut ()) -> Self {
+            Self { ptr: ptr as _ }
+        }
+        #[inline(always)]
+        pub const fn as_ptr(&self) -> *mut () {
+            self.ptr as _
+        }
+        #[doc = "SRCIR1_2SRC0_1."]
+        #[inline(always)]
+        pub const fn srcir(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0usize) as _) }
+        }
+        #[doc = "SADIR1_2SRC0_1."]
+        #[inline(always)]
+        pub const fn sadir(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04usize) as _) }
+        }
+        #[doc = "SRCBR1_2SRC0_1."]
+        #[inline(always)]
+        pub const fn srcbr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x08usize) as _) }
+        }
+        #[doc = "IFSCR1_2SRC0_1."]
+        #[inline(always)]
+        pub const fn ifscr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0cusize) as _) }
+        }
+        #[doc = "IFSVR1_2SRC0_1."]
+        #[inline(always)]
+        pub const fn ifsvr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x10usize) as _) }
+        }
+        #[doc = "SRCCR1_2SRC0_1."]
+        #[inline(always)]
+        pub const fn srccr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x14usize) as _) }
+        }
+        #[doc = "MNFSR1_2SRC0_1."]
+        #[inline(always)]
+        pub const fn mnfsr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x18usize) as _) }
+        }
+        #[doc = "BFSSR1_2SRC0_1."]
+        #[inline(always)]
+        pub const fn bfssr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1cusize) as _) }
+        }
+        #[doc = "SC2SR1_2SRC0_1."]
+        #[inline(always)]
+        pub const fn sc2sr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x20usize) as _) }
+        }
+        #[doc = "WATSR1_2SRC0_1."]
+        #[inline(always)]
+        pub const fn watsr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x24usize) as _) }
+        }
+        #[doc = "SEVMR1_2SRC0_1."]
+        #[inline(always)]
+        pub const fn sevmr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x28usize) as _) }
+        }
+        #[doc = "SEVCR1_2SRC0_1."]
+        #[inline(always)]
+        pub const fn sevcr(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x30usize) as _) }
         }
     }
 }
@@ -53009,6 +51107,175 @@ pub mod sdg {
         #[inline(always)]
         pub const fn sgsfr(self) -> crate::common::Reg<u8, crate::common::RW> {
             unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x05usize) as _) }
+        }
+    }
+}
+pub mod sdhi {
+    #[doc = "SD host interface (RZ/A1L hardware manual §38)."]
+    #[derive(Copy, Clone, Eq, PartialEq)]
+    pub struct Sdhi {
+        ptr: *mut u8,
+    }
+    unsafe impl Send for Sdhi {}
+    unsafe impl Sync for Sdhi {}
+    impl Sdhi {
+        #[inline(always)]
+        pub const unsafe fn from_ptr(ptr: *mut ()) -> Self {
+            Self { ptr: ptr as _ }
+        }
+        #[inline(always)]
+        pub const fn as_ptr(&self) -> *mut () {
+            self.ptr as _
+        }
+        #[doc = "Command type register."]
+        #[inline(always)]
+        pub const fn sd_cmd(self) -> crate::common::Reg<u16, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0usize) as _) }
+        }
+        #[doc = "SD command argument register 0."]
+        #[inline(always)]
+        pub const fn sd_arg0(self) -> crate::common::Reg<u16, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04usize) as _) }
+        }
+        #[doc = "SD command argument register 1."]
+        #[inline(always)]
+        pub const fn sd_arg1(self) -> crate::common::Reg<u16, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x06usize) as _) }
+        }
+        #[doc = "Data stop register."]
+        #[inline(always)]
+        pub const fn sd_stop(self) -> crate::common::Reg<u16, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x08usize) as _) }
+        }
+        #[doc = "Block count register."]
+        #[inline(always)]
+        pub const fn sd_seccnt(self) -> crate::common::Reg<u16, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0ausize) as _) }
+        }
+        #[doc = "SD card response register 00."]
+        #[inline(always)]
+        pub const fn sd_rsp00(self) -> crate::common::Reg<u16, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0cusize) as _) }
+        }
+        #[doc = "SD card response register 01."]
+        #[inline(always)]
+        pub const fn sd_rsp01(self) -> crate::common::Reg<u16, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0eusize) as _) }
+        }
+        #[doc = "SD card response register 02."]
+        #[inline(always)]
+        pub const fn sd_rsp02(self) -> crate::common::Reg<u16, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x10usize) as _) }
+        }
+        #[doc = "SD card response register 03."]
+        #[inline(always)]
+        pub const fn sd_rsp03(self) -> crate::common::Reg<u16, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x12usize) as _) }
+        }
+        #[doc = "SD card response register 04."]
+        #[inline(always)]
+        pub const fn sd_rsp04(self) -> crate::common::Reg<u16, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x14usize) as _) }
+        }
+        #[doc = "SD card response register 05."]
+        #[inline(always)]
+        pub const fn sd_rsp05(self) -> crate::common::Reg<u16, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x16usize) as _) }
+        }
+        #[doc = "SD card response register 06."]
+        #[inline(always)]
+        pub const fn sd_rsp06(self) -> crate::common::Reg<u16, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x18usize) as _) }
+        }
+        #[doc = "SD card response register 07."]
+        #[inline(always)]
+        pub const fn sd_rsp07(self) -> crate::common::Reg<u16, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1ausize) as _) }
+        }
+        #[doc = "SD card interrupt flag register 1."]
+        #[inline(always)]
+        pub const fn sd_info1(self) -> crate::common::Reg<u16, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1cusize) as _) }
+        }
+        #[doc = "SD card interrupt flag register 2."]
+        #[inline(always)]
+        pub const fn sd_info2(self) -> crate::common::Reg<u16, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1eusize) as _) }
+        }
+        #[doc = "SD_INFO1 interrupt mask register."]
+        #[inline(always)]
+        pub const fn sd_info1_mask(self) -> crate::common::Reg<u16, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x20usize) as _) }
+        }
+        #[doc = "SD_INFO2 interrupt mask register."]
+        #[inline(always)]
+        pub const fn sd_info2_mask(self) -> crate::common::Reg<u16, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x22usize) as _) }
+        }
+        #[doc = "SD clock control register."]
+        #[inline(always)]
+        pub const fn sd_clk_ctrl(self) -> crate::common::Reg<u16, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x24usize) as _) }
+        }
+        #[doc = "Transfer data length register."]
+        #[inline(always)]
+        pub const fn sd_size(self) -> crate::common::Reg<u16, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x26usize) as _) }
+        }
+        #[doc = "SD card access control option register."]
+        #[inline(always)]
+        pub const fn sd_option(self) -> crate::common::Reg<u16, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x28usize) as _) }
+        }
+        #[doc = "SD error status register 1."]
+        #[inline(always)]
+        pub const fn sd_err_sts1(self) -> crate::common::Reg<u16, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x2cusize) as _) }
+        }
+        #[doc = "SD error status register 2."]
+        #[inline(always)]
+        pub const fn sd_err_sts2(self) -> crate::common::Reg<u16, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x2eusize) as _) }
+        }
+        #[doc = "SD buffer read/write register."]
+        #[inline(always)]
+        pub const fn sd_buf0(self) -> crate::common::Reg<u32, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x30usize) as _) }
+        }
+        #[doc = "SDIO mode control register."]
+        #[inline(always)]
+        pub const fn sdio_mode(self) -> crate::common::Reg<u16, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x34usize) as _) }
+        }
+        #[doc = "SDIO interrupt flag register."]
+        #[inline(always)]
+        pub const fn sdio_info1(self) -> crate::common::Reg<u16, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x36usize) as _) }
+        }
+        #[doc = "SDIO_INFO1 interrupt mask register."]
+        #[inline(always)]
+        pub const fn sdio_info1_mask(self) -> crate::common::Reg<u16, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x38usize) as _) }
+        }
+        #[doc = "DMA mode enable register."]
+        #[inline(always)]
+        pub const fn cc_ext_mode(self) -> crate::common::Reg<u16, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xd8usize) as _) }
+        }
+        #[doc = "Software reset register."]
+        #[inline(always)]
+        pub const fn soft_rst(self) -> crate::common::Reg<u16, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xe0usize) as _) }
+        }
+        #[doc = "Version register."]
+        #[inline(always)]
+        pub const fn version(self) -> crate::common::Reg<u16, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xe2usize) as _) }
+        }
+        #[doc = "Swap control register."]
+        #[inline(always)]
+        pub const fn ext_swap(self) -> crate::common::Reg<u16, crate::common::RW> {
+            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xf0usize) as _) }
         }
     }
 }
@@ -53346,15 +51613,39 @@ pub mod usb {
         pub const fn cfifo(self) -> crate::common::Reg<u32, crate::common::RW> {
             unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x14usize) as _) }
         }
+        #[doc = "CFIFO, byte access: element n is the byte at offset n."]
+        #[inline(always)]
+        pub const fn cfifo_b(self, n: usize) -> crate::common::Reg<u8, crate::common::RW> {
+            assert!(n < 4usize);
+            unsafe {
+                crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x14usize + n * 1usize) as _)
+            }
+        }
         #[doc = "D0FIFO."]
         #[inline(always)]
         pub const fn d0fifo(self) -> crate::common::Reg<u32, crate::common::RW> {
             unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x18usize) as _) }
         }
+        #[doc = "D0FIFO, byte access: element n is the byte at offset n."]
+        #[inline(always)]
+        pub const fn d0fifo_b(self, n: usize) -> crate::common::Reg<u8, crate::common::RW> {
+            assert!(n < 4usize);
+            unsafe {
+                crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x18usize + n * 1usize) as _)
+            }
+        }
         #[doc = "D1FIFO."]
         #[inline(always)]
         pub const fn d1fifo(self) -> crate::common::Reg<u32, crate::common::RW> {
             unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1cusize) as _) }
+        }
+        #[doc = "D1FIFO, byte access: element n is the byte at offset n."]
+        #[inline(always)]
+        pub const fn d1fifo_b(self, n: usize) -> crate::common::Reg<u8, crate::common::RW> {
+            assert!(n < 4usize);
+            unsafe {
+                crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1cusize + n * 1usize) as _)
+            }
         }
         #[doc = "CFIFOSEL."]
         #[inline(always)]
@@ -53388,13 +51679,11 @@ pub mod usb {
         }
         #[doc = "INTENB0."]
         #[inline(always)]
-        pub const fn intenb0(self) -> crate::common::Reg<u16, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x30usize) as _) }
-        }
-        #[doc = "INTENB1."]
-        #[inline(always)]
-        pub const fn intenb1(self) -> crate::common::Reg<u16, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x32usize) as _) }
+        pub const fn intenb(self, n: usize) -> crate::common::Reg<u16, crate::common::RW> {
+            assert!(n < 2usize);
+            unsafe {
+                crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x30usize + n * 2usize) as _)
+            }
         }
         #[doc = "BRDYENB."]
         #[inline(always)]
@@ -53418,13 +51707,11 @@ pub mod usb {
         }
         #[doc = "INTSTS0."]
         #[inline(always)]
-        pub const fn intsts0(self) -> crate::common::Reg<u16, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x40usize) as _) }
-        }
-        #[doc = "INTSTS1."]
-        #[inline(always)]
-        pub const fn intsts1(self) -> crate::common::Reg<u16, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x42usize) as _) }
+        pub const fn intsts(self, n: usize) -> crate::common::Reg<u16, crate::common::RW> {
+            assert!(n < 2usize);
+            unsafe {
+                crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x40usize + n * 2usize) as _)
+            }
         }
         #[doc = "BRDYSTS."]
         #[inline(always)]
@@ -53518,78 +51805,11 @@ pub mod usb {
         }
         #[doc = "PIPE1CTR."]
         #[inline(always)]
-        pub const fn pipe1ctr(self) -> crate::common::Reg<u16, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x70usize) as _) }
-        }
-        #[doc = "PIPE2CTR."]
-        #[inline(always)]
-        pub const fn pipe2ctr(self) -> crate::common::Reg<u16, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x72usize) as _) }
-        }
-        #[doc = "PIPE3CTR."]
-        #[inline(always)]
-        pub const fn pipe3ctr(self) -> crate::common::Reg<u16, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x74usize) as _) }
-        }
-        #[doc = "PIPE4CTR."]
-        #[inline(always)]
-        pub const fn pipe4ctr(self) -> crate::common::Reg<u16, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x76usize) as _) }
-        }
-        #[doc = "PIPE5CTR."]
-        #[inline(always)]
-        pub const fn pipe5ctr(self) -> crate::common::Reg<u16, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x78usize) as _) }
-        }
-        #[doc = "PIPE6CTR."]
-        #[inline(always)]
-        pub const fn pipe6ctr(self) -> crate::common::Reg<u16, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x7ausize) as _) }
-        }
-        #[doc = "PIPE7CTR."]
-        #[inline(always)]
-        pub const fn pipe7ctr(self) -> crate::common::Reg<u16, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x7cusize) as _) }
-        }
-        #[doc = "PIPE8CTR."]
-        #[inline(always)]
-        pub const fn pipe8ctr(self) -> crate::common::Reg<u16, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x7eusize) as _) }
-        }
-        #[doc = "PIPE9CTR."]
-        #[inline(always)]
-        pub const fn pipe9ctr(self) -> crate::common::Reg<u16, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x80usize) as _) }
-        }
-        #[doc = "PIPEACTR."]
-        #[inline(always)]
-        pub const fn pipeactr(self) -> crate::common::Reg<u16, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x82usize) as _) }
-        }
-        #[doc = "PIPEBCTR."]
-        #[inline(always)]
-        pub const fn pipebctr(self) -> crate::common::Reg<u16, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x84usize) as _) }
-        }
-        #[doc = "PIPECCTR."]
-        #[inline(always)]
-        pub const fn pipecctr(self) -> crate::common::Reg<u16, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x86usize) as _) }
-        }
-        #[doc = "PIPEDCTR."]
-        #[inline(always)]
-        pub const fn pipedctr(self) -> crate::common::Reg<u16, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x88usize) as _) }
-        }
-        #[doc = "PIPEECTR."]
-        #[inline(always)]
-        pub const fn pipeectr(self) -> crate::common::Reg<u16, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x8ausize) as _) }
-        }
-        #[doc = "PIPEFCTR."]
-        #[inline(always)]
-        pub const fn pipefctr(self) -> crate::common::Reg<u16, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x8cusize) as _) }
+        pub const fn pipectr(self, n: usize) -> crate::common::Reg<u16, crate::common::RW> {
+            assert!(n < 15usize);
+            unsafe {
+                crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x70usize + n * 2usize) as _)
+            }
         }
         #[doc = "PIPE1TRE."]
         #[inline(always)]
@@ -53713,58 +51933,11 @@ pub mod usb {
         }
         #[doc = "DEVADD0."]
         #[inline(always)]
-        pub const fn devadd0(self) -> crate::common::Reg<u16, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xd0usize) as _) }
-        }
-        #[doc = "DEVADD1."]
-        #[inline(always)]
-        pub const fn devadd1(self) -> crate::common::Reg<u16, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xd2usize) as _) }
-        }
-        #[doc = "DEVADD2."]
-        #[inline(always)]
-        pub const fn devadd2(self) -> crate::common::Reg<u16, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xd4usize) as _) }
-        }
-        #[doc = "DEVADD3."]
-        #[inline(always)]
-        pub const fn devadd3(self) -> crate::common::Reg<u16, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xd6usize) as _) }
-        }
-        #[doc = "DEVADD4."]
-        #[inline(always)]
-        pub const fn devadd4(self) -> crate::common::Reg<u16, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xd8usize) as _) }
-        }
-        #[doc = "DEVADD5."]
-        #[inline(always)]
-        pub const fn devadd5(self) -> crate::common::Reg<u16, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xdausize) as _) }
-        }
-        #[doc = "DEVADD6."]
-        #[inline(always)]
-        pub const fn devadd6(self) -> crate::common::Reg<u16, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xdcusize) as _) }
-        }
-        #[doc = "DEVADD7."]
-        #[inline(always)]
-        pub const fn devadd7(self) -> crate::common::Reg<u16, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xdeusize) as _) }
-        }
-        #[doc = "DEVADD8."]
-        #[inline(always)]
-        pub const fn devadd8(self) -> crate::common::Reg<u16, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xe0usize) as _) }
-        }
-        #[doc = "DEVADD9."]
-        #[inline(always)]
-        pub const fn devadd9(self) -> crate::common::Reg<u16, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xe2usize) as _) }
-        }
-        #[doc = "DEVADDA."]
-        #[inline(always)]
-        pub const fn devadda(self) -> crate::common::Reg<u16, crate::common::RW> {
-            unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xe4usize) as _) }
+        pub const fn devadd(self, n: usize) -> crate::common::Reg<u16, crate::common::RW> {
+            assert!(n < 11usize);
+            unsafe {
+                crate::common::Reg::from_ptr(self.ptr.wrapping_add(0xd0usize + n * 2usize) as _)
+            }
         }
         #[doc = "SUSPMODE."]
         #[inline(always)]

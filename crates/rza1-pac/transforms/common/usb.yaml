@@ -1,0 +1,23 @@
+transforms:
+  # Numbered registers the driver indexes: the two interrupt enable/status words, PIPE1CTR..
+  # PIPEFCTR (element n is pipe n + 1; pipe 0's control is DCPCTR) and DEVADD0..DEVADDA.
+  - !MakeRegisterArray
+    blocks: '^USB::USB$'
+    from: '^(INTENB|INTSTS)[01]$'
+    to: '$1'
+  - !MakeRegisterArray
+    blocks: '^USB::USB$'
+    from: '^PIPE[1-9A-F]CTR$'
+    to: PIPECTR
+  - !MakeRegisterArray
+    blocks: '^USB::USB$'
+    from: '^DEVADD[0-9A]$'
+    to: DEVADD
+  # A packet's tail goes into a FIFO port a byte at a time (see usb::fifo), so each 32-bit port
+  # gets a byte view over its four lanes. The ports allow 8-, 16- and 32-bit access (Table 46.1).
+  - !AddRegisters
+    block: '^USB::USB$'
+    registers:
+      - {name: CFIFO_B, description: "CFIFO, byte access: element n is the byte at offset n.", byte_offset: 0x14, bit_size: 8, array: {len: 4, stride: 1}}
+      - {name: D0FIFO_B, description: "D0FIFO, byte access: element n is the byte at offset n.", byte_offset: 0x18, bit_size: 8, array: {len: 4, stride: 1}}
+      - {name: D1FIFO_B, description: "D1FIFO, byte access: element n is the byte at offset n.", byte_offset: 0x1C, bit_size: 8, array: {len: 4, stride: 1}}
