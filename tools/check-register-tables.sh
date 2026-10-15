@@ -19,7 +19,7 @@ for m in "${MIGRATED[@]}"; do
   # Everything before the first host-test module; comment lines skipped.
   hits="$(awk '/^#\[cfg\(all\(test/{exit} {print FILENAME":"NR": "$0}' "$f" \
     | grep -vE '^[^:]+:[0-9]+: *(//|\*)' \
-    | grep -E 'const +(OFF_[A-Z0-9_]+|[A-Z0-9_]*_BASE) *: *usize|0x(E8|FC|3F)[0-9A-Fa-f]{2}_?[0-9A-Fa-f]{4}' || true)"
+    | grep -E 'const +(OFF_[A-Z0-9_]+|[A-Z0-9_]*_BASE) *: *usize|0[xX]([Ee]8|[Ff][Cc]|3[Ff])[0-9A-Fa-f]{2}_?[0-9A-Fa-f]{4}' || true)"
   if [ -n "$hits" ]; then
     printf '%s\n' "$hits"
     status=1
