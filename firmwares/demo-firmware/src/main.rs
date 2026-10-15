@@ -96,9 +96,10 @@ fn setup() {
     tasks::audio::fill_tx_with_dither();
     info!("audio: TX buffer pre-filled with dither");
 
-    // RSPI0 init — shared between OLED (8-bit) and CV DAC (32-bit), arbitrated by
-    // deluge_bsp::bus. cv_gate::init() leaves RSPI0 ready; oled::init() (in its
-    // task) switches frame mode through the bus guard.
+    // RSPI0 is shared by the OLED (8-bit) and the CV DAC (32-bit), arbitrated by
+    // deluge_bsp::bus. This firmware drives both itself, so it takes them from the SDK.
+    let (spi, oled_dma) = deluge::parts::with(|p| (p.shared_spi.take(), p.oled_dma.take()));
+    deluge_bsp::bus::init(spi.expect("RSPI0 is free"), oled_dma.expect("the OLED DMA channel is free"));
     unsafe { cv_gate::init() };
     info!("RSPI0: initialised via cv_gate::init");
 

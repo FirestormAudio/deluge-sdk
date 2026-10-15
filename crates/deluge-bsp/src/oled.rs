@@ -49,7 +49,6 @@
 #[cfg(target_os = "none")]
 use rza1l_hal::UNCACHED_MIRROR_OFFSET;
 #[cfg(target_os = "none")]
-use rza1l_hal::dmac;
 
 #[cfg(target_os = "none")]
 use crate::pic;
@@ -57,22 +56,23 @@ use crate::pic;
 // ── OLED SPI DMA constants ────────────────────────────────────────────────────
 
 /// DMAC channel 4 = OLED SPI TX (matches original C firmware `OLED_SPI_DMA_CHANNEL`).
+#[cfg(test)]
 pub(crate) const OLED_DMA_CH: u8 = 4;
 
 /// RSPI0 SPDR byte LL address (little-endian lowest byte of the 32-bit SPDR
 /// at offset 0x04 from RSPI0 base 0xE800_C800).  The DMAC writes each pixel
 /// byte here to clock it over SPI.
-const RSPI0_SPDR_LL: u32 = 0xE800_C804;
+pub(crate) const RSPI0_SPDR_LL: u32 = 0xE800_C804;
 
 /// DMARS for RSPI0 TX: DMARS_FOR_RSPI_TX = 0b100100001 = 0x121, channel 0, no shift.
-const OLED_DMA_DMARS: u32 = 0x121;
+pub(crate) const OLED_DMA_DMARS: u32 = 0x121;
 
 /// CHCFG for the OLED SPI DMA TX channel.
 ///
 /// From `oledDMAInit()`:
 ///   `0b00000000_00100000_00000010_01101000 | (OLED_SPI_DMA_CHANNEL & 7)`
 ///   = 0x00200268 | 4 = 0x0020026C
-const OLED_CHCFG: u32 = 0x0020_026C;
+pub(crate) const OLED_CHCFG: u32 = 0x0020_026C;
 
 /// Cache-line-aligned DMA staging buffer for OLED frame data.
 ///
@@ -404,14 +404,6 @@ pub async fn init() {
     let mut bus = crate::bus::lock_rspi0().await;
     bus.enter_8bit();
 
-    // ---- 1b. Set up DMAC channel 4 for OLED SPI TX ----------------------
-    // Mirrors oledDMAInit() from the C firmware.  Must be done after RSPI0
-    // is initialised (stb clock enabled) but before the first send_frame.
-    unsafe {
-        dmac::raw::init_register_mode(OLED_DMA_CH, OLED_CHCFG, RSPI0_SPDR_LL, OLED_DMA_DMARS);
-        dmac::raw::register_completion_irq(OLED_DMA_CH);
-    }
-
     // ---- 2. PIC: DC_LOW, ENABLE_OLED, SELECT_OLED -----------------------
     // Mirrors the original C firmware's setupOLED() exactly:
     //   PIC::setDCLow(); PIC::enableOLED(); PIC::selectOLED(); PIC::flush();
@@ -633,11 +625,11 @@ pub async fn send_frame(fb: &FrameBuffer) {
         // bus address the DMAC will read from — same physical RAM as the cached
         // alias but coherent since we wrote through the uncached window above.
         let src_uncached = dst_uncached as u32;
-        dmac::raw::start_transfer(OLED_DMA_CH, src_uncached, FRAME_BYTES as u32);
+        bus.oled_dma().start_transfer(src_uncached, FRAME_BYTES as u32);
     }
 
     // Await DMA completion interrupt (still holding the RSPI0 guard).
-    dmac::raw::wait_transfer_complete(OLED_DMA_CH).await;
+    bus.oled_dma().wait_transfer_complete().await;
 
     // Wait for RSPI0 to finish clocking out its FIFO/shift register (TEND=1).
     // DMA completion only means all bytes have been *enqueued*; deselecting

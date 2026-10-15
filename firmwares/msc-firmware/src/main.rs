@@ -100,7 +100,7 @@ pub extern "C" fn main() -> ! {
         s / 1024
     });
 
-    let _board = deluge_bsp::Board::new(rza1l_hal::init(deluge_bsp::system::BOARD_CONFIG));
+    let board = deluge_bsp::Board::new(rza1l_hal::init(deluge_bsp::system::BOARD_CONFIG));
     info!("system: module clocks, MMU, cache, SDRAM, GIC, OSTM, time driver ready");
 
     // Initialise the SDRAM heap now that the SDRAM window is accessible.
@@ -114,9 +114,10 @@ pub extern "C" fn main() -> ! {
     unsafe { bsp_uart::init_pic(31_250) };
     info!("UART: SCIF1 @ 31 250 baud");
 
-    // RSPI0 init — shared between OLED (8-bit) and CV DAC (32-bit).
-    // cv_gate::init() enables the RSPI0 module clock; oled::init() then switches
+    // RSPI0 is shared between OLED (8-bit) and CV DAC (32-bit). The bus brings it up;
+    // cv_gate::init() runs the DAC's linearity sequence; oled::init() then switches
     // it to 8-bit mode for the panel.
+    deluge_bsp::bus::init(board.shared_spi, board.dma.oled);
     unsafe { cv_gate::init() };
     info!("RSPI0: initialised via cv_gate::init");
 

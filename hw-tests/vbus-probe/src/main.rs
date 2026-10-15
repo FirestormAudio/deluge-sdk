@@ -72,7 +72,7 @@ pub extern "C" fn main() -> ! {
         allocator::SRAM.init(start, size);
     }
 
-    let _board = deluge_bsp::Board::new(rza1l_hal::init(deluge_bsp::system::BOARD_CONFIG));
+    let board = deluge_bsp::Board::new(rza1l_hal::init(deluge_bsp::system::BOARD_CONFIG));
     info!("system: clocks, MMU, cache, SDRAM, GIC, OSTM, time driver ready");
 
     unsafe { allocator::SDRAM.init(0x0C00_0000 as *mut u8, 64 * 1024 * 1024) };
@@ -83,7 +83,8 @@ pub extern "C" fn main() -> ! {
     info!("UART: initialising PIC...");
     unsafe { bsp_uart::init_pic(31_250) };
 
-    // RSPI0 init — shared between OLED (8-bit) and CV DAC (32-bit).
+    // RSPI0 is shared between OLED (8-bit) and CV DAC (32-bit); the bus brings it up.
+    deluge_bsp::bus::init(board.shared_spi, board.dma.oled);
     unsafe { cv_gate::init() };
     info!("RSPI0: initialised via cv_gate::init");
 

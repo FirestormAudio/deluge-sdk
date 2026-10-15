@@ -102,7 +102,7 @@ pub extern "C" fn main() -> ! {
         allocator::SRAM.init(start, size);
     }
 
-    let _board = deluge_bsp::Board::new(rza1l_hal::init(deluge_bsp::system::BOARD_CONFIG));
+    let board = deluge_bsp::Board::new(rza1l_hal::init(deluge_bsp::system::BOARD_CONFIG));
     info!("platform: clocks, MMU, cache, SDRAM, GIC ready");
 
     // SDRAM heap initialised but not used by the bootloader itself;
@@ -115,6 +115,8 @@ pub extern "C" fn main() -> ! {
     // chip-select echo handshake can never be received and `oled::init` hangs.
     unsafe { deluge_bsp::uart::init_pic(31_250) };
 
+    // The bus brings RSPI0 up; cv_gate::init runs the DAC's linearity sequence on it.
+    deluge_bsp::bus::init(board.shared_spi, board.dma.oled);
     unsafe { deluge_bsp::cv_gate::init() };
 
     #[allow(static_mut_refs)]

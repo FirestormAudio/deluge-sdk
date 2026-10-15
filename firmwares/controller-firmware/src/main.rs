@@ -133,7 +133,7 @@ pub extern "C" fn main() -> ! {
         s / 1024
     });
 
-    let _board = deluge_bsp::Board::new(rza1l_hal::init(deluge_bsp::system::BOARD_CONFIG));
+    let board = deluge_bsp::Board::new(rza1l_hal::init(deluge_bsp::system::BOARD_CONFIG));
     info!("system: module clocks, MMU, cache, SDRAM, GIC, OSTM, time driver ready");
 
     // Initialise the SDRAM heap now that the SDRAM window is accessible.
@@ -161,8 +161,9 @@ pub extern "C" fn main() -> ! {
     tasks::audio::fill_tx_with_dither();
     info!("audio: TX buffer pre-filled with dither");
 
-    // RSPI0 init — shared between OLED (8-bit) and CV DAC (32-bit).
-    // cv_gate::init() puts it in 32-bit mode; oled::init() will switch to 8-bit.
+    // RSPI0 is shared between OLED (8-bit) and CV DAC (32-bit). The bus brings it up in 32-bit
+    // mode; cv_gate::init() runs the DAC's linearity sequence; oled::init() switches to 8-bit.
+    deluge_bsp::bus::init(board.shared_spi, board.dma.oled);
     unsafe { cv_gate::init() };
     info!("RSPI0: initialised via cv_gate::init");
 

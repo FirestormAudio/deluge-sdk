@@ -26,18 +26,9 @@
 
 #[cfg(target_os = "none")]
 use rza1l_hal::ostm;
-use rza1l_hal::{gpio, rspi};
+use rza1l_hal::gpio;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-
-/// RSPI channel shared between the CV DAC and the OLED display.
-const SPI_CH: u8 = 0;
-
-/// Target SCK frequency for RSPI0, which the MAX5136 CV DAC shares with the OLED.
-///
-/// The OLED sets the limit, not the DAC (good to 20 MHz). The OEL9M0087-W-E datasheet allows 10 MHz (a 100 ns
-/// cycle), but the 2026 batch of these panels, the same model, glitches at 8.5 MHz and above; 4 MHz is safe.
-const SPI_RATE_HZ: u32 = 4_000_000;
 
 /// MAX5136 linearity-init delay in milliseconds (datasheet §8.3).
 const LIN_DELAY_MS: u32 = max5136::LINEARITY_SETTLE_MS;
@@ -86,10 +77,10 @@ fn dac_word(ch: u8, value: u16) -> Option<u32> {
 
 // ── Initialise hardware ───────────────────────────────────────────────────────
 
-/// Initialise RSPI0 and the CV DAC + gate GPIO lines.
+/// Initialise the CV DAC + gate GPIO lines.
 ///
-/// **Must be called after** `rza1l_hal::stb::init()` (enables RSPI clocks) and
-/// `rza1l_hal::ostm::start_free_running(0)` (required for `delay_ms`).
+/// **Must be called after** [`crate::bus::init`] (RSPI0) and `rza1l_hal::time_driver::init`
+/// (which `delay_ms` needs).
 ///
 /// After this function returns:
 /// - All gate outputs are de-asserted (gate OFF).
@@ -119,32 +110,30 @@ pub unsafe fn init() {
         }
         log::debug!("cv_gate: gate GPIOs ok");
 
-        // ---- Initialise RSPI0 as 4 MHz SPI master -------------------------------
-        rspi::init(SPI_CH, SPI_RATE_HZ);
-        log::debug!("cv_gate: RSPI0 init at {} Hz ok", SPI_RATE_HZ);
+        // ---- RSPI0 is the bus's: hold it for the whole linearity sequence ------
+        let mut bus = crate::bus::try_lock_rspi0()
+            .expect("cv_gate::init found RSPI0 busy: bring CV/gate up before the OLED starts drawing");
+        bus.enter_32bit();
 
         // ---- MAX5136 linearity initialisation -----------------------------------
         // Step 1: LIN=1 (linear ramp mode)
         log::debug!("cv_gate: MAX5136 LIN=1");
         gpio::write(CS_PORT, CS_PIN, false);
-        rspi::send32_blocking(SPI_CH, max5136::LINEARITY_ON_U32);
+        bus.send32_blocking(max5136::LINEARITY_ON_U32);
         gpio::write(CS_PORT, CS_PIN, true);
-        log::debug!("cv_gate: MAX5136 LIN=1 sent");
 
         // Step 2: wait ≥ 10 ms for internal capacitor to charge
-        log::debug!("cv_gate: LIN delay start");
         ostm::delay_ms(LIN_DELAY_MS);
-        log::debug!("cv_gate: LIN delay done");
 
         // Step 3: LIN=0 (return to normal mode)
         gpio::write(CS_PORT, CS_PIN, false);
-        rspi::send32_blocking(SPI_CH, max5136::LINEARITY_OFF_U32);
+        bus.send32_blocking(max5136::LINEARITY_OFF_U32);
         gpio::write(CS_PORT, CS_PIN, true);
         log::debug!("cv_gate: MAX5136 linearity init done");
 
         // ---- Zero all CV outputs ------------------------------------------------
         for ch in 0..NUM_CV_CHANNELS as u8 {
-            cv_set_blocking(ch, 0);
+            cv_set_blocking(&mut bus, ch, 0);
         }
         log::debug!("cv_gate: CV outputs zeroed");
     }
@@ -168,8 +157,7 @@ pub unsafe fn init() {
 ///
 /// This is the runtime CV-write path. It locks the shared RSPI0 bus (awaiting
 /// any in-progress OLED frame), ensures 32-bit frame mode, then clocks out the
-/// DAC word. Use this instead of [`cv_set_blocking`] once the executor is
-/// running.
+/// DAC word.
 ///
 /// - `ch`: 0 or 1 (hardware supports 0–1 on the Deluge). Other channels are ignored.
 /// - `value`: 16-bit DAC code.  ~6552 counts ≈ 1 V.
@@ -190,27 +178,18 @@ pub async fn cv_set(ch: u8, value: u16) {
     }
 }
 
-/// Write a voltage code to CV channel `ch` without acquiring the RSPI0 bus.
-///
-/// - `ch`: 0 or 1 (hardware supports 0–1 on the Deluge). Other channels are ignored.
-/// - `value`: 16-bit DAC code.  ~6552 counts ≈ 1 V.
-///
-/// # Safety
-/// Bypasses the [`crate::bus`] RSPI0 mutex, so it is only sound during
-/// single-threaded startup (e.g. inside [`init`]) before the executor and the
-/// OLED task are running. Once the executor is running, use [`cv_set`] instead;
-/// calling this concurrently with an OLED transfer corrupts both. Writes RSPI0
-/// and CS GPIO registers.
-pub unsafe fn cv_set_blocking(ch: u8, value: u16) {
+/// Write a voltage code to CV channel `ch` on a bus the caller already holds (in 32-bit mode).
+#[cfg(target_os = "none")]
+fn cv_set_blocking(bus: &mut crate::bus::Rspi0, ch: u8, value: u16) {
     let Some(word) = dac_word(ch, value) else {
         log::warn!("cv_gate: ignoring write to unwired CV channel {ch}");
         return;
     };
-    unsafe {
-        gpio::write(CS_PORT, CS_PIN, false);
-        rspi::send32_blocking(SPI_CH, word);
-        gpio::write(CS_PORT, CS_PIN, true);
-    }
+    // SAFETY: CS is cv_gate's GPIO; the bus is held.
+    unsafe { gpio::write(CS_PORT, CS_PIN, false) };
+    bus.send32_blocking(word);
+    // SAFETY: as above.
+    unsafe { gpio::write(CS_PORT, CS_PIN, true) };
 }
 
 // ── Gate output ───────────────────────────────────────────────────────────────
@@ -269,15 +248,11 @@ mod tests {
 
     /// The host stand-in `init()` must return without touching hardware (the
     /// device version calls `ostm::delay_ms`, raw MMIO that would crash here),
-    /// and `cv_set_blocking`/`gate_set` (routed through the mmio-shadow
-    /// `gpio`/`rspi` seam) must not panic either.
+    /// and `gate_set` (routed through the mmio-shadow `gpio` seam) must not panic either.
     #[test]
     fn init_and_gate_set_do_not_panic_on_host() {
         unsafe {
             init();
-            for ch in 0..NUM_CV_CHANNELS as u8 {
-                cv_set_blocking(ch, 0x1234);
-            }
             for ch in 0..NUM_GATE_CHANNELS as u8 {
                 gate_set(ch, true);
                 gate_set(ch, false);

@@ -3,7 +3,9 @@
 //! Implements a blocking / interrupt-driven SPI master following the
 //! `R_RSPI_Create` + `R_RSPI_Start` + `R_RSPI_SendBasic32/8` sequences from the
 //! C firmware.  The channel runs 32-bit frames for the MAX5136 CV DAC and is
-//! switched to 8-bit frames ([`configure_8bit`]) for the OLED that shares it.
+//! switched to 8-bit frames for the OLED that shares it.
+//!
+//! Build one with [`Rspi::new`] from its peripheral singleton; it is ready in 32-bit frames.
 //!
 //! ## Channel map
 //! | Channel | Base address  | Use on Deluge         |
@@ -16,13 +18,6 @@
 //!
 //! ## Clock gating
 //! RSPI0–4 clocks are enabled in `stb::init()` via STBCR10.
-//!
-//! ## GIC interrupt IDs (RSPI channel n)
-//! | IRQ     | ID            | Use                         |
-//! |---------|---------------|-----------------------------|
-//! | SPEIn   | 270 + 3n      |                             |
-//! | SPRIn   | 271 + 3n      | CV transfer complete        |
-//! | SPTIn   | 272 + 3n      |                             |
 //!
 //! ## Register offsets inside `struct st_rspi`
 //! | Register | Offset | Width | Description                     |
@@ -42,8 +37,6 @@
 //! | SPCMD0   | 0x10   | u16   | Command register 0              |
 //! | SPBFCR   | 0x20   | u8    | Buffer control                  |
 //! | SPBFDR   | 0x22   | u16   | Buffer data count               |
-
-use crate::gic;
 
 // ── Peripheral base addresses ─────────────────────────────────────────────────
 const RSPI0_BASE: usize = 0xE800_C800;
@@ -72,9 +65,6 @@ const SPCR_SPE: u8 = 1 << 6;
 const SPCR_MSTR: u8 = 1 << 3;
 /// SPTIE — SPI transmit interrupt enable (used for DMA trigger; set here as C does)
 const SPCR_SPTIE: u8 = 1 << 5;
-/// SPRIE — SPI receive interrupt enable (enabled per-transfer, then disabled in ISR)
-const SPCR_SPRIE: u8 = 1 << 7;
-
 // ── SPSR bits (status) ────────────────────────────────────────────────────────
 /// SPTEF — transmit buffer empty (TX has room for 4 bytes)
 const SPSR_SPTEF: u8 = 1 << 5;
@@ -90,8 +80,6 @@ const SPDCR_32BIT: u8 = 0x60;
 const SPBFCR_8BIT: u8 = 0b0110_0000;
 /// Initial value: TX trigger = 4 bytes free, RX trigger = 2 bytes available
 const SPBFCR_INIT_32BIT: u8 = 0b0010_0010;
-/// CV-transfer value: disable RX reset (so we get the SPRI interrupt)
-const SPBFCR_CV_TRANSFER: u8 = 0b0011_0010;
 /// Reset RX buffer (bit 6 = RXRST)
 const SPBFCR_RX_RESET: u8 = 1 << 6;
 
@@ -119,10 +107,6 @@ fn spbr_for(p1_hz: u32, bit_rate: u32) -> u8 {
     p1_hz.div_ceil(bit_rate * 2).saturating_sub(1) as u8
 }
 
-// ── GIC interrupt ID base for RSPI ────────────────────────────────────────────
-/// SPEI0 = 270; each channel adds 3: SPEI_n = 270 + 3n, SPRI_n = 271 + 3n, SPTI_n = 272 + 3n
-const SPEI_BASE: u32 = 270;
-
 // ── Register access helpers ───────────────────────────────────────────────────
 
 #[inline]
@@ -149,15 +133,6 @@ fn reg32(ch: u8, off: usize) -> crate::mmio::Reg32 {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// GIC interrupt ID for the SPRI (receive complete) interrupt on channel `ch`.
-///
-/// The C firmware uses SPRI to detect when the 32-bit CV word has been fully
-/// shifted out (the RSPI hardware receives a dummy byte for every byte sent).
-#[inline]
-pub fn irq_spri(ch: u8) -> u16 {
-    (SPEI_BASE + 1 + 3 * (ch as u32)) as u16
-}
-
 /// Initialise RSPI channel `ch` as an SPI master.
 ///
 /// - `bit_rate`: desired SCK frequency in Hz (e.g. `10_000_000` for 10 MHz).
@@ -175,7 +150,7 @@ pub fn irq_spri(ch: u8) -> u16 {
 /// # Safety
 /// Writes to memory-mapped RSPI registers; must be called once before any
 /// SPI transfers on channel `ch`.
-pub unsafe fn init(ch: u8, bit_rate: u32) {
+unsafe fn init(ch: u8, bit_rate: u32) {
     unsafe {
         // SPPCR = 0 (no loopback, MOSI idle = low)
         reg8(ch, OFF_SPPCR).write(0);
@@ -227,86 +202,6 @@ pub unsafe fn init(ch: u8, bit_rate: u32) {
     }
 }
 
-/// Register the SPRI (receive-complete) GIC interrupt for channel `ch`.
-///
-/// `handler` is called (at GIC priority 5) when the 32-bit transfer finishes.
-/// Use it to implement the `cvSPITransferComplete` ISR: deassert CS, reset the
-/// RX buffer, and optionally start the next transfer.
-///
-/// # Safety
-/// Must be called after [`crate::gic::init`] and before interrupts are enabled.
-pub unsafe fn register_irq(ch: u8, handler: fn()) {
-    unsafe {
-        let id = irq_spri(ch);
-        gic::register(id, handler);
-        gic::set_priority(id, 5);
-        gic::enable(id);
-    }
-}
-
-/// Disable the SPRI interrupt for channel `ch`.
-///
-/// Call from within the SPRI ISR to prevent re-entrancy, mirroring
-/// `RSPI(ch).SPCR &= ~(1 << 7)` in the C firmware.
-///
-/// # Safety
-/// Writes SPCR register.
-#[inline]
-pub unsafe fn disable_rx_irq(ch: u8) {
-    unsafe {
-        let v = reg8(ch, OFF_SPCR).read();
-        reg8(ch, OFF_SPCR).write(v & !SPCR_SPRIE);
-    }
-}
-
-/// Enable the SPRI interrupt for channel `ch`.
-///
-/// Call just before writing to SPDR to arm the receive-complete interrupt.
-///
-/// # Safety
-/// Writes SPCR register.
-#[inline]
-pub unsafe fn enable_rx_irq(ch: u8) {
-    unsafe {
-        let v = reg8(ch, OFF_SPCR).read();
-        reg8(ch, OFF_SPCR).write(v | SPCR_SPRIE);
-    }
-}
-
-/// Send a 32-bit word over SPI channel `ch`, using the interrupt-driven
-/// CV-transfer path.
-///
-/// This function:
-/// 1. Waits until SPTEF=1 (TX buffer has room for 4 more bytes).
-/// 2. Resets the SPBFCR so the RX interrupt fires at end-of-transfer.
-/// 3. Enables the SPRI interrupt.
-/// 4. Writes `data` to SPDR (starts the shift).
-///
-/// The SPRI ISR (registered via [`register_irq`]) fires when the word has
-/// been fully shifted out; the ISR must:
-/// - Deassert the chip-select GPIO.
-/// - Call [`disable_rx_irq`].
-/// - Reset the RX FIFO with [`reset_rx_buf`].
-///
-/// # Safety
-/// Channel must have been initialised with [`init`].  The caller must assert
-/// the chip-select GPIO **before** calling this function.
-pub unsafe fn send32(ch: u8, data: u32) {
-    unsafe {
-        // Wait until TX buffer has space (SPTEF=1)
-        while reg8(ch, OFF_SPSR).read() & SPSR_SPTEF == 0 {}
-
-        // Program SPBFCR for CV mode (don't reset RX so the interrupt fires)
-        reg8(ch, OFF_SPBFCR).write(SPBFCR_CV_TRANSFER);
-
-        // Enable receive interrupt: fires when the shift register finishes
-        enable_rx_irq(ch);
-
-        // Write data — transfer starts immediately
-        reg32(ch, OFF_SPDR).write(data);
-    }
-}
-
 /// Blocking 32-bit SPI send without interrupt — wait for TEND.
 ///
 /// Intended for the init sequence (MAX5136 linearity words) where no ISR
@@ -314,7 +209,7 @@ pub unsafe fn send32(ch: u8, data: u32) {
 ///
 /// # Safety
 /// Channel must have been initialised with [`init`].
-pub unsafe fn send32_blocking(ch: u8, data: u32) {
+unsafe fn send32_blocking(ch: u8, data: u32) {
     unsafe {
         log::debug!(
             "rspi: ch{} blocking send {:#010x}, SPSR={:#04x}",
@@ -363,21 +258,6 @@ pub unsafe fn send32_blocking(ch: u8, data: u32) {
     }
 }
 
-/// Reset the RSPI receive FIFO buffer (set RXRST in SPBFCR).
-///
-/// The C firmware does this after every CV transfer completes to prevent
-/// the receive-buffer-full condition from stalling subsequent transfers.
-///
-/// # Safety
-/// Writes SPBFCR register.
-#[inline]
-pub unsafe fn reset_rx_buf(ch: u8) {
-    unsafe {
-        let v = reg8(ch, OFF_SPBFCR).read();
-        reg8(ch, OFF_SPBFCR).write(v | SPBFCR_RX_RESET);
-    }
-}
-
 /// Switch RSPI channel `ch` to 8-bit frame mode for OLED (SSD1309) transfers.
 ///
 /// Sets SPDCR=0x20 (8-bit), SPCMD0=0x0700 (SPB=8, Mode 0), SPBFCR=0x60.
@@ -388,7 +268,7 @@ pub unsafe fn reset_rx_buf(ch: u8) {
 ///
 /// # Safety
 /// Writes RSPI registers.  No concurrent SPI transfers must be in progress.
-pub unsafe fn configure_8bit(ch: u8) {
+unsafe fn configure_8bit(ch: u8) {
     unsafe {
         reg8(ch, OFF_SPDCR).write(SPDCR_8BIT);
         reg16(ch, OFF_SPCMD0).write(SPCMD0_8BIT);
@@ -400,7 +280,7 @@ pub unsafe fn configure_8bit(ch: u8) {
 ///
 /// # Safety
 /// Writes RSPI registers.  No concurrent SPI transfers must be in progress.
-pub unsafe fn configure_32bit(ch: u8) {
+unsafe fn configure_32bit(ch: u8) {
     unsafe {
         reg8(ch, OFF_SPDCR).write(SPDCR_32BIT);
         reg16(ch, OFF_SPCMD0).write(SPCMD0_32BIT);
@@ -422,7 +302,7 @@ pub unsafe fn configure_32bit(ch: u8) {
 /// Channel must have been initialised with [`init`] and configured for 8-bit
 /// mode via [`configure_8bit`].
 #[inline]
-pub unsafe fn send8(ch: u8, data: u8) {
+unsafe fn send8(ch: u8, data: u8) {
     unsafe {
         // Wait until TX buffer has 4 free bytes (SPTEF=1).
         while reg8(ch, OFF_SPSR).read() & SPSR_SPTEF == 0 {}
@@ -442,161 +322,95 @@ pub unsafe fn send8(ch: u8, data: u8) {
 /// # Safety
 /// Reads SPSR register.
 #[inline]
-pub unsafe fn wait_end(ch: u8) {
+unsafe fn wait_end(ch: u8) {
     unsafe { while reg8(ch, OFF_SPSR).read() & SPSR_TEND == 0 {} }
 }
 
-// ── embedded-hal SpiBus impls ─────────────────────────────────────────────────
+// ── Owned driver ──────────────────────────────────────────────────────────────
 
-use core::convert::Infallible;
 use core::marker::PhantomData;
 
-/// Marker type: RSPI channel configured for 8-bit frame transfers.
-pub struct Bits8;
-/// Marker type: RSPI channel configured for 32-bit frame transfers.
-pub struct Bits32;
+use crate::Peri;
 
-/// A type-safe handle to an RSPI channel.
-///
-/// `CH` is the channel number (0–4).  `BITS` is either [`Bits8`] or [`Bits32`],
-/// selecting which [`embedded_hal::spi::SpiBus`] impl is active.
-///
-/// This handle **does not** own the hardware configuration; the caller must
-/// have already called [`init`] (and, for 8-bit mode, [`configure_8bit`]).
-/// The handle is zero-cost (ZST).
-pub struct Rspi<const CH: u8, BITS>(PhantomData<BITS>);
+mod sealed {
+    pub trait Sealed {}
+}
 
-impl<const CH: u8, BITS> Rspi<CH, BITS> {
-    /// Create an RSPI handle for a channel that has already been initialised.
+/// An RSPI channel singleton (`peripherals::RSPI0`–`RSPI4`).
+pub trait Instance: crate::PeripheralType + sealed::Sealed + 'static {
+    /// The channel number, 0–4.
+    const INDEX: u8;
+}
+
+macro_rules! instances {
+    ($($rspi:ident = $n:literal),* $(,)?) => {$(
+        impl sealed::Sealed for crate::peripherals::$rspi {}
+        impl Instance for crate::peripherals::$rspi {
+            const INDEX: u8 = $n;
+        }
+    )*};
+}
+
+instances!(RSPI0 = 0, RSPI1 = 1, RSPI2 = 2, RSPI3 = 3, RSPI4 = 4);
+
+/// An RSPI channel as an SPI master, SPI mode 0, in 32-bit or 8-bit frames.
+pub struct Rspi<'d> {
+    ch: u8,
+    _rspi: PhantomData<&'d mut ()>,
+}
+
+impl<'d> Rspi<'d> {
+    /// Bring RSPI `T` up as an SPI master at no more than `bit_rate` Hz, in 32-bit frames.
+    /// Mirrors `R_RSPI_Create` + `R_RSPI_Start` from the C firmware (apart from the SPI mode; see
+    /// `SPCMD0_*`).
+    ///
+    /// # Panics
+    /// If [`crate::clocks::init`] has not been called.
+    pub fn new<T: Instance>(_rspi: Peri<'d, T>, bit_rate: u32) -> Self {
+        // SAFETY: RSPI T is owned, so nothing else drives it.
+        unsafe { init(T::INDEX, bit_rate) };
+        Self { ch: T::INDEX, _rspi: PhantomData }
+    }
+
+    /// RSPI `T` without its singleton, for code that can't reach the owner: a panic handler
+    /// drawing to a display. Touches no register.
     ///
     /// # Safety
-    /// `CH` must be valid (0–4) and [`init`] must have been called for it.
-    #[inline]
-    pub unsafe fn new() -> Self {
-        Rspi(PhantomData)
-    }
-}
-
-// ── ErrorType ─────────────────────────────────────────────────────────────────
-
-impl<const CH: u8, BITS> embedded_hal::spi::ErrorType for Rspi<CH, BITS> {
-    type Error = Infallible;
-}
-
-// ── SpiBus<u8> for Bits8 ──────────────────────────────────────────────────────
-
-impl<const CH: u8> embedded_hal::spi::SpiBus<u8> for Rspi<CH, Bits8> {
-    fn read(&mut self, words: &mut [u8]) -> Result<(), Infallible> {
-        for w in words.iter_mut() {
-            // Transmit a dummy 0x00 to clock in a byte from the peripheral.
-            unsafe {
-                send8(CH, 0x00);
-                wait_end(CH);
-                // The received byte sits in SPDR after the shift completes.
-                // RSPI SPDR lower byte contains the last received byte.
-                *w = crate::mmio::Reg8(reg32(CH, OFF_SPDR).0).read();
-            }
-        }
-        Ok(())
+    /// [`Rspi::new`] has run for `T`, and its owner doesn't run while the stolen handle is in use
+    /// (a panic handler with interrupts masked).
+    pub unsafe fn steal<T: Instance>() -> Rspi<'static> {
+        Rspi { ch: T::INDEX, _rspi: PhantomData }
     }
 
-    fn write(&mut self, words: &[u8]) -> Result<(), Infallible> {
-        for &b in words {
-            unsafe {
-                send8(CH, b);
-            }
-        }
-        unsafe {
-            wait_end(CH);
-        }
-        Ok(())
+    /// Switch to 8-bit frames: SPDCR, SPCMD0, and SPBFCR (which also resets the receive FIFO).
+    pub fn configure_8bit(&mut self) {
+        // SAFETY: owned channel.
+        unsafe { configure_8bit(self.ch) }
     }
 
-    fn transfer(&mut self, read: &mut [u8], write: &[u8]) -> Result<(), Infallible> {
-        let len = read.len().max(write.len());
-        for i in 0..len {
-            let tx = if i < write.len() { write[i] } else { 0x00 };
-            unsafe {
-                send8(CH, tx);
-                wait_end(CH);
-                if i < read.len() {
-                    read[i] = crate::mmio::Reg8(reg32(CH, OFF_SPDR).0).read();
-                }
-            }
-        }
-        Ok(())
+    /// Switch to 32-bit frames.
+    pub fn configure_32bit(&mut self) {
+        // SAFETY: owned channel.
+        unsafe { configure_32bit(self.ch) }
     }
 
-    fn transfer_in_place(&mut self, words: &mut [u8]) -> Result<(), Infallible> {
-        for w in words.iter_mut() {
-            unsafe {
-                let tx = *w;
-                send8(CH, tx);
-                wait_end(CH);
-                *w = crate::mmio::Reg8(reg32(CH, OFF_SPDR).0).read();
-            }
-        }
-        Ok(())
+    /// Queue one byte in 8-bit mode. Doesn't wait for it to shift out: call
+    /// [`wait_end`](Self::wait_end) after the last.
+    pub fn send8(&mut self, byte: u8) {
+        // SAFETY: owned channel.
+        unsafe { send8(self.ch, byte) }
     }
 
-    fn flush(&mut self) -> Result<(), Infallible> {
-        unsafe {
-            wait_end(CH);
-        }
-        Ok(())
-    }
-}
-
-// ── SpiBus<u32> for Bits32 ────────────────────────────────────────────────────
-
-impl<const CH: u8> embedded_hal::spi::SpiBus<u32> for Rspi<CH, Bits32> {
-    fn read(&mut self, words: &mut [u32]) -> Result<(), Infallible> {
-        for w in words.iter_mut() {
-            unsafe {
-                send32_blocking(CH, 0x0000_0000);
-                *w = reg32(CH, OFF_SPDR).read();
-            }
-        }
-        Ok(())
+    /// Send one word in 32-bit mode and wait until it has shifted out.
+    pub fn send32_blocking(&mut self, word: u32) {
+        // SAFETY: owned channel.
+        unsafe { send32_blocking(self.ch, word) }
     }
 
-    fn write(&mut self, words: &[u32]) -> Result<(), Infallible> {
-        for &w in words {
-            unsafe {
-                send32_blocking(CH, w);
-            }
-        }
-        Ok(())
-    }
-
-    fn transfer(&mut self, read: &mut [u32], write: &[u32]) -> Result<(), Infallible> {
-        let len = read.len().max(write.len());
-        for i in 0..len {
-            let tx = if i < write.len() { write[i] } else { 0 };
-            unsafe {
-                send32_blocking(CH, tx);
-                if i < read.len() {
-                    read[i] = reg32(CH, OFF_SPDR).read();
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn transfer_in_place(&mut self, words: &mut [u32]) -> Result<(), Infallible> {
-        for w in words.iter_mut() {
-            unsafe {
-                let tx = *w;
-                send32_blocking(CH, tx);
-                *w = reg32(CH, OFF_SPDR).read();
-            }
-        }
-        Ok(())
-    }
-
-    fn flush(&mut self) -> Result<(), Infallible> {
-        // send32_blocking already polls TEND; nothing left to drain.
-        Ok(())
+    /// Wait until the shift register is idle (TEND).
+    pub fn wait_end(&mut self) {
+        // SAFETY: owned channel.
+        unsafe { wait_end(self.ch) }
     }
 }
 
@@ -615,15 +429,6 @@ mod tests {
     }
 
     #[test]
-    fn rspi_irq_ids() {
-        // SPEI0=270, SPRI0=271, SPTI0=272
-        // Each successive channel adds 3.
-        assert_eq!(irq_spri(0), 271u16);
-        assert_eq!(irq_spri(1), 274u16);
-        assert_eq!(irq_spri(4), 283u16);
-    }
-
-    #[test]
     fn spbr_matches_the_old_hardcoded_p1() {
         let p1 = crate::clocks::TEST_CLOCKS.p1_hz();
         // ceil(66_128_125 / 20_000_000) - 1 = 3 → 8.27 MHz actual.
@@ -632,37 +437,53 @@ mod tests {
         assert_eq!(spbr_for(p1, 4_000_000), 8);
     }
 
-    /// `init` programs the master-mode SPI config through the seam: verify the
-    /// key registers end up with the expected values for a 10 MHz CV-DAC setup.
     #[test]
-    fn init_programs_master_mode_config() {
+    fn rspi_channels_know_their_index() {
+        assert_eq!(<crate::peripherals::RSPI0 as Instance>::INDEX, 0);
+        assert_eq!(<crate::peripherals::RSPI4 as Instance>::INDEX, 4);
+    }
+
+    /// `Rspi::new` programs the master-mode SPI config through the seam: the key registers end
+    /// up with the expected values for a 10 MHz setup.
+    #[test]
+    fn new_programs_master_mode_config() {
         crate::clocks::init(crate::clocks::TEST_CLOCKS);
         use crate::mmio;
         mmio::test::reset();
-        let ch = 0u8;
-        unsafe { init(ch, 10_000_000) };
-        let b = base(ch);
+        let _rspi = Rspi::new(unsafe { crate::peripherals::RSPI0::steal() }, 10_000_000);
+        let b = base(0);
 
-        assert_eq!(
-            mmio::test::peek8(b + OFF_SPBR),
-            3,
-            "baud divider for ~10 MHz"
-        );
-        assert_eq!(
-            mmio::test::peek8(b + OFF_SPDCR),
-            SPDCR_32BIT,
-            "32-bit longword frames"
-        );
+        assert_eq!(mmio::test::peek8(b + OFF_SPBR), 3, "baud divider for ~10 MHz");
+        assert_eq!(mmio::test::peek8(b + OFF_SPDCR), SPDCR_32BIT, "32-bit longword frames");
         assert_eq!(mmio::test::peek8(b + OFF_SPBFCR), SPBFCR_INIT_32BIT);
-        assert_eq!(
-            mmio::test::peek16(b + OFF_SPCMD0),
-            SPCMD0_32BIT,
-            "32-bit mode-0 cmd"
-        );
-        // Final SPCR has master + TX-int + SPI-enable all set.
+        assert_eq!(mmio::test::peek16(b + OFF_SPCMD0), SPCMD0_32BIT, "32-bit mode-0 cmd");
         let spcr = mmio::test::peek8(b + OFF_SPCR);
         assert_eq!(spcr & SPCR_MSTR, SPCR_MSTR, "master mode");
         assert_eq!(spcr & SPCR_SPTIE, SPCR_SPTIE, "TX interrupt enabled");
         assert_eq!(spcr & SPCR_SPE, SPCR_SPE, "SPI enabled (R_RSPI_Start)");
+    }
+
+    #[test]
+    fn a_stolen_rspi_touches_no_register() {
+        crate::mmio::test::reset();
+        let _rspi = unsafe { Rspi::steal::<crate::peripherals::RSPI0>() };
+        assert!(crate::mmio::test::log().is_empty());
+    }
+
+    #[test]
+    fn switching_to_8_bit_frames_rewrites_length_command_and_buffer_control() {
+        crate::clocks::init(crate::clocks::TEST_CLOCKS);
+        let mut rspi = Rspi::new(unsafe { crate::peripherals::RSPI1::steal() }, 4_000_000);
+        crate::mmio::test::reset();
+        rspi.configure_8bit();
+        let b = base(1);
+        assert_eq!(
+            crate::mmio::test::writes(),
+            [
+                (b + OFF_SPDCR, SPDCR_8BIT as u32),
+                (b + OFF_SPCMD0, SPCMD0_8BIT as u32),
+                (b + OFF_SPBFCR, SPBFCR_8BIT as u32),
+            ]
+        );
     }
 }

@@ -63,7 +63,19 @@ pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame]) + Send 
 /// The SYNC LED is wired to port 6, pin 7.
 type SyncLedPin = Pin<6, 7, Output>;
 
+/// Bring up RSPI0, which the OLED and the CV DAC share, the first time either needs it, unless
+/// the app already did.
+fn ensure_shared_spi() {
+    if deluge_bsp::bus::is_initialised() {
+        return;
+    }
+    let spi = crate::parts::take("RSPI0 (the OLED and CV bus)", |p| p.shared_spi.take());
+    let dma = crate::parts::take("the OLED DMA channel", |p| p.oled_dma.take());
+    deluge_bsp::bus::init(spi, dma);
+}
+
 pub(crate) async fn oled_init_panel() {
+    ensure_shared_spi();
     oled::init().await;
 }
 pub(crate) async fn oled_flush(fb: &FrameBuffer) {
@@ -166,7 +178,8 @@ pub(crate) fn sync_led_is_set_low(pin: &mut SyncLedPin) -> Result<bool, Infallib
 }
 
 pub(crate) fn cv_gate_init() {
-    // SAFETY: runs once. Configures GPIO + RSPI0 and runs the DAC's ~10 ms
+    ensure_shared_spi();
+    // SAFETY: runs once, after the bus is up. Configures GPIO and runs the DAC's ~10 ms
     // linearity init (poll-based delays). Acquire CV/gate before entering a
     // loop that also drives the OLED, so this one-time RSPI0 setup can't race an
     // in-flight OLED transfer (see docs/advanced-guide.md §7).
