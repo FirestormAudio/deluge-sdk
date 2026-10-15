@@ -1,6 +1,5 @@
-//! SCUX register map: block base addresses, per-channel register accessors,
-//! bit-field constants, and the small `const fn` helpers that derive register
-//! values. The driver logic is in `scux.rs`.
+//! SCUX register values: bit-field constants and the small `const fn` helpers
+//! that derive register values (the addresses come from `crate::pac::SCUX`). The driver logic is in `scux.rs`.
 //!
 //! Most items are `pub(super)` so the driver in `scux.rs` can reach them via
 //! `use regs::*`; the few that form the public SCUX API (`DMARS_*`, `INTIFS_*`,
@@ -11,265 +10,14 @@ use crate::dmac::{
     CHCFG_REQD, CHCFG_SAD, CHCFG_SDS_32BIT,
 };
 
-// ── SCUX top-level base ───────────────────────────────────────────────────────
-
-pub(super) const SCUX_BASE: usize = 0xE820_8000;
-
-// ── IPC block (×4, stride 0x100) ─────────────────────────────────────────────
-// TRM §37.3.1  IPCIR_IPC0_n — Initialization Register
-// TRM §37.3.2  IPSLR_IPC0_n — Pass Select Register
-
-pub(super) const IPC_BASE: usize = SCUX_BASE;
-pub(super) const IPC_STRIDE: usize = 0x100;
-
-pub(super) const IPCIR_OFF: usize = 0x00; // IPCIR_IPC0_n (§37.3.1)  Init register (bit 0 = INIT)
-pub(super) const IPSLR_OFF: usize = 0x04; // IPSLR_IPC0_n (§37.3.2)  Pass-select register
-
-#[inline(always)]
-pub(super) fn ipc(ch: u8, off: usize) -> *mut u32 {
-    (IPC_BASE + ch as usize * IPC_STRIDE + off) as *mut u32
-}
-
-// ── OPC block (×4, stride 0x100) ─────────────────────────────────────────────
-// TRM §37.3.3  OPCIR_OPC0_n — Initialization Register
-// TRM §37.3.4  OPSLR_OPC0_n — Pass Select Register
-
-pub(super) const OPC_BASE: usize = SCUX_BASE + 0x0400;
-pub(super) const OPC_STRIDE: usize = 0x100;
-
-pub(super) const OPCIR_OFF: usize = 0x00; // OPCIR_OPC0_n (§37.3.3)  Init register
-pub(super) const OPSLR_OFF: usize = 0x04; // OPSLR_OPC0_n (§37.3.4)  Pass-select register
-
-#[inline(always)]
-pub(super) fn opc(ch: u8, off: usize) -> *mut u32 {
-    (OPC_BASE + ch as usize * OPC_STRIDE + off) as *mut u32
-}
-
-// ── FFD block (×4, stride 0x100) ─────────────────────────────────────────────
-// TRM §37.3.5  FFDIR_FFD0_n  — FIFO Download Initialization Register
-// TRM §37.3.6  FDAIR_FFD0_n  — FIFO Download Audio Information Register
-// TRM §37.3.7  DRQSR_FFD0_n  — FIFO Download Request Size Register
-// TRM §37.3.8  FFDPR_FFD0_n  — FIFO Download Pass Register
-// TRM §37.3.9  FFDBR_FFD0_n  — FIFO Download Boot Register
-// TRM §37.3.10 DEVMR_FFD0_n  — FIFO Download Event Mask Register
-// TRM §37.3.11 DEVCR_FFD0_n  — FIFO Download Event Clear Register
-
-pub(super) const FFD_BASE: usize = SCUX_BASE + 0x0800;
-pub(super) const FFD_STRIDE: usize = 0x100;
-
-pub(super) const FFDIR_OFF: usize = 0x00; // FFDIR_FFD0_n (§37.3.5)  Init register (bit 0 = INIT)
-pub(super) const FDAIR_OFF: usize = 0x04; // FDAIR_FFD0_n (§37.3.6)  Audio info register (channels, bit depth)
-pub(super) const DRQSR_OFF: usize = 0x08; // DRQSR_FFD0_n (§37.3.7)  DMA request size register
-pub(super) const FFDPR_OFF: usize = 0x0C; // FFDPR_FFD0_n (§37.3.8)  FIFO data pass register
-pub(super) const FFDBR_OFF: usize = 0x10; // FFDBR_FFD0_n (§37.3.9)  Boot register (bit 0 = BOOT)
-pub(super) const DEVMR_OFF: usize = 0x14; // DEVMR_FFD0_n (§37.3.10) DMA event mode register (0 = DMA trigger, 1 = interrupt)
-pub(super) const DEVCR_OFF: usize = 0x1C; // DEVCR_FFD0_n (§37.3.11) DMA event clear register
-
-#[inline(always)]
-pub(super) fn ffd(ch: u8, off: usize) -> *mut u32 {
-    (FFD_BASE + ch as usize * FFD_STRIDE + off) as *mut u32
-}
-
-// ── FFU block (×4, stride 0x100) ─────────────────────────────────────────────
-// TRM §37.3.12 FFUIR_FFU0_n  — FIFO Upload Initialization Register
-// TRM §37.3.13 FUAIR_FFU0_n  — FIFO Upload Audio Information Register
-// TRM §37.3.14 URQSR_FFU0_n  — FIFO Upload Request Size Register
-// TRM §37.3.15 FFUPR_FFU0_n  — FIFO Upload Pass Register
-// TRM §37.3.16 UEVMR_FFU0_n  — FIFO Upload Event Mask Register
-// TRM §37.3.17 UEVCR_FFU0_n  — FIFO Upload Event Clear Register
-
-pub(super) const FFU_BASE: usize = SCUX_BASE + 0x0C00;
-pub(super) const FFU_STRIDE: usize = 0x100;
-
-pub(super) const FFUIR_OFF: usize = 0x00; // FFUIR_FFU0_n (§37.3.12) Init register
-pub(super) const FUAIR_OFF: usize = 0x04; // FUAIR_FFU0_n (§37.3.13) Audio info register
-pub(super) const URQSR_OFF: usize = 0x08; // URQSR_FFU0_n (§37.3.14) DMA request size register
-pub(super) const FFUPR_OFF: usize = 0x0C; // FFUPR_FFU0_n (§37.3.15) FIFO data pass register
-pub(super) const UEVMR_OFF: usize = 0x10; // UEVMR_FFU0_n (§37.3.16) DMA event mode register (0 = DMA trigger, 1 = interrupt)
-pub(super) const UEVCR_OFF: usize = 0x18; // UEVCR_FFU0_n (§37.3.17) DMA event clear register
-
-#[inline(always)]
-pub(super) fn ffu(ch: u8, off: usize) -> *mut u32 {
-    (FFU_BASE + ch as usize * FFU_STRIDE + off) as *mut u32
-}
-
-// ── 2SRC block ───────────────────────────────────────────────────────────────
-// TRM §37.3.18 SRCIRp_2SRC0_m  — 2SRC Initialization Register p (m=0,1; p=0,1)
-// TRM §37.3.19 SADIRp_2SRC0_m  — 2SRC Audio Information Register p
-// TRM §37.3.20 SRCBRp_2SRC0_m  — 2SRC Bypass Register p
-// TRM §37.3.21 IFSCRp_2SRC0_m  — 2SRC IFS Control Register p  (INTIFSEN bit 0)
-// TRM §37.3.22 IFSVRp_2SRC0_m  — 2SRC IFS Value Setting Register p (INTIFS Q22)
-// TRM §37.3.23 SRCCRp_2SRC0_m  — 2SRC Control Register p (SRCMD bit 0; must-be-1 bits 16,8,4)
-// TRM §37.3.24 MNFSRp_2SRC0_m  — 2SRC Minimum FS Setting Register p
-// TRM §37.3.25 BFSSRp_2SRC0_m  — 2SRC Buffer Size Setting Register p
-// TRM §37.3.26 SC2SRp_2SRC0_m  — 2SRC Status Register p (read-only)
-// TRM §37.3.27 WATSRp_2SRC0_m  — 2SRC Wait Time Setting Register p
-// TRM §37.3.28 SEVMRp_2SRC0_m  — 2SRC Event Mask Register p
-// TRM §37.3.29 SEVCRp_2SRC0_m  — 2SRC Event Clear Register p
-// TRM §37.3.30 SRCIRR_2SRC0_m  — 2SRC Initialization Register RIF (unit-level)
-//
-// Two SRC units (unit 0 and unit 1), each containing two SRC paths (pair 0
-// and pair 1).  The two paths within a unit share one BFSSR (buffer size
-// register) and one SRCCR (common config), but have independent SADIR, IFSCR,
-// IFSVR, MNFSR, SEVMR, and SRCIR / SRCIRR registers.
-//
-// Base of unit 0, pair 0 = 0xE820_9000.  Stride between pairs within a unit = 0x34.
-// Unit 1 begins at 0xE820_9100 (stride 0x100 per TRM Table 37.2).
-
-pub(super) const SRC_BASE: usize = 0xE820_9000;
-pub(super) const SRC_UNIT_STRIDE: usize = 0x100;
-pub(super) const SRC_PAIR_STRIDE: usize = 0x34;
-
-pub(super) const SRCIR_OFF: usize = 0x00; // SRCIRp_2SRC0_m (§37.3.18) Init register
-pub(super) const SADIR_OFF: usize = 0x04; // SADIRp_2SRC0_m (§37.3.19) Audio information (channels, bit depth)
-pub(super) const SRCBR_OFF: usize = 0x08; // SRCBRp_2SRC0_m (§37.3.20) Bypass register (bit 0 = BYPASS)
-pub(super) const IFSCR_OFF: usize = 0x0C; // IFSCRp_2SRC0_m (§37.3.21) Input frequency select (0=sync, 1=async)
-pub(super) const IFSVR_OFF: usize = 0x10; // IFSVRp_2SRC0_m (§37.3.22) Input frequency value (INTIFS ratio Q22)
-pub(super) const SRCCR_OFF: usize = 0x14; // SRCCRp_2SRC0_m (§37.3.23) Common control (must-be-1 bits 16,8,4)
-pub(super) const MNFSR_OFF: usize = 0x18; // MNFSRp_2SRC0_m (§37.3.24) Minimum frequency select
-pub(super) const BFSSR_OFF: usize = 0x1C; // BFSSRp_2SRC0_m (§37.3.25) Buffer size select
-// 0x20: SC2SRp_2SRC0_m (§37.3.26) status register (read-only)
-// 0x24: WATSRp_2SRC0_m (§37.3.27) wait time
-pub(super) const SEVMR_OFF: usize = 0x28; // SEVMRp_2SRC0_m (§37.3.28) Sampling event mode register
-// 0x2C: 4-byte reserved gap
-pub(super) const SEVCR_OFF: usize = 0x30; // SEVCRp_2SRC0_m (§37.3.29) Sampling event clear register
-// SRCIRR_2SRC0_m (§37.3.30) lives at unit_base + 0x68 (after both pairs); see srcirr() below.
-pub(super) const SRCIRR_UNIT_OFF: usize = 0x68;
-
-#[inline(always)]
-pub(super) fn src(unit: u8, pair: u8, off: usize) -> *mut u32 {
-    (SRC_BASE + unit as usize * SRC_UNIT_STRIDE + pair as usize * SRC_PAIR_STRIDE + off) as *mut u32
-}
-
-/// Accessor for SRCIRR (Input-Rate Reload init register), which is per-unit
-/// and sits after both pair register banks, at unit_base + 0x68.
-#[inline(always)]
-pub(super) fn srcirr(unit: u8) -> *mut u32 {
-    (SRC_BASE + unit as usize * SRC_UNIT_STRIDE + SRCIRR_UNIT_OFF) as *mut u32
-}
-
-// ── DVU block (×4, stride 0x100) ─────────────────────────────────────────────
-// TRM §37.3.31 DVUIR_DVU0_n  — DVU Initialization Register
-// TRM §37.3.32 VADIR_DVU0_n  — DVU Audio Information Register
-// TRM §37.3.33 DVUBR_DVU0_n  — DVU Bypass Register
-// TRM §37.3.34 DVUCR_DVU0_n  — DVU Control Register (VRMD bit 4, VVMD bit 8)
-// TRM §37.3.35 ZCMCR_DVU0_n  — DVU Zero Cross Mute Control Register
-// TRM §37.3.36 VRCTR_DVU0_n  — DVU Volume Ramp Control Register
-// TRM §37.3.37 VRPDR_DVU0_n  — DVU Volume Ramp Period Register
-// TRM §37.3.38 VRDBR_DVU0_n  — DVU Volume Ramp Decibel Register
-// TRM §37.3.39 VRWTR_DVU0_n  — DVU Volume Ramp Wait Time Register
-// TRM §37.3.40–47 VOL0R–VOL7R_DVU0_n — Per-channel Volume Value Registers
-// TRM §37.3.48 DVUER_DVU0_n  — DVU Enable Register (DVUEN bit 0)
-// TRM §37.3.50 VEVMR_DVU0_n  — DVU Volume Event Mask Register
-// TRM §37.3.51 VEVCR_DVU0_n  — DVU Volume Event Clear Register
-// TRM §37.4.8  DVU Block operation notes
-
-pub(super) const DVU_BASE: usize = 0xE820_9200;
-pub(super) const DVU_STRIDE: usize = 0x100;
-
-pub(super) const DVUIR_OFF: usize = 0x00; // DVUIR_DVU0_n (§37.3.31) Init register
-pub(super) const VADIR_OFF: usize = 0x04; // VADIR_DVU0_n (§37.3.32) Audio information (channels, bit depth)
-pub(super) const DVUBR_OFF: usize = 0x08; // DVUBR_DVU0_n (§37.3.33) Bypass register (bit 0 = BYPASS)
-pub(super) const DVUCR_OFF: usize = 0x0C; // DVUCR_DVU0_n (§37.3.34) Control (VRMD bit 4, VVMD bit 8)
-pub(super) const ZCMCR_OFF: usize = 0x10; // ZCMCR_DVU0_n (§37.3.35) Zero-cross mute control
-pub(super) const VRCTR_OFF: usize = 0x14; // VRCTR_DVU0_n (§37.3.36) Volume ramp control (bit 0 = enable ramp)
-pub(super) const VRPDR_OFF: usize = 0x18; // VRPDR_DVU0_n (§37.3.37) Volume ramp period
-pub(super) const VRDBR_OFF: usize = 0x1C; // VRDBR_DVU0_n (§37.3.38) Volume ramp dB step
-pub(super) const VRWTR_OFF: usize = 0x20; // VRWTR_DVU0_n (§37.3.39) Volume ramp wait time register
-pub(super) const VOL0R_OFF: usize = 0x24; // VOL0R–VOL7R_DVU0_n (§37.3.40–47) Per-channel volume registers
-pub(super) const DVUER_OFF: usize = 0x44; // DVUER_DVU0_n (§37.3.48) DVU enable register (DVUEN bit 0)
-pub(super) const VEVMR_OFF: usize = 0x4C; // VEVMR_DVU0_n (§37.3.50) Volume event mode
-pub(super) const VEVCR_OFF: usize = 0x54; // VEVCR_DVU0_n (§37.3.51) Volume event clear (0x50 is a 4-byte gap)
-
-#[inline(always)]
-pub(super) fn dvu(ch: u8, off: usize) -> *mut u32 {
-    (DVU_BASE + ch as usize * DVU_STRIDE + off) as *mut u32
-}
-
-/// Offset of VOL register for a specific audio sub-channel within a DVU instance.
-#[inline(always)]
-pub(super) fn vol_off(audio_ch: u8) -> usize {
-    VOL0R_OFF + audio_ch as usize * 4
-}
-
-// ── MIX block ────────────────────────────────────────────────────────────────
-// TRM §37.3.52 MIXIR_MIX0_0  — MIX Initialization Register
-// TRM §37.3.53 MADIR_MIX0_0  — MIX Audio Information Register
-// TRM §37.3.54 MIXBR_MIX0_0  — MIX Bypass Register
-// TRM §37.3.55 MIXMR_MIX0_0  — MIX Mode Register
-// TRM §37.3.56 MVPDR_MIX0_0  — MIX Volume Period Register
-// TRM §37.3.57 MDBAR_MIX0_0  — MIX Decibel A Register (source 0 gain)
-// TRM §37.3.58 MDBBR_MIX0_0  — MIX Decibel B Register (source 1 gain)
-// TRM §37.3.59 MDBCR_MIX0_0  — MIX Decibel C Register (source 2 gain)
-// TRM §37.3.60 MDBDR_MIX0_0  — MIX Decibel D Register (source 3 gain)
-// TRM §37.3.61 MDBER_MIX0_0  — MIX Decibel Enable Register (MIXDBEN bit 0)
-// TRM §37.4.9  MIX Block operation notes
-
-pub(super) const MIX_BASE: usize = 0xE820_9600;
-
-pub(super) const MIXIR_OFF: usize = 0x00; // MIXIR_MIX0_0 (§37.3.52) Init register
-pub(super) const MADIR_OFF: usize = 0x04; // MADIR_MIX0_0 (§37.3.53) Audio information
-pub(super) const MIXBR_OFF: usize = 0x08; // MIXBR_MIX0_0 (§37.3.54) Bypass register (bit 0 = BYPASS)
-pub(super) const MIXMR_OFF: usize = 0x0C; // MIXMR_MIX0_0 (§37.3.55) Mix mode register
-pub(super) const MVPDR_OFF: usize = 0x10; // MVPDR_MIX0_0 (§37.3.56) Master volume period
-pub(super) const MDB0R_OFF: usize = 0x14; // MDBAR_MIX0_0 (§37.3.57) Decibel A — source 0 gain
-pub(super) const MDB1R_OFF: usize = 0x18; // MDBBR_MIX0_0 (§37.3.58) Decibel B — source 1 gain
-pub(super) const MDB2R_OFF: usize = 0x1C; // MDBCR_MIX0_0 (§37.3.59) Decibel C — source 2 gain
-pub(super) const MDB3R_OFF: usize = 0x20; // MDBDR_MIX0_0 (§37.3.60) Decibel D — source 3 gain
-pub(super) const MDBER_OFF: usize = 0x24; // MDBER_MIX0_0 (§37.3.61) Decibel enable (MIXDBEN)
-
-#[inline(always)]
-pub(super) fn mix(off: usize) -> *mut u32 {
-    (MIX_BASE + off) as *mut u32
-}
-
-// ── CIM block ─────────────────────────────────────────────────────────────────
-// TRM §37.3.63 SWRSR_CIM     — Software Reset Register
-// TRM §37.3.64 DMACR_CIM     — DMA Control Register (bits 3:0=FFD0-3, bits 7:4=FFU0-3)
-// TRM §37.3.65 DMATDn_CIM    — DMA Transfer Registers for FFD0_n (n=0–3)
-// TRM §37.3.66 DMATUn_CIM    — DMA Transfer Registers for FFU0_n (n=0–3)
-// TRM §37.3.67 SSIRSEL_CIM   — SSI Route Select Register
-// TRM §37.3.68 FDTSELn_CIM   — FFD0_n Timing Select Register (n=0–3)
-// TRM §37.3.69 FUTSELn_CIM   — FFU0_n Timing Select Register (n=0–3)
-// TRM §37.3.70 SSIPMD_CIM    — SSI Pin Mode Register
-// TRM §37.3.71 SSICTRL_CIM   — SSI Control Register (SSI012TEN bit 14, SSI012REN bit 8)
-// TRM §37.3.72 SRCRSELn_CIM  — SRCn Route Select Register (n=0–3; reset = 0x76543210)
-// TRM §37.3.73 MIXRSEL_CIM   — MIX Route Select Register (reset = 0x76543210)
-
-pub(super) const CIM_BASE: usize = 0xE820_9700;
-
-pub(super) const SWRSR_CIM_OFF: usize = 0x00; // SWRSR_CIM    (§37.3.63) Software reset (bit 0; 0=reset, 1=run)
-pub(super) const DMACR_CIM_OFF: usize = 0x04; // DMACR_CIM    (§37.3.64) DMA enable (bits 3:0=FFD0-3 TX, bits 7:4=FFU0-3 RX)
-pub(super) const DMATD0_CIM_OFF: usize = 0x08; // DMATD0_CIM   (§37.3.65) DMA channel number for FFD0
-pub(super) const DMATD1_CIM_OFF: usize = 0x0C; // DMATD1_CIM   (§37.3.65) DMA channel number for FFD1
-pub(super) const DMATD2_CIM_OFF: usize = 0x10; // DMATD2_CIM   (§37.3.65) DMA channel number for FFD2
-pub(super) const DMATD3_CIM_OFF: usize = 0x14; // DMATD3_CIM   (§37.3.65) DMA channel number for FFD3
-pub(super) const DMATU0_CIM_OFF: usize = 0x18; // DMATU0_CIM   (§37.3.66) DMA channel number for FFU0
-pub(super) const DMATU1_CIM_OFF: usize = 0x1C; // DMATU1_CIM   (§37.3.66) DMA channel number for FFU1
-pub(super) const DMATU2_CIM_OFF: usize = 0x20; // DMATU2_CIM   (§37.3.66) DMA channel number for FFU2
-pub(super) const DMATU3_CIM_OFF: usize = 0x24; // DMATU3_CIM   (§37.3.66) DMA channel number for FFU3
-// 0x28–0x37: 16-byte reserved gap (TRM Table 37.2, between DMATUn and SSIRSEL)
-pub(super) const SSIRSEL_CIM_OFF: usize = 0x38; // SSIRSEL_CIM  (§37.3.67) SSI→SRC route selector
-pub(super) const FDTSEL0_CIM_OFF: usize = 0x3C; // FDTSEL0_CIM  (§37.3.68) FFD0 timing select
-pub(super) const FDTSEL1_CIM_OFF: usize = 0x40; // FDTSEL1_CIM  (§37.3.68) FFD1 timing select
-pub(super) const FDTSEL2_CIM_OFF: usize = 0x44; // FDTSEL2_CIM  (§37.3.68) FFD2 timing select
-pub(super) const FDTSEL3_CIM_OFF: usize = 0x48; // FDTSEL3_CIM  (§37.3.68) FFD3 timing select
-pub(super) const FUTSEL0_CIM_OFF: usize = 0x4C; // FUTSEL0_CIM  (§37.3.69) FFU0 timing select
-pub(super) const FUTSEL1_CIM_OFF: usize = 0x50; // FUTSEL1_CIM  (§37.3.69) FFU1 timing select
-pub(super) const FUTSEL2_CIM_OFF: usize = 0x54; // FUTSEL2_CIM  (§37.3.69) FFU2 timing select
-pub(super) const FUTSEL3_CIM_OFF: usize = 0x58; // FUTSEL3_CIM  (§37.3.69) FFU3 timing select
-pub(super) const SSIPMD_CIM_OFF: usize = 0x5C; // SSIPMD_CIM   (§37.3.70) SSI port mode
-pub(super) const SSICTRL_CIM_OFF: usize = 0x60; // SSICTRL_CIM  (§37.3.71) SSI clock/gate control
-pub(super) const SRCRSEL0_CIM_OFF: usize = 0x64; // SRCRSEL0_CIM (§37.3.72) SRC0 route select (reset = 0x76543210)
-pub(super) const SRCRSEL1_CIM_OFF: usize = 0x68; // SRCRSEL1_CIM (§37.3.72) SRC1 route select
-pub(super) const SRCRSEL2_CIM_OFF: usize = 0x6C; // SRCRSEL2_CIM (§37.3.72) SRC2 route select
-pub(super) const SRCRSEL3_CIM_OFF: usize = 0x70; // SRCRSEL3_CIM (§37.3.72) SRC3 route select
-pub(super) const MIXRSEL_CIM_OFF: usize = 0x74; // MIXRSEL_CIM  (§37.3.73) MIX input route selector (reset = 0x76543210)
-
-#[inline(always)]
-pub(super) fn cim(off: usize) -> *mut u32 {
-    (CIM_BASE + off) as *mut u32
-}
+// ── Register addresses ────────────────────────────────────────────────────────
+// Every SCUX register address comes from `crate::pac::SCUX` (TRM §37.3, Table 37.2):
+// `ipc(n)`/`opc(n)`/`ffd(n)`/`ffu(n)`/`dvu(n)` are the four per-channel banks
+// (stride 0x100), `src(2 * unit + pair)` the 2SRC pairs (units 0x100 apart,
+// pairs 0x34 apart within a unit), `srcirr(unit)` each unit's RIF init
+// register, `mix()` the MIX block, and the CIM registers sit flat on `SCUX`
+// (`swrsr_cim()`, `dmacr_cim()`, `dmatd(n)`, `dmatu(n)`, `fdtsel(n)`,
+// `futsel(n)`, `srcrsel(n)`, ...).
 
 // ── DMARS constants ───────────────────────────────────────────────────────────
 
@@ -468,40 +216,6 @@ pub const SSICTRL_SSI0TX: u32 = 1 << 14;
 mod tests {
     use super::*;
 
-    // SCUX_BASE = 0xE820_8000. Each sub-block (IPC/OPC/FFD/FFU) is a bank of
-    // per-channel register windows STRIDE bytes apart.
-    #[test]
-    fn block_bases_match_datasheet_offsets() {
-        assert_eq!(IPC_BASE, 0xE820_8000);
-        assert_eq!(OPC_BASE, 0xE820_8400);
-        assert_eq!(FFD_BASE, 0xE820_8800);
-        assert_eq!(FFU_BASE, 0xE820_8C00);
-    }
-
-    #[test]
-    fn channel_addressing_is_base_plus_stride_plus_offset() {
-        assert_eq!(ipc(0, IPCIR_OFF) as usize, 0xE820_8000);
-        assert_eq!(ipc(1, IPCIR_OFF) as usize, 0xE820_8100);
-        assert_eq!(ipc(2, IPSLR_OFF) as usize, 0xE820_8200 + 0x04);
-
-        assert_eq!(opc(0, OPCIR_OFF) as usize, 0xE820_8400);
-        assert_eq!(opc(3, OPSLR_OFF) as usize, 0xE820_8400 + 3 * 0x100 + 0x04);
-
-        assert_eq!(ffd(0, FFDIR_OFF) as usize, 0xE820_8800);
-        assert_eq!(ffd(3, FFDPR_OFF) as usize, 0xE820_8800 + 3 * 0x100 + 0x0C);
-
-        assert_eq!(ffu(0, FFUIR_OFF) as usize, 0xE820_8C00);
-        assert_eq!(ffu(2, FUAIR_OFF) as usize, 0xE820_8C00 + 2 * 0x100 + 0x04);
-    }
-
-    #[test]
-    fn per_channel_windows_do_not_overlap() {
-        for ch in 0..3u8 {
-            assert_eq!(ffd(ch + 1, 0) as usize - ffd(ch, 0) as usize, FFD_STRIDE);
-            assert_eq!(ffu(ch + 1, 0) as usize - ffu(ch, 0) as usize, FFU_STRIDE);
-        }
-    }
-
     #[test]
     fn intifs_unity_is_q22_one_not_the_old_16x_bug() {
         // INTIFS is Q22: unity (Fin==Fout) must be exactly 2^22 = 0x0040_0000.
@@ -548,12 +262,5 @@ mod tests {
         assert_eq!(ffd_chcfg(5) & 7, 5);
         assert_eq!(ffu_chcfg(3) & 7, 3);
         assert_eq!(ffd_chcfg(7), ffd_chcfg(0) | 7);
-    }
-
-    #[test]
-    fn vol_register_offsets_are_4_apart() {
-        assert_eq!(vol_off(0), VOL0R_OFF);
-        assert_eq!(vol_off(1), VOL0R_OFF + 4);
-        assert_eq!(vol_off(7), VOL0R_OFF + 28);
     }
 }

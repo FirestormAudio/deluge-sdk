@@ -18,22 +18,8 @@
 //!
 //! (RZ/A1L TRM §9, register table: DMARS0=0xFCFE1000 … DMARS7=0xFCFE101C)
 
-const DMAC_BASE: usize = 0xE820_0000;
-const DMARS_BASE: usize = 0xFCFE_1000;
-
 // ── Channel register byte offsets within one `st_dmac_n` block ──────────────
 // Register-mode (N0/N1) source, destination, and byte-count registers.
-const OFF_N0SA: usize = 0x00; // Next-0 source address
-const OFF_N0DA: usize = 0x04; // Next-0 destination address
-const OFF_N0TB: usize = 0x08; // Next-0 transfer byte count
-const OFF_CRSA: usize = 0x18; // Current source address
-const OFF_CRDA: usize = 0x1C; // Current destination address
-const OFF_CHCTRL: usize = 0x28; // Channel control
-const OFF_CHCFG: usize = 0x2C; // Channel config
-const OFF_CHITVL: usize = 0x30; // Channel interval
-const OFF_CHEXT: usize = 0x34; // Channel extension
-const OFF_CHSTAT: usize = 0x24; // Channel status (TC = bit 6)
-const OFF_NXLA: usize = 0x38; // Next link-descriptor address
 
 // ── CHCTRL bits ──────────────────────────────────────────────────────────────
 const CHCTRL_SETEN: u32 = 1 << 0; // Set enable  (start transfer)
@@ -80,30 +66,6 @@ pub(crate) const CHCFG_REQD: u32 = 1 << 3;
 const DMAC_IRQ_PRIORITY: u8 = 13;
 
 // ── DCTRL group-control registers ───────────────────────────────────────────
-const DCTRL_0_7: usize = DMAC_BASE + 0x300;
-const DCTRL_8_15: usize = DMAC_BASE + 0x700;
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-#[inline]
-fn ch_base(ch: u8) -> usize {
-    DMAC_BASE + (ch as usize) * 64 + if ch >= 8 { 0x200 } else { 0 }
-}
-
-#[inline]
-fn ch_reg(ch: u8, off: usize) -> crate::mmio::Reg32 {
-    crate::mmio::Reg32(ch_base(ch) + off)
-}
-
-#[inline]
-fn dctrl_reg(ch: u8) -> crate::mmio::Reg32 {
-    crate::mmio::Reg32(if ch < 8 { DCTRL_0_7 } else { DCTRL_8_15 })
-}
-
-#[inline]
-fn dmars_reg(ch: u8) -> crate::mmio::Reg32 {
-    crate::mmio::Reg32(DMARS_BASE + (ch as usize / 2) * 4)
-}
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
@@ -121,6 +83,8 @@ mod raw;
 // The tests below call the channel-number functions by name.
 #[cfg(all(test, not(target_os = "none")))]
 use raw::*;
+
+use crate::pac::DMAC;
 
 use core::future::poll_fn;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -434,7 +398,7 @@ static DMAC_BLOCK_READY: [AtomicBool; 16] = [const { AtomicBool::new(false) }; 1
 /// block, and wake the awaiter.
 fn on_block_int(ch: u8) {
     // CHCTRL bits are write-1-to-trigger; write a clean value (not RMW).
-    unsafe { ch_reg(ch, OFF_CHCTRL).write(CHCTRL_CLRTC) };
+    DMAC.ch(ch as usize).chctrl().write_value(CHCTRL_CLRTC);
     DMAC_BLOCK_READY[ch as usize].store(true, Ordering::Release);
     DMAC_WAKERS[ch as usize].wake();
 }
@@ -442,6 +406,43 @@ fn on_block_int(ch: u8) {
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
     use super::*;
+
+    // The register addresses as the TRM gives them, independent of the code under test: the
+    // sequence tests below compare the PAC-driven writes against these.
+    const DMAC_BASE: usize = 0xE820_0000;
+    const DMARS_BASE: usize = 0xFCFE_1000;
+    const OFF_N0SA: usize = 0x00; // Next-0 source address
+    const OFF_N0DA: usize = 0x04; // Next-0 destination address
+    const OFF_N0TB: usize = 0x08; // Next-0 transfer byte count
+    const OFF_CRSA: usize = 0x18; // Current source address
+    const OFF_CRDA: usize = 0x1C; // Current destination address
+    const OFF_CHCTRL: usize = 0x28; // Channel control
+    const OFF_CHCFG: usize = 0x2C; // Channel config
+    const OFF_CHITVL: usize = 0x30; // Channel interval
+    const OFF_CHEXT: usize = 0x34; // Channel extension
+    const OFF_CHSTAT: usize = 0x24; // Channel status (TC = bit 6)
+    const OFF_NXLA: usize = 0x38; // Next link-descriptor address
+    const DCTRL_0_7: usize = DMAC_BASE + 0x300;
+    const DCTRL_8_15: usize = DMAC_BASE + 0x700;
+    #[inline]
+    fn ch_base(ch: u8) -> usize {
+        DMAC_BASE + (ch as usize) * 64 + if ch >= 8 { 0x200 } else { 0 }
+    }
+
+    #[inline]
+    fn ch_reg(ch: u8, off: usize) -> crate::mmio::Reg32 {
+        crate::mmio::Reg32(ch_base(ch) + off)
+    }
+
+    #[inline]
+    fn dctrl_reg(ch: u8) -> crate::mmio::Reg32 {
+        crate::mmio::Reg32(if ch < 8 { DCTRL_0_7 } else { DCTRL_8_15 })
+    }
+
+    #[inline]
+    fn dmars_reg(ch: u8) -> crate::mmio::Reg32 {
+        crate::mmio::Reg32(DMARS_BASE + (ch as usize / 2) * 4)
+    }
 
     // DMAC_BASE = 0xE820_0000. Channels 0–7 are 64 bytes apart from the base;
     // channels 8–15 sit 0x200 higher (a register gap), i.e. base+0x400 for ch8.
@@ -467,13 +468,6 @@ mod tests {
     }
 
     #[test]
-    fn ch_reg_adds_offset() {
-        assert_eq!(ch_reg(0, OFF_CHCFG).0, 0xE820_0000 + 0x2C);
-        assert_eq!(ch_reg(8, OFF_NXLA).0, 0xE820_0400 + 0x38);
-        assert_eq!(ch_reg(5, OFF_CHSTAT).0, ch_base(5) + OFF_CHSTAT);
-    }
-
-    #[test]
     fn dctrl_selects_group_register() {
         // Channels 0–7 share one DCTRL; 8–15 share another.
         for ch in 0..8u8 {
@@ -482,17 +476,6 @@ mod tests {
         for ch in 8..16u8 {
             assert_eq!(dctrl_reg(ch).0, 0xE820_0700);
         }
-    }
-
-    #[test]
-    fn dmars_register_is_shared_per_channel_pair() {
-        // DMARS holds two channels' resource selectors per 32-bit word.
-        assert_eq!(dmars_reg(0).0, 0xFCFE_1000);
-        assert_eq!(dmars_reg(1).0, 0xFCFE_1000);
-        assert_eq!(dmars_reg(2).0, 0xFCFE_1004);
-        assert_eq!(dmars_reg(3).0, 0xFCFE_1004);
-        assert_eq!(dmars_reg(14).0, 0xFCFE_101C);
-        assert_eq!(dmars_reg(15).0, 0xFCFE_101C);
     }
 
     #[test]
@@ -580,6 +563,48 @@ mod tests {
         crate::mmio::test::poke32(dmars, 0x0062_0066);
         unsafe { stop(5) };
         assert_eq!(crate::mmio::test::peek32(dmars), 0x0000_0066, "ch4 kept");
+    }
+
+    #[test]
+    fn the_pac_names_the_same_channel_registers() {
+        use crate::pac::DMAC;
+        for ch in 0..16usize {
+            let base = 0xE820_0000 + ch * 64 + if ch >= 8 { 0x200 } else { 0 };
+            let c = DMAC.ch(ch);
+            let got = [
+                c.n0sa().addr(),
+                c.n0da().addr(),
+                c.n0tb().addr(),
+                c.crsa().addr(),
+                c.crda().addr(),
+                c.chstat().addr(),
+                c.chctrl().addr(),
+                c.chcfg().addr(),
+                c.chitvl().addr(),
+                c.chext().addr(),
+                c.nxla().addr(),
+            ];
+            assert_eq!(
+                got,
+                [
+                    base,
+                    base + 0x04,
+                    base + 0x08,
+                    base + 0x18,
+                    base + 0x1C,
+                    base + 0x24,
+                    base + 0x28,
+                    base + 0x2C,
+                    base + 0x30,
+                    base + 0x34,
+                    base + 0x38,
+                ],
+                "channel {ch}"
+            );
+            assert_eq!(c.chctrl().width(), 4);
+            assert_eq!(DMAC.dctrl(ch / 8).addr(), 0xE820_0300 + (ch / 8) * 0x400);
+            assert_eq!(DMAC.dmars(ch / 2).addr(), 0xFCFE_1000 + (ch / 2) * 4);
+        }
     }
 }
 

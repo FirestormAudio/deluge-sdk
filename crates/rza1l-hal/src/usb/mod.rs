@@ -1,6 +1,6 @@
 //! RUSB1 USB modules for the RZ/A1L (HW manual §28).
 //!
-//! Provides the chip-level USB plumbing (base addresses, GIC interrupt IDs,
+//! Provides the chip-level USB plumbing (GIC interrupt IDs,
 //! STBCR7 clock gates) plus full `embassy-usb-driver` implementations for
 //! both directions of the dual-role RUSB1 controller:
 //!
@@ -66,29 +66,21 @@ pub use host::{Rusb1Allocator, Rusb1HostDriver, Rusb1Pipe, hcd_int_handler};
 
 use core::marker::PhantomData;
 
+use crate::pac::CPG;
+use crate::pac::cpg::regs::Stbcr7;
+
 // ---------------------------------------------------------------------------
-// Base addresses, interrupt IDs, module clock (chip-level plumbing)
+// Registers, interrupt IDs, module clock (chip-level plumbing)
 // ---------------------------------------------------------------------------
 
-/// USB channel 0 peripheral register base address (TRM §28: SYSCFG0_0 at
-/// H'E8010000).  Both channels are identical USB 2.0 high-speed host/function
-/// modules.
-pub const USB0_BASE: usize = 0xE801_0000;
-/// USB channel 1 peripheral register base address (TRM §28: SYSCFG0_1 at
-/// H'E8207000).  Same USB 2.0 HS host/function module as channel 0; note that
-/// the UCKSEL/UPLLE clock bits exist only in channel 0's SYSCFG0.
-pub const USB1_BASE: usize = 0xE820_7000;
+// The two channels' registers are `crate::pac::USB200` (H'E8010000) and `USB201` (H'E8207000),
+// through [`regs::usb`]: identical USB 2.0 HS host/function modules, except that the
+// UCKSEL/UPLLE clock bits exist only in channel 0's SYSCFG0.
 
 /// GIC interrupt ID for USB0 (USB200).
 pub const USB0_IRQ: u16 = 73;
 /// GIC interrupt ID for USB1 (USB201).
 pub const USB1_IRQ: u16 = 74;
-
-/// Return the peripheral base address for the given port (0 or 1).
-#[inline]
-pub const fn base(port: u8) -> usize {
-    if port == 0 { USB0_BASE } else { USB1_BASE }
-}
 
 /// Return the GIC interrupt ID for the given port.
 #[inline]
@@ -99,7 +91,6 @@ pub const fn irq(port: u8) -> u16 {
 // CPG Standby Control Register 7 — USB clock gates.
 // Bit 1: MSTP71 — channel 0 clock (0 = running, 1 = stopped)
 // Bit 0: MSTP70 — channel 1 clock (0 = running, 1 = stopped)
-const STBCR7: usize = 0xFCFE_0430;
 const STBCR7_MSTP71: u8 = 1 << 1; // channel 0
 const STBCR7_MSTP70: u8 = 1 << 0; // channel 1
 
@@ -116,17 +107,15 @@ const STBCR7_MSTP70: u8 = 1 << 0; // channel 1
 /// Writes to memory-mapped CPG registers. Must not be called concurrently
 /// with other STBCR7 writers.
 pub unsafe fn module_clock_enable(port: u8) {
-    unsafe {
-        let bits: u8 = if port == 0 {
-            STBCR7_MSTP71 // ch0 only
-        } else {
-            STBCR7_MSTP71 | STBCR7_MSTP70 // ch1 also needs ch0 (shared PLL)
-        };
-        let cur = core::ptr::read_volatile(STBCR7 as *const u8);
-        core::ptr::write_volatile(STBCR7 as *mut u8, cur & !bits);
-        // Dummy read to flush write buffer (required by HW manual §10).
-        let _ = core::ptr::read_volatile(STBCR7 as *const u8);
-    }
+    let bits: u8 = if port == 0 {
+        STBCR7_MSTP71 // ch0 only
+    } else {
+        STBCR7_MSTP71 | STBCR7_MSTP70 // ch1 also needs ch0 (shared PLL)
+    };
+    let stbcr7 = CPG.stbcr7();
+    stbcr7.write_value(Stbcr7(stbcr7.read().0 & !bits));
+    // Dummy read to flush write buffer (required by HW manual §10).
+    let _ = stbcr7.read();
 }
 
 /// Stop the clock for USB module `port` in CPG STBCR7.
@@ -134,18 +123,16 @@ pub unsafe fn module_clock_enable(port: u8) {
 /// # Safety
 /// Writes to memory-mapped CPG registers.
 pub unsafe fn module_clock_disable(port: u8) {
-    unsafe {
-        // Stop only this port's own channel.  Port 1 must NOT gate channel 0
-        // (MSTP71): channel 0 hosts the shared PLL and may still serve port 0.
-        let bit: u8 = if port == 0 {
-            STBCR7_MSTP71
-        } else {
-            STBCR7_MSTP70
-        };
-        let cur = core::ptr::read_volatile(STBCR7 as *const u8);
-        core::ptr::write_volatile(STBCR7 as *mut u8, cur | bit);
-        let _ = core::ptr::read_volatile(STBCR7 as *const u8);
-    }
+    // Stop only this port's own channel.  Port 1 must NOT gate channel 0
+    // (MSTP71): channel 0 hosts the shared PLL and may still serve port 0.
+    let bit: u8 = if port == 0 {
+        STBCR7_MSTP71
+    } else {
+        STBCR7_MSTP70
+    };
+    let stbcr7 = CPG.stbcr7();
+    stbcr7.write_value(Stbcr7(stbcr7.read().0 | bit));
+    let _ = stbcr7.read();
 }
 
 /// GIC interrupt priority for USB0/USB1.
@@ -377,18 +364,18 @@ pub fn init_host_mode<'d, T: Instance, H: ServesHost<T>>(
 pub fn disconnect<T: Instance>(_usb: Peri<'_, T>) {
     // SAFETY: port T is owned; its old driver's session is over.
     unsafe {
-        use regs::{Rusb1Regs, SYSCFG_DPRPU, SYSCFG_USBE, rmw, wr};
+        use regs::{SYSCFG_DPRPU, SYSCFG_USBE};
         let port = T::PORT;
         int_disable(port);
-        let regs = Rusb1Regs::ptr(port);
+        let u = regs::usb(port);
         // Pull-up off: host sees a disconnect.
-        rmw(core::ptr::addr_of_mut!((*regs).syscfg0), SYSCFG_DPRPU, 0);
-        wr(core::ptr::addr_of_mut!((*regs).intenb0), 0);
-        wr(core::ptr::addr_of_mut!((*regs).brdyenb), 0);
-        wr(core::ptr::addr_of_mut!((*regs).bempenb), 0);
+        u.syscfg0().modify(|r| *r &= !SYSCFG_DPRPU);
+        u.intenb(0).write_value(0);
+        u.brdyenb().write_value(0);
+        u.bempenb().write_value(0);
         // Clear USBE to reset the SIE.
-        let cur = regs::rd(core::ptr::addr_of!((*regs).syscfg0));
-        wr(core::ptr::addr_of_mut!((*regs).syscfg0), cur & !SYSCFG_USBE);
+        let cur = u.syscfg0().read();
+        u.syscfg0().write_value(cur & !SYSCFG_USBE);
     }
 }
 
@@ -397,21 +384,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn base_addresses() {
-        assert_eq!(USB0_BASE, 0xE801_0000);
-        assert_eq!(USB1_BASE, 0xE820_7000);
-    }
-
-    #[test]
     fn irq_ids() {
         assert_eq!(irq(0), 73);
         assert_eq!(irq(1), 74);
-    }
-
-    #[test]
-    fn base_fn() {
-        assert_eq!(base(0), USB0_BASE);
-        assert_eq!(base(1), USB1_BASE);
     }
 
     #[test]

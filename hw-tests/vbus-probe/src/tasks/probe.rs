@@ -10,7 +10,7 @@ use log::info;
 
 use deluge_bsp::oled::{self, text};
 use deluge_bsp::pic;
-use rza1l_hal::usb::regs::{INTSTS0_VBSTS, Rusb1Regs, rd};
+use rza1l_hal::usb::regs::INTSTS0_VBSTS;
 
 /// First on-screen pixel row (the top rows sit off the visible panel area).
 const TOP: usize = 10;
@@ -27,10 +27,7 @@ pub(crate) async fn probe_task() {
     let mut last: i32 = -1;
     loop {
         // VBSTS (INTSTS0 bit 7): the RUSB1 VBUS-pin monitor. 1 = VBUS present.
-        let present = unsafe {
-            let regs = Rusb1Regs::ptr(0);
-            rd(core::ptr::addr_of!((*regs).intsts0)) & INTSTS0_VBSTS != 0
-        };
+        let present = rza1l_hal::pac::USB200.intsts(0).read() & INTSTS0_VBSTS != 0;
 
         if last != present as i32 {
             info!(

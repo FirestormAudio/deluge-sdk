@@ -5,6 +5,9 @@ includes:
   - ../common/names.yaml
   - ../common/rspi.yaml
   - ../common/adc.yaml
+  - ../common/dmac.yaml
+  - ../common/scux.yaml
+  - ../common/usb.yaml
   - ../common/sanitize.yaml
   - ../common/access.yaml
 transforms: []

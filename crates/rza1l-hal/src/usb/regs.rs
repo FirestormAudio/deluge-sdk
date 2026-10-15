@@ -1,14 +1,12 @@
 //! RUSB1 peripheral register map for Renesas RZ/A1L.
 //!
-//! `Rusb1Regs` is a `#[repr(C)]` struct that mirrors `struct st_usb20` from
-//! the Renesas `usb20_iodefine.h`.  All register accesses go through
-//! [`rd`] / [`wr`] / [`rmw`] (`read_volatile` / `write_volatile`) so the
-//! compiler cannot elide or reorder hardware-visible accesses.
+//! The registers themselves come from `crate::pac::USB200` / `USB201`, through [`usb`]
+//! (and [`pipectr`] for the DCPCTR / PIPEnCTR family); every access goes through the
+//! PAC's `Reg` and so through the MMIO seam.
 //!
 //! ## Usage
 //! ```ignore
-//! let r = Rusb1Regs::ptr(0);
-//! unsafe { rmw(core::ptr::addr_of_mut!((*r).syscfg0), SYSCFG_USBE, SYSCFG_USBE) };
+//! usb(0).syscfg0().modify(|r| *r |= SYSCFG_USBE);
 //! ```
 //!
 //! ## Bit constants
@@ -16,8 +14,9 @@
 //! Naming follows the C `usb_iobitmask.h` file with the `USB_` prefix removed
 //! and snake_case used for the shift variants.
 
-use super::{USB0_BASE, USB1_BASE};
-use core::ptr::{read_volatile, write_volatile};
+use crate::pac::common::{RW, Reg};
+use crate::pac::usb::Usb;
+use crate::pac::{USB200, USB201};
 
 // ---------------------------------------------------------------------------
 // SYSCFG0
@@ -280,274 +279,89 @@ pub const PKT_BUF_BLOCKS: usize = PKT_BUF_SIZE_BYTES / PKT_BUF_BLOCK_SIZE; // 12
 pub const BUSWAIT_VALUE: u16 = 0x000F;
 
 // ---------------------------------------------------------------------------
-// Register struct
+// Registers
 // ---------------------------------------------------------------------------
 
-/// Memory-mapped register block for one RUSB1 USB module.
-///
-/// The struct layout exactly matches `struct st_usb20` from
-/// `usb20_iodefine.h`.  All fields declared `pub` for direct volatile
-/// access in the driver modules; do **not** read or write them without
-/// `read_volatile` / `write_volatile`.
-///
-/// Obtain a pointer via [`Rusb1Regs::ptr`].
-#[repr(C)]
-pub struct Rusb1Regs {
-    pub syscfg0: u16,   // +0x00
-    pub buswait: u16,   // +0x02
-    pub syssts0: u16,   // +0x04
-    _pad0: [u8; 2],     // +0x06
-    pub dvstctr0: u16,  // +0x08
-    _pad1: [u8; 2],     // +0x0A
-    pub testmode: u16,  // +0x0C
-    _pad2: [u8; 2],     // +0x0E
-    pub d0fbcfg: u16,   // +0x10
-    pub d1fbcfg: u16,   // +0x12
-    pub cfifo: u32,     // +0x14 (32-bit data port)
-    pub d0fifo: u32,    // +0x18
-    pub d1fifo: u32,    // +0x1C
-    pub cfifosel: u16,  // +0x20
-    pub cfifoctr: u16,  // +0x22
-    _pad3: [u8; 4],     // +0x24
-    pub d0fifosel: u16, // +0x28
-    pub d0fifoctr: u16, // +0x2A
-    pub d1fifosel: u16, // +0x2C
-    pub d1fifoctr: u16, // +0x2E
-    pub intenb0: u16,   // +0x30
-    pub intenb1: u16,   // +0x32
-    _pad4: [u8; 2],     // +0x34
-    pub brdyenb: u16,   // +0x36
-    pub nrdyenb: u16,   // +0x38
-    pub bempenb: u16,   // +0x3A
-    pub sofcfg: u16,    // +0x3C
-    _pad5: [u8; 2],     // +0x3E
-    pub intsts0: u16,   // +0x40
-    pub intsts1: u16,   // +0x42
-    _pad6: [u8; 2],     // +0x44
-    pub brdysts: u16,   // +0x46
-    pub nrdysts: u16,   // +0x48
-    pub bempsts: u16,   // +0x4A
-    pub frmnum: u16,    // +0x4C
-    pub ufrmnum: u16,   // +0x4E
-    pub usbaddr: u16,   // +0x50
-    _pad7: [u8; 2],     // +0x52
-    pub usbreq: u16,    // +0x54
-    pub usbval: u16,    // +0x56
-    pub usbindx: u16,   // +0x58
-    pub usbleng: u16,   // +0x5A
-    pub dcpcfg: u16,    // +0x5C
-    pub dcpmaxp: u16,   // +0x5E
-    pub dcpctr: u16,    // +0x60
-    _pad8: [u8; 2],     // +0x62
-    pub pipesel: u16,   // +0x64
-    _pad9: [u8; 2],     // +0x66
-    pub pipecfg: u16,   // +0x68
-    pub pipebuf: u16,   // +0x6A
-    pub pipemaxp: u16,  // +0x6C
-    pub pipeperi: u16,  // +0x6E
-    // PIPEnCTR for pipes 1-9 (contiguous) then A-F
-    pub pipe1ctr: u16, // +0x70
-    pub pipe2ctr: u16, // +0x72
-    pub pipe3ctr: u16, // +0x74
-    pub pipe4ctr: u16, // +0x76
-    pub pipe5ctr: u16, // +0x78
-    pub pipe6ctr: u16, // +0x7A
-    pub pipe7ctr: u16, // +0x7C
-    pub pipe8ctr: u16, // +0x7E
-    pub pipe9ctr: u16, // +0x80
-    pub pipeactr: u16, // +0x82
-    pub pipebctr: u16, // +0x84
-    pub pipecctr: u16, // +0x86
-    pub pipedctr: u16, // +0x88
-    pub pipeectr: u16, // +0x8A
-    pub pipefctr: u16, // +0x8C
-    _pad10: [u8; 2],   // +0x8E
-    // TRE/TRN pairs: pipes 1-5 are contiguous
-    pub pipe1tre: u16, // +0x90
-    pub pipe1trn: u16, // +0x92
-    pub pipe2tre: u16, // +0x94
-    pub pipe2trn: u16, // +0x96
-    pub pipe3tre: u16, // +0x98
-    pub pipe3trn: u16, // +0x9A
-    pub pipe4tre: u16, // +0x9C
-    pub pipe4trn: u16, // +0x9E
-    pub pipe5tre: u16, // +0xA0
-    pub pipe5trn: u16, // +0xA2
-    // Pipes B-F (note: not contiguous with 1-5 in hardware)
-    pub pipebtre: u16, // +0xA4
-    pub pipebtrn: u16, // +0xA6
-    pub pipectre: u16, // +0xA8
-    pub pipectrn: u16, // +0xAA
-    pub pipedtre: u16, // +0xAC
-    pub pipedtrn: u16, // +0xAE
-    pub pipeetre: u16, // +0xB0
-    pub pipeetrn: u16, // +0xB2
-    pub pipeftre: u16, // +0xB4
-    pub pipeftrn: u16, // +0xB6
-    // Pipe 9 and A TRE/TRN come *after* B-F in the hardware
-    pub pipe9tre: u16, // +0xB8
-    pub pipe9trn: u16, // +0xBA
-    pub pipeatre: u16, // +0xBC
-    pub pipeatrn: u16, // +0xBE
-    _pad11: [u8; 16],  // +0xC0 – 0xCF
-    // Device-address configuration registers (DEVADD0-A)
-    pub devadd0: u16, // +0xD0
-    pub devadd1: u16, // +0xD2
-    pub devadd2: u16, // +0xD4
-    pub devadd3: u16, // +0xD6
-    pub devadd4: u16, // +0xD8
-    pub devadd5: u16, // +0xDA
-    pub devadd6: u16, // +0xDC
-    pub devadd7: u16, // +0xDE
-    pub devadd8: u16, // +0xE0
-    pub devadd9: u16, // +0xE2
-    pub devadda: u16, // +0xE4
-    _pad12: [u8; 28], // +0xE6 – 0x101
-    pub suspmode: u16, // +0x102
-                      // Remainder (DMA burst buffers, not used in this driver) omitted.
-}
-
-impl Rusb1Regs {
-    /// Return a raw mutable pointer to the register block for `port` (0 or 1).
-    ///
-    /// # Safety
-    /// The caller must ensure only one `&mut` alias exists at a time, and that
-    /// all accesses use `read_volatile` / `write_volatile`.
-    #[inline]
-    pub unsafe fn ptr(port: u8) -> *mut Self {
-        let base = if port == 0 { USB0_BASE } else { USB1_BASE };
-        base as *mut Self
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Read / write helpers
-// ---------------------------------------------------------------------------
-
-/// Read a 16-bit USB register via `read_volatile`.
-///
-/// # Safety
-/// `reg` must point to a valid, aligned, memory-mapped register.
+/// USB port `port`'s registers: `USB200` for port 0, `USB201` for port 1.
 #[inline]
-pub unsafe fn rd(reg: *const u16) -> u16 {
-    unsafe { read_volatile(reg) }
+pub fn usb(port: u8) -> Usb {
+    if port == 0 { USB200 } else { USB201 }
 }
 
-/// Write a 16-bit USB register via `write_volatile`.
-///
-/// # Safety
-/// `reg` must point to a valid, aligned, memory-mapped register.
+/// Pipe `pipe`'s control register: `DCPCTR` for pipe 0, `PIPEnCTR` for pipes 1-15.
 #[inline]
-pub unsafe fn wr(reg: *mut u16, val: u16) {
-    unsafe {
-        write_volatile(reg, val);
-    }
-}
-
-/// Read-modify-write: apply `mask` and `val` (both un-shifted).
-///
-/// # Safety
-/// Same as [`wr`].
-#[inline]
-pub unsafe fn rmw(reg: *mut u16, mask: u16, val: u16) {
-    unsafe {
-        let cur = read_volatile(reg);
-        write_volatile(reg, (cur & !mask) | (val & mask));
-    }
-}
-
-/// Read a 32-bit FIFO data port.
-///
-/// # Safety
-/// `reg` must be a valid 32-bit-aligned FIFO data register.
-#[inline]
-pub unsafe fn rd32(reg: *const u32) -> u32 {
-    unsafe { read_volatile(reg) }
-}
-
-/// Write a 32-bit FIFO data port.
-///
-/// # Safety
-/// `reg` must be a valid 32-bit-aligned FIFO data register.
-#[inline]
-pub unsafe fn wr32(reg: *mut u32, val: u32) {
-    unsafe {
-        write_volatile(reg, val);
+pub fn pipectr(u: Usb, pipe: usize) -> Reg<u16, RW> {
+    if pipe == 0 {
+        u.dcpctr()
+    } else {
+        u.pipectr(pipe - 1)
     }
 }
 
 // ---------------------------------------------------------------------------
-// Pipe control register helper
-// ---------------------------------------------------------------------------
-
-/// Return a pointer to the PIPEnCTR register for pipe `n`.
-/// Pipe 0 → DCPCTR. Pipes 1-15 → PIPE1CTR … PIPEFCTR.
-///
-/// # Safety
-/// `regs` must be a valid pointer to the USB register block.
-pub unsafe fn pipectr_ptr(regs: *mut Rusb1Regs, n: usize) -> *mut u16 {
-    unsafe {
-        if n == 0 {
-            core::ptr::addr_of_mut!((*regs).dcpctr)
-        } else {
-            // PIPE1CTR is at +0x70; pipes are contiguous u16 words.
-            core::ptr::addr_of_mut!((*regs).pipe1ctr).add(n - 1)
-        }
-    }
-}
-
-/// Return a pointer to the `DEVADDn` register for device address `dev_addr` (0-10).
-///
-/// # Safety
-/// `regs` must be valid.  `dev_addr` must be in the range 0-10.
-pub unsafe fn devadd_ptr(regs: *mut Rusb1Regs, dev_addr: u8) -> *mut u16 {
-    unsafe {
-        debug_assert!((dev_addr as usize) <= 10);
-        core::ptr::addr_of_mut!((*regs).devadd0).add(dev_addr as usize)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Layout tests
+// Address tests
 // ---------------------------------------------------------------------------
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
     use super::*;
-    use core::mem::offset_of;
+
+    /// The USB registers sit at the offsets `struct st_usb20` (`usb20_iodefine.h`) gives them.
+    #[test]
+    fn the_pac_names_the_usb_registers() {
+        use crate::pac::USB200 as U;
+        let pairs = [
+            (U.syscfg0().addr(), 0x00),
+            (U.buswait().addr(), 0x02),
+            (U.syssts0().addr(), 0x04),
+            (U.dvstctr0().addr(), 0x08),
+            (U.cfifo().addr(), 0x14),
+            (U.d0fifo().addr(), 0x18),
+            (U.d1fifo().addr(), 0x1C),
+            (U.cfifosel().addr(), 0x20),
+            (U.cfifoctr().addr(), 0x22),
+            (U.d0fifosel().addr(), 0x28),
+            (U.d0fifoctr().addr(), 0x2A),
+            (U.d1fifosel().addr(), 0x2C),
+            (U.d1fifoctr().addr(), 0x2E),
+            (U.intenb(0).addr(), 0x30),
+            (U.intenb(1).addr(), 0x32),
+            (U.brdyenb().addr(), 0x36),
+            (U.nrdyenb().addr(), 0x38),
+            (U.bempenb().addr(), 0x3A),
+            (U.intsts(0).addr(), 0x40),
+            (U.intsts(1).addr(), 0x42),
+            (U.brdysts().addr(), 0x46),
+            (U.nrdysts().addr(), 0x48),
+            (U.bempsts().addr(), 0x4A),
+            (U.usbaddr().addr(), 0x50),
+            (U.usbreq().addr(), 0x54),
+            (U.usbval().addr(), 0x56),
+            (U.usbindx().addr(), 0x58),
+            (U.usbleng().addr(), 0x5A),
+            (U.dcpcfg().addr(), 0x5C),
+            (U.dcpmaxp().addr(), 0x5E),
+            (U.dcpctr().addr(), 0x60),
+            (U.pipesel().addr(), 0x64),
+            (U.pipecfg().addr(), 0x68),
+            (U.pipebuf().addr(), 0x6A),
+            (U.pipemaxp().addr(), 0x6C),
+            (U.pipeperi().addr(), 0x6E),
+            (U.pipectr(0).addr(), 0x70),
+            (U.pipectr(14).addr(), 0x8C),
+            (U.devadd(0).addr(), 0xD0),
+            (U.suspmode().addr(), 0x102),
+        ];
+        for (i, (addr, off)) in pairs.iter().enumerate() {
+            assert_eq!(*addr, 0xE801_0000 + off, "pair {i}");
+        }
+        assert_eq!(crate::pac::USB201.syscfg0().addr(), 0xE820_7000);
+    }
 
     #[test]
-    fn reg_offsets() {
-        assert_eq!(offset_of!(Rusb1Regs, syscfg0), 0x00);
-        assert_eq!(offset_of!(Rusb1Regs, syssts0), 0x04);
-        assert_eq!(offset_of!(Rusb1Regs, dvstctr0), 0x08);
-        assert_eq!(offset_of!(Rusb1Regs, cfifo), 0x14);
-        assert_eq!(offset_of!(Rusb1Regs, d0fifo), 0x18);
-        assert_eq!(offset_of!(Rusb1Regs, d1fifo), 0x1C);
-        assert_eq!(offset_of!(Rusb1Regs, cfifosel), 0x20);
-        assert_eq!(offset_of!(Rusb1Regs, d0fifosel), 0x28);
-        assert_eq!(offset_of!(Rusb1Regs, d1fifosel), 0x2C);
-        assert_eq!(offset_of!(Rusb1Regs, intenb0), 0x30);
-        assert_eq!(offset_of!(Rusb1Regs, brdyenb), 0x36);
-        assert_eq!(offset_of!(Rusb1Regs, intsts0), 0x40);
-        assert_eq!(offset_of!(Rusb1Regs, intsts1), 0x42);
-        assert_eq!(offset_of!(Rusb1Regs, brdysts), 0x46);
-        assert_eq!(offset_of!(Rusb1Regs, usbaddr), 0x50);
-        assert_eq!(offset_of!(Rusb1Regs, usbreq), 0x54);
-        assert_eq!(offset_of!(Rusb1Regs, dcpcfg), 0x5C);
-        assert_eq!(offset_of!(Rusb1Regs, dcpmaxp), 0x5E);
-        assert_eq!(offset_of!(Rusb1Regs, dcpctr), 0x60);
-        assert_eq!(offset_of!(Rusb1Regs, pipesel), 0x64);
-        assert_eq!(offset_of!(Rusb1Regs, pipecfg), 0x68);
-        assert_eq!(offset_of!(Rusb1Regs, pipebuf), 0x6A);
-        assert_eq!(offset_of!(Rusb1Regs, pipemaxp), 0x6C);
-        assert_eq!(offset_of!(Rusb1Regs, pipe1ctr), 0x70);
-        assert_eq!(offset_of!(Rusb1Regs, pipe9ctr), 0x80);
-        assert_eq!(offset_of!(Rusb1Regs, pipefctr), 0x8C);
-        assert_eq!(offset_of!(Rusb1Regs, pipe1tre), 0x90);
-        assert_eq!(offset_of!(Rusb1Regs, pipebtre), 0xA4);
-        assert_eq!(offset_of!(Rusb1Regs, pipe9tre), 0xB8);
-        assert_eq!(offset_of!(Rusb1Regs, devadd0), 0xD0);
-        assert_eq!(offset_of!(Rusb1Regs, suspmode), 0x102);
+    fn pipectr_maps_pipe_0_to_dcpctr() {
+        assert_eq!(pipectr(usb(0), 0).addr(), 0xE801_0060);
+        assert_eq!(pipectr(usb(0), 1).addr(), 0xE801_0070);
+        assert_eq!(pipectr(usb(1), 15).addr(), 0xE820_708C);
     }
 }

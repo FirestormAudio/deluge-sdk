@@ -25,9 +25,10 @@ use super::regs::{
     PIPECFG_CNTMD, PIPECFG_DBLB, PIPECFG_DIR, PIPECFG_EPNUM_MASK, PIPECFG_SHTNAK,
     PIPECFG_TYPE_BULK, PIPECFG_TYPE_INTR, PIPECFG_TYPE_ISO, PIPECTR_ACLRM, PIPECTR_PBUSY,
     PIPECTR_PID_BUF, PIPECTR_PID_MASK, PIPECTR_PID_NAK, PIPECTR_PID_STALL10, PIPECTR_PID_STALL11,
-    PIPECTR_SQCLR, PIPEMAXP_MXPS_MASK, PIPEPERI_IFIS, PKT_BUF_BLOCKS, Rusb1Regs, pipectr_ptr, rd,
-    wr,
+    PIPECTR_SQCLR, PIPEMAXP_MXPS_MASK, PIPEPERI_IFIS, PKT_BUF_BLOCKS, pipectr,
 };
+use crate::pac::common::{RW, Reg};
+use crate::pac::usb::Usb;
 
 // ---------------------------------------------------------------------------
 // Pipe count
@@ -159,23 +160,23 @@ pub unsafe fn is_iso_in_hook_pipe(pipe: usize) -> bool {
 /// [`pipe_configure`].)
 ///
 /// # Safety
-/// `regs` valid; task context (no transfer in flight on this pipe).
-pub unsafe fn pipe_iso_in_activate(regs: *mut Rusb1Regs, n: usize) {
+/// Task context (no transfer in flight on this pipe).
+pub unsafe fn pipe_iso_in_activate(u: Usb, n: usize) {
     unsafe {
         // pipe_reset quiesces (PID=NAK, deselect) and pulses ACLRM|SQCLR.
-        pipe_reset(regs, n);
+        pipe_reset(u, n);
         // Prime BOTH double-buffer planes while PID is still NAK.  TRM §28.4
         // "BRDY interrupt (a), transmitting direction" condition 4: BRDY fires
         // when one plane empties AND the OTHER plane has been fully written — so
         // with only one plane primed, transmitting it leaves the other plane
         // empty and BRDY never fires, stalling the stream.  With both planes
         // filled, each subsequent BRDY refills the plane the SIE just freed.
-        pipe_xfer_in_brdy(regs, n); // plane A
-        pipe_xfer_in_brdy(regs, n); // plane B
+        pipe_xfer_in_brdy(u, n); // plane A
+        pipe_xfer_in_brdy(u, n); // plane B
         // Clear any stale BRDY, arm BRDY *before* releasing to BUF.
-        wr(core::ptr::addr_of_mut!((*regs).brdysts), !(1u16 << n));
-        pipe_brdy_enable(regs, n);
-        pipe_enable(regs, n); // PID=BUF
+        u.brdysts().write_value(!(1u16 << n));
+        pipe_brdy_enable(u, n);
+        pipe_enable(u, n); // PID=BUF
     }
 }
 
@@ -186,9 +187,9 @@ pub unsafe fn pipe_iso_in_activate(regs: *mut Rusb1Regs, n: usize) {
 /// the FIFO port is not ready.
 ///
 /// # Safety
-/// `regs` must be valid; single-core IRQ or task context (never both at once —
+/// Single-core IRQ or task context (never both at once —
 /// the enable-time prime runs with BRDY disabled).
-pub unsafe fn pipe_xfer_in_brdy(regs: *mut Rusb1Regs, n: usize) {
+pub unsafe fn pipe_xfer_in_brdy(u: Usb, n: usize) {
     unsafe {
         let Some(hook) = core::ptr::addr_of!(ISO_IN_HOOK).read() else {
             return;
@@ -196,7 +197,7 @@ pub unsafe fn pipe_xfer_in_brdy(regs: *mut Rusb1Regs, n: usize) {
         let mps = core::ptr::addr_of!(ISO_IN_HOOK_MPS)
             .read()
             .min(ISO_DRAIN_LEN);
-        let fifo = fifo_for_pipe(regs, n);
+        let fifo = fifo_for_pipe(u, n);
         fifo_select_pipe(&fifo, n, true); // ISEL=1 for IN (ignored on DnFIFO)
         if !fifo_is_ready(&fifo, n) {
             return;
@@ -396,9 +397,9 @@ impl Default for BufAllocator {
 /// Pipe 0 (DCP) is configured separately via DCPCFG / DCPMAXP.
 ///
 /// # Safety
-/// `regs` must be a valid pointer to the USB register block with USBE=1.
+/// USB port `u` must be running (USBE=1).
 /// Caller must ensure no transfer is active on this pipe.
-pub unsafe fn pipe_configure(regs: *mut Rusb1Regs, n: usize, cfg: &PipeConfig) {
+pub unsafe fn pipe_configure(u: Usb, n: usize, cfg: &PipeConfig) {
     unsafe {
         debug_assert!((1..=15).contains(&n), "pipe_configure: invalid pipe number");
 
@@ -406,10 +407,10 @@ pub unsafe fn pipe_configure(regs: *mut Rusb1Regs, n: usize, cfg: &PipeConfig) {
         // PIPEBUF / PIPEMAXP / PIPEPERI may only be written while PID is NAK
         // *and* the pipe is not selected by any FIFO port's CURPIPE bits,
         // with PBUSY confirmed 0 after a software BUF→NAK transition.
-        pipe_quiesce(regs, n);
+        pipe_quiesce(u, n);
 
         // Select the pipe and write configuration registers.
-        wr(core::ptr::addr_of_mut!((*regs).pipesel), n as u16);
+        u.pipesel().write_value(n as u16);
 
         // Record direction so the BEMP ISR can dispatch IN vs OUT (see PIPE_IS_IN).
         if cfg.is_in {
@@ -445,7 +446,7 @@ pub unsafe fn pipe_configure(regs: *mut Rusb1Regs, n: usize, cfg: &PipeConfig) {
             _ => {}
         }
 
-        wr(core::ptr::addr_of_mut!((*regs).pipecfg), pipecfg);
+        u.pipecfg().write_value(pipecfg);
 
         // PIPEBUF: BUFNMB (start block) | BUFSIZE ((blocks - 1) in 64-byte units).
         // BUFSIZE is a 5-bit field [14:10]; mask after the shift so an oversized
@@ -453,7 +454,7 @@ pub unsafe fn pipe_configure(regs: *mut Rusb1Regs, n: usize, cfg: &PipeConfig) {
         let bufsize_field = (((cfg.buf_blocks as u16).saturating_sub(1)) << PIPEBUF_BUFSIZE_SHIFT)
             & PIPEBUF_BUFSIZE_MASK;
         let pipebuf = cfg.buf_start as u16 | bufsize_field;
-        wr(core::ptr::addr_of_mut!((*regs).pipebuf), pipebuf);
+        u.pipebuf().write_value(pipebuf);
 
         // Log the packet-RAM footprint so overlaps are visible: a
         // double-buffered pipe occupies two banks of `buf_blocks` each.  Pipes
@@ -483,10 +484,7 @@ pub unsafe fn pipe_configure(regs: *mut Rusb1Regs, n: usize, cfg: &PipeConfig) {
         );
 
         // PIPEMAXP: max packet size.
-        wr(
-            core::ptr::addr_of_mut!((*regs).pipemaxp),
-            cfg.mps & PIPEMAXP_MXPS_MASK,
-        );
+        u.pipemaxp().write_value(cfg.mps & PIPEMAXP_MXPS_MASK);
 
         // PIPEPERI: set IFIS for ISO IN pipes (function controller mode).
         // IFIS=1 causes the hardware to flush the TX buffer if no IN token arrives
@@ -497,10 +495,10 @@ pub unsafe fn pipe_configure(regs: *mut Rusb1Regs, n: usize, cfg: &PipeConfig) {
         } else {
             0
         };
-        wr(core::ptr::addr_of_mut!((*regs).pipeperi), pipeperi);
+        u.pipeperi().write_value(pipeperi);
 
         // Deselect pipe.
-        wr(core::ptr::addr_of_mut!((*regs).pipesel), 0);
+        u.pipesel().write_value(0);
     }
 }
 
@@ -514,8 +512,8 @@ pub unsafe fn pipe_configure(regs: *mut Rusb1Regs, n: usize, cfg: &PipeConfig) {
 /// Returns `true` if the entire transfer fit in one packet (done immediately).
 ///
 /// # Safety
-/// `regs` must be valid.
-pub unsafe fn pipe_xfer_in_start(regs: *mut Rusb1Regs, n: usize, mps: u16) -> bool {
+/// The caller owns USB port `u`: no other context reconfigures pipe `n` meanwhile.
+pub unsafe fn pipe_xfer_in_start(u: Usb, n: usize, mps: u16) -> bool {
     unsafe {
         critical_section::with(|cs| {
             let state = &mut *PIPE_XFER[n].borrow(cs).get();
@@ -527,7 +525,7 @@ pub unsafe fn pipe_xfer_in_start(regs: *mut Rusb1Regs, n: usize, mps: u16) -> bo
                     // be used to clear the buffer and then the BVAL bit is set
                     // to end the writing."  Without the commit the SIE NAKs every
                     // IN token and no BEMP ever fires.
-                    let fifo = fifo_for_pipe(regs, n);
+                    let fifo = fifo_for_pipe(u, n);
                     fifo_select_pipe(&fifo, n, true);
                     if fifo_is_ready(&fifo, n) {
                         fifo_bclr(&fifo);
@@ -537,7 +535,7 @@ pub unsafe fn pipe_xfer_in_start(regs: *mut Rusb1Regs, n: usize, mps: u16) -> bo
                 }
                 return true;
             }
-            if !fill_in_packet(regs, n, mps as usize, state) {
+            if !fill_in_packet(u, n, mps as usize, state) {
                 return false; // FIFO port not ready — nothing written
             }
             state.remaining == 0
@@ -555,16 +553,11 @@ pub unsafe fn pipe_xfer_in_start(regs: *mut Rusb1Regs, n: usize, mps: u16) -> bo
 /// `state.remaining` afterward.
 ///
 /// # Safety
-/// `regs` must be valid.  The caller must already hold the `PIPE_XFER[n]`
+/// The caller must already hold the `PIPE_XFER[n]`
 /// critical section (task context) or be running in ISR context.
-unsafe fn fill_in_packet(
-    regs: *mut Rusb1Regs,
-    n: usize,
-    mps: usize,
-    state: &mut PipeXferState,
-) -> bool {
+unsafe fn fill_in_packet(u: Usb, n: usize, mps: usize, state: &mut PipeXferState) -> bool {
     unsafe {
-        let fifo = fifo_for_pipe(regs, n);
+        let fifo = fifo_for_pipe(u, n);
         fifo_select_pipe(&fifo, n, true); // ISEL=1 for IN
 
         if !fifo_is_ready(&fifo, n) {
@@ -617,10 +610,10 @@ unsafe fn fill_in_packet(
 ///   (e.g. the MSC BOT loop awaiting a 31-byte CBW).
 ///
 /// # Safety
-/// `regs` must be valid.  When called from ISR context no critical section is
+/// When called from ISR context no critical section is
 /// needed (single-core Cortex-A9 with IRQ disabled); the speculative call site
 /// wraps it in one.
-pub unsafe fn pipe_xfer_out_brdy(regs: *mut Rusb1Regs, n: usize, speculative: bool) -> bool {
+pub unsafe fn pipe_xfer_out_brdy(u: Usb, n: usize, speculative: bool) -> bool {
     unsafe {
         let state = &mut *{
             // No critical section: the ISR caller cannot be preempted by the
@@ -649,7 +642,7 @@ pub unsafe fn pipe_xfer_out_brdy(regs: *mut Rusb1Regs, n: usize, speculative: bo
             if n == core::ptr::addr_of!(ISO_OUT_HOOK_PIPE).read()
                 && let Some(hook) = core::ptr::addr_of!(ISO_OUT_HOOK).read()
             {
-                let fifo = fifo_for_pipe(regs, n);
+                let fifo = fifo_for_pipe(u, n);
                 fifo_select_pipe(&fifo, n, false);
                 if fifo_is_ready(&fifo, n) {
                     let vld = fifo_dtln(&fifo) as usize;
@@ -674,19 +667,16 @@ pub unsafe fn pipe_xfer_out_brdy(regs: *mut Rusb1Regs, n: usize, speculative: bo
             return false;
         }
 
-        let ctr_ptr = pipectr_ptr(regs, n);
+        let ctr = pipectr(u, n);
 
         // For non-ISO: NAK first to prevent the SIE from filling the FIFO while
         // the CPU is reading it.
         if !is_iso {
-            let cur = rd(ctr_ptr);
-            wr(
-                ctr_ptr,
-                (cur & !super::regs::PIPECTR_PID_MASK) | PIPECTR_PID_NAK,
-            );
+            let cur = ctr.read();
+            ctr.write_value((cur & !PIPECTR_PID_MASK) | PIPECTR_PID_NAK);
         }
 
-        let fifo = fifo_for_pipe(regs, n);
+        let fifo = fifo_for_pipe(u, n);
         // Receiving (OUT) pipe selection.  For bulk pipes on the shared D1FIFO
         // (e.g. CDC OUT pipe 3 sharing the port with IN pipe 4) use the TRM
         // deselect-first CURPIPE-change procedure so this read cannot surface
@@ -702,11 +692,8 @@ pub unsafe fn pipe_xfer_out_brdy(regs: *mut Rusb1Regs, n: usize, speculative: bo
         if !fifo_is_ready(&fifo, n) {
             // FIFO port not ready; re-arm and retry next BRDY.
             if !is_iso {
-                let cur = rd(ctr_ptr);
-                wr(
-                    ctr_ptr,
-                    (cur & !super::regs::PIPECTR_PID_MASK) | PIPECTR_PID_BUF,
-                );
+                let cur = ctr.read();
+                ctr.write_value((cur & !PIPECTR_PID_MASK) | PIPECTR_PID_BUF);
             }
             return false;
         }
@@ -752,11 +739,8 @@ pub unsafe fn pipe_xfer_out_brdy(regs: *mut Rusb1Regs, n: usize, speculative: bo
         // Transfer not yet complete; re-arm the pipe so the host can send the
         // next packet (non-ISO only — ISO stays at BUF/auto-managed).
         if !is_iso {
-            let cur = rd(ctr_ptr);
-            wr(
-                ctr_ptr,
-                (cur & !super::regs::PIPECTR_PID_MASK) | PIPECTR_PID_BUF,
-            );
+            let cur = ctr.read();
+            ctr.write_value((cur & !PIPECTR_PID_MASK) | PIPECTR_PID_BUF);
         }
 
         false
@@ -769,8 +753,8 @@ pub unsafe fn pipe_xfer_out_brdy(regs: *mut Rusb1Regs, n: usize, speculative: bo
 /// Returns `true` when the transfer is fully complete.
 ///
 /// # Safety
-/// `regs` must be valid.  Called from ISR context.
-pub unsafe fn pipe_xfer_in_bemp(regs: *mut Rusb1Regs, n: usize) -> bool {
+/// Called from ISR context.
+pub unsafe fn pipe_xfer_in_bemp(u: Usb, n: usize) -> bool {
     unsafe {
         let state = &mut *{
             PIPE_XFER[n]
@@ -787,7 +771,7 @@ pub unsafe fn pipe_xfer_in_bemp(regs: *mut Rusb1Regs, n: usize) -> bool {
         // Fill the next packet (shared with the task-context first-fill path).
         // A `false` return means the FIFO port wasn't ready; report "not yet
         // done" and let the next BEMP retry.
-        fill_in_packet(regs, n, mps, state);
+        fill_in_packet(u, n, mps, state);
         false
     }
 }
@@ -803,54 +787,39 @@ pub unsafe fn pipe_xfer_in_bemp(regs: *mut Rusb1Regs, n: usize) -> bool {
 /// (babble / control-sequence error) would otherwise never clear — leaving a
 /// `CLEAR_FEATURE(ENDPOINT_HALT)` ineffective and the endpoint wedged.  Mirrors
 /// Linux `__usbhsp_pid_try_nak_if_stall`.  No-op for NAK/BUF.
-///
-/// # Safety
-/// `ctr` must be a valid PIPEnCTR/DCPCTR pointer.
-unsafe fn pid_nak_if_stall(ctr: *mut u16) {
-    unsafe {
-        let pid = rd(ctr) & PIPECTR_PID_MASK;
-        if pid == PIPECTR_PID_STALL11 {
-            // 11 → 10 first; the SIE ignores a direct 11 → NAK transition.
-            wr(ctr, (rd(ctr) & !PIPECTR_PID_MASK) | PIPECTR_PID_STALL10);
-        }
-        if pid == PIPECTR_PID_STALL11 || pid == PIPECTR_PID_STALL10 {
-            wr(ctr, (rd(ctr) & !PIPECTR_PID_MASK) | PIPECTR_PID_NAK);
-        }
+fn pid_nak_if_stall(ctr: Reg<u16, RW>) {
+    let pid = ctr.read() & PIPECTR_PID_MASK;
+    if pid == PIPECTR_PID_STALL11 {
+        // 11 → 10 first; the SIE ignores a direct 11 → NAK transition.
+        ctr.write_value((ctr.read() & !PIPECTR_PID_MASK) | PIPECTR_PID_STALL10);
+    }
+    if pid == PIPECTR_PID_STALL11 || pid == PIPECTR_PID_STALL10 {
+        ctr.write_value((ctr.read() & !PIPECTR_PID_MASK) | PIPECTR_PID_NAK);
     }
 }
 
 /// Set PID=BUF to allow data transfer on pipe `n`.
 ///
 /// # Safety
-/// `regs` must be valid.
-pub unsafe fn pipe_enable(regs: *mut Rusb1Regs, n: usize) {
-    unsafe {
-        let ctr = pipectr_ptr(regs, n);
-        // Clear any residual STALL first (matches Linux usbhs_pipe_enable).
-        pid_nak_if_stall(ctr);
-        let cur = rd(ctr);
-        wr(
-            ctr,
-            (cur & !super::regs::PIPECTR_PID_MASK) | PIPECTR_PID_BUF,
-        );
-    }
+/// The caller owns USB port `u`: no other context reconfigures pipe `n` meanwhile.
+pub unsafe fn pipe_enable(u: Usb, n: usize) {
+    let ctr = pipectr(u, n);
+    // Clear any residual STALL first (matches Linux usbhs_pipe_enable).
+    pid_nak_if_stall(ctr);
+    let cur = ctr.read();
+    ctr.write_value((cur & !PIPECTR_PID_MASK) | PIPECTR_PID_BUF);
 }
 
 /// Set PID=NAK to halt data transfer on pipe `n`.
 ///
 /// # Safety
-/// `regs` must be valid.
-pub unsafe fn pipe_disable(regs: *mut Rusb1Regs, n: usize) {
-    unsafe {
-        let ctr = pipectr_ptr(regs, n);
-        // Step down through STALL(10) so a hardware STALL(11) actually clears.
-        pid_nak_if_stall(ctr);
-        let cur = rd(ctr);
-        wr(
-            ctr,
-            (cur & !super::regs::PIPECTR_PID_MASK) | PIPECTR_PID_NAK,
-        );
-    }
+/// The caller owns USB port `u`: no other context reconfigures pipe `n` meanwhile.
+pub unsafe fn pipe_disable(u: Usb, n: usize) {
+    let ctr = pipectr(u, n);
+    // Step down through STALL(10) so a hardware STALL(11) actually clears.
+    pid_nak_if_stall(ctr);
+    let cur = ctr.read();
+    ctr.write_value((cur & !PIPECTR_PID_MASK) | PIPECTR_PID_NAK);
 }
 
 /// Set PID=STALL on pipe `n`, choosing the encoding from the current PID as the
@@ -858,32 +827,30 @@ pub unsafe fn pipe_disable(regs: *mut Rusb1Regs, n: usize) {
 /// unchanged.  Matches Linux `usbhs_pipe_stall`.
 ///
 /// # Safety
-/// `regs` must be valid.
-pub unsafe fn pipe_stall(regs: *mut Rusb1Regs, n: usize) {
-    unsafe {
-        let ctr = pipectr_ptr(regs, n);
-        let stall = match rd(ctr) & PIPECTR_PID_MASK {
-            PIPECTR_PID_NAK => PIPECTR_PID_STALL10,
-            PIPECTR_PID_BUF => PIPECTR_PID_STALL11,
-            _ => return, // already stalled — leave as-is
-        };
-        wr(ctr, (rd(ctr) & !PIPECTR_PID_MASK) | stall);
-    }
+/// The caller owns USB port `u`: no other context reconfigures pipe `n` meanwhile.
+pub unsafe fn pipe_stall(u: Usb, n: usize) {
+    let ctr = pipectr(u, n);
+    let stall = match ctr.read() & PIPECTR_PID_MASK {
+        PIPECTR_PID_NAK => PIPECTR_PID_STALL10,
+        PIPECTR_PID_BUF => PIPECTR_PID_STALL11,
+        _ => return, // already stalled — leave as-is
+    };
+    ctr.write_value((ctr.read() & !PIPECTR_PID_MASK) | stall);
 }
 
 /// Clear the data toggle and FIFO on pipe `n`, then set PID=NAK.
 ///
 /// # Safety
-/// `regs` must be valid.
-pub unsafe fn pipe_reset(regs: *mut Rusb1Regs, n: usize) {
+/// The caller owns USB port `u`: no other context reconfigures pipe `n` meanwhile.
+pub unsafe fn pipe_reset(u: Usb, n: usize) {
     unsafe {
         // ACLRM and SQCLR require PID=NAK with the pipe idle (PBUSY=0).
-        pipe_quiesce(regs, n);
-        let ctr = pipectr_ptr(regs, n);
+        pipe_quiesce(u, n);
+        let ctr = pipectr(u, n);
         // Set ACLRM (auto clear FIFO and toggle) then clear it, per TRM.
-        wr(ctr, PIPECTR_PID_NAK | PIPECTR_ACLRM);
-        wr(ctr, PIPECTR_PID_NAK);
-        wr(ctr, PIPECTR_PID_NAK | PIPECTR_SQCLR);
+        ctr.write_value(PIPECTR_PID_NAK | PIPECTR_ACLRM);
+        ctr.write_value(PIPECTR_PID_NAK);
+        ctr.write_value(PIPECTR_PID_NAK | PIPECTR_SQCLR);
     }
 }
 
@@ -895,50 +862,44 @@ pub unsafe fn pipe_reset(regs: *mut Rusb1Regs, n: usize) {
 /// DREQE first on the DnFIFO ports, as required before a CURPIPE change).
 ///
 /// # Safety
-/// `regs` must be valid.
-unsafe fn pipe_quiesce(regs: *mut Rusb1Regs, n: usize) {
-    unsafe {
-        let ctr = pipectr_ptr(regs, n);
-        let entry_pid = rd(ctr) & PIPECTR_PID_MASK;
-        // Step a hardware STALL(11) down to NAK before touching config (a direct
-        // STALL→NAK write is ignored); then force NAK for the BUF case.
-        pid_nak_if_stall(ctr);
-        let cur = rd(ctr);
-        if cur & PIPECTR_PID_MASK != PIPECTR_PID_NAK {
-            wr(ctr, (cur & !PIPECTR_PID_MASK) | PIPECTR_PID_NAK);
-        }
-        if entry_pid != PIPECTR_PID_NAK {
-            // PBUSY clears once the in-flight transaction (at most one
-            // max-size packet) finishes; bound the wait so a wedged bus
-            // cannot hang the driver.
-            for _ in 0..100_000 {
-                if rd(ctr) & PIPECTR_PBUSY == 0 {
-                    break;
-                }
+/// The caller owns USB port `u`: no other context reconfigures pipe `n` meanwhile.
+unsafe fn pipe_quiesce(u: Usb, n: usize) {
+    let ctr = pipectr(u, n);
+    let entry_pid = ctr.read() & PIPECTR_PID_MASK;
+    // Step a hardware STALL(11) down to NAK before touching config (a direct
+    // STALL→NAK write is ignored); then force NAK for the BUF case.
+    pid_nak_if_stall(ctr);
+    let cur = ctr.read();
+    if cur & PIPECTR_PID_MASK != PIPECTR_PID_NAK {
+        ctr.write_value((cur & !PIPECTR_PID_MASK) | PIPECTR_PID_NAK);
+    }
+    if entry_pid != PIPECTR_PID_NAK {
+        // PBUSY clears once the in-flight transaction (at most one
+        // max-size packet) finishes; bound the wait so a wedged bus
+        // cannot hang the driver.
+        for _ in 0..100_000 {
+            if ctr.read() & PIPECTR_PBUSY == 0 {
+                break;
             }
         }
+    }
 
-        // CFIFOSEL has no DREQE bit (masking it there is harmless);
-        // DnFIFOSEL requires DREQE=0 before CURPIPE may change.
-        let sels = [
-            core::ptr::addr_of_mut!((*regs).cfifosel),
-            core::ptr::addr_of_mut!((*regs).d0fifosel),
-            core::ptr::addr_of_mut!((*regs).d1fifosel),
-        ];
-        for sel in sels {
-            let v = rd(sel);
-            if (v & FIFOSEL_CURPIPE_MASK) as usize != n {
-                continue;
-            }
-            if v & FIFOSEL_DREQE != 0 {
-                wr(sel, v & !FIFOSEL_DREQE);
-            }
-            wr(sel, rd(sel) & !FIFOSEL_CURPIPE_MASK);
-            // Read back until the CURPIPE change latches (TRM procedure).
-            for _ in 0..1_000 {
-                if rd(sel) & FIFOSEL_CURPIPE_MASK == 0 {
-                    break;
-                }
+    // CFIFOSEL has no DREQE bit (masking it there is harmless);
+    // DnFIFOSEL requires DREQE=0 before CURPIPE may change.
+    let sels = [u.cfifosel(), u.d0fifosel(), u.d1fifosel()];
+    for sel in sels {
+        let v = sel.read();
+        if (v & FIFOSEL_CURPIPE_MASK) as usize != n {
+            continue;
+        }
+        if v & FIFOSEL_DREQE != 0 {
+            sel.write_value(v & !FIFOSEL_DREQE);
+        }
+        sel.write_value(sel.read() & !FIFOSEL_CURPIPE_MASK);
+        // Read back until the CURPIPE change latches (TRM procedure).
+        for _ in 0..1_000 {
+            if sel.read() & FIFOSEL_CURPIPE_MASK == 0 {
+                break;
             }
         }
     }
@@ -951,54 +912,46 @@ unsafe fn pipe_quiesce(regs: *mut Rusb1Regs, n: usize) {
 /// Enable BRDY interrupt for pipe `n`.
 ///
 /// # Safety
-/// `regs` must be valid.
-pub unsafe fn pipe_brdy_enable(regs: *mut Rusb1Regs, n: usize) {
-    unsafe {
-        let brdysts = core::ptr::addr_of_mut!((*regs).brdysts);
-        let brdyenb = core::ptr::addr_of_mut!((*regs).brdyenb);
-        // Clear any pending BRDY for this pipe before enabling.
-        wr(brdysts, !((1u16) << n));
-        let cur = rd(brdyenb);
-        wr(brdyenb, cur | (1u16 << n));
-    }
+/// The caller owns USB port `u`: no other context reconfigures pipe `n` meanwhile.
+pub unsafe fn pipe_brdy_enable(u: Usb, n: usize) {
+    let brdysts = u.brdysts();
+    let brdyenb = u.brdyenb();
+    // Clear any pending BRDY for this pipe before enabling.
+    brdysts.write_value(!((1u16) << n));
+    let cur = brdyenb.read();
+    brdyenb.write_value(cur | (1u16 << n));
 }
 
 /// Disable BRDY interrupt for pipe `n`.
 ///
 /// # Safety
-/// `regs` must be valid.
-pub unsafe fn pipe_brdy_disable(regs: *mut Rusb1Regs, n: usize) {
-    unsafe {
-        let brdyenb = core::ptr::addr_of_mut!((*regs).brdyenb);
-        let cur = rd(brdyenb);
-        wr(brdyenb, cur & !(1u16 << n));
-    }
+/// The caller owns USB port `u`: no other context reconfigures pipe `n` meanwhile.
+pub unsafe fn pipe_brdy_disable(u: Usb, n: usize) {
+    let brdyenb = u.brdyenb();
+    let cur = brdyenb.read();
+    brdyenb.write_value(cur & !(1u16 << n));
 }
 
 /// Enable BEMP interrupt for pipe `n`.
 ///
 /// # Safety
-/// `regs` must be valid.
-pub unsafe fn pipe_bemp_enable(regs: *mut Rusb1Regs, n: usize) {
-    unsafe {
-        let bempsts = core::ptr::addr_of_mut!((*regs).bempsts);
-        let bempenb = core::ptr::addr_of_mut!((*regs).bempenb);
-        wr(bempsts, !((1u16) << n));
-        let cur = rd(bempenb);
-        wr(bempenb, cur | (1u16 << n));
-    }
+/// The caller owns USB port `u`: no other context reconfigures pipe `n` meanwhile.
+pub unsafe fn pipe_bemp_enable(u: Usb, n: usize) {
+    let bempsts = u.bempsts();
+    let bempenb = u.bempenb();
+    bempsts.write_value(!((1u16) << n));
+    let cur = bempenb.read();
+    bempenb.write_value(cur | (1u16 << n));
 }
 
 /// Disable BEMP interrupt for pipe `n`.
 ///
 /// # Safety
-/// `regs` must be valid.
-pub unsafe fn pipe_bemp_disable(regs: *mut Rusb1Regs, n: usize) {
-    unsafe {
-        let bempenb = core::ptr::addr_of_mut!((*regs).bempenb);
-        let cur = rd(bempenb);
-        wr(bempenb, cur & !(1u16 << n));
-    }
+/// The caller owns USB port `u`: no other context reconfigures pipe `n` meanwhile.
+pub unsafe fn pipe_bemp_disable(u: Usb, n: usize) {
+    let bempenb = u.bempenb();
+    let cur = bempenb.read();
+    bempenb.write_value(cur & !(1u16 << n));
 }
 
 // ---------------------------------------------------------------------------

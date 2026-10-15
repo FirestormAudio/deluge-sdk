@@ -41,6 +41,8 @@ use embassy_sync::once_lock::OnceLock;
 
 use crate::Peri;
 use crate::dmac::{BlockDma, Dma};
+use crate::pac::cpg::regs::Swrstcr1;
+use crate::pac::{CPG, SSIF0};
 use crate::peripherals::SSIF0;
 
 // ── Channel / resource constants ────────────────────────────────────────────
@@ -79,13 +81,6 @@ use crate::dmac::{
 };
 
 // ── SSI0 register map ────────────────────────────────────────────────────────
-
-const SSI0_BASE: usize = 0xE820_B000;
-const SSICR_OFF: usize = 0x00; // Control register
-const SSIFCR_OFF: usize = 0x10; // FIFO control register
-const SSIFTDR_OFF: usize = 0x18; // TX FIFO data register
-const SSIFRDR_OFF: usize = 0x1C; // RX FIFO data register
-const SSITDMR_OFF: usize = 0x20; // TDM mode register
 
 // SSICR initialisation value — from `src/RZA1/ssi/drv_ssif_user.h`
 // `SSI_SSICR0_USER_INIT_VALUE`:
@@ -133,10 +128,6 @@ const SSIFCR_RTRG_4: u32 = 0b10 << 4; // = 0x20
 const SSIFCR_INIT: u32 = SSIFCR_TFRST | SSIFCR_RFRST | SSIFCR_TTRG_4 | SSIFCR_RTRG_4;
 
 // ── CPG soft-reset ───────────────────────────────────────────────────────────
-
-/// CPG SWRSTCR1 — byte register that controls peripheral soft-reset.
-/// Bit `(6 - ssi_channel)` asserts / deasserts the SSI reset.
-const SWRSTCR1: usize = 0xFCFE_0460;
 
 // ── Uncached mirror ──────────────────────────────────────────────────────────
 
@@ -247,12 +238,12 @@ const fn rx_chcfg(dma_ch: u8) -> u32 {
         | (dma_ch as u32 & 7)
 }
 
-/// TX link descriptor.  Word[1] (src), word[4] (CHCFG), and word[7] (NXLA)
-/// are patched at runtime by [`init`].
+/// TX link descriptor.  Word[1] (src), word[2] (dst, SSIFTDR), word[4] (CHCFG) and word[7]
+/// (NXLA) are patched at runtime by [`init`].
 static mut TX_DESC: LinkDesc = LinkDesc([
     DESC_HEADER,                                       // Header: LDEN + NXA + valid
     0,                                                 // src  (→ TX_BUF, set at init)
-    (SSI0_BASE + SSIFTDR_OFF) as u32,                  // dst  = SSIFTDR (fixed)
+    0,                                                 // dst  (→ SSIFTDR, set at init)
     (TX_BUF_LEN * core::mem::size_of::<i32>()) as u32, // transfer bytes
     0,                                                 // CHCFG (patched at init)
     0,                                                 // CHITVL (no interval)
@@ -260,11 +251,11 @@ static mut TX_DESC: LinkDesc = LinkDesc([
     0,                                                 // NXLA → &TX_DESC (set at init)
 ]);
 
-/// RX link descriptor.  Word[2] (dst), word[4] (CHCFG), and word[7] (NXLA)
-/// are patched at runtime by [`init`].
+/// RX link descriptor.  Word[1] (src, SSIFRDR), word[2] (dst), word[4] (CHCFG) and word[7]
+/// (NXLA) are patched at runtime by [`init`].
 static mut RX_DESC: LinkDesc = LinkDesc([
     DESC_HEADER,                                       // Header: LDEN + NXA + valid
-    (SSI0_BASE + SSIFRDR_OFF) as u32,                  // src  = SSIFRDR (fixed)
+    0,                                                 // src  (→ SSIFRDR, set at init)
     0,                                                 // dst  (→ RX_BUF, set at init)
     (RX_BUF_LEN * core::mem::size_of::<i32>()) as u32, // transfer bytes
     0,                                                 // CHCFG (patched at init)
@@ -272,13 +263,6 @@ static mut RX_DESC: LinkDesc = LinkDesc([
     0,                                                 // CHEXT
     0,                                                 // NXLA → &RX_DESC (set at init)
 ]);
-
-// ── Register helpers ─────────────────────────────────────────────────────────
-
-#[inline(always)]
-fn ssi_reg(off: usize) -> crate::mmio::Reg32 {
-    crate::mmio::Reg32(SSI0_BASE + off)
-}
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
@@ -365,30 +349,36 @@ unsafe fn start(ssicr: u32, tx: &mut Dma<'_>, rx: &mut Dma<'_>) {
         tx_desc_u
             .add(1)
             .write_volatile(core::ptr::addr_of!(TX_BUF.0[0]) as u32);
+        tx_desc_u
+            .add(2)
+            .write_volatile(SSIF0.ssiftdr().addr() as u32);
         tx_desc_u.add(4).write_volatile(tx_chcfg(tx.number()));
         tx_desc_u.add(7).write_volatile(tx_desc_u as u32);
 
         rx_desc_u
             .add(2)
             .write_volatile(core::ptr::addr_of!(RX_BUF.0[0]) as u32);
+        rx_desc_u
+            .add(1)
+            .write_volatile(SSIF0.ssifrdr().addr() as u32);
         rx_desc_u.add(4).write_volatile(rx_chcfg(rx.number()));
         rx_desc_u.add(7).write_volatile(rx_desc_u as u32);
 
         // 2. SSI0 software reset via CPG SWRSTCR1 bit 6.
-        let swrstcr = crate::mmio::Reg8(SWRSTCR1);
+        let swrstcr = CPG.swrstcr1();
         let reset_bit = 1u8 << (6 - SSI_CH);
-        swrstcr.write(swrstcr.read() | reset_bit);
+        swrstcr.write_value(Swrstcr1(swrstcr.read().0 | reset_bit));
         let _ = swrstcr.read(); // mandatory dummy read
-        swrstcr.write(swrstcr.read() & !reset_bit);
+        swrstcr.write_value(Swrstcr1(swrstcr.read().0 & !reset_bit));
         let _ = swrstcr.read(); // mandatory dummy read
 
         // 3. Configure SSI registers.
         // SSITDMR: CONT=1 (WS continue mode, required for master mode);
         //   TDM=0 (normal stereo, not TDM).
         //   BSP sets SCUX_SSITDMR_CONT_SET when mode_master=true.
-        ssi_reg(SSITDMR_OFF).write(SSITDMR_CONT);
-        ssi_reg(SSICR_OFF).write(ssicr); // master, 24-bit/32-bit, ÷4
-        ssi_reg(SSIFCR_OFF).write(SSIFCR_INIT); // FIFOs in reset
+        SSIF0.ssitdmr().write_value(SSITDMR_CONT);
+        SSIF0.ssicr().write_value(ssicr); // master, 24-bit/32-bit, ÷4
+        SSIF0.ssifcr().write_value(SSIFCR_INIT); // FIFOs in reset
 
         // 4. Initialise and connect DMA channels to the link descriptors.
         //    Pass uncached alias addresses so the DMAC can re-fetch them coherently.
@@ -408,18 +398,18 @@ unsafe fn start(ssicr: u32, tx: &mut Dma<'_>, rx: &mut Dma<'_>) {
 
         // 6. Release the FIFOs from reset and enable TX/RX.
         //    This mirrors `ssiStart()` from the C firmware exactly.
-        let fcr = ssi_reg(SSIFCR_OFF);
+        let fcr = SSIF0.ssifcr();
 
         // Release TX FIFO from reset, enable TX DMA trigger
-        fcr.write(fcr.read() & !SSIFCR_TFRST);
-        fcr.write(fcr.read() | SSIFCR_TIE);
+        fcr.write_value(fcr.read() & !SSIFCR_TFRST);
+        fcr.write_value(fcr.read() | SSIFCR_TIE);
         // Release RX FIFO from reset, enable RX DMA trigger
-        fcr.write(fcr.read() & !SSIFCR_RFRST);
-        fcr.write(fcr.read() | SSIFCR_RIE);
+        fcr.write_value(fcr.read() & !SSIFCR_RFRST);
+        fcr.write_value(fcr.read() | SSIFCR_RIE);
 
         // Enable transmit and receive
-        let cr = ssi_reg(SSICR_OFF);
-        cr.write(cr.read() | SSICR_TEN | SSICR_REN);
+        let cr = SSIF0.ssicr();
+        cr.write_value(cr.read() | SSICR_TEN | SSICR_REN);
         log::debug!("ssi: TX+RX enabled, streaming");
     }
 }
@@ -454,6 +444,9 @@ unsafe fn start_block_irq(ssicr: u32, tx: &mut Dma<'_>, rx: &mut Dma<'_>) {
         tx_desc_u
             .add(1)
             .write_volatile(core::ptr::addr_of!(TX_BUF.0[0]) as u32);
+        tx_desc_u
+            .add(2)
+            .write_volatile(SSIF0.ssiftdr().addr() as u32);
         tx_desc_u.add(4).write_volatile(tx_chcfg(tx.number()));
         tx_desc_u.add(7).write_volatile(tx_desc_u as u32);
 
@@ -466,7 +459,7 @@ unsafe fn start_block_irq(ssicr: u32, tx: &mut Dma<'_>, rx: &mut Dma<'_>) {
                 crate::uncached(core::ptr::addr_of!(RX_RING[(i + 1) % RX_RING_DESCS]) as *mut u32)
                     as u32;
             d.add(0).write_volatile(DESC_HEADER);
-            d.add(1).write_volatile((SSI0_BASE + SSIFRDR_OFF) as u32); // src = SSIFRDR (fixed)
+            d.add(1).write_volatile(SSIF0.ssifrdr().addr() as u32); // src = SSIFRDR (fixed)
             d.add(2)
                 .write_volatile(core::ptr::addr_of!(RX_BUF.0[i * chunk_slots]) as u32); // dst slice
             d.add(3).write_volatile(chunk_bytes);
@@ -479,16 +472,16 @@ unsafe fn start_block_irq(ssicr: u32, tx: &mut Dma<'_>, rx: &mut Dma<'_>) {
             crate::uncached(core::ptr::addr_of!(RX_RING[0]) as *mut u32) as *const u32;
 
         // ── SSI0 software reset + register config (identical to `init`). ──────
-        let swrstcr = crate::mmio::Reg8(SWRSTCR1);
+        let swrstcr = CPG.swrstcr1();
         let reset_bit = 1u8 << (6 - SSI_CH);
-        swrstcr.write(swrstcr.read() | reset_bit);
+        swrstcr.write_value(Swrstcr1(swrstcr.read().0 | reset_bit));
         let _ = swrstcr.read();
-        swrstcr.write(swrstcr.read() & !reset_bit);
+        swrstcr.write_value(Swrstcr1(swrstcr.read().0 & !reset_bit));
         let _ = swrstcr.read();
 
-        ssi_reg(SSITDMR_OFF).write(SSITDMR_CONT);
-        ssi_reg(SSICR_OFF).write(ssicr);
-        ssi_reg(SSIFCR_OFF).write(SSIFCR_INIT);
+        SSIF0.ssitdmr().write_value(SSITDMR_CONT);
+        SSIF0.ssicr().write_value(ssicr);
+        SSIF0.ssifcr().write_value(SSIFCR_INIT);
 
         // ── Connect DMA: TX single descriptor, RX descriptor ring. ───────────
         tx.init_with_link_descriptor(tx_desc_u as *const u32, DMARS_SSI0_TX);
@@ -497,13 +490,13 @@ unsafe fn start_block_irq(ssicr: u32, tx: &mut Dma<'_>, rx: &mut Dma<'_>) {
         rx.channel_start();
 
         // ── Release FIFOs + enable TX/RX (identical to `init`). ──────────────
-        let fcr = ssi_reg(SSIFCR_OFF);
-        fcr.write(fcr.read() & !SSIFCR_TFRST);
-        fcr.write(fcr.read() | SSIFCR_TIE);
-        fcr.write(fcr.read() & !SSIFCR_RFRST);
-        fcr.write(fcr.read() | SSIFCR_RIE);
-        let cr = ssi_reg(SSICR_OFF);
-        cr.write(cr.read() | SSICR_TEN | SSICR_REN);
+        let fcr = SSIF0.ssifcr();
+        fcr.write_value(fcr.read() & !SSIFCR_TFRST);
+        fcr.write_value(fcr.read() | SSIFCR_TIE);
+        fcr.write_value(fcr.read() & !SSIFCR_RFRST);
+        fcr.write_value(fcr.read() | SSIFCR_RIE);
+        let cr = SSIF0.ssicr();
+        cr.write_value(cr.read() | SSICR_TEN | SSICR_REN);
         log::debug!("ssi: TX + block-IRQ RX ({} descs) streaming", RX_RING_DESCS);
     }
 }
@@ -531,21 +524,24 @@ unsafe fn start_rx_only(ssicr: u32, rx: &mut Dma<'_>) {
         rx_desc_u
             .add(2)
             .write_volatile(core::ptr::addr_of!(RX_BUF.0[0]) as u32);
+        rx_desc_u
+            .add(1)
+            .write_volatile(SSIF0.ssifrdr().addr() as u32);
         rx_desc_u.add(4).write_volatile(rx_chcfg(rx.number()));
         rx_desc_u.add(7).write_volatile(rx_desc_u as u32);
 
         // 2. SSI0 software reset.
-        let swrstcr = crate::mmio::Reg8(SWRSTCR1);
+        let swrstcr = CPG.swrstcr1();
         let reset_bit = 1u8 << (6 - SSI_CH);
-        swrstcr.write(swrstcr.read() | reset_bit);
+        swrstcr.write_value(Swrstcr1(swrstcr.read().0 | reset_bit));
         let _ = swrstcr.read();
-        swrstcr.write(swrstcr.read() & !reset_bit);
+        swrstcr.write_value(Swrstcr1(swrstcr.read().0 & !reset_bit));
         let _ = swrstcr.read();
 
         // 3. Configure SSI registers (same as full init).
-        ssi_reg(SSITDMR_OFF).write(SSITDMR_CONT); // WS continue mode (master)
-        ssi_reg(SSICR_OFF).write(ssicr);
-        ssi_reg(SSIFCR_OFF).write(SSIFCR_INIT); // both FIFOs held in reset
+        SSIF0.ssitdmr().write_value(SSITDMR_CONT); // WS continue mode (master)
+        SSIF0.ssicr().write_value(ssicr);
+        SSIF0.ssifcr().write_value(SSIFCR_INIT); // both FIFOs held in reset
 
         // 4. Initialise and start RX DMA only.
         let rx_desc_u = crate::uncached(core::ptr::addr_of!(RX_DESC) as *mut u32) as *const u32;
@@ -557,13 +553,13 @@ unsafe fn start_rx_only(ssicr: u32, rx: &mut Dma<'_>) {
         );
 
         // 5. Release RX FIFO only; leave TX FIFO in reset (TFRST stays set).
-        let fcr = ssi_reg(SSIFCR_OFF);
-        fcr.write(fcr.read() & !SSIFCR_RFRST);
-        fcr.write(fcr.read() | SSIFCR_RIE);
+        let fcr = SSIF0.ssifcr();
+        fcr.write_value(fcr.read() & !SSIFCR_RFRST);
+        fcr.write_value(fcr.read() | SSIFCR_RIE);
 
         // 6. Enable receive only (TEN stays 0 — SCUX owns TX).
-        let cr = ssi_reg(SSICR_OFF);
-        cr.write(cr.read() | SSICR_REN);
+        let cr = SSIF0.ssicr();
+        cr.write_value(cr.read() | SSICR_REN);
         log::debug!("ssi: RX-only enabled, streaming");
     }
 }
@@ -582,13 +578,11 @@ unsafe fn start_rx_only(ssicr: u32, rx: &mut Dma<'_>) {
 /// # Safety
 /// Read-modify-writes SSI0 SSICR and SSIFCR.
 pub unsafe fn enable_tx() {
-    unsafe {
-        let fcr = ssi_reg(SSIFCR_OFF);
-        fcr.write(fcr.read() & !SSIFCR_TFRST);
-        let cr = ssi_reg(SSICR_OFF);
-        cr.write(cr.read() | SSICR_TEN);
-        log::debug!("ssi: TX enabled (SCUX direct-drive mode), TX FIFO released");
-    }
+    let fcr = SSIF0.ssifcr();
+    fcr.write_value(fcr.read() & !SSIFCR_TFRST);
+    let cr = SSIF0.ssicr();
+    cr.write_value(cr.read() | SSICR_TEN);
+    log::debug!("ssi: TX enabled (SCUX direct-drive mode), TX FIFO released");
 }
 
 // ── Buffer pointer accessors ─────────────────────────────────────────────────
@@ -719,6 +713,23 @@ mod tests {
         assert_eq!(rx_chcfg(0) & common, common);
         assert_ne!(tx_chcfg(0), rx_chcfg(0), "direction bits differ");
     }
+
+    #[test]
+    fn the_pac_names_the_same_ssi_registers() {
+        use crate::pac::{CPG, SSIF0};
+        let b = 0xE820_B000;
+        assert_eq!((SSIF0.ssicr().addr(), SSIF0.ssicr().width()), (b, 4));
+        assert_eq!(SSIF0.ssisr().addr(), b + 0x04);
+        assert_eq!(SSIF0.ssifcr().addr(), b + 0x10);
+        assert_eq!(SSIF0.ssifsr().addr(), b + 0x14);
+        assert_eq!(SSIF0.ssiftdr().addr(), b + 0x18);
+        assert_eq!(SSIF0.ssifrdr().addr(), b + 0x1C);
+        assert_eq!(SSIF0.ssitdmr().addr(), b + 0x20);
+        assert_eq!(
+            (CPG.swrstcr1().addr(), CPG.swrstcr1().width()),
+            (0xFCFE_0460, 1)
+        );
+    }
 }
 
 #[cfg(all(test, not(target_os = "none")))]
@@ -753,6 +764,28 @@ mod typed_tests {
         assert!(after.contains(&(0xE820_1184, 1 << 16)), "DMAINT7 masked");
         // SSI0's TX/RX request routes: DMARS3 (channels 6 and 7) holds 0xE1 low, 0xE2 high.
         assert_eq!(test::peek32(0xFCFE_100C), 0x00E2_00E1);
+    }
+
+    /// The rings' fixed ends are the FIFO data registers: SSIFTDR for transmit, SSIFRDR for
+    /// receive, written into the descriptors at start from the PAC.
+    #[test]
+    fn the_descriptors_name_the_fifo_data_registers() {
+        test::reset();
+        let mut tx = Dma::new_without_interrupt(unsafe { DMA_CH6::steal() });
+        let mut rx = Dma::new_without_interrupt(unsafe { DMA_CH7::steal() });
+        unsafe { start(0x002B_C020, &mut tx, &mut rx) };
+        let tx_desc = crate::uncached(core::ptr::addr_of!(TX_DESC) as *mut u32);
+        let rx_desc = crate::uncached(core::ptr::addr_of!(RX_DESC) as *mut u32);
+        assert_eq!(
+            unsafe { tx_desc.add(2).read_volatile() },
+            0xE820_B018,
+            "TX dst = SSIFTDR"
+        );
+        assert_eq!(
+            unsafe { rx_desc.add(1).read_volatile() },
+            0xE820_B01C,
+            "RX src = SSIFRDR"
+        );
     }
 
     #[test]

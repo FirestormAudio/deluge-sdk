@@ -135,10 +135,9 @@ Register addresses come from [`rza1-pac`](../rza1-pac/README.md), re-exported as
 `rza1l_hal::pac` and built with its `rza1l` feature: chiptool output from the vendor SVD (an RZ/A1H
 SVD) minus what the RZ/A1L lacks, generated and checked against the RZ/A1L manual's register list
 by `tools/gen-pac.sh`. Every access goes through the MMIO seam (`rza1l_hal::mmio`, which now lives
-in the PAC), so register sequences are testable on the host. CPG/STB, BSC, OSTM, ADC, the L2
-cache, MTU2, SCIF, RSPI, GPIO and the GIC take every register from it
-(`tools/check-register-tables.sh` holds them to that); DMAC, SSI, SCUX, SDHI, SPIBSC and USB still
-hand-write their addresses until Phase 5b.
+in the PAC), so register sequences are testable on the host. Every module takes its registers from
+it, and `tools/check-register-tables.sh` checks the whole crate for hand-written addresses (only
+`memmap.rs` and `mmu.rs`, which describe memory rather than registers, are exempt).
 
 ---
 

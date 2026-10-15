@@ -5,7 +5,7 @@
 //!   - SDHI1 at 0xE804_E800 (Deluge SD card — port 1)
 //!
 //! All registers are 16-bit with byte-granular offsets per TRM table 38.2.
-//! The data FIFO (SD_BUF0) is at `base + 0x30`, accessed as 32-bit words.
+//! The data FIFO (SD_BUF0) is at offset 0x30, accessed as 32-bit words.
 //!
 //! GIC interrupt IDs for SDHI1:
 //!   305 = INTC_ID_SDHI1_3  (card-detect / status-change)
@@ -43,49 +43,13 @@ use core::task::Poll;
 
 use embassy_sync::waitqueue::AtomicWaker;
 
-// ---------------------------------------------------------------------------
-// Base addresses
-// ---------------------------------------------------------------------------
-
-const SDHI0_BASE: usize = 0xE804_E000;
-const SDHI1_BASE: usize = 0xE804_E800;
+use crate::pac::CPG;
+use crate::pac::cpg::regs::Stbcr12;
 
 // ---------------------------------------------------------------------------
-// Register offsets — direct byte offsets from base address (TRM table 38.2).
-// All registers are 16-bit except SD_BUF0 which is 32-bit.
-// Note: the address map has a 2-byte gap at offset 0x002 (reserved within
-// the CMD 32-bit slot), so offsets are NOT simply index*2 for all registers.
+// Registers: `crate::pac::SDHI0`/`SDHI1` (TRM table 38.2), through `sdhi(port)`.
+// All registers are 16-bit except SD_BUF0, which is 32-bit.
 // ---------------------------------------------------------------------------
-
-const OFF_CMD: usize = 0x00; // SD Command
-const OFF_ARG0: usize = 0x04; // Argument low  [15:0]
-const OFF_ARG1: usize = 0x06; // Argument high [31:16]
-const OFF_STOP: usize = 0x08; // Data Stop / Automatic Stop
-const OFF_SECCNT: usize = 0x0A; // Block Count
-const OFF_RESP0: usize = 0x0C; // Response R[23:8]   (SD_RSP00)
-const OFF_RESP1: usize = 0x0E; // Response R[39:24]  (SD_RSP01)
-const OFF_RESP2: usize = 0x10; // Response R[55:40]  (SD_RSP02)
-const OFF_RESP3: usize = 0x12; // Response R[71:56]  (SD_RSP03)
-const OFF_RESP4: usize = 0x14; // Response R[87:72]  (SD_RSP04)
-const OFF_RESP5: usize = 0x16; // Response R[103:88] (SD_RSP05)
-const OFF_RESP6: usize = 0x18; // Response R[119:104](SD_RSP06)
-const OFF_RESP7: usize = 0x1A; // Response R[127:120](SD_RSP07)
-const OFF_INFO1: usize = 0x1C; // Status flag 1
-const OFF_INFO2: usize = 0x1E; // Status flag 2
-const OFF_INFO1_MASK: usize = 0x20; // Interrupt mask 1  (0 = enabled, 1 = masked)
-const OFF_INFO2_MASK: usize = 0x22; // Interrupt mask 2  (0 = enabled, 1 = masked)
-const OFF_CLK_CTRL: usize = 0x24; // Clock control
-const OFF_SIZE: usize = 0x26; // Block size
-const OFF_OPTION: usize = 0x28; // Access option (timing, bus width)
-const OFF_ERR_STS1: usize = 0x2C; // CMD/CRC/END error status
-const OFF_ERR_STS2: usize = 0x2E; // Timeout error status
-const OFF_BUF0: usize = 0x30; // Data FIFO — 32-bit access
-const OFF_SDIO_MODE: usize = 0x34; // SDIO mode
-const OFF_SDIO_INFO1: usize = 0x36; // SDIO interrupt flag
-const OFF_SDIO_INFO1_MASK: usize = 0x38; // SDIO interrupt mask
-const OFF_CC_EXT_MODE: usize = 0xD8; // DMA mode enable
-const OFF_SOFT_RST: usize = 0xE0; // Soft reset
-const OFF_EXT_SWAP: usize = 0xF0; // Byte-swap control
 
 // ---------------------------------------------------------------------------
 // SD_INFO1 bit masks
@@ -222,11 +186,6 @@ pub const CLK_DIV_2: u16 = 0x00;
 const CLK_ENABLE: u16 = 1 << 8; // Bit 8 (SCLKEN) = clock output enable
 
 // ---------------------------------------------------------------------------
-// Module clock
-// ---------------------------------------------------------------------------
-const STBCR12: usize = 0xFCFE_0444;
-
-// ---------------------------------------------------------------------------
 // Per-port state
 // ---------------------------------------------------------------------------
 
@@ -320,22 +279,13 @@ const SOFT_RST_DEASSERT: u16 = 0x0007;
 // Register helpers
 // ---------------------------------------------------------------------------
 
-#[inline]
-fn port_base(port: u8) -> usize {
-    match port {
-        0 => SDHI0_BASE,
-        _ => SDHI1_BASE,
+/// SDHI port `port`'s registers.
+fn sdhi(port: u8) -> crate::pac::sdhi::Sdhi {
+    if port == 0 {
+        crate::pac::SDHI0
+    } else {
+        crate::pac::SDHI1
     }
-}
-
-#[inline]
-fn reg16(base: usize, off: usize) -> crate::mmio::Reg16 {
-    crate::mmio::Reg16(base + off)
-}
-
-#[inline]
-fn reg32(base: usize, off: usize) -> crate::mmio::Reg32 {
-    crate::mmio::Reg32(base + off)
 }
 
 // ---------------------------------------------------------------------------
@@ -352,60 +302,59 @@ fn reg32(base: usize, off: usize) -> crate::mmio::Reg32 {
 /// # Safety
 /// Writes to memory-mapped peripheral registers.
 unsafe fn init(port: u8, sd_option: u16) {
-    unsafe {
-        // ---- enable SDHI module clock (STBCR12) ----
-        // STBCR12 layout (bit 7..0): [1][1][1][1][SDHI00][SDHI01][SDHI10][SDHI11]
-        //   SDHI0 (port 0): bits 3 (SDHI00) + 2 (SDHI01) — mask 0x0C
-        //   SDHI1 (port 1): bits 1 (SDHI10) + 0 (SDHI11) — mask 0x03
-        // Use RMW to enable only the clocks for the requested port; preserve
-        // the other port's stop-bits so unused clocks stay gated.
-        let stbcr12 = crate::mmio::Reg8(STBCR12);
-        let bits: u8 = if port == 0 {
-            STBCR12_SDHI0_MASK
-        } else {
-            STBCR12_SDHI1_MASK
-        };
-        stbcr12.write(stbcr12.read() & !bits);
-        let _ = stbcr12.read(); // dummy read (required per RZ/A1 HW manual)
+    // ---- enable SDHI module clock (STBCR12) ----
+    // STBCR12 layout (bit 7..0): [1][1][1][1][SDHI00][SDHI01][SDHI10][SDHI11]
+    //   SDHI0 (port 0): bits 3 (SDHI00) + 2 (SDHI01) — mask 0x0C
+    //   SDHI1 (port 1): bits 1 (SDHI10) + 0 (SDHI11) — mask 0x03
+    // Use RMW to enable only the clocks for the requested port; preserve
+    // the other port's stop-bits so unused clocks stay gated.
+    let stbcr12 = CPG.stbcr12();
+    let bits: u8 = if port == 0 {
+        STBCR12_SDHI0_MASK
+    } else {
+        STBCR12_SDHI1_MASK
+    };
+    stbcr12.write_value(Stbcr12(stbcr12.read().0 & !bits));
+    let _ = stbcr12.read(); // dummy read (required per RZ/A1 HW manual)
 
-        let base = port_base(port);
+    let s = sdhi(port);
 
-        // ---- mask all meaningful interrupts (0 = enabled, 1 = masked) ----
-        // Values match sd_init.c: SD_INFO1_MASK=0x031D, SD_INFO2_MASK=0x8B7F (RZA1)
-        reg16(base, OFF_INFO1_MASK).write(INFO1_MASK_INIT);
-        reg16(base, OFF_INFO2_MASK).write(INFO2_MASK_INIT);
-        reg16(base, OFF_SDIO_INFO1_MASK).write(SDIO_INFO1_MASK_INIT);
+    // ---- mask all meaningful interrupts (0 = enabled, 1 = masked) ----
+    // Values match sd_init.c: SD_INFO1_MASK=0x031D, SD_INFO2_MASK=0x8B7F (RZA1)
+    s.sd_info1_mask().write_value(INFO1_MASK_INIT);
+    s.sd_info2_mask().write_value(INFO2_MASK_INIT);
+    s.sdio_info1_mask().write_value(SDIO_INFO1_MASK_INIT);
 
-        // ---- clear SDIO mode ----
-        reg16(base, OFF_SDIO_MODE).write(0x0000);
+    // ---- clear SDIO mode ----
+    s.sdio_mode().write_value(0x0000);
 
-        // ---- clear status registers ----
-        // Clear RESP(bit0) and DATA_TRNS(bit2) only, per sd_init.c: info1 & ~0x0005
-        let info1 = reg16(base, OFF_INFO1).read();
-        reg16(base, OFF_INFO1).write(info1 & !(INFO1_RESP | INFO1_DATA_TRNS));
-        reg16(base, OFF_INFO2).write(0x0000);
-        reg16(base, OFF_SDIO_INFO1).write(0x0000);
+    // ---- clear status registers ----
+    // Clear RESP(bit0) and DATA_TRNS(bit2) only, per sd_init.c: info1 & ~0x0005
+    let info1 = s.sd_info1().read();
+    s.sd_info1()
+        .write_value(info1 & !(INFO1_RESP | INFO1_DATA_TRNS));
+    s.sd_info2().write_value(0x0000);
+    s.sdio_info1().write_value(0x0000);
 
-        // ---- soft reset (RZ/A1 variant: SOFT_RST_ASSERT → SOFT_RST_DEASSERT) ----
-        reg16(base, OFF_SOFT_RST).write(SOFT_RST_ASSERT);
-        reg16(base, OFF_SOFT_RST).write(SOFT_RST_DEASSERT);
+    // ---- soft reset (RZ/A1 variant: SOFT_RST_ASSERT → SOFT_RST_DEASSERT) ----
+    s.soft_rst().write_value(SOFT_RST_ASSERT);
+    s.soft_rst().write_value(SOFT_RST_DEASSERT);
 
-        // ---- SD_OPTION: bus width, data timeout and card-detect time ----
-        // Board-specific; see the caller's `sd_option`.
-        reg16(base, OFF_OPTION).write(sd_option);
+    // ---- SD_OPTION: bus width, data timeout and card-detect time ----
+    // Board-specific; see the caller's `sd_option`.
+    s.sd_option().write_value(sd_option);
 
-        // ---- EXT_SWAP: no byte-swap ----
-        reg16(base, OFF_EXT_SWAP).write(0x0000);
+    // ---- EXT_SWAP: no byte-swap ----
+    s.ext_swap().write_value(0x0000);
 
-        // ---- CC_EXT_MODE: software transfer mode (no DMA yet) ----
-        reg16(base, OFF_CC_EXT_MODE).write(0x0000);
+    // ---- CC_EXT_MODE: software transfer mode (no DMA yet) ----
+    s.cc_ext_mode().write_value(0x0000);
 
-        // ---- block size = 512 bytes ----
-        reg16(base, OFF_SIZE).write(512);
+    // ---- block size = 512 bytes ----
+    s.sd_size().write_value(512);
 
-        // ---- start at identification clock (~130 kHz, P1/512) ----
-        reg16(base, OFF_CLK_CTRL).write(CLK_DIV_512 | CLK_ENABLE);
-    }
+    // ---- start at identification clock (~130 kHz, P1/512) ----
+    s.sd_clk_ctrl().write_value(CLK_DIV_512 | CLK_ENABLE);
 }
 
 /// Set the SD clock divider (`CLK_DIV_*` constant).
@@ -419,30 +368,28 @@ unsafe fn init(port: u8, sd_option: u16) {
 /// # Safety
 /// Writes to memory-mapped SDHI register.
 unsafe fn set_clock_div(port: u8, div: u16) {
-    unsafe {
-        let base = port_base(port);
-        // Wait for clock divider change to settle (SCLKDIVEN = 1 means ready).
-        let mut ok = false;
-        for _ in 0..10_000u32 {
-            if reg16(base, OFF_INFO2).read() & INFO2_SCLKDIVEN != 0 {
-                ok = true;
-                break;
-            }
+    let s = sdhi(port);
+    // Wait for clock divider change to settle (SCLKDIVEN = 1 means ready).
+    let mut ok = false;
+    for _ in 0..10_000u32 {
+        if s.sd_info2().read() & INFO2_SCLKDIVEN != 0 {
+            ok = true;
+            break;
         }
-        if !ok {
-            log::warn!("sdhi{}: set_clock_div: SCLKDIVEN pre-change timeout", port);
+    }
+    if !ok {
+        log::warn!("sdhi{}: set_clock_div: SCLKDIVEN pre-change timeout", port);
+    }
+    s.sd_clk_ctrl().write_value(div | CLK_ENABLE);
+    ok = false;
+    for _ in 0..10_000u32 {
+        if s.sd_info2().read() & INFO2_SCLKDIVEN != 0 {
+            ok = true;
+            break;
         }
-        reg16(base, OFF_CLK_CTRL).write(div | CLK_ENABLE);
-        ok = false;
-        for _ in 0..10_000u32 {
-            if reg16(base, OFF_INFO2).read() & INFO2_SCLKDIVEN != 0 {
-                ok = true;
-                break;
-            }
-        }
-        if !ok {
-            log::warn!("sdhi{}: set_clock_div: SCLKDIVEN post-change timeout", port);
-        }
+    }
+    if !ok {
+        log::warn!("sdhi{}: set_clock_div: SCLKDIVEN post-change timeout", port);
     }
 }
 
@@ -465,36 +412,34 @@ unsafe fn set_clock_fast(port: u8) {
 /// # Safety
 /// Reads and writes memory-mapped SDHI registers.
 unsafe fn interrupt_handler(port: u8) {
-    unsafe {
-        let base = port_base(port);
+    let s = sdhi(port);
 
-        // Read status
-        let info1 = reg16(base, OFF_INFO1).read();
-        let info2 = reg16(base, OFF_INFO2).read();
+    // Read status
+    let info1 = s.sd_info1().read();
+    let info2 = s.sd_info2().read();
 
-        // Clear bits by writing 0 (write-0-to-clear per RZ/A1 HW manual).
-        // Only clear the bits we just read to avoid losing a racing edge.
-        reg16(base, OFF_INFO1).write(!info1);
-        reg16(base, OFF_INFO2).write(!info2);
+    // Clear bits by writing 0 (write-0-to-clear per RZ/A1 HW manual).
+    // Only clear the bits we just read to avoid losing a racing edge.
+    s.sd_info1().write_value(!info1);
+    s.sd_info2().write_value(!info2);
 
-        // Also clear SDIO status to prevent spurious SDIO interrupts.
-        let sdio = reg16(base, OFF_SDIO_INFO1).read();
-        reg16(base, OFF_SDIO_INFO1).write(!sdio);
+    // Also clear SDIO status to prevent spurious SDIO interrupts.
+    let sdio = s.sdio_info1().read();
+    s.sdio_info1().write_value(!sdio);
 
-        let st = &STATE[port as usize];
-        st.info1.fetch_or(info1, Ordering::Release);
-        st.info2.fetch_or(info2, Ordering::Release);
-        // The clear above took the card-detect edge latches down with everything
-        // else, and `clear_info` wipes the accumulator at each transfer start —
-        // so hand any edge over to `take_card_detect_events` separately.
-        if info1 & INFO1_REM_CD != 0 {
-            st.cd_removed.store(true, Ordering::Release);
-        }
-        if info1 & INFO1_INS_CD != 0 {
-            st.cd_inserted.store(true, Ordering::Release);
-        }
-        st.waker.wake();
+    let st = &STATE[port as usize];
+    st.info1.fetch_or(info1, Ordering::Release);
+    st.info2.fetch_or(info2, Ordering::Release);
+    // The clear above took the card-detect edge latches down with everything
+    // else, and `clear_info` wipes the accumulator at each transfer start —
+    // so hand any edge over to `take_card_detect_events` separately.
+    if info1 & INFO1_REM_CD != 0 {
+        st.cd_removed.store(true, Ordering::Release);
     }
+    if info1 & INFO1_INS_CD != 0 {
+        st.cd_inserted.store(true, Ordering::Release);
+    }
+    st.waker.wake();
 }
 
 // ---------------------------------------------------------------------------
@@ -625,11 +570,9 @@ async fn wait_access_end(port: u8) -> Result<(), SdhiError> {
 /// Writes to SDHI registers.
 #[inline]
 unsafe fn set_arg(port: u8, arg: u32) {
-    unsafe {
-        let base = port_base(port);
-        reg16(base, OFF_ARG0).write((arg & 0xFFFF) as u16);
-        reg16(base, OFF_ARG1).write((arg >> 16) as u16);
-    }
+    let s = sdhi(port);
+    s.sd_arg0().write_value((arg & 0xFFFF) as u16);
+    s.sd_arg1().write_value((arg >> 16) as u16);
 }
 
 /// Wait for the clock divider register to be ready (SCLKDIVEN bit).
@@ -637,15 +580,13 @@ unsafe fn set_arg(port: u8, arg: u32) {
 /// # Safety
 /// Reads SDHI INFO2 register.
 unsafe fn wait_clk_stable(port: u8) {
-    unsafe {
-        let base = port_base(port);
-        for _ in 0..100_000u32 {
-            if reg16(base, OFF_INFO2).read() & INFO2_SCLKDIVEN != 0 {
-                return;
-            }
+    let s = sdhi(port);
+    for _ in 0..100_000u32 {
+        if s.sd_info2().read() & INFO2_SCLKDIVEN != 0 {
+            return;
         }
-        // Timeout — continue anyway; hardware may still work.
     }
+    // Timeout — continue anyway; hardware may still work.
 }
 
 // ---------------------------------------------------------------------------
@@ -728,7 +669,7 @@ fn check_info2_errors(info2: u16) -> Result<(), SdhiError> {
 /// for the same port.
 async unsafe fn send_cmd(port: u8, cmd_val: u16) -> Result<(), SdhiError> {
     unsafe {
-        let base = port_base(port);
+        let s = sdhi(port);
 
         // Wait for clock to be stable
         wait_clk_stable(port);
@@ -740,18 +681,18 @@ async unsafe fn send_cmd(port: u8, cmd_val: u16) -> Result<(), SdhiError> {
         // Hardware polarity: 0 = enabled, 1 = masked → write bitwise complement.
         // INFO1: enable RESP only  → ~0x0001 = 0xFFFE
         // INFO2: enable ERR_ALL (includes ILA) → ~INFO2_ERR_ALL = 0x7F80
-        reg16(base, OFF_INFO1_MASK).write(!INFO1_RESP);
-        reg16(base, OFF_INFO2_MASK).write(!INFO2_ERR_ALL);
+        s.sd_info1_mask().write_value(!INFO1_RESP);
+        s.sd_info2_mask().write_value(!INFO2_ERR_ALL);
 
         // Issue command
-        reg16(base, OFF_CMD).write(cmd_val);
+        s.sd_cmd().write_value(cmd_val);
 
         // Async wait
         let result = wait_resp(port).await;
 
         // Disable all interrupts (0 = enabled, 1 = masked → 0xFFFF masks all)
-        reg16(base, OFF_INFO1_MASK).write(0xFFFF);
-        reg16(base, OFF_INFO2_MASK).write(0xFFFF);
+        s.sd_info1_mask().write_value(0xFFFF);
+        s.sd_info2_mask().write_value(0xFFFF);
 
         // Clear accumulated state
         clear_info(port);
@@ -769,12 +710,10 @@ async unsafe fn send_cmd(port: u8, cmd_val: u16) -> Result<(), SdhiError> {
 /// # Safety
 /// Reads SDHI response registers.
 unsafe fn read_r1(port: u8) -> u32 {
-    unsafe {
-        let base = port_base(port);
-        let lo = reg16(base, OFF_RESP0).read() as u32;
-        let hi = reg16(base, OFF_RESP1).read() as u32;
-        (hi << 16) | lo
-    }
+    let s = sdhi(port);
+    let lo = s.sd_rsp00().read() as u32;
+    let hi = s.sd_rsp01().read() as u32;
+    (hi << 16) | lo
 }
 
 /// Read the full 128-bit R2 response (CID or CSD register).
@@ -784,16 +723,13 @@ unsafe fn read_r1(port: u8) -> u32 {
 /// # Safety
 /// Reads SDHI response registers.
 unsafe fn read_r2(port: u8) -> [u32; 4] {
-    unsafe {
-        let base = port_base(port);
-        let r = |off: usize| reg16(base, off).read() as u32;
-        [
-            (r(OFF_RESP7) << 16) | r(OFF_RESP6),
-            (r(OFF_RESP5) << 16) | r(OFF_RESP4),
-            (r(OFF_RESP3) << 16) | r(OFF_RESP2),
-            (r(OFF_RESP1) << 16) | r(OFF_RESP0),
-        ]
-    }
+    let s = sdhi(port);
+    [
+        ((s.sd_rsp07().read() as u32) << 16) | s.sd_rsp06().read() as u32,
+        ((s.sd_rsp05().read() as u32) << 16) | s.sd_rsp04().read() as u32,
+        ((s.sd_rsp03().read() as u32) << 16) | s.sd_rsp02().read() as u32,
+        ((s.sd_rsp01().read() as u32) << 16) | s.sd_rsp00().read() as u32,
+    ]
 }
 
 // ---------------------------------------------------------------------------
@@ -814,14 +750,14 @@ unsafe fn read_r2(port: u8) -> [u32; 4] {
 /// Reads/writes SDHI registers and the provided buffer.
 async unsafe fn read_blocks_sw(port: u8, buf: *mut u8, count: u32) -> Result<(), SdhiError> {
     unsafe {
-        let base = port_base(port);
+        let s = sdhi(port);
 
         // Enable DATA_TRNS (access end), BRE, and all errors.
         // Hardware polarity: 0 = enabled, 1 = masked → write bitwise complement.
         // INFO1: enable DATA_TRNS only  → ~INFO1_DATA_TRNS = 0xFFFB
         // INFO2: enable ERR_ALL + BRE   → ~(INFO2_ERR_ALL | INFO2_BRE) = 0x7E80
-        reg16(base, OFF_INFO1_MASK).write(!INFO1_DATA_TRNS);
-        reg16(base, OFF_INFO2_MASK).write(!(INFO2_ERR_ALL | INFO2_BRE));
+        s.sd_info1_mask().write_value(!INFO1_DATA_TRNS);
+        s.sd_info2_mask().write_value(!(INFO2_ERR_ALL | INFO2_BRE));
 
         let mut dst = buf;
         for _block in 0..count {
@@ -829,7 +765,7 @@ async unsafe fn read_blocks_sw(port: u8, buf: *mut u8, count: u32) -> Result<(),
             wait_buf_ready(port, INFO2_BRE).await?;
 
             // Drain 512 bytes from 32-bit FIFO (128 reads)
-            let fifo = reg32(base, OFF_BUF0);
+            let fifo = s.sd_buf0();
             for w in 0..128usize {
                 let word = fifo.read();
                 let p = dst.add(w * 4) as *mut u32;
@@ -842,8 +778,8 @@ async unsafe fn read_blocks_sw(port: u8, buf: *mut u8, count: u32) -> Result<(),
         wait_access_end(port).await?;
 
         // Disable all interrupts (0xFFFF = all masked)
-        reg16(base, OFF_INFO1_MASK).write(0xFFFF);
-        reg16(base, OFF_INFO2_MASK).write(0xFFFF);
+        s.sd_info1_mask().write_value(0xFFFF);
+        s.sd_info2_mask().write_value(0xFFFF);
         clear_info(port);
 
         Ok(())
@@ -858,14 +794,14 @@ async unsafe fn read_blocks_sw(port: u8, buf: *mut u8, count: u32) -> Result<(),
 /// Reads/writes SDHI registers and the provided buffer.
 async unsafe fn write_blocks_sw(port: u8, buf: *const u8, count: u32) -> Result<(), SdhiError> {
     unsafe {
-        let base = port_base(port);
+        let s = sdhi(port);
 
         // Enable DATA_TRNS, BWE, and all errors.
         // Hardware polarity: 0 = enabled, 1 = masked → write bitwise complement.
         // INFO1: enable DATA_TRNS only  → ~INFO1_DATA_TRNS = 0xFFFB
         // INFO2: enable ERR_ALL + BWE   → ~(INFO2_ERR_ALL | INFO2_BWE) = 0x7D80
-        reg16(base, OFF_INFO1_MASK).write(!INFO1_DATA_TRNS);
-        reg16(base, OFF_INFO2_MASK).write(!(INFO2_ERR_ALL | INFO2_BWE));
+        s.sd_info1_mask().write_value(!INFO1_DATA_TRNS);
+        s.sd_info2_mask().write_value(!(INFO2_ERR_ALL | INFO2_BWE));
 
         let mut src = buf;
         for _block in 0..count {
@@ -873,10 +809,10 @@ async unsafe fn write_blocks_sw(port: u8, buf: *const u8, count: u32) -> Result<
             wait_buf_ready(port, INFO2_BWE).await?;
 
             // Fill 512 bytes into 32-bit FIFO (128 writes)
-            let fifo = reg32(base, OFF_BUF0);
+            let fifo = s.sd_buf0();
             for w in 0..128usize {
                 let p = src.add(w * 4) as *const u32;
-                fifo.write(p.read_unaligned());
+                fifo.write_value(p.read_unaligned());
             }
             src = src.add(512);
         }
@@ -889,8 +825,8 @@ async unsafe fn write_blocks_sw(port: u8, buf: *const u8, count: u32) -> Result<
         // for a write *after reception of the busy state following the CRC status*
         // completes. So once INFO1_DATA_TRNS is observed the card has already
         // released D0/CBSY, and the next command can be issued safely.
-        reg16(base, OFF_INFO1_MASK).write(0xFFFF);
-        reg16(base, OFF_INFO2_MASK).write(0xFFFF);
+        s.sd_info1_mask().write_value(0xFFFF);
+        s.sd_info2_mask().write_value(0xFFFF);
         clear_info(port);
 
         Ok(())
@@ -922,26 +858,26 @@ async unsafe fn read_status_block_sw(
     buf: &mut [u8; 64],
 ) -> Result<(), SdhiError> {
     unsafe {
-        let base = port_base(port);
+        let s = sdhi(port);
 
         // SD_SIZE ← 64 before the command (TRM §38.2.11; single-block
         // transfers accept 1–512 bytes).  Never while SCLKDIVEN = 0.
         wait_clk_stable(port);
-        reg16(base, OFF_SIZE).write(64);
+        s.sd_size().write_value(64);
         // Single block: SEC (block-count enable) off.
-        reg16(base, OFF_STOP).write(0x0000);
-        reg16(base, OFF_SECCNT).write(1);
+        s.sd_stop().write_value(0x0000);
+        s.sd_seccnt().write_value(1);
 
         set_arg(port, arg);
         let result = read_status_block_inner(port, cmd_val, buf).await;
 
         // Quiesce interrupts and restore the 512-byte sector block size —
         // error path included, so a failed CMD6 can't poison later sector IO.
-        reg16(base, OFF_INFO1_MASK).write(0xFFFF);
-        reg16(base, OFF_INFO2_MASK).write(0xFFFF);
+        s.sd_info1_mask().write_value(0xFFFF);
+        s.sd_info2_mask().write_value(0xFFFF);
         clear_info(port);
         wait_clk_stable(port);
-        reg16(base, OFF_SIZE).write(512);
+        s.sd_size().write_value(512);
 
         result
     }
@@ -955,19 +891,19 @@ async unsafe fn read_status_block_inner(
     buf: &mut [u8; 64],
 ) -> Result<(), SdhiError> {
     unsafe {
-        let base = port_base(port);
+        let s = sdhi(port);
 
         // Issue the command and await the R1 response.
         send_cmd(port, cmd_val).await?;
 
         // Enable DATA_TRNS (access end), BRE, and all errors.
         // Hardware polarity: 0 = enabled, 1 = masked → write bitwise complement.
-        reg16(base, OFF_INFO1_MASK).write(!INFO1_DATA_TRNS);
-        reg16(base, OFF_INFO2_MASK).write(!(INFO2_ERR_ALL | INFO2_BRE));
+        s.sd_info1_mask().write_value(!INFO1_DATA_TRNS);
+        s.sd_info2_mask().write_value(!(INFO2_ERR_ALL | INFO2_BRE));
 
         // Wait for FIFO data (BRE), drain 64 bytes (16 × 32-bit reads).
         wait_buf_ready(port, INFO2_BRE).await?;
-        let fifo = reg32(base, OFF_BUF0);
+        let fifo = s.sd_buf0();
         for w in 0..16usize {
             let word = fifo.read();
             let p = buf.as_mut_ptr().add(w * 4) as *mut u32;
@@ -1007,31 +943,32 @@ async unsafe fn read_blocks_dma(
     dma: &mut crate::dmac::Dma<'_>,
 ) -> Result<(), SdhiError> {
     unsafe {
-        let base = port_base(port);
-        let (dmars_rx, sd_buf0) = if port == 0 {
-            (DMARS_SDHI0_RX, (SDHI0_BASE + OFF_BUF0) as u32)
+        let s = sdhi(port);
+        let dmars_rx = if port == 0 {
+            DMARS_SDHI0_RX
         } else {
-            (DMARS_SDHI1_RX, (SDHI1_BASE + OFF_BUF0) as u32)
+            DMARS_SDHI1_RX
         };
+        let sd_buf0 = s.sd_buf0().addr() as u32;
 
         // 1. Enable DMA mode BEFORE issuing the command (TRM §38.4.9).
-        reg16(base, OFF_CC_EXT_MODE).write(CC_EXT_MODE_DMASDRW);
+        s.cc_ext_mode().write_value(CC_EXT_MODE_DMASDRW);
 
         // 2. Issue command and wait for response end (mirrors send_cmd).
         wait_clk_stable(port);
         clear_info(port);
-        reg16(base, OFF_INFO1_MASK).write(!INFO1_RESP);
-        reg16(base, OFF_INFO2_MASK).write(!INFO2_ERR_ALL);
-        reg16(base, OFF_CMD).write(cmd_val);
+        s.sd_info1_mask().write_value(!INFO1_RESP);
+        s.sd_info2_mask().write_value(!INFO2_ERR_ALL);
+        s.sd_cmd().write_value(cmd_val);
 
         let cmd_result = wait_resp(port).await;
 
-        reg16(base, OFF_INFO1_MASK).write(0xFFFF);
-        reg16(base, OFF_INFO2_MASK).write(0xFFFF);
+        s.sd_info1_mask().write_value(0xFFFF);
+        s.sd_info2_mask().write_value(0xFFFF);
         clear_info(port);
 
         if let Err(e) = cmd_result {
-            reg16(base, OFF_CC_EXT_MODE).write(0x0000);
+            s.cc_ext_mode().write_value(0x0000);
             return Err(e);
         }
 
@@ -1039,8 +976,8 @@ async unsafe fn read_blocks_dma(
         dma.init_register_mode_rx(chcfg_sdhi_rx(dma.number()), sd_buf0, dmars_rx);
 
         // 4. Enable DATA_TRNS + error interrupts, then kick the DMAC.
-        reg16(base, OFF_INFO1_MASK).write(!INFO1_DATA_TRNS);
-        reg16(base, OFF_INFO2_MASK).write(!INFO2_ERR_ALL);
+        s.sd_info1_mask().write_value(!INFO1_DATA_TRNS);
+        s.sd_info2_mask().write_value(!INFO2_ERR_ALL);
         dma.start_transfer_rx(buf as u32, count * 512);
 
         // 5. Wait for transfer complete (DATA_TRNS via SDHI interrupt).
@@ -1056,10 +993,10 @@ async unsafe fn read_blocks_dma(
         }
 
         // 6. Restore software transfer mode.
-        reg16(base, OFF_INFO1_MASK).write(0xFFFF);
-        reg16(base, OFF_INFO2_MASK).write(0xFFFF);
+        s.sd_info1_mask().write_value(0xFFFF);
+        s.sd_info2_mask().write_value(0xFFFF);
         clear_info(port);
-        reg16(base, OFF_CC_EXT_MODE).write(0x0000);
+        s.cc_ext_mode().write_value(0x0000);
 
         data_result
     }
@@ -1087,31 +1024,32 @@ async unsafe fn write_blocks_dma(
     dma: &mut crate::dmac::Dma<'_>,
 ) -> Result<(), SdhiError> {
     unsafe {
-        let base = port_base(port);
-        let (dmars_tx, sd_buf0) = if port == 0 {
-            (DMARS_SDHI0_TX, (SDHI0_BASE + OFF_BUF0) as u32)
+        let s = sdhi(port);
+        let dmars_tx = if port == 0 {
+            DMARS_SDHI0_TX
         } else {
-            (DMARS_SDHI1_TX, (SDHI1_BASE + OFF_BUF0) as u32)
+            DMARS_SDHI1_TX
         };
+        let sd_buf0 = s.sd_buf0().addr() as u32;
 
         // 1. Enable DMA mode BEFORE issuing the command (TRM §38.4.9).
-        reg16(base, OFF_CC_EXT_MODE).write(CC_EXT_MODE_DMASDRW);
+        s.cc_ext_mode().write_value(CC_EXT_MODE_DMASDRW);
 
         // 2. Issue command and wait for response end.
         wait_clk_stable(port);
         clear_info(port);
-        reg16(base, OFF_INFO1_MASK).write(!INFO1_RESP);
-        reg16(base, OFF_INFO2_MASK).write(!INFO2_ERR_ALL);
-        reg16(base, OFF_CMD).write(cmd_val);
+        s.sd_info1_mask().write_value(!INFO1_RESP);
+        s.sd_info2_mask().write_value(!INFO2_ERR_ALL);
+        s.sd_cmd().write_value(cmd_val);
 
         let cmd_result = wait_resp(port).await;
 
-        reg16(base, OFF_INFO1_MASK).write(0xFFFF);
-        reg16(base, OFF_INFO2_MASK).write(0xFFFF);
+        s.sd_info1_mask().write_value(0xFFFF);
+        s.sd_info2_mask().write_value(0xFFFF);
         clear_info(port);
 
         if let Err(e) = cmd_result {
-            reg16(base, OFF_CC_EXT_MODE).write(0x0000);
+            s.cc_ext_mode().write_value(0x0000);
             return Err(e);
         }
 
@@ -1119,8 +1057,8 @@ async unsafe fn write_blocks_dma(
         dma.init_register_mode(chcfg_sdhi_tx(dma.number()), sd_buf0, dmars_tx);
 
         // 4. Enable DATA_TRNS + error interrupts, then kick the DMAC.
-        reg16(base, OFF_INFO1_MASK).write(!INFO1_DATA_TRNS);
-        reg16(base, OFF_INFO2_MASK).write(!INFO2_ERR_ALL);
+        s.sd_info1_mask().write_value(!INFO1_DATA_TRNS);
+        s.sd_info2_mask().write_value(!INFO2_ERR_ALL);
         dma.start_transfer(buf as u32, count * 512);
 
         // 5. Wait for transfer complete (DATA_TRNS via SDHI interrupt).
@@ -1134,10 +1072,10 @@ async unsafe fn write_blocks_dma(
         // already released D0/CBSY and the next command can be issued safely.
 
         // 6. Restore software transfer mode.
-        reg16(base, OFF_INFO1_MASK).write(0xFFFF);
-        reg16(base, OFF_INFO2_MASK).write(0xFFFF);
+        s.sd_info1_mask().write_value(0xFFFF);
+        s.sd_info2_mask().write_value(0xFFFF);
         clear_info(port);
-        reg16(base, OFF_CC_EXT_MODE).write(0x0000);
+        s.cc_ext_mode().write_value(0x0000);
 
         data_result
     }
@@ -1159,15 +1097,13 @@ async unsafe fn write_blocks_dma(
 /// # Safety
 /// Writes SDHI registers.
 unsafe fn set_block_count(port: u8, count: u32) {
-    unsafe {
-        let base = port_base(port);
-        reg16(base, OFF_SECCNT).write(count as u16);
-        // Block-count enable (SEC, bit 8) when count > 1; otherwise disabled.
-        if count > 1 {
-            reg16(base, OFF_STOP).write(0x0100);
-        } else {
-            reg16(base, OFF_STOP).write(0x0000);
-        }
+    let s = sdhi(port);
+    s.sd_seccnt().write_value(count as u16);
+    // Block-count enable (SEC, bit 8) when count > 1; otherwise disabled.
+    if count > 1 {
+        s.sd_stop().write_value(0x0100);
+    } else {
+        s.sd_stop().write_value(0x0000);
     }
 }
 
@@ -1197,12 +1133,10 @@ async unsafe fn stop_transfer(port: u8) -> Result<(), SdhiError> {
 /// # Safety
 /// Reads SDHI INFO1 register.
 unsafe fn card_inserted(port: u8) -> bool {
-    unsafe {
-        let base = port_base(port);
-        let info1 = reg16(base, OFF_INFO1).read();
-        // INFO1_CD_LEVEL (bit 5 = INFO5): 1 = SD_CD held low = card present.
-        info1 & INFO1_CD_LEVEL != 0
-    }
+    let s = sdhi(port);
+    let info1 = s.sd_info1().read();
+    // INFO1_CD_LEVEL (bit 5 = INFO5): 1 = SD_CD held low = card present.
+    info1 & INFO1_CD_LEVEL != 0
 }
 
 /// Return `true` if the card's write-protect (lock) tab is engaged (read-only).
@@ -1217,10 +1151,8 @@ unsafe fn card_inserted(port: u8) -> bool {
 /// # Safety
 /// Reads SDHI INFO1 register.
 unsafe fn card_write_protected(port: u8) -> bool {
-    unsafe {
-        let base = port_base(port);
-        reg16(base, OFF_INFO1).read() & INFO1_WP == 0
-    }
+    let s = sdhi(port);
+    s.sd_info1().read() & INFO1_WP == 0
 }
 
 /// Consume the latched card-detect *edges* for `port`, as `(removed, inserted)`.
@@ -1242,26 +1174,24 @@ unsafe fn card_write_protected(port: u8) -> bool {
 /// # Safety
 /// Reads and writes the SDHI INFO1 register.
 unsafe fn take_card_detect_events(port: u8) -> (bool, bool) {
-    unsafe {
-        let base = port_base(port);
-        let latched = reg16(base, OFF_INFO1).read() & INFO1_DET_CD;
-        if latched != 0 {
-            // Write-0-to-clear: `!latched` writes 0 to exactly the bits we read as
-            // set and 1 (= leave alone) everywhere else, so a response or
-            // transfer-end flag that gets set between the read and this write is
-            // not cleared out from under the waiter blocked on it.
-            reg16(base, OFF_INFO1).write(!latched);
-        }
-        let st = &STATE[port as usize];
-        // Swap both before combining: `||` would short-circuit past the second
-        // swap and leave a stale sticky flag set for the next caller to re-report.
-        let sticky_removed = st.cd_removed.swap(false, Ordering::AcqRel);
-        let sticky_inserted = st.cd_inserted.swap(false, Ordering::AcqRel);
-        (
-            latched & INFO1_REM_CD != 0 || sticky_removed,
-            latched & INFO1_INS_CD != 0 || sticky_inserted,
-        )
+    let s = sdhi(port);
+    let latched = s.sd_info1().read() & INFO1_DET_CD;
+    if latched != 0 {
+        // Write-0-to-clear: `!latched` writes 0 to exactly the bits we read as
+        // set and 1 (= leave alone) everywhere else, so a response or
+        // transfer-end flag that gets set between the read and this write is
+        // not cleared out from under the waiter blocked on it.
+        s.sd_info1().write_value(!latched);
     }
+    let st = &STATE[port as usize];
+    // Swap both before combining: `||` would short-circuit past the second
+    // swap and leave a stale sticky flag set for the next caller to re-report.
+    let sticky_removed = st.cd_removed.swap(false, Ordering::AcqRel);
+    let sticky_inserted = st.cd_inserted.swap(false, Ordering::AcqRel);
+    (
+        latched & INFO1_REM_CD != 0 || sticky_removed,
+        latched & INFO1_INS_CD != 0 || sticky_inserted,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1311,14 +1241,14 @@ const POLL_TIMEOUT: u32 = 10_000_000;
 /// Must not be called concurrently on the same port.  Writes SDHI registers.
 unsafe fn send_cmd_poll(port: u8, cmd_val: u16) -> Result<(), SdhiError> {
     unsafe {
-        let base = port_base(port);
+        let s = sdhi(port);
 
         wait_clk_stable(port);
         clear_info(port);
 
         // Mask all interrupts (we poll instead).
-        reg16(base, OFF_INFO1_MASK).write(0xFFFF);
-        reg16(base, OFF_INFO2_MASK).write(0xFFFF);
+        s.sd_info1_mask().write_value(0xFFFF);
+        s.sd_info2_mask().write_value(0xFFFF);
 
         // Clear any *hardware* INFO2 status/error bits latched by the previous
         // polled transfer. clear_info() only resets the software-side
@@ -1330,27 +1260,27 @@ unsafe fn send_cmd_poll(port: u8, cmd_val: u16) -> Result<(), SdhiError> {
         // complement (matches interrupt_handler): clears exactly the currently
         // set bits and writes 1 back to reserved/unset bits (INFO2 bit 11 must
         // always be written as 1).
-        let info2 = reg16(base, OFF_INFO2).read();
-        reg16(base, OFF_INFO2).write(!info2);
+        let info2 = s.sd_info2().read();
+        s.sd_info2().write_value(!info2);
 
         // Issue command.
-        reg16(base, OFF_CMD).write(cmd_val);
+        s.sd_cmd().write_value(cmd_val);
 
         // Spin until RESP or error.
         for _ in 0..POLL_TIMEOUT {
-            let info1 = reg16(base, OFF_INFO1).read();
-            let info2 = reg16(base, OFF_INFO2).read();
+            let info1 = s.sd_info1().read();
+            let info2 = s.sd_info2().read();
 
             if info2 & INFO2_ERR_ALL != 0 {
                 // Clear before returning.
-                reg16(base, OFF_INFO1).write(!info1);
-                reg16(base, OFF_INFO2).write(!info2);
+                s.sd_info1().write_value(!info1);
+                s.sd_info2().write_value(!info2);
                 clear_info(port);
                 return check_info2_errors(info2);
             }
             if info1 & INFO1_RESP != 0 {
-                reg16(base, OFF_INFO1).write(!info1);
-                reg16(base, OFF_INFO2).write(!info2);
+                s.sd_info1().write_value(!info1);
+                s.sd_info2().write_value(!info2);
                 clear_info(port);
                 return Ok(());
             }
@@ -1371,21 +1301,21 @@ unsafe fn send_cmd_poll(port: u8, cmd_val: u16) -> Result<(), SdhiError> {
 /// Must not be called concurrently on the same port.
 unsafe fn read_blocks_poll(port: u8, buf: *mut u8, count: u32) -> Result<(), SdhiError> {
     unsafe {
-        let base = port_base(port);
+        let s = sdhi(port);
 
         let mut dst = buf;
         for _block in 0..count {
             // Wait for Buffer Read Enable (INFO2_BRE).
             let mut ready = false;
             for _ in 0..POLL_TIMEOUT {
-                let info2 = reg16(base, OFF_INFO2).read();
+                let info2 = s.sd_info2().read();
                 if info2 & INFO2_ERR_ALL != 0 {
-                    reg16(base, OFF_INFO2).write(!info2);
+                    s.sd_info2().write_value(!info2);
                     return check_info2_errors(info2);
                 }
                 if info2 & INFO2_BRE != 0 {
                     // Clear only BRE.
-                    reg16(base, OFF_INFO2).write(!(INFO2_BRE));
+                    s.sd_info2().write_value(!(INFO2_BRE));
                     ready = true;
                     break;
                 }
@@ -1395,7 +1325,7 @@ unsafe fn read_blocks_poll(port: u8, buf: *mut u8, count: u32) -> Result<(), Sdh
             }
 
             // Drain 512 bytes from 32-bit FIFO (128 × 32-bit reads).
-            let fifo = reg32(base, OFF_BUF0);
+            let fifo = s.sd_buf0();
             for w in 0..128usize {
                 let word = fifo.read();
                 let p = dst.add(w * 4) as *mut u32;
@@ -1406,15 +1336,15 @@ unsafe fn read_blocks_poll(port: u8, buf: *mut u8, count: u32) -> Result<(), Sdh
 
         // Wait for access end (INFO1_DATA_TRNS).
         for _ in 0..POLL_TIMEOUT {
-            let info2 = reg16(base, OFF_INFO2).read();
+            let info2 = s.sd_info2().read();
             if info2 & INFO2_ERR_ALL != 0 {
-                reg16(base, OFF_INFO2).write(!info2);
+                s.sd_info2().write_value(!info2);
                 return check_info2_errors(info2);
             }
-            let info1 = reg16(base, OFF_INFO1).read();
+            let info1 = s.sd_info1().read();
             if info1 & INFO1_DATA_TRNS != 0 {
-                reg16(base, OFF_INFO1).write(!info1);
-                reg16(base, OFF_INFO2).write(!info2);
+                s.sd_info1().write_value(!info1);
+                s.sd_info2().write_value(!info2);
                 return Ok(());
             }
         }
@@ -1431,20 +1361,20 @@ unsafe fn read_blocks_poll(port: u8, buf: *mut u8, count: u32) -> Result<(), Sdh
 /// Must not be called concurrently on the same port.
 unsafe fn write_blocks_poll(port: u8, buf: *const u8, count: u32) -> Result<(), SdhiError> {
     unsafe {
-        let base = port_base(port);
+        let s = sdhi(port);
 
         let mut src = buf;
         for _block in 0..count {
             // Wait for Buffer Write Enable (INFO2_BWE).
             let mut ready = false;
             for _ in 0..POLL_TIMEOUT {
-                let info2 = reg16(base, OFF_INFO2).read();
+                let info2 = s.sd_info2().read();
                 if info2 & INFO2_ERR_ALL != 0 {
-                    reg16(base, OFF_INFO2).write(!info2);
+                    s.sd_info2().write_value(!info2);
                     return check_info2_errors(info2);
                 }
                 if info2 & INFO2_BWE != 0 {
-                    reg16(base, OFF_INFO2).write(!(INFO2_BWE));
+                    s.sd_info2().write_value(!(INFO2_BWE));
                     ready = true;
                     break;
                 }
@@ -1454,25 +1384,25 @@ unsafe fn write_blocks_poll(port: u8, buf: *const u8, count: u32) -> Result<(), 
             }
 
             // Fill 512 bytes into 32-bit FIFO (128 × 32-bit writes).
-            let fifo = reg32(base, OFF_BUF0);
+            let fifo = s.sd_buf0();
             for w in 0..128usize {
                 let p = src.add(w * 4) as *const u32;
-                fifo.write(p.read_unaligned());
+                fifo.write_value(p.read_unaligned());
             }
             src = src.add(512);
         }
 
         // Wait for access end.
         for _ in 0..POLL_TIMEOUT {
-            let info2 = reg16(base, OFF_INFO2).read();
+            let info2 = s.sd_info2().read();
             if info2 & INFO2_ERR_ALL != 0 {
-                reg16(base, OFF_INFO2).write(!info2);
+                s.sd_info2().write_value(!info2);
                 return check_info2_errors(info2);
             }
-            let info1 = reg16(base, OFF_INFO1).read();
+            let info1 = s.sd_info1().read();
             if info1 & INFO1_DATA_TRNS != 0 {
-                reg16(base, OFF_INFO1).write(!info1);
-                reg16(base, OFF_INFO2).write(!info2);
+                s.sd_info1().write_value(!info1);
+                s.sd_info2().write_value(!info2);
                 return Ok(());
             }
         }
@@ -1756,37 +1686,62 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sdhi1_base_address() {
-        assert_eq!(SDHI1_BASE, 0xE804_E800);
-    }
-
-    #[test]
-    fn register_offsets() {
-        // Verify register byte offsets from TRM table 38.2
-        // (SDHI0 base = H'E804_E000; offsets are absolute byte distances)
-        assert_eq!(OFF_CMD, 0x00);
-        assert_eq!(OFF_ARG0, 0x04);
-        assert_eq!(OFF_ARG1, 0x06);
-        assert_eq!(OFF_STOP, 0x08);
-        assert_eq!(OFF_SECCNT, 0x0A);
-        assert_eq!(OFF_RESP0, 0x0C);
-        assert_eq!(OFF_RESP1, 0x0E);
-        assert_eq!(OFF_INFO1, 0x1C);
-        assert_eq!(OFF_INFO2, 0x1E);
-        assert_eq!(OFF_INFO1_MASK, 0x20);
-        assert_eq!(OFF_INFO2_MASK, 0x22);
-        assert_eq!(OFF_CLK_CTRL, 0x24);
-        assert_eq!(OFF_SIZE, 0x26);
-        assert_eq!(OFF_OPTION, 0x28);
-        assert_eq!(OFF_ERR_STS1, 0x2C);
-        assert_eq!(OFF_ERR_STS2, 0x2E);
-        assert_eq!(OFF_BUF0, 0x30);
-        assert_eq!(OFF_SDIO_MODE, 0x34);
-        assert_eq!(OFF_SDIO_INFO1, 0x36);
-        assert_eq!(OFF_SDIO_INFO1_MASK, 0x38);
-        assert_eq!(OFF_CC_EXT_MODE, 0xD8);
-        assert_eq!(OFF_SOFT_RST, 0xE0);
-        assert_eq!(OFF_EXT_SWAP, 0xF0);
+    fn the_pac_names_the_same_sdhi_registers() {
+        for (port, base) in [(0u8, 0xE804_E000usize), (1, 0xE804_E800)] {
+            let s = sdhi(port);
+            let got = [
+                (s.sd_cmd().addr(), s.sd_cmd().width()),
+                (s.sd_arg0().addr(), s.sd_arg0().width()),
+                (s.sd_arg1().addr(), s.sd_arg1().width()),
+                (s.sd_stop().addr(), s.sd_stop().width()),
+                (s.sd_seccnt().addr(), s.sd_seccnt().width()),
+                (s.sd_rsp00().addr(), s.sd_rsp00().width()),
+                (s.sd_rsp07().addr(), s.sd_rsp07().width()),
+                (s.sd_info1().addr(), s.sd_info1().width()),
+                (s.sd_info2().addr(), s.sd_info2().width()),
+                (s.sd_info1_mask().addr(), s.sd_info1_mask().width()),
+                (s.sd_info2_mask().addr(), s.sd_info2_mask().width()),
+                (s.sd_clk_ctrl().addr(), s.sd_clk_ctrl().width()),
+                (s.sd_size().addr(), s.sd_size().width()),
+                (s.sd_option().addr(), s.sd_option().width()),
+                (s.sd_err_sts1().addr(), s.sd_err_sts1().width()),
+                (s.sd_err_sts2().addr(), s.sd_err_sts2().width()),
+                (s.sd_buf0().addr(), s.sd_buf0().width()),
+                (s.sdio_mode().addr(), s.sdio_mode().width()),
+                (s.sdio_info1().addr(), s.sdio_info1().width()),
+                (s.sdio_info1_mask().addr(), s.sdio_info1_mask().width()),
+                (s.cc_ext_mode().addr(), s.cc_ext_mode().width()),
+                (s.soft_rst().addr(), s.soft_rst().width()),
+                (s.ext_swap().addr(), s.ext_swap().width()),
+            ];
+            let want = [
+                (base, 2),
+                (base + 0x04, 2),
+                (base + 0x06, 2),
+                (base + 0x08, 2),
+                (base + 0x0A, 2),
+                (base + 0x0C, 2),
+                (base + 0x1A, 2),
+                (base + 0x1C, 2),
+                (base + 0x1E, 2),
+                (base + 0x20, 2),
+                (base + 0x22, 2),
+                (base + 0x24, 2),
+                (base + 0x26, 2),
+                (base + 0x28, 2),
+                (base + 0x2C, 2),
+                (base + 0x2E, 2),
+                (base + 0x30, 4),
+                (base + 0x34, 2),
+                (base + 0x36, 2),
+                (base + 0x38, 2),
+                (base + 0xD8, 2),
+                (base + 0xE0, 2),
+                (base + 0xF0, 2),
+            ];
+            assert_eq!(got, want, "SDHI{port}");
+        }
+        assert_eq!(crate::pac::CPG.stbcr12().addr(), 0xFCFE_0444);
     }
 
     #[test]
@@ -1853,12 +1808,12 @@ mod typed_tests {
     #[test]
     fn a_controller_comes_up_clocked_reset_and_bound_with_sdio_masked() {
         test::reset();
-        test::poke8(STBCR12, 0xFF);
+        test::poke8(0xFCFE_0444, 0xFF);
         let _sdhi = sdhi1();
         // SDHI1's clocks (STBCR12 bits 1:0) run; SDHI0's stay stopped.
-        assert_eq!(test::peek8(STBCR12), 0xFF & !STBCR12_SDHI1_MASK);
-        assert_eq!(test::peek16(SDHI1_BASE + OFF_OPTION), 0x00BD);
-        assert_eq!(test::peek16(SDHI1_BASE + OFF_SIZE), 512);
+        assert_eq!(test::peek8(0xFCFE_0444), 0xFF & !STBCR12_SDHI1_MASK);
+        assert_eq!(test::peek16(0xE804_E828), 0x00BD);
+        assert_eq!(test::peek16(0xE804_E826), 512);
         assert!(crate::gic::handler(305).is_some(), "status bound");
         assert!(crate::gic::handler(306).is_some(), "operation bound");
         // SDIO (307) is neither bound nor enabled: GICD_ISENABLER9 (0xE820_1124) bit 307-288=19.
@@ -1870,9 +1825,9 @@ mod typed_tests {
     fn card_detect_reads_info1_of_its_own_port() {
         test::reset();
         let sdhi = sdhi1();
-        test::poke16(SDHI1_BASE + OFF_INFO1, INFO1_CD_LEVEL);
+        test::poke16(0xE804_E81C, INFO1_CD_LEVEL);
         assert!(sdhi.card_inserted());
-        test::poke16(SDHI1_BASE + OFF_INFO1, 0);
+        test::poke16(0xE804_E81C, 0);
         assert!(!sdhi.card_inserted());
     }
     #[test]
@@ -1881,16 +1836,16 @@ mod typed_tests {
         let sdhi = sdhi1();
         // The previous card ran at the High-Speed clock with an odd block size.
         sdhi.set_clock_div(CLK_DIV_2);
-        test::poke16(SDHI1_BASE + OFF_SIZE, 64);
-        test::poke16(SDHI1_BASE + OFF_OPTION, 0);
+        test::poke16(0xE804_E826, 64);
+        test::poke16(0xE804_E828, 0);
         sdhi.reset();
         assert_eq!(
-            test::peek16(SDHI1_BASE + OFF_CLK_CTRL),
+            test::peek16(0xE804_E824),
             CLK_DIV_512 | CLK_ENABLE,
             "re-identification runs at P1/512"
         );
-        assert_eq!(test::peek16(SDHI1_BASE + OFF_SIZE), 512);
-        assert_eq!(test::peek16(SDHI1_BASE + OFF_OPTION), 0x00BD);
-        assert_eq!(test::peek16(SDHI1_BASE + OFF_SOFT_RST), SOFT_RST_DEASSERT);
+        assert_eq!(test::peek16(0xE804_E826), 512);
+        assert_eq!(test::peek16(0xE804_E828), 0x00BD);
+        assert_eq!(test::peek16(0xE804_E8E0), SOFT_RST_DEASSERT);
     }
 }

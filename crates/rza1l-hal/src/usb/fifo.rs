@@ -21,63 +21,54 @@
 
 use super::regs::{
     FIFOCTR_BCLR, FIFOCTR_BVAL, FIFOCTR_DTLN_MASK, FIFOCTR_FRDY, FIFOSEL_CURPIPE_MASK,
-    FIFOSEL_MBW_MASK, FIFOSEL_MBW_SHIFT, MBW_32, Rusb1Regs, rd, rd32, wr, wr32,
+    FIFOSEL_MBW_MASK, FIFOSEL_MBW_SHIFT, MBW_32,
 };
+use crate::pac::common::{RW, Reg};
+use crate::pac::usb::Usb;
 
-/// Hardware FIFO port: data register + SEL register + CTR register.
+/// Hardware FIFO port: data register, its byte lanes, SEL register and CTR register.
 pub struct FifoPort {
-    /// Pointer to the 32-bit data register (CFIFO / D0FIFO / D1FIFO).
-    pub data: *mut u32,
-    /// Pointer to the 16-bit select register (CFIFOSEL / D0FIFOSEL / D1FIFOSEL).
-    pub sel: *mut u16,
-    /// Pointer to the 16-bit control register (CFIFOCTR / D0FIFOCTR / D1FIFOCTR).
-    pub ctr: *mut u16,
+    /// The 32-bit data register (CFIFO / D0FIFO / D1FIFO).
+    pub data: Reg<u32, RW>,
+    /// The data register's four byte lanes, at byte addresses `data + 0` … `data + 3`.
+    pub lanes: [Reg<u8, RW>; 4],
+    /// The 16-bit select register (CFIFOSEL / D0FIFOSEL / D1FIFOSEL).
+    pub sel: Reg<u16, RW>,
+    /// The 16-bit control register (CFIFOCTR / D0FIFOCTR / D1FIFOCTR).
+    pub ctr: Reg<u16, RW>,
 }
 
-// Safety: FifoPort is a bundle of raw pointers to memory-mapped registers.
-// All access is unsafe and protected by the caller.
+// Safety: FifoPort names memory-mapped registers; it holds no memory of its own.
 unsafe impl Send for FifoPort {}
 
 impl FifoPort {
-    /// Construct the CFIFO port from a register block pointer.
-    ///
-    /// # Safety
-    /// `regs` must be a valid pointer to the USB register block for the active port.
-    pub unsafe fn cfifo(regs: *mut Rusb1Regs) -> Self {
-        unsafe {
-            Self {
-                data: core::ptr::addr_of_mut!((*regs).cfifo),
-                sel: core::ptr::addr_of_mut!((*regs).cfifosel),
-                ctr: core::ptr::addr_of_mut!((*regs).cfifoctr),
-            }
+    /// The CFIFO port of USB port `u`.
+    pub fn cfifo(u: Usb) -> Self {
+        Self {
+            data: u.cfifo(),
+            lanes: [u.cfifo_b(0), u.cfifo_b(1), u.cfifo_b(2), u.cfifo_b(3)],
+            sel: u.cfifosel(),
+            ctr: u.cfifoctr(),
         }
     }
 
-    /// Construct the D0FIFO port.
-    ///
-    /// # Safety
-    /// Same as [`Self::cfifo`].
-    pub unsafe fn d0fifo(regs: *mut Rusb1Regs) -> Self {
-        unsafe {
-            Self {
-                data: core::ptr::addr_of_mut!((*regs).d0fifo),
-                sel: core::ptr::addr_of_mut!((*regs).d0fifosel),
-                ctr: core::ptr::addr_of_mut!((*regs).d0fifoctr),
-            }
+    /// The D0FIFO port of USB port `u`.
+    pub fn d0fifo(u: Usb) -> Self {
+        Self {
+            data: u.d0fifo(),
+            lanes: [u.d0fifo_b(0), u.d0fifo_b(1), u.d0fifo_b(2), u.d0fifo_b(3)],
+            sel: u.d0fifosel(),
+            ctr: u.d0fifoctr(),
         }
     }
 
-    /// Construct the D1FIFO port.
-    ///
-    /// # Safety
-    /// Same as [`Self::cfifo`].
-    pub unsafe fn d1fifo(regs: *mut Rusb1Regs) -> Self {
-        unsafe {
-            Self {
-                data: core::ptr::addr_of_mut!((*regs).d1fifo),
-                sel: core::ptr::addr_of_mut!((*regs).d1fifosel),
-                ctr: core::ptr::addr_of_mut!((*regs).d1fifoctr),
-            }
+    /// The D1FIFO port of USB port `u`.
+    pub fn d1fifo(u: Usb) -> Self {
+        Self {
+            data: u.d1fifo(),
+            lanes: [u.d1fifo_b(0), u.d1fifo_b(1), u.d1fifo_b(2), u.d1fifo_b(3)],
+            sel: u.d1fifosel(),
+            ctr: u.d1fifoctr(),
         }
     }
 }
@@ -89,16 +80,11 @@ impl FifoPort {
 /// Return the correct [`FifoPort`] for `pipe_num`.
 ///
 /// Routing: pipe 0 → CFIFO, pipes 1-2 → D0FIFO, pipes 3+ → D1FIFO.
-///
-/// # Safety
-/// `regs` must be valid.
-pub unsafe fn fifo_for_pipe(regs: *mut Rusb1Regs, pipe_num: usize) -> FifoPort {
-    unsafe {
-        match pipe_num {
-            0 => FifoPort::cfifo(regs),
-            1 | 2 => FifoPort::d0fifo(regs),
-            _ => FifoPort::d1fifo(regs),
-        }
+pub fn fifo_for_pipe(u: Usb, pipe_num: usize) -> FifoPort {
+    match pipe_num {
+        0 => FifoPort::cfifo(u),
+        1 | 2 => FifoPort::d0fifo(u),
+        _ => FifoPort::d1fifo(u),
     }
 }
 
@@ -107,17 +93,8 @@ pub unsafe fn fifo_for_pipe(regs: *mut Rusb1Regs, pipe_num: usize) -> FifoPort {
 // ---------------------------------------------------------------------------
 
 /// Change the MBW field in a FIFO SEL register without touching other bits.
-///
-/// # Safety
-/// `sel` must be a valid pointer to a FIFO select register.
-unsafe fn set_mbw(sel: *mut u16, mbw: u16) {
-    unsafe {
-        let cur = rd(sel);
-        wr(
-            sel,
-            (cur & !FIFOSEL_MBW_MASK) | ((mbw << FIFOSEL_MBW_SHIFT) & FIFOSEL_MBW_MASK),
-        );
-    }
+fn set_mbw(sel: Reg<u16, RW>, mbw: u16) {
+    sel.modify(|r| *r = (*r & !FIFOSEL_MBW_MASK) | ((mbw << FIFOSEL_MBW_SHIFT) & FIFOSEL_MBW_MASK));
 }
 
 // ---------------------------------------------------------------------------
@@ -134,23 +111,21 @@ unsafe fn set_mbw(sel: *mut u16, mbw: u16) {
 /// # Safety
 /// `fifo` fields must be valid register pointers.
 pub unsafe fn fifo_is_ready(fifo: &FifoPort, pipe_num: usize) -> bool {
-    unsafe {
-        // Confirm CURPIPE has latched to the requested pipe (TRM §28: after a
-        // CURPIPE write, read it back to confirm it updated), then poll FRDY.
-        // Correct selection — including the deselect-first dance the TRM mandates
-        // when switching to a *receiving* pipe — is handled by the caller via
-        // `fifo_select_recv` so the port can't surface the prior pipe's data.
-        for _ in 0..64 {
-            let sel = rd(fifo.sel);
-            if (sel & FIFOSEL_CURPIPE_MASK) as usize != pipe_num {
-                continue;
-            }
-            if (rd(fifo.ctr) & FIFOCTR_FRDY) != 0 {
-                return true;
-            }
+    // Confirm CURPIPE has latched to the requested pipe (TRM §28: after a
+    // CURPIPE write, read it back to confirm it updated), then poll FRDY.
+    // Correct selection — including the deselect-first dance the TRM mandates
+    // when switching to a *receiving* pipe — is handled by the caller via
+    // `fifo_select_recv` so the port can't surface the prior pipe's data.
+    for _ in 0..64 {
+        let sel = fifo.sel.read();
+        if (sel & FIFOSEL_CURPIPE_MASK) as usize != pipe_num {
+            continue;
         }
-        false
+        if (fifo.ctr.read() & FIFOCTR_FRDY) != 0 {
+            return true;
+        }
     }
+    false
 }
 
 /// Select a **receiving-direction** (OUT) pipe on a DnFIFO port, following the
@@ -169,7 +144,7 @@ pub unsafe fn fifo_select_recv(fifo: &FifoPort, pipe_num: usize) {
         // Step 1: deselect (CURPIPE = 0 → "no pipe" on D0/D1FIFO) and confirm.
         fifo_select_pipe(fifo, 0, false);
         for _ in 0..64 {
-            if (rd(fifo.sel) & FIFOSEL_CURPIPE_MASK) == 0 {
+            if (fifo.sel.read() & FIFOSEL_CURPIPE_MASK) == 0 {
                 break;
             }
         }
@@ -183,7 +158,7 @@ pub unsafe fn fifo_select_recv(fifo: &FifoPort, pipe_num: usize) {
 /// # Safety
 /// `fifo` must be valid.
 pub unsafe fn fifo_dtln(fifo: &FifoPort) -> u16 {
-    unsafe { rd(fifo.ctr) & FIFOCTR_DTLN_MASK }
+    fifo.ctr.read() & FIFOCTR_DTLN_MASK
 }
 
 /// Issue BCLR (clear the FIFO buffer) on `fifo`.
@@ -191,9 +166,7 @@ pub unsafe fn fifo_dtln(fifo: &FifoPort) -> u16 {
 /// # Safety
 /// `fifo` must be valid.
 pub unsafe fn fifo_bclr(fifo: &FifoPort) {
-    unsafe {
-        wr(fifo.ctr, FIFOCTR_BCLR);
-    }
+    fifo.ctr.write_value(FIFOCTR_BCLR);
 }
 
 /// Issue BVAL (commit the write buffer) on `fifo`.
@@ -201,9 +174,7 @@ pub unsafe fn fifo_bclr(fifo: &FifoPort) {
 /// # Safety
 /// `fifo` must be valid.
 pub unsafe fn fifo_bval(fifo: &FifoPort) {
-    unsafe {
-        wr(fifo.ctr, FIFOCTR_BVAL);
-    }
+    fifo.ctr.write_value(FIFOCTR_BVAL);
 }
 
 // ---------------------------------------------------------------------------
@@ -218,7 +189,7 @@ pub unsafe fn fifo_bval(fifo: &FifoPort) {
 /// `dcd_rusb1.c` uses the wrong tail lane.
 ///
 /// # Safety
-/// - `fifo.data` / `fifo.sel` must be valid.
+/// - `buf` must be valid for `len` byte reads.
 /// - The FIFO must have been selected via [`fifo_select_pipe`] (CURPIPE + MBW=32)
 ///   before calling.
 pub unsafe fn sw_to_hw_fifo(fifo: &FifoPort, buf: *const u8, len: usize) {
@@ -236,7 +207,7 @@ pub unsafe fn sw_to_hw_fifo(fifo: &FifoPort, buf: *const u8, len: usize) {
         let mut rem = len;
         while rem >= 4 {
             let w = (p as *const u32).read_unaligned();
-            wr32(fifo.data, w);
+            fifo.data.write_value(w);
             p = p.add(4);
             rem -= 4;
         }
@@ -247,15 +218,14 @@ pub unsafe fn sw_to_hw_fifo(fifo: &FifoPort, buf: *const u8, len: usize) {
         // Do NOT narrow MBW: leave it at 32 and emit each remaining byte as an
         // 8-bit store to the correct byte lane.  Per TRM Table 28.9 (8-bit
         // access, BIGEND=0) the valid byte for the RZ/A1L sits on bits[31:24],
-        // i.e. CPU byte-address `base + 3`.  As in the Linux `renesas_usbhs` PIO
+        // i.e. CPU byte-address `data + 3`.  As in the Linux `renesas_usbhs` PIO
         // push (cfifo_byte_addr=0 → `addr + (3 - (i & 3))`), byte `i` of the
         // tail goes to lane `3 - (i & 3)`.  A byte in bits[7:0] would be
         // ignored: the hardware latches bits[31:24].
         if rem > 0 {
-            let base = fifo.data as *mut u8;
             let mut i = 0usize;
             while rem > 0 {
-                core::ptr::write_volatile(base.add(3 - (i & 3)), *p);
+                fifo.lanes[3 - (i & 3)].write_value(*p);
                 p = p.add(1);
                 rem -= 1;
                 i += 1;
@@ -275,7 +245,7 @@ pub unsafe fn sw_to_hw_fifo(fifo: &FifoPort, buf: *const u8, len: usize) {
 /// extra word read.
 ///
 /// # Safety
-/// - `fifo.data` / `fifo.sel` must be valid.
+/// - `buf` must be valid for `len` byte writes.
 /// - The FIFO must have been selected with [`fifo_select_pipe`] (CURPIPE +
 ///   MBW=32) before calling.
 pub unsafe fn hw_to_sw_fifo(fifo: &FifoPort, buf: *mut u8, len: usize) {
@@ -292,7 +262,7 @@ pub unsafe fn hw_to_sw_fifo(fifo: &FifoPort, buf: *mut u8, len: usize) {
         let mut p = buf;
         let mut rem = len;
         while rem >= 4 {
-            let w = rd32(fifo.data);
+            let w = fifo.data.read();
             (p as *mut u32).write_unaligned(w);
             p = p.add(4);
             rem -= 4;
@@ -303,7 +273,7 @@ pub unsafe fn hw_to_sw_fifo(fifo: &FifoPort, buf: *mut u8, len: usize) {
         // that is just the 31-byte CBW, whose packet length equals the FIFO's
         // valid byte count, so the over-read is discarded by the caller's BCLR.
         if rem > 0 {
-            let bytes = rd32(fifo.data).to_le_bytes();
+            let bytes = fifo.data.read().to_le_bytes();
             let mut i = 0;
             while i < rem {
                 *p.add(i) = bytes[i];
@@ -330,39 +300,33 @@ pub unsafe fn hw_to_sw_fifo(fifo: &FifoPort, buf: *mut u8, len: usize) {
 /// # Safety
 /// `fifo.sel` must be valid.
 pub unsafe fn fifo_select_pipe(fifo: &FifoPort, pipe_num: usize, isel: bool) {
-    unsafe {
-        // ISEL selects the access direction for the *bidirectional* DCP buffer
-        // only (CFIFO / pipe 0); see TRM §28.3 "The ISEL bit determines this only
-        // for the DCP", and regs `FIFOSEL_ISEL` ("CFIFOSEL only").  For D0/D1FIFO
-        // the direction is fixed by PIPECFG.DIR, and writing the ISEL bit there
-        // flips the FIFO-port DIR, raising a *spurious* BRDY on every IN select
-        // (TRM §28.4.2(2): "DIR bit changed 0→1").  That spurious BRDY marks the
-        // single-packet IN transfer complete before the host has actually read
-        // it, so `write()` returns early.  Only set it for the DCP.
-        let isel_bit: u16 = if isel && pipe_num == 0 { 0x0020 } else { 0 };
-        // 32-bit access for both directions; the copy routines handle any
-        // non-word-aligned tail.
-        let val: u16 = (pipe_num as u16) | (MBW_32 << FIFOSEL_MBW_SHIFT) | isel_bit;
-        wr(fifo.sel, val);
-    }
+    // ISEL selects the access direction for the *bidirectional* DCP buffer
+    // only (CFIFO / pipe 0); see TRM §28.3 "The ISEL bit determines this only
+    // for the DCP", and regs `FIFOSEL_ISEL` ("CFIFOSEL only").  For D0/D1FIFO
+    // the direction is fixed by PIPECFG.DIR, and writing the ISEL bit there
+    // flips the FIFO-port DIR, raising a *spurious* BRDY on every IN select
+    // (TRM §28.4.2(2): "DIR bit changed 0→1").  That spurious BRDY marks the
+    // single-packet IN transfer complete before the host has actually read
+    // it, so `write()` returns early.  Only set it for the DCP.
+    let isel_bit: u16 = if isel && pipe_num == 0 { 0x0020 } else { 0 };
+    // 32-bit access for both directions; the copy routines handle any
+    // non-word-aligned tail.
+    let val: u16 = (pipe_num as u16) | (MBW_32 << FIFOSEL_MBW_SHIFT) | isel_bit;
+    fifo.sel.write_value(val);
 }
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
     use super::*;
+    use crate::mmio::test;
+    use crate::usb::regs::usb;
 
     #[test]
     fn sw_to_hw_roundtrip() {
-        // Mock FIFO register: checks that the unaligned source reads in
-        // sw_to_hw_fifo don't panic for any length.
+        // The unaligned source reads in sw_to_hw_fifo don't panic for any length.
+        test::reset();
         let src = [0x01u8, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
-        let mut dest = 0u32;
-        let fifo = FifoPort {
-            data: &mut dest as *mut u32,
-            sel: &mut 0u16 as *mut u16,
-            ctr: &mut 0u16 as *mut u16,
-        };
-        // Just verify it doesn't panic for each length up to 7.
+        let fifo = FifoPort::cfifo(usb(0));
         for len in 0..=7 {
             unsafe {
                 sw_to_hw_fifo(&fifo, src.as_ptr(), len);
@@ -375,41 +339,54 @@ mod tests {
         // TRM Table 28.9 (8-bit access, BIGEND=0): the valid byte lane for the
         // RZ/A1L is bits[31:24] = CPU byte-address base+3, and tail byte `i`
         // lands on lane `3 - (i & 3)` (matching Linux renesas_usbhs,
-        // cfifo_byte_addr=0).  Use a 4-byte scratch word as the mock FIFO data
-        // register and write a pure 3-byte tail (no 4-byte body).
-        let word_store = 0u32;
-        let mut sel = (MBW_32 << FIFOSEL_MBW_SHIFT) as u16;
-        let fifo = FifoPort {
-            data: &word_store as *const u32 as *mut u32,
-            sel: &mut sel as *mut u16,
-            ctr: &mut 0u16 as *mut u16,
-        };
+        // cfifo_byte_addr=0).  Write a pure 3-byte tail (no 4-byte body) to CFIFO.
+        test::reset();
+        let fifo = FifoPort::cfifo(usb(0));
         let src = [0xAAu8, 0xBB, 0xCC];
         unsafe { sw_to_hw_fifo(&fifo, src.as_ptr(), 3) };
-        // Bytes of the mock register in memory order (little-endian): index k is
-        // CPU byte-address base+k.  src[0]→lane3, src[1]→lane2, src[2]→lane1.
-        let bytes = word_store.to_le_bytes();
+        // src[0]→lane3, src[1]→lane2, src[2]→lane1.
         assert_eq!(
-            bytes[3], 0xAA,
+            test::peek8(0xE801_0017),
+            0xAA,
             "tail byte 0 must land on lane 3 (bits[31:24])"
         );
-        assert_eq!(bytes[2], 0xBB, "tail byte 1 must land on lane 2");
-        assert_eq!(bytes[1], 0xCC, "tail byte 2 must land on lane 1");
         assert_eq!(
-            bytes[0], 0x00,
+            test::peek8(0xE801_0016),
+            0xBB,
+            "tail byte 1 must land on lane 2"
+        );
+        assert_eq!(
+            test::peek8(0xE801_0015),
+            0xCC,
+            "tail byte 2 must land on lane 1"
+        );
+        assert_eq!(
+            test::peek8(0xE801_0014),
+            0x00,
             "lane 0 (bits[7:0]) is the prohibited lane, untouched"
         );
     }
 
     #[test]
+    fn a_packet_tail_goes_to_cfifo_byte_lanes_through_the_seam() {
+        test::reset();
+        let port = FifoPort::cfifo(usb(0));
+        unsafe { sw_to_hw_fifo(&port, [1u8, 2, 3, 4, 5, 6].as_ptr(), 6) };
+        let w: Vec<_> = test::log()
+            .iter()
+            .filter(|a| a.write && (0xE801_0014..0xE801_0018).contains(&a.addr))
+            .map(|a| (a.addr, a.width))
+            .collect();
+        // One 32-bit word, then bytes 5 and 6 into lanes 3 and 2 (BIGEND clear).
+        assert_eq!(w, [(0xE801_0014, 4), (0xE801_0017, 1), (0xE801_0016, 1)]);
+    }
+
+    #[test]
     fn hw_to_sw_sub_word() {
         // Sub-word tail: one word read at MBW=32, low bytes extracted.
-        let word: u32 = 0x04030201;
-        let fifo = FifoPort {
-            data: &word as *const u32 as *mut u32,
-            sel: &mut 0u16 as *mut u16,
-            ctr: &mut 0u16 as *mut u16,
-        };
+        test::reset();
+        test::poke32(0xE801_0014, 0x0403_0201);
+        let fifo = FifoPort::cfifo(usb(0));
         let mut buf = [0u8; 3];
         unsafe {
             hw_to_sw_fifo(&fifo, buf.as_mut_ptr(), 3);

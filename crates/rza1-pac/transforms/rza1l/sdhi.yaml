@@ -1,0 +1,43 @@
+transforms:
+  # SDHI0/1, which the vendor SVD omits: a hand-written block from the RZ/A1L manual's Table 46.1
+  # (R01UH0437EJ0700, SD host interface). The RZ/A1L manual check covers it.
+  - !Add
+    ir:
+      "block/SDHI::SDHI":
+        description: "SD host interface (RZ/A1L hardware manual §38)."
+        items:
+          - {name: SD_CMD, description: "Command type register.", byte_offset: 0x000, bit_size: 16}
+          - {name: SD_ARG0, description: "SD command argument register 0.", byte_offset: 0x004, bit_size: 16}
+          - {name: SD_ARG1, description: "SD command argument register 1.", byte_offset: 0x006, bit_size: 16}
+          - {name: SD_STOP, description: "Data stop register.", byte_offset: 0x008, bit_size: 16}
+          - {name: SD_SECCNT, description: "Block count register.", byte_offset: 0x00A, bit_size: 16}
+          - {name: SD_RSP00, description: "SD card response register 00.", byte_offset: 0x00C, bit_size: 16}
+          - {name: SD_RSP01, description: "SD card response register 01.", byte_offset: 0x00E, bit_size: 16}
+          - {name: SD_RSP02, description: "SD card response register 02.", byte_offset: 0x010, bit_size: 16}
+          - {name: SD_RSP03, description: "SD card response register 03.", byte_offset: 0x012, bit_size: 16}
+          - {name: SD_RSP04, description: "SD card response register 04.", byte_offset: 0x014, bit_size: 16}
+          - {name: SD_RSP05, description: "SD card response register 05.", byte_offset: 0x016, bit_size: 16}
+          - {name: SD_RSP06, description: "SD card response register 06.", byte_offset: 0x018, bit_size: 16}
+          - {name: SD_RSP07, description: "SD card response register 07.", byte_offset: 0x01A, bit_size: 16}
+          - {name: SD_INFO1, description: "SD card interrupt flag register 1.", byte_offset: 0x01C, bit_size: 16}
+          - {name: SD_INFO2, description: "SD card interrupt flag register 2.", byte_offset: 0x01E, bit_size: 16}
+          - {name: SD_INFO1_MASK, description: "SD_INFO1 interrupt mask register.", byte_offset: 0x020, bit_size: 16}
+          - {name: SD_INFO2_MASK, description: "SD_INFO2 interrupt mask register.", byte_offset: 0x022, bit_size: 16}
+          - {name: SD_CLK_CTRL, description: "SD clock control register.", byte_offset: 0x024, bit_size: 16}
+          - {name: SD_SIZE, description: "Transfer data length register.", byte_offset: 0x026, bit_size: 16}
+          - {name: SD_OPTION, description: "SD card access control option register.", byte_offset: 0x028, bit_size: 16}
+          - {name: SD_ERR_STS1, description: "SD error status register 1.", byte_offset: 0x02C, bit_size: 16}
+          - {name: SD_ERR_STS2, description: "SD error status register 2.", byte_offset: 0x02E, bit_size: 16}
+          - {name: SD_BUF0, description: "SD buffer read/write register.", byte_offset: 0x030, bit_size: 32}
+          - {name: SDIO_MODE, description: "SDIO mode control register.", byte_offset: 0x034, bit_size: 16}
+          - {name: SDIO_INFO1, description: "SDIO interrupt flag register.", byte_offset: 0x036, bit_size: 16}
+          - {name: SDIO_INFO1_MASK, description: "SDIO_INFO1 interrupt mask register.", byte_offset: 0x038, bit_size: 16}
+          - {name: CC_EXT_MODE, description: "DMA mode enable register.", byte_offset: 0x0D8, bit_size: 16}
+          - {name: SOFT_RST, description: "Software reset register.", byte_offset: 0x0E0, bit_size: 16}
+          - {name: VERSION, description: "Version register.", byte_offset: 0x0E2, bit_size: 16}
+          - {name: EXT_SWAP, description: "Swap control register.", byte_offset: 0x0F0, bit_size: 16}
+  - !AddPeripherals
+    devices: .*
+    peripherals:
+      - {name: SDHI0, base_address: 0xE804E000, block: "SDHI::SDHI"}
+      - {name: SDHI1, base_address: 0xE804E800, block: "SDHI::SDHI"}

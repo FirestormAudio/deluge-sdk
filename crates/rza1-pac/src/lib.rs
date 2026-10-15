@@ -80,4 +80,47 @@ mod tests {
         write_only(OSTM0.ts());
         write_only(OSTM0.tt());
     }
+
+    #[test]
+    fn dmac_channels_8_to_15_sit_past_the_group_gap() {
+        assert_eq!((DMAC.ch(0).n0sa().addr(), DMAC.ch(0).n0sa().width()), (0xE820_0000, 4));
+        assert_eq!(DMAC.ch(7).chctrl().addr(), 0xE820_0000 + 7 * 64 + 0x28);
+        assert_eq!(DMAC.ch(8).chctrl().addr(), 0xE820_0000 + 8 * 64 + 0x200 + 0x28);
+        assert_eq!(DMAC.ch(15).nxla().addr(), 0xE820_0000 + 15 * 64 + 0x200 + 0x38);
+        assert_eq!(DMAC.dctrl(0).addr(), 0xE820_0300);
+        assert_eq!(DMAC.dctrl(1).addr(), 0xE820_0700);
+        assert_eq!(DMAC.dmars(3).addr(), 0xFCFE_100C);
+    }
+
+    #[test]
+    fn scux_sub_units_are_indexed_by_unit() {
+        assert_eq!(SCUX.ipc(2).ipslr().addr(), 0xE820_8000 + 0x200 + 0x04);
+        assert_eq!(SCUX.ffd(1).drqsr().addr(), 0xE820_8800 + 0x100 + 0x08);
+        assert_eq!(SCUX.ffu(3).urqsr().addr(), 0xE820_8C00 + 0x300 + 0x08);
+        // 2SRC converter 2·unit + pair: unit stride 0x100, pair stride 0x34.
+        assert_eq!(SCUX.src(0).srcir().addr(), 0xE820_9000);
+        assert_eq!(SCUX.src(1).srcir().addr(), 0xE820_9034);
+        assert_eq!(SCUX.src(3).ifsvr().addr(), 0xE820_9000 + 0x100 + 0x34 + 0x10);
+        assert_eq!(SCUX.dvu(1).volr(7).addr(), 0xE820_9200 + 0x100 + 0x24 + 7 * 4);
+        assert_eq!(SCUX.swrsr_cim().addr(), 0xE820_9700);
+    }
+
+    #[test]
+    fn usb_fifo_ports_have_byte_views_over_their_lanes() {
+        assert_eq!((USB200.cfifo().addr(), USB200.cfifo().width()), (0xE801_0014, 4));
+        assert_eq!((USB200.cfifo_b(3).addr(), USB200.cfifo_b(3).width()), (0xE801_0017, 1));
+        assert_eq!(USB201.d1fifo_b(0).addr(), 0xE820_701C);
+        assert_eq!(USB200.pipectr(0).addr(), 0xE801_0070); // PIPE1CTR
+        assert_eq!(USB200.pipectr(14).addr(), 0xE801_008C); // PIPEFCTR
+        assert_eq!(USB200.devadd(10).addr(), 0xE801_00D0 + 20); // DEVADDA
+        assert_eq!(USB200.intsts(1).addr(), 0xE801_0042);
+    }
+
+    #[cfg(feature = "rza1l")]
+    #[test]
+    fn sdhi_comes_from_the_rza1l_manual() {
+        assert_eq!((SDHI0.sd_cmd().addr(), SDHI0.sd_cmd().width()), (0xE804_E000, 2));
+        assert_eq!((SDHI1.sd_buf0().addr(), SDHI1.sd_buf0().width()), (0xE804_E830, 4));
+        assert_eq!(SDHI1.ext_swap().addr(), 0xE804_E8F0);
+    }
 }

@@ -19,7 +19,6 @@ from pac_manual import a1l_registers  # noqa: E402
 # Manual modules the PAC doesn't describe yet, and why.
 NOT_YET = {
     'Debugger interface': 'CoreSight debug components; no driver uses them',
-    'SD host interface': 'absent from the vendor SVD; Phase 5b adds a hand-written block',
 }
 
 # Port-indexed GPIO arrays start at port 0, which has none of these registers (port 0 is
@@ -62,6 +61,12 @@ for addr, bits, name in pac:
     if name in GPIO_PORT0_HOLES:
         continue
     m = manual.get(addr)
+    if m is None and addr & 3:
+        # A byte or halfword view of a register the manual lists (RSPI's SPDR, USB's FIFO ports):
+        # fine if that register allows the view's width.
+        whole = manual.get(addr & ~3)
+        if whole is not None and bits in whole[2] and bits < 32:
+            continue
     if m is None:
         errors.append('PAC register %s at 0x%08X is not an RZ/A1L register' % (name, addr))
     elif bits not in m[2]:

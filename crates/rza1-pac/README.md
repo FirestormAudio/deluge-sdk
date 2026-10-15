@@ -10,7 +10,9 @@ registers it has that the SVD omits. The deletions, `transforms/rza1l/absent.yam
 by `tools/pac-a1l-absent.py` from the RZ/A1L manual's register list (Table 46.1, R01UH0437EJ0700),
 and `tools/pac-check-a1l.py` checks the generated RZ/A1L PAC against that list both ways: every
 register it defines is an RZ/A1L register at an allowed width, and every RZ/A1L register is in it,
-apart from named exceptions.
+apart from named exceptions. SDHI, which the SVD lacks, is a hand-written RZ/A1L block
+(`transforms/rza1l/sdhi.yaml`) from Table 46.1, so the same check covers it; the `rza1h` PAC has no
+SDHI block, for want of an RZ/A1H manual.
 
 Do not edit `src/chips/*.rs` or `transforms/rza1l/absent.yaml`: change the other transforms and run
 `tools/gen-pac.sh`. `tools/test.sh` runs `tools/gen-pac.sh --check`, which fails on drift or a
