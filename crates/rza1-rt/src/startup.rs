@@ -9,8 +9,8 @@
 //! the address of the faulting instruction and, with the `rtt` feature, first dumps the fault
 //! registers to RTT channel 0. With the `app-fault-reporter` feature it then hands over to the
 //! application's `rza1_cpu_fault_report`; without it, or for a consumer that has no reporter, it
-//! blinks the P6_7 LED in a repeating pattern (1 = undefined instruction, 2 = SVC, 3 = prefetch
-//! abort, 4 = data abort, 5 = reserved).
+//! blinks the board's status LED (named in its memory.x) in a repeating pattern (1 = undefined
+//! instruction, 2 = SVC, 3 = prefetch abort, 4 = data abort, 5 = reserved).
 
 use core::arch::global_asm;
 
@@ -79,7 +79,7 @@ _reset_handler:
      * would branch into SPI flash (the old bootloader at 0x00000000). */
     cpsid aif
 
-    /* Configure the heartbeat LED pin as a plain GPIO immediately so any
+    /* Configure the board's status LED as a plain GPIO immediately so any
      * early exception can signal a visible fault pattern without relying on
      * Rust, the allocator, RTT, or later board init. */
     bl _boot_led_setup
@@ -304,37 +304,39 @@ _reset_handler:
     b .                           /* Safety: infinite loop        */
 
 _boot_led_setup:
-    /* P6_7 = heartbeat LED. Match gpio::set_as_output(6, 7):
-     *   PMC6  @ 0xFCFE3418, bit7 = 0 (GPIO)
-     *   PM6   @ 0xFCFE3318, bit7 = 0 (output)
-     *   PIPC6 @ 0xFCFE7218, bit7 = 0 (software control) */
-    ldr r0, =0xFCFE3418
+    /* The board's status LED (memory.x: RZA1_STATUS_LED_PORT/PIN; link.x derives the
+     * registers) as a software-controlled GPIO output: its PMC bit (port mode), PM bit
+     * (output) and PIPC bit (software control) cleared. Clobbers r0-r2. */
+    ldr r2, =__rza1_status_led_mask
+    ldr r0, =__rza1_status_led_pmc
     ldrh r1, [r0]
-    bic r1, r1, #0x80
+    bic r1, r1, r2
     strh r1, [r0]
 
-    ldr r0, =0xFCFE3318
+    ldr r0, =__rza1_status_led_pm
     ldrh r1, [r0]
-    bic r1, r1, #0x80
+    bic r1, r1, r2
     strh r1, [r0]
 
-    ldr r0, =0xFCFE7218
+    ldr r0, =__rza1_status_led_pipc
     ldrh r1, [r0]
-    bic r1, r1, #0x80
+    bic r1, r1, r2
     strh r1, [r0]
     bx lr
 
 _boot_led_write_high:
-    ldr r0, =0xFCFE3018
+    ldr r2, =__rza1_status_led_mask
+    ldr r0, =__rza1_status_led_p
     ldrh r1, [r0]
-    orr r1, r1, #0x80
+    orr r1, r1, r2
     strh r1, [r0]
     bx lr
 
 _boot_led_write_low:
-    ldr r0, =0xFCFE3018
+    ldr r2, =__rza1_status_led_mask
+    ldr r0, =__rza1_status_led_p
     ldrh r1, [r0]
-    bic r1, r1, #0x80
+    bic r1, r1, r2
     strh r1, [r0]
     bx lr
 

@@ -22,6 +22,8 @@ ENTRY(_start)
  *   ABT_STACK_SIZE     = ...;
  *
  *   INTERNAL_RAM_END   = ...;   -- top byte address of on-chip SRAM
+ *   RZA1_STATUS_LED_PORT = ...; -- GPIO port of the status LED (1-11)
+ *   RZA1_STATUS_LED_PIN  = ...; -- its pin (0-15)
  *
  * Published as link.x when rza1-rt's `rtt` feature is on; otherwise link.x is the RTT-free form.
  */
@@ -30,6 +32,20 @@ INCLUDE memory.x
 /* One level-1 translation table: 4096 x 4 B, one 1 MB section per entry, TTBR0
  * only (TTBCR.N = 0) and no second-level tables, so nothing else needs room here. */
 TTB_SIZE = 0x4000;
+
+/* The status LED the reset and fault handlers drive (startup.rs). The port's GPIO registers are
+ * 16 bits wide and 4 bytes apart per port (RZ/A1L hardware manual, ch. 54: Pn, PMn, PMCn,
+ * PIPCn; matches rza1l_hal::gpio). Port 0 is input-only, so it has no PM/PIPC register. */
+ASSERT(DEFINED(RZA1_STATUS_LED_PORT) && DEFINED(RZA1_STATUS_LED_PIN),
+       "memory.x must define RZA1_STATUS_LED_PORT and RZA1_STATUS_LED_PIN")
+ASSERT(RZA1_STATUS_LED_PORT >= 1 && RZA1_STATUS_LED_PORT <= 11,
+       "RZA1_STATUS_LED_PORT must be 1-11 (P1-P11)")
+ASSERT(RZA1_STATUS_LED_PIN <= 15, "RZA1_STATUS_LED_PIN must be 0-15")
+__rza1_status_led_p    = 0xFCFE3000 + 4 * RZA1_STATUS_LED_PORT;
+__rza1_status_led_pm   = 0xFCFE3300 + 4 * RZA1_STATUS_LED_PORT;
+__rza1_status_led_pmc  = 0xFCFE3400 + 4 * RZA1_STATUS_LED_PORT;
+__rza1_status_led_pipc = 0xFCFE7200 + 4 * RZA1_STATUS_LED_PORT;
+__rza1_status_led_mask = 1 << RZA1_STATUS_LED_PIN;
 
 SECTIONS {
     /* _SEGGER_RTT control block in the uncached SRAM mirror so the debug
