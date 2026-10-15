@@ -1,0 +1,31 @@
+[package]
+name = "rza1-rt"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Runtime for the Renesas RZ/A1L (Cortex-A9): reset vector, exception entry and linker script."
+categories = ["embedded", "no-std"]
+keywords = ["rza1", "renesas", "cortex-a9", "runtime", "startup"]
+# One vector table and one `_start` per image: Cargo refuses a second copy of this crate.
+links = "rza1-rt"
+
+# docs.rs builds on the x86_64 host by default; build the docs for the device.
+[package.metadata.docs.rs]
+default-target = "armv7a-none-eabihf"
+
+[lib]
+# Assembly only; nothing to unit-test.
+test = false
+
+[features]
+## Each fault handler first dumps the fault registers to SEGGER RTT channel 0, and the linker
+## script reserves the RTT buffer (the board's memory.x must then define RTT_RAM and
+## NCACHE_RTT_RAM). The image must also link `rtt-target`, which defines `_SEGGER_RTT`.
+rtt = []
+## Hand every CPU fault to the application's `rza1_cpu_fault_report`; without it, faults blink
+## the status LED. The application must then define the reporter, or the link fails.
+app-fault-reporter = []

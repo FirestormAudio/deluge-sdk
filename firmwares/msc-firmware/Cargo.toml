@@ -29,4 +29,4 @@ log = { workspace = true }
 ## Activates rtt-target, defines _SEGGER_RTT, and registers the logger.
 ## Disable for release builds: cargo build-fw --release --no-default-features
 default = []
-rtt = ["dep:rtt-target", "rza1l-hal/rtt"]
+rtt = ["dep:rtt-target", "deluge-bsp/rtt"]

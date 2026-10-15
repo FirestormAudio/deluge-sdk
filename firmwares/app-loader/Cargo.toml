@@ -28,4 +28,4 @@ rtt-target = { workspace = true, optional = true }
 
 [features]
 default = []
-rtt = ["dep:rtt-target", "rza1l-hal/rtt"]
+rtt = ["dep:rtt-target", "deluge-bsp/rtt"]

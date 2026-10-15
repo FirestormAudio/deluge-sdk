@@ -8,6 +8,7 @@ members = [
   "hw-tests/vbus-probe",
   "hw-tests/uac-host-firmware",
   "crates/rza1l-hal",
+  "crates/rza1-rt",
   "crates/deluge-alloc",
   "crates/deluge-bsp",
   "firmwares/app-loader",

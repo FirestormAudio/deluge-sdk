@@ -32,4 +32,4 @@ rtt-target = { workspace = true, optional = true }
 ## feature also selects the rtt linker script via build.rs (CARGO_FEATURE_RTT).
 ## Disable for release builds: cargo build-fw --release --no-default-features
 default = []
-rtt = ["dep:rtt-target", "rza1l-hal/rtt", "deluge/rtt"]
+rtt = ["dep:rtt-target", "deluge-bsp/rtt", "deluge/rtt"]

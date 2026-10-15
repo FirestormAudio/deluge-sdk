@@ -24,4 +24,4 @@ log = { workspace = true }
 [features]
 ## Enable RTT (SEGGER Real-Time Transfer) debug logging.
 default = []
-rtt = ["dep:rtt-target", "rza1l-hal/rtt"]
+rtt = ["dep:rtt-target", "deluge-bsp/rtt"]

@@ -15,7 +15,8 @@
 pub const UNCACHED_MIRROR_OFFSET: usize = 0x4000_0000;
 
 pub mod adc;
-// startup, mmu and cache use ARM coprocessor assembly and cannot compile on the host.
+// mmu and cache use ARM coprocessor instructions and cannot compile on the host. The reset
+// vector and exception entry live in the `rza1-rt` crate.
 pub mod bsc;
 #[cfg(target_os = "none")]
 pub mod cache;
@@ -38,8 +39,6 @@ pub mod scux;
 pub mod sdhi;
 pub mod spibsc;
 pub mod ssi;
-#[cfg(target_os = "none")]
-pub mod startup;
 pub mod stb;
 // The OSTM-backed embassy time driver does raw MMIO and registers the global
 // `_embassy_time_now`/`_embassy_time_schedule_wake` symbols. On host the

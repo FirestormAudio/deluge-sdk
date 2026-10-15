@@ -100,4 +100,4 @@ audio-irq = ["deluge-bsp/audio-irq"]
 ## RTT (SEGGER Real-Time Transfer) debug logging, in the app runtime and the
 ## HAL/BSP. Needs the matching RTT linker script, which the example template's
 ## `rtt` feature also wires up.
-rtt = ["dep:rtt-target", "rza1l-hal/rtt"]
+rtt = ["dep:rtt-target", "deluge-bsp/rtt"]

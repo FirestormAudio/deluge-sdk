@@ -27,7 +27,6 @@ at runtime rather than compiled in.
 
 | Module        | Description |
 |---------------|-------------|
-| `startup`     | ARM vector table and reset handler (`_start`). Includes the bootloader signature words at fixed offsets so the Deluge boot ROM accepts the image. |
 | `mmu`         | Flat-map L1 Translation Table (VA = PA, 1 MB sections) covering the full 4 GB address space with correct cache attributes per region (SRAM cached, I/O strongly-ordered, uncached mirror at +0x4000_0000). |
 | `cache`       | L1 D/I-cache + Cortex-A9 branch predictor enable; PL310 L2 cache init. Call `mmu::init_and_enable` first. |
 | `clocks`      | The clock tree, from the board's EXTAL crystal: `clocks::init(ClockConfig::new(extal_hz))` once at boot, then P0φ/P1φ (and the exact P0 ticks-per-µs ratio) are derived for every driver. Call it first. |

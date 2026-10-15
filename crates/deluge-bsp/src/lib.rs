@@ -5,8 +5,10 @@
 #![cfg_attr(target_os = "none", feature(impl_trait_in_assoc_type))]
 #![allow(dead_code)]
 
-// Startup code lives in `rza1l_hal::startup`; the linker script references
-// `_start` and the vector table, so it is linked into every binary.
+// The runtime (reset vector, exception entry, linker script). Nothing calls into it by name,
+// so this is what links it into every image built on the BSP.
+#[cfg(target_os = "none")]
+use rza1_rt as _;
 
 pub mod audio;
 #[cfg(target_os = "none")]

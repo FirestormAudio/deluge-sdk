@@ -25,6 +25,10 @@ test = false
 ## the card another way doesn't carry a second filesystem.
 fat = ["dep:embedded-sdmmc"]
 default = []
+## SEGGER RTT: fault dumps to RTT channel 0 and the RTT memory layout.
+rtt = ["rza1-rt/rtt"]
+## Hand CPU faults to the application's `rza1_cpu_fault_report` (see `rza1-rt`).
+app-fault-reporter = ["rza1-rt/app-fault-reporter"]
 ## Drive `audio::init_direct` from a per-block RX DMA interrupt instead of the
 ## default poll loop. Selected by `deluge/audio-irq`.
 audio-irq = []
@@ -50,6 +54,7 @@ host-panel = ["dep:embassy-time"]
 max5136 = { workspace = true }
 usb-classes = { workspace = true, features = ["device-midi"] }
 rza1l-hal = { path = "../rza1l-hal", version = "0.1.0" }
+rza1-rt = { path = "../rza1-rt", version = "0.1.0" }
 embedded-sdmmc = { version = "0.9", default-features = false, features = ["log"], optional = true }
 critical-section = { workspace = true }
 log = { workspace = true }
