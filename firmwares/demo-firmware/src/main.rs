@@ -127,7 +127,9 @@ fn setup() {
     }
 
     info!("encoder: configuring interrupt-driven inputs...");
-    unsafe { deluge_bsp::encoder::irq_init() };
+    let poll_timer =
+        deluge::parts::with(|p| p.encoder_poll_timer.take()).expect("MTU2 channel 3 is free");
+    unsafe { deluge_bsp::encoder::irq_init(poll_timer) };
     info!("trigger_clock: configuring interrupt-driven input...");
     unsafe { deluge_bsp::trigger_clock::irq_init() };
 }

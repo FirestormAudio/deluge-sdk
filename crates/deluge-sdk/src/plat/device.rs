@@ -319,7 +319,9 @@ pub(crate) fn input_start_pump(spawner: Spawner) {
     }
     // SAFETY: runs once (guarded above). `irq_init` registers each encoder's GIC
     // handler before enabling its source, so it is safe with interrupts enabled.
-    unsafe { encoder::irq_init() };
+    let poll_timer =
+        crate::parts::take("MTU2 channel 3 (the encoder poll)", |p| p.encoder_poll_timer.take());
+    unsafe { encoder::irq_init(poll_timer) };
     spawner.spawn(encoder_pump().unwrap());
 }
 

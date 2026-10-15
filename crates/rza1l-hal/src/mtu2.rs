@@ -1,8 +1,8 @@
 //! Multi-Function Timer Pulse Unit 2 (MTU2) driver for the RZ/A1L.
 //!
 //! The RZ/A1L MTU2 has five 16-bit timer channels (0–4), all clocked by P0φ
-//! (see [`crate::clocks::ClockConfig::p0_hz`]).  Channels can run as
-//! free-running counters or be configured for one-shot compare-match use.
+//! (see [`crate::clocks::ClockConfig::p0_hz`]). Each is driven as a one-shot compare-match timer,
+//! [`OneShot`].
 //!
 //! ## Register layout peculiarity
 //! The MTU2 register block at `0xFCFF_0000` is non-contiguous: channels 2, 3,
@@ -12,37 +12,19 @@
 //!
 //! ## TSTR (Timer Start Register)
 //! One shared TSTR register at `0xFCFF_0280` controls which channels run.
-//! Channels 3 and 4 have a write gate, `TRWER`: it is open at reset, but call
-//! [`enable_write`] once before touching them, in case earlier code closed it.
-//!
-//! ## Usage (free-running counters)
-//! ```rust,no_run
-//! # use rza1l_hal::mtu2;
-//! unsafe {
-//!     mtu2::enable_write();                   // unlock MTU2 registers
-//!     mtu2::start_free_running(1, 1);         // ch1 @ 33.06 MHz
-//!     mtu2::start_free_running(0, 64);        // ch0 @ ~517 kHz
-//!     mtu2::start_free_running(4, 1024);      // ch4 @ ~32.3 kHz
-//!
-//!     let t0 = mtu2::count(0);
-//!     // do work...
-//!     let elapsed = mtu2::count(0).wrapping_sub(t0);
-//! }
-//! ```
+//! Channels 3 and 4 have a write gate, `TRWER`: it is open at reset, and [`OneShot::new`] opens
+//! it again in case earlier code closed it.
 //!
 //! ## Usage (one-shot)
-//! ```rust,no_run
-//! # use rza1l_hal::mtu2;
-//! // `gic::HandlerFn` is a safe `fn()`, so the unsafe work goes inside.
-//! fn gate_handler() { unsafe { mtu2::clear_flag(2) } /* ... */ }
-//! unsafe {
-//!     mtu2::enable_write();
-//!     mtu2::setup_one_shot(2, 64, gate_handler, 5); // configure ch2
-//!     // later, when you want to schedule an event:
-//!     mtu2::arm(2, 520);    // fires after 520 ticks ≈ 1 ms at /64
-//!     // handler is called, then:
-//!     mtu2::disarm(2);      // in handler or after timeout
+//! ```ignore
+//! struct GateHandler;
+//! impl Handler<typelevel::TGI2A> for GateHandler {
+//!     unsafe fn on_interrupt() { /* timer.clear_flag(); act; timer.disarm(); */ }
 //! }
+//! rza1l_hal::bind_interrupts!(struct Irqs { TGI2A => GateHandler; });
+//!
+//! let timer = mtu2::OneShot::new(p.MTU2_2, 64, 5, Irqs); // P0φ/64, GIC priority 5
+//! timer.arm(520); // fires after 520 ticks ≈ 1 ms
 //! ```
 
 // ---------------------------------------------------------------------------
@@ -113,7 +95,7 @@ const CST: [u8; 5] = [0x01, 0x02, 0x04, 0x40, 0x80];
 
 /// GIC interrupt IDs for the compare-match-A (TGInA) interrupt on channels 0–4.
 /// Source: `devdrv_intc.h`.
-pub const TGIA_IRQ: [u16; 5] = [139, 146, 150, 154, 159];
+pub(crate) const TGIA_IRQ: [u16; 5] = [139, 146, 150, 154, 159];
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -126,24 +108,24 @@ pub const TGIA_IRQ: [u16; 5] = [139, 146, 150, 154, 159];
 /// - Ch1, 3, 4 only: 256
 /// - Ch2, 3, 4 only: 1024
 ///
-/// Returns 0 (prescaler /1) for invalid combinations.
-fn tpsc(ch: u8, prescaler: u16) -> u8 {
+/// Returns `None` for a prescaler the channel lacks.
+fn tpsc(ch: u8, prescaler: u16) -> Option<u8> {
     match prescaler {
-        1 => 0b000,
-        4 => 0b001,
-        16 => 0b010,
-        64 => 0b011,
+        1 => Some(0b000),
+        4 => Some(0b001),
+        16 => Some(0b010),
+        64 => Some(0b011),
         256 => match ch {
-            1 => 0b110,
-            3 | 4 => 0b100,
-            _ => 0b000,
+            1 => Some(0b110),
+            3 | 4 => Some(0b100),
+            _ => None,
         },
         1024 => match ch {
-            2 => 0b111,
-            3 | 4 => 0b101,
-            _ => 0b000,
+            2 => Some(0b111),
+            3 | 4 => Some(0b101),
+            _ => None,
         },
-        _ => 0b000,
+        _ => None,
     }
 }
 
@@ -181,110 +163,24 @@ unsafe fn wr16(addr: usize, val: u16) {
 ///
 /// # Safety
 /// Writes to the memory-mapped TRWER register.
-pub unsafe fn enable_write() {
+unsafe fn enable_write() {
     unsafe {
         wr8(TRWER, 1);
     }
 }
 
-/// Configure channel `ch` as a free-running up-counter and start it.
-///
-/// The counter increments from 0, wrapping at 0xFFFF (65535).  No interrupt
-/// is generated.  The counter is stopped first so TCR can be written, then
-/// restarted.
-///
-/// `prescaler` must be one of: 1, 4, 16, 64 (all channels), 256 (ch1/3/4),
-/// 1024 (ch2/3/4).  Invalid combinations default to /1.
+/// Stop channel `ch` and configure it for one-shot compare-match use: TCR = `tpsc` with
+/// CCLR = TGRA (the counter clears on the match), TIER = 0, and TGInA's GIC priority. The GIC
+/// source stays masked until [`arm`].
 ///
 /// # Safety
-/// Writes to memory-mapped MTU2 registers. [`enable_write`] must have been
-/// called first.
-pub unsafe fn start_free_running(ch: u8, prescaler: u16) {
+/// Writes MTU2 and GIC registers; `ch` is owned.
+unsafe fn setup_one_shot(ch: u8, tpsc: u8, priority: u8) {
     unsafe {
-        if ch > 4 {
-            return;
-        }
-
-        // Stop the channel while we configure TCR.
         wr8(TSTR, rd8(TSTR) & !CST[ch as usize]);
-
-        // TCR: TPSC only, CCLR = 0 (counter not cleared on any match).
-        wr8(TCR[ch as usize], tpsc(ch, prescaler));
-
-        // Disable compare-match interrupt.
+        wr8(TCR[ch as usize], tpsc | (1 << 5));
         wr8(TIER[ch as usize], 0);
-
-        // Start.
-        wr8(TSTR, rd8(TSTR) | CST[ch as usize]);
-    }
-}
-
-/// Stop channel `ch`.
-///
-/// Clears the corresponding CST bit in TSTR.  The counter value is preserved.
-///
-/// # Safety
-/// Writes to memory-mapped MTU2 registers.
-pub unsafe fn stop(ch: u8) {
-    unsafe {
-        if ch > 4 {
-            return;
-        }
-        wr8(TSTR, rd8(TSTR) & !CST[ch as usize]);
-    }
-}
-
-/// Read the current 16-bit counter value of channel `ch`.
-///
-/// For a free-running channel this wraps every 65536 / effective_frequency.
-/// Use [`u16::wrapping_sub`] for elapsed-time calculations.
-///
-/// # Safety
-/// Reads from memory-mapped MTU2 registers.
-pub unsafe fn count(ch: u8) -> u16 {
-    unsafe {
-        if ch > 4 {
-            return 0;
-        }
-        rd16(TCNT[ch as usize])
-    }
-}
-
-/// Configure channel `ch` for one-shot compare-match use.
-///
-/// This function:
-/// 1. Stops the channel.
-/// 2. Writes TCR with the prescaler and CCLR = TGRA (counter reset on compare
-///    match), making it naturally one-shot when paired with [`arm`]/[`disarm`].
-/// 3. Disables the compare-match interrupt locally (TIER = 0).
-/// 4. Registers `handler` with the GIC at `TGIA_IRQ[ch]` with the given
-///    `priority` (0 = highest, 31 = lowest), but does **not** enable it in
-///    the GIC — [`arm`] does that.
-///
-/// Call once during startup.  [`arm`] / [`disarm`] are the run-time controls.
-///
-/// # Safety
-/// Writes to memory-mapped MTU2 and GIC registers.  [`enable_write`] and
-/// [`crate::gic::init`] must have been called first.
-pub unsafe fn setup_one_shot(ch: u8, prescaler: u16, handler: crate::gic::HandlerFn, priority: u8) {
-    unsafe {
-        if ch > 4 {
-            return;
-        }
-
-        // Stop channel.
-        wr8(TSTR, rd8(TSTR) & !CST[ch as usize]);
-
-        // TCR: prescaler + CCLR = 0b001 (clear TCNT on TGRA match).
-        wr8(TCR[ch as usize], tpsc(ch, prescaler) | (1 << 5));
-
-        // Start with interrupts off.
-        wr8(TIER[ch as usize], 0);
-
-        // Register handler with GIC (priority, target CPU, but NOT enabled yet).
-        let irq = TGIA_IRQ[ch as usize];
-        crate::gic::register(irq, handler);
-        crate::gic::set_priority(irq, priority);
+        crate::gic::set_priority(TGIA_IRQ[ch as usize], priority);
     }
 }
 
@@ -300,12 +196,8 @@ pub unsafe fn setup_one_shot(ch: u8, prescaler: u16, handler: crate::gic::Handle
 ///
 /// # Safety
 /// Writes to memory-mapped MTU2 registers and GIC ISENABLER.
-pub unsafe fn arm(ch: u8, tgra: u16) {
+unsafe fn arm(ch: u8, tgra: u16) {
     unsafe {
-        if ch > 4 {
-            return;
-        }
-
         // Stop while reconfiguring.
         wr8(TSTR, rd8(TSTR) & !CST[ch as usize]);
 
@@ -335,11 +227,8 @@ pub unsafe fn arm(ch: u8, tgra: u16) {
 ///
 /// # Safety
 /// Reads and writes to memory-mapped MTU2 registers.
-pub unsafe fn clear_flag(ch: u8) {
+unsafe fn clear_flag(ch: u8) {
     unsafe {
-        if ch > 4 {
-            return;
-        }
         let addr = TSR[ch as usize];
         // Loop until the flag is clear (normally 1–2 reads; bounded to 64 iterations
         // so a continuously re-firing timer cannot trap the CPU here indefinitely).
@@ -360,12 +249,8 @@ pub unsafe fn clear_flag(ch: u8) {
 ///
 /// # Safety
 /// Writes to memory-mapped MTU2 registers and GIC ICENABLER.
-pub unsafe fn disarm(ch: u8) {
+unsafe fn disarm(ch: u8) {
     unsafe {
-        if ch > 4 {
-            return;
-        }
-
         // Disable the channel's interrupt output first.
         wr8(TIER[ch as usize], 0);
 
@@ -377,6 +262,102 @@ pub unsafe fn disarm(ch: u8) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Owned one-shot
+// ---------------------------------------------------------------------------
+
+use core::marker::PhantomData;
+
+use crate::Peri;
+use crate::interrupt::{self, Binding, Handler, Interrupt};
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// An MTU2 channel singleton (`peripherals::MTU2_0`–`MTU2_4`).
+pub trait Instance: crate::PeripheralType + sealed::Sealed + 'static {
+    /// The channel number, 0–4.
+    const CH: u8;
+    /// Its compare-match-A interrupt, TGI<CH>A.
+    type Interrupt: Interrupt;
+}
+
+macro_rules! instances {
+    ($($t:ident = $n:literal, $irq:ident;)*) => {$(
+        impl sealed::Sealed for crate::peripherals::$t {}
+        impl Instance for crate::peripherals::$t {
+            const CH: u8 = $n;
+            type Interrupt = crate::interrupt::typelevel::$irq;
+        }
+    )*};
+}
+
+instances! {
+    MTU2_0 = 0, TGI0A;
+    MTU2_1 = 1, TGI1A;
+    MTU2_2 = 2, TGI2A;
+    MTU2_3 = 3, TGI3A;
+    MTU2_4 = 4, TGI4A;
+}
+
+/// An MTU2 channel as a one-shot timer: [`arm`](Self::arm) it for a number of ticks and its
+/// compare-match handler runs once they have elapsed. The counter clears on the match, so a shot
+/// left armed fires again every period, which makes a periodic tick too.
+///
+/// Its methods take `&self`, so an interrupt handler can reach it through a static.
+pub struct OneShot<'d> {
+    ch: u8,
+    _timer: PhantomData<&'d mut ()>,
+}
+
+impl<'d> OneShot<'d> {
+    /// Configure channel `T` at P0φ / `prescaler`, with `H` handling its compare match at GIC
+    /// `priority` (0 most urgent, 31 least). Stopped until [`arm`](Self::arm).
+    ///
+    /// # Panics
+    /// If channel `T` has no /`prescaler`: every channel has /1, /4, /16 and /64; channels 1, 3
+    /// and 4 have /256; channels 2, 3 and 4 have /1024.
+    pub fn new<T: Instance, H: Handler<T::Interrupt>>(
+        _timer: Peri<'d, T>,
+        prescaler: u16,
+        priority: u8,
+        irq: impl Binding<T::Interrupt, H> + 'd,
+    ) -> Self {
+        let code = tpsc(T::CH, prescaler).unwrap_or_else(|| {
+            panic!("MTU2 channel {} has no /{} prescaler", T::CH, prescaler)
+        });
+        interrupt::bind(irq);
+        // SAFETY: channel T is owned. TRWER opens channels 3 and 4's registers and is harmless
+        // to write again.
+        unsafe {
+            enable_write();
+            setup_one_shot(T::CH, code, priority);
+        }
+        Self { ch: T::CH, _timer: PhantomData }
+    }
+
+    /// Fire once `ticks` from now: the counter restarts from 0, a stale match flag is cleared, and
+    /// the interrupt is unmasked. Re-arming before it fires replaces the pending shot.
+    pub fn arm(&self, ticks: u16) {
+        // SAFETY: the owned channel.
+        unsafe { arm(self.ch, ticks) }
+    }
+
+    /// Stop the counter and mask the interrupt. Safe to call from the handler.
+    pub fn disarm(&self) {
+        // SAFETY: the owned channel.
+        unsafe { disarm(self.ch) }
+    }
+
+    /// Clear the compare-match flag. The handler must do this before it returns, or the GIC
+    /// raises the interrupt again at once.
+    pub fn clear_flag(&self) {
+        // SAFETY: the owned channel.
+        unsafe { clear_flag(self.ch) }
+    }
+}
+
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
     use super::*;
@@ -385,33 +366,33 @@ mod tests {
     fn tpsc_common_prescalers() {
         // 1/4/16/64 are valid on every channel and encode identically.
         for ch in 0..5u8 {
-            assert_eq!(tpsc(ch, 1), 0b000);
-            assert_eq!(tpsc(ch, 4), 0b001);
-            assert_eq!(tpsc(ch, 16), 0b010);
-            assert_eq!(tpsc(ch, 64), 0b011);
+            assert_eq!(tpsc(ch, 1), Some(0b000));
+            assert_eq!(tpsc(ch, 4), Some(0b001));
+            assert_eq!(tpsc(ch, 16), Some(0b010));
+            assert_eq!(tpsc(ch, 64), Some(0b011));
         }
     }
 
     #[test]
     fn tpsc_channel_specific_prescalers() {
         // /256: ch1 -> 0b110; ch3,4 -> 0b100; others invalid.
-        assert_eq!(tpsc(1, 256), 0b110);
-        assert_eq!(tpsc(3, 256), 0b100);
-        assert_eq!(tpsc(4, 256), 0b100);
+        assert_eq!(tpsc(1, 256), Some(0b110));
+        assert_eq!(tpsc(3, 256), Some(0b100));
+        assert_eq!(tpsc(4, 256), Some(0b100));
         // /1024: ch2 -> 0b111; ch3,4 -> 0b101.
-        assert_eq!(tpsc(2, 1024), 0b111);
-        assert_eq!(tpsc(3, 1024), 0b101);
-        assert_eq!(tpsc(4, 1024), 0b101);
+        assert_eq!(tpsc(2, 1024), Some(0b111));
+        assert_eq!(tpsc(3, 1024), Some(0b101));
+        assert_eq!(tpsc(4, 1024), Some(0b101));
     }
 
     #[test]
-    fn tpsc_invalid_combinations_fall_back_to_div1() {
-        // /256 not available on ch0/ch2; /1024 not on ch0/ch1; bogus values too.
-        assert_eq!(tpsc(0, 256), 0b000);
-        assert_eq!(tpsc(2, 256), 0b000);
-        assert_eq!(tpsc(0, 1024), 0b000);
-        assert_eq!(tpsc(1, 1024), 0b000);
-        assert_eq!(tpsc(0, 3), 0b000);
+    fn tpsc_refuses_prescalers_the_channel_lacks() {
+        // /256 not available on ch0/ch2; /1024 not on ch0/ch1; bogus values never.
+        assert_eq!(tpsc(0, 256), None);
+        assert_eq!(tpsc(2, 256), None);
+        assert_eq!(tpsc(0, 1024), None);
+        assert_eq!(tpsc(1, 1024), None);
+        assert_eq!(tpsc(0, 3), None);
     }
 
     #[test]
@@ -433,40 +414,77 @@ mod tests {
     // ── register-effect tests via the MMIO seam ─────────────────────────────
     use crate::mmio;
 
+    use crate::interrupt::{Handler, typelevel};
+    use crate::peripherals::{MTU2_0, MTU2_2};
+
+    struct Shot;
+    impl Handler<typelevel::TGI2A> for Shot {
+        unsafe fn on_interrupt() {}
+    }
+    struct Shot0;
+    impl Handler<typelevel::TGI0A> for Shot0 {
+        unsafe fn on_interrupt() {}
+    }
+
+    crate::bind_interrupts!(struct Irqs {
+        TGI0A => Shot0;
+        TGI2A => Shot;
+    });
+
     #[test]
-    fn start_free_running_configures_tcr_and_sets_cst() {
+    fn a_one_shot_is_bound_stopped_and_prioritised_but_not_enabled() {
         mmio::test::reset();
-        let ch = 2u8;
-        unsafe { start_free_running(ch, 16) };
-        // TCR holds the prescaler code for /16 (= 0b010).
-        assert_eq!(mmio::test::peek8(TCR[ch as usize]), tpsc(ch, 16));
+        let _timer = OneShot::new(unsafe { MTU2_2::steal() }, 64, 5, Irqs);
+        assert!(crate::gic::handler(150).is_some(), "TGI2A bound");
         assert_eq!(
-            mmio::test::peek8(TIER[ch as usize]),
-            0,
-            "compare-match IRQ off"
+            mmio::test::writes(),
+            [
+                (TRWER, 1),
+                (TSTR, 0),                      // channel 2 stopped
+                (TCR[2], 0b011 | (0b001 << 5)), // P0φ/64, counter cleared on a TGRA match
+                (TIER[2], 0),
+                (0xE820_1494, (5 << 3) << 16), // GICD_IPRIORITYR37, byte lane 150 % 4 = 2
+            ]
         );
-        // The channel's CST start bit is set in TSTR.
-        assert_eq!(mmio::test::peek8(TSTR) & CST[ch as usize], CST[ch as usize]);
     }
 
     #[test]
-    fn stop_clears_only_this_channels_cst_bit() {
+    #[should_panic(expected = "MTU2 channel 0 has no /256 prescaler")]
+    fn a_prescaler_the_channel_lacks_is_refused() {
+        let _ = OneShot::new(unsafe { MTU2_0::steal() }, 256, 5, Irqs);
+    }
+
+    #[test]
+    fn arming_starts_a_shot_from_zero_and_unmasks_it() {
+        let timer = OneShot::new(unsafe { MTU2_2::steal() }, 64, 5, Irqs);
         mmio::test::reset();
-        // Pretend channels 1 and 3 are both running.
-        mmio::test::poke8(TSTR, CST[1] | CST[3]);
-        unsafe { stop(3) };
+        timer.arm(520);
         assert_eq!(
-            mmio::test::peek8(TSTR),
-            CST[1],
-            "ch1 still running, ch3 stopped"
+            mmio::test::writes(),
+            [
+                (TSTR, 0),
+                (TGRA[2], 520),
+                (TCNT[2], 0),
+                (0xE820_1110, 1 << 22), // GICD_ISENABLER4, bit 150 - 128
+                (TIER[2], 1),
+                (TSTR, CST[2] as u32),
+            ]
         );
     }
 
     #[test]
-    fn out_of_range_channel_is_a_noop() {
+    fn disarming_stops_the_shot_and_masks_it() {
+        let timer = OneShot::new(unsafe { MTU2_2::steal() }, 64, 5, Irqs);
         mmio::test::reset();
-        unsafe { start_free_running(9, 1) };
-        unsafe { stop(9) };
-        assert!(mmio::test::log().is_empty(), "ch>4 must touch no registers");
+        mmio::test::poke8(TSTR, CST[2] | CST[3]);
+        timer.disarm();
+        assert_eq!(
+            mmio::test::writes(),
+            [
+                (TIER[2], 0),
+                (TSTR, CST[3] as u32),  // channel 3 keeps running
+                (0xE820_1190, 1 << 22), // GICD_ICENABLER4, bit 150 - 128
+            ]
+        );
     }
 }

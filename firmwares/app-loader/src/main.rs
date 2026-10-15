@@ -118,6 +118,8 @@ pub extern "C" fn main() -> ! {
     // The bus brings RSPI0 up; cv_gate::init runs the DAC's linearity sequence on it.
     deluge_bsp::bus::init(board.shared_spi, board.dma.oled);
     unsafe { deluge_bsp::cv_gate::init() };
+    // Encoder GPIO interrupts and the MTU2 pin poll, while interrupts are still masked.
+    unsafe { deluge_bsp::encoder::irq_init(board.encoder_poll_timer) };
 
     #[allow(static_mut_refs)]
     let executor = unsafe {
@@ -308,9 +310,8 @@ async fn boot_task(spawner: Spawner) {
     // pic::init() and oled::init() use embassy_time `Timer`s, which are woken
     // only by the OSTM1 GIC interrupt (see rza1l_hal::time_driver); with
     // CPSR.I still masked that interrupt can never be taken and the executor
-    // parks in wfe() forever.  encoder::irq_init() registers the encoder GPIO
-    // IRQ and, per its contract, must run before the global unmask.
-    unsafe { deluge_bsp::encoder::irq_init() };
+    // parks in wfe() forever.  main() has already registered every GIC source the
+    // boot tasks need.
     unsafe { cortex_ar::interrupt::enable() };
 
     // Start the PIC receive pump *before* driving the OLED.  It owns
