@@ -34,21 +34,19 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use deluge::prelude::*;
 use deluge_bsp::cv_gate;
 use deluge_bsp::uart as bsp_uart;
-use rza1l_hal::gic;
-use rza1l_hal::usb::{
-    Rusb1Driver, dcd_int_handler, hcd_int_handler, init_device_mode, init_host_mode,
-};
+use rza1l_hal::usb::{Rusb1Driver, init_device_mode, init_host_mode};
 
 // ---------------------------------------------------------------------------
 // USB mode selection
 // ---------------------------------------------------------------------------
 
-/// When `true` at boot, USB0 starts in host mode instead of device mode. The
-/// ISR dispatcher reads this on every interrupt. Switching at runtime requires
-/// quiescing the port, calling `UsbPort::into_device_mode` /
-/// `UsbPort::into_host_mode`, and updating this flag under an IRQ-disabled
-/// critical section.
+/// When `true` at boot, USB0 starts in host mode instead of device mode.
 static USB0_HOST_MODE: AtomicBool = AtomicBool::new(false);
+
+// USB0's interrupt goes to the host or device handler, whichever mode the port was brought up in.
+rza1l_hal::bind_interrupts!(struct UsbIrqs {
+    USB0 => rza1l_hal::usb::DualRoleInterruptHandler<rza1l_hal::peripherals::USB0>;
+});
 
 // ---------------------------------------------------------------------------
 // USB descriptor static buffers
@@ -131,21 +129,6 @@ fn setup() {
     unsafe { cv_gate::init() };
     info!("RSPI0: initialised via cv_gate::init");
 
-    // Register the USB0 ISR handler. The dispatcher checks USB0_HOST_MODE on
-    // every interrupt to direct the call to the device or host handler without
-    // re-registering. The USB interrupt source is only enabled later when the
-    // device/host task starts, so registering here (before global enable) is
-    // sufficient.
-    unsafe {
-        gic::register(rza1l_hal::usb::USB0_IRQ, || {
-            if USB0_HOST_MODE.load(Ordering::Relaxed) {
-                hcd_int_handler(0);
-            } else {
-                dcd_int_handler(0);
-            }
-        });
-    }
-
     info!("encoder: configuring interrupt-driven inputs...");
     let poll_timer =
         deluge::parts::with(|p| p.encoder_poll_timer.take()).expect("MTU2 channel 3 is free");
@@ -163,30 +146,33 @@ async fn main(dlg: Deluge) {
     let spawner = dlg.spawner();
 
     // ── Build the USB stack ──────────────────────────────────────────────────
-    // The ISR handler was registered in `setup()`; `init_device_mode` /
-    // `init_host_mode` enable the module clock, and the USB interrupt source is
-    // only raised once the device/host task starts running. Building the
-    // descriptors here (with interrupts enabled) therefore does not race the ISR.
+    // `init_device_mode` / `init_host_mode` bind the USB0 handler and enable the module clock;
+    // the USB interrupt source is only raised once the device/host task starts running.
+    // Building the descriptors here (with interrupts enabled) therefore does not race the ISR.
     info!(
         "USB: initialising USB0 (host_mode={})...",
         USB0_HOST_MODE.load(Ordering::Relaxed)
     );
 
-    let mut usb_host_driver: Option<rza1l_hal::usb::Rusb1HostDriver> = None;
-    let mut usb_device_opt: Option<embassy_usb::UsbDevice<'static, Rusb1Driver>> = None;
+    let mut usb_host_driver: Option<rza1l_hal::usb::Rusb1HostDriver<'static>> = None;
+    let mut usb_device_opt: Option<embassy_usb::UsbDevice<'static, Rusb1Driver<'static>>> = None;
     let mut ep_out_opt: Option<rza1l_hal::usb::Rusb1EndpointOut> = None;
     let mut ep_in_opt: Option<rza1l_hal::usb::Rusb1EndpointIn> = None;
-    let mut midi_sender_opt: Option<embassy_usb::class::midi::Sender<'static, Rusb1Driver>> = None;
-    let mut midi_receiver_opt: Option<embassy_usb::class::midi::Receiver<'static, Rusb1Driver>> =
-        None;
+    let mut midi_sender_opt: Option<
+        embassy_usb::class::midi::Sender<'static, Rusb1Driver<'static>>,
+    > = None;
+    let mut midi_receiver_opt: Option<
+        embassy_usb::class::midi::Receiver<'static, Rusb1Driver<'static>>,
+    > = None;
 
+    let usb0 = deluge::parts::with(|p| p.usb0.take()).expect("USB0 is free");
     if USB0_HOST_MODE.load(Ordering::Relaxed) {
-        let (_port, hd) = unsafe { init_host_mode(0) };
+        let (_port, hd) = init_host_mode(usb0, UsbIrqs);
         usb_host_driver = Some(hd);
         info!("USB: host driver ready");
     } else {
         let (usb_device, ep_out, ep_in, midi_sender, midi_receiver) = unsafe {
-            let (_port, driver) = init_device_mode(0);
+            let (_port, driver) = init_device_mode(usb0, UsbIrqs);
             // Example/development USB identity — self-contained, NOT a product
             // ID. See `deluge_bsp::usb::ids` for the product-identity rules and
             // why distinct PIDs matter on macOS. TODO: use IDs you own (e.g. a

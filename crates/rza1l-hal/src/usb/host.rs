@@ -267,11 +267,12 @@ static HCD_ALLOC: [critical_section::Mutex<core::cell::UnsafeCell<HcdAlloc>>; 2]
 ///
 /// The lower-level async methods (`wait_for_event`, `setup_send`, `xfer_in`, …)
 /// are public for use without the Embassy host stack.
-pub struct Rusb1HostDriver {
+pub struct Rusb1HostDriver<'d> {
     port: u8,
+    _usb: core::marker::PhantomData<&'d mut ()>,
 }
 
-impl Rusb1HostDriver {
+impl<'d> Rusb1HostDriver<'d> {
     /// Initialise the hardware in host mode and return a driver instance.
     ///
     /// # Safety
@@ -280,7 +281,7 @@ impl Rusb1HostDriver {
     /// - No device-mode driver may be active on this port simultaneously.
     /// - `hcd_int_handler(port)` must be wired to GIC IRQ 73+port before
     ///   calling any async method.
-    pub unsafe fn new(port: u8) -> Self {
+    pub(crate) unsafe fn new(port: u8) -> Self {
         unsafe {
             debug_assert!(port <= 1);
             let regs = Rusb1Regs::ptr(port);
@@ -388,7 +389,10 @@ impl Rusb1HostDriver {
             // Register the GIC interrupt for this port.
             crate::usb::int_enable(port);
 
-            Self { port }
+            Self {
+                port,
+                _usb: core::marker::PhantomData,
+            }
         }
     }
 
@@ -1627,7 +1631,7 @@ impl<T: pipe::Type, D: pipe::Direction> Drop for Rusb1Pipe<T, D> {
 
 // UsbHostController ───────────────────────────────────────────────────────────
 
-impl<'d> UsbHostController<'d> for Rusb1HostDriver {
+impl<'d> UsbHostController<'d> for Rusb1HostDriver<'d> {
     type Allocator = Rusb1Allocator;
 
     fn allocator(&self) -> Self::Allocator {
@@ -1685,7 +1689,10 @@ impl<'d> UsbHostAllocator<'d> for Rusb1Allocator {
         endpoint: &EndpointInfo,
         split: Option<SplitInfo>,
     ) -> Result<Self::Pipe<T, D>, HostError> {
-        let drv = Rusb1HostDriver { port: self.port };
+        let drv = Rusb1HostDriver {
+            port: self.port,
+            _usb: core::marker::PhantomData,
+        };
 
         // Decode the bus topology.  A directly attached device uses hub 0 /
         // port 0 at the root-port speed; a split (hub-attached) device carries
@@ -1749,7 +1756,10 @@ impl<T: pipe::Type, D: pipe::Direction> UsbPipe<T, D> for Rusb1Pipe<T, D> {
         T: pipe::IsControl,
         D: pipe::IsIn,
     {
-        let drv = Rusb1HostDriver { port: self.port };
+        let drv = Rusb1HostDriver {
+            port: self.port,
+            _usb: core::marker::PhantomData,
+        };
         drv.setup_send(self.dev_addr, setup).await?;
         let n = drv.control_data_in(self.dev_addr, buf).await?;
         // Status stage: OUT ZLP, opposite direction to the data stage, DATA1.
@@ -1764,7 +1774,10 @@ impl<T: pipe::Type, D: pipe::Direction> UsbPipe<T, D> for Rusb1Pipe<T, D> {
         T: pipe::IsControl,
         D: pipe::IsOut,
     {
-        let drv = Rusb1HostDriver { port: self.port };
+        let drv = Rusb1HostDriver {
+            port: self.port,
+            _usb: core::marker::PhantomData,
+        };
         drv.setup_send(self.dev_addr, setup).await?;
         if !buf.is_empty() {
             drv.control_data_out(self.dev_addr, buf).await?;
@@ -1781,7 +1794,10 @@ impl<T: pipe::Type, D: pipe::Direction> UsbPipe<T, D> for Rusb1Pipe<T, D> {
     where
         D: pipe::IsIn,
     {
-        let drv = Rusb1HostDriver { port: self.port };
+        let drv = Rusb1HostDriver {
+            port: self.port,
+            _usb: core::marker::PhantomData,
+        };
         let ep_addr = u8::from(self.ep_info.addr);
         drv.xfer_in(self.dev_addr, ep_addr, buf).await
     }
@@ -1795,7 +1811,10 @@ impl<T: pipe::Type, D: pipe::Direction> UsbPipe<T, D> for Rusb1Pipe<T, D> {
     where
         D: pipe::IsOut,
     {
-        let drv = Rusb1HostDriver { port: self.port };
+        let drv = Rusb1HostDriver {
+            port: self.port,
+            _usb: core::marker::PhantomData,
+        };
         let ep_addr = u8::from(self.ep_info.addr);
         drv.xfer_out(self.dev_addr, ep_addr, buf).await
     }

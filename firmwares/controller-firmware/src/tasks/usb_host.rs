@@ -9,10 +9,10 @@ use rza1l_hal::usb::Rusb1HostDriver;
 /// disconnect before looping.
 ///
 /// Spawn this task *instead of* `usb_task` when the port is in host mode.
-/// The `driver` must have been initialised via [`rza1l_hal::usb::init_host_mode`]
-/// and the ISR wired to [`rza1l_hal::usb::hcd_int_handler`].
+/// The `driver` must have been initialised via [`rza1l_hal::usb::init_host_mode`],
+/// whose binding serves host mode.
 #[embassy_executor::task]
-pub(crate) async fn usb_host_task(driver: Rusb1HostDriver) {
+pub(crate) async fn usb_host_task(driver: Rusb1HostDriver<'static>) {
     info!("usb_host_task: running");
 
     // Bus-wide state (device-address allocator + enumeration lock) lives for

@@ -487,7 +487,8 @@ async fn boot_task(spawner: Spawner) {
         // The menu branch won (or dev mode is off): if a CDC listener was brought
         // up, tear it down so the port is free for a later DATA TRANSFER MSC init.
         if cfg.dev_mode {
-            unsafe { rza1l_hal::usb::disconnect(0) };
+            // SAFETY: the listener's session is over.
+            rza1l_hal::usb::disconnect(unsafe { rza1l_hal::peripherals::USB0::steal() });
         }
 
         // ---- Long-press on an SD `/APPS` ELF: store it to the flash slot ----

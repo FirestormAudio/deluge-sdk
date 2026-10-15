@@ -16,25 +16,25 @@
 //!
 //! ## Quick start — device mode
 //!
-//! ```rust,no_run
-//! use rza1l_hal::usb::init_device_mode;
+//! ```ignore
+//! use rza1l_hal::usb::{self, init_device_mode};
+//! use rza1l_hal::peripherals::USB0;
 //!
-//! let (port, driver) = unsafe { init_device_mode(0) };
+//! rza1l_hal::bind_interrupts!(struct Irqs { USB0 => usb::DeviceInterruptHandler<USB0>; });
+//! let (port, driver) = init_device_mode(p.USB0, Irqs);
 //! // pass `driver` to `embassy_usb::UsbDevice::new(driver, config, ...)`
 //! ```
 //!
 //! ## Quick start — host mode
 //!
-//! `ignore`d rather than compiled: `embassy-usb-host` is a
-//! `cfg(target_os = "none")` dependency, so this example cannot build during a
-//! host-target `cargo test`.
-//!
 //! ```ignore
-//! use rza1l_hal::usb::init_host_mode;
+//! use rza1l_hal::usb::{self, init_host_mode};
+//! use rza1l_hal::peripherals::USB0;
 //! use embassy_usb_host::{bus, BusState, handler::BusRoute};
 //!
+//! rza1l_hal::bind_interrupts!(struct Irqs { USB0 => usb::HostInterruptHandler<USB0>; });
 //! static BUS_STATE: BusState = BusState::new();
-//! let (port, host) = unsafe { init_host_mode(0) };
+//! let (port, host) = init_host_mode(p.USB0, Irqs);
 //! let (mut controller, handle) = bus(host, &BUS_STATE);
 //! let speed = controller.wait_for_connection().await;
 //! let (info, _) = handle.enumerate(BusRoute::Direct(speed), &mut [0u8; 256]).await.unwrap();
@@ -42,26 +42,16 @@
 //!
 //! ## ISR wiring
 //!
-//! Call `dcd_int_handler` (device mode) or `hcd_int_handler` (host mode) from
-//! your GIC interrupt dispatcher; both take the port number.  Firmware that
-//! only ever runs one mode can call that handler directly; firmware that
-//! switches at runtime dispatches on a flag, as below.
+//! Bind the port's interrupt to the handler for the mode you run, and pass the binding to
+//! `init_device_mode` / `init_host_mode`:
 //!
-//! ```rust,no_run
-//! use core::sync::atomic::{AtomicBool, Ordering};
-//! use rza1l_hal::usb::{dcd_int_handler, hcd_int_handler};
-//!
-//! static HOST_MODE: AtomicBool = AtomicBool::new(false);
-//!
-//! #[unsafe(no_mangle)]
-//! extern "C" fn irq73_handler() {  // USB0
-//!     if HOST_MODE.load(Ordering::Relaxed) {
-//!         unsafe { hcd_int_handler(0) }
-//!     } else {
-//!         unsafe { dcd_int_handler(0) }
-//!     }
-//! }
+//! ```ignore
+//! rza1l_hal::bind_interrupts!(struct Irqs { USB0 => usb::DeviceInterruptHandler<USB0>; });
+//! let (_port, driver) = usb::init_device_mode(p.USB0, Irqs);
 //! ```
+//!
+//! Firmware that picks device or host mode at run time binds `DualRoleInterruptHandler`,
+//! which dispatches to the mode the port was last brought up in.
 
 pub mod driver;
 pub mod fifo;
@@ -189,6 +179,111 @@ pub unsafe fn int_disable(port: u8) {
 }
 
 // ---------------------------------------------------------------------------
+// Typed ports and interrupt handlers
+// ---------------------------------------------------------------------------
+
+use core::sync::atomic::{AtomicBool, Ordering};
+
+use crate::Peri;
+use crate::interrupt::{self, Binding, Handler, Interrupt};
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// A USB port singleton (`peripherals::USB0`, `USB1`).
+pub trait Instance: crate::PeripheralType + sealed::Sealed + 'static {
+    /// The port number, 0 or 1.
+    const PORT: u8;
+    /// Its interrupt.
+    type Interrupt: Interrupt;
+}
+
+impl sealed::Sealed for crate::peripherals::USB0 {}
+impl Instance for crate::peripherals::USB0 {
+    const PORT: u8 = 0;
+    type Interrupt = crate::interrupt::typelevel::USB0;
+}
+impl sealed::Sealed for crate::peripherals::USB1 {}
+impl Instance for crate::peripherals::USB1 {
+    const PORT: u8 = 1;
+    type Interrupt = crate::interrupt::typelevel::USB1;
+}
+
+/// Whether each port was last initialised in host mode: the dual-role handler's dispatch.
+static HOST_MODE: [AtomicBool; 2] = [const { AtomicBool::new(false) }; 2];
+
+fn set_host_mode(port: u8, host: bool) {
+    HOST_MODE[port as usize].store(host, Ordering::Release);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Role {
+    Device,
+    Host,
+}
+
+fn role(port: u8) -> Role {
+    if HOST_MODE[port as usize].load(Ordering::Acquire) {
+        Role::Host
+    } else {
+        Role::Device
+    }
+}
+
+/// Port `T`'s interrupt in device mode.
+pub struct DeviceInterruptHandler<T: Instance> {
+    _usb: PhantomData<T>,
+}
+impl<T: Instance> Handler<T::Interrupt> for DeviceInterruptHandler<T> {
+    unsafe fn on_interrupt() {
+        // SAFETY: the GIC dispatches this for T's interrupt.
+        unsafe { dcd_int_handler(T::PORT) }
+    }
+}
+
+/// Port `T`'s interrupt in host mode.
+pub struct HostInterruptHandler<T: Instance> {
+    _usb: PhantomData<T>,
+}
+impl<T: Instance> Handler<T::Interrupt> for HostInterruptHandler<T> {
+    unsafe fn on_interrupt() {
+        // SAFETY: as above.
+        unsafe { hcd_int_handler(T::PORT) }
+    }
+}
+
+/// Port `T`'s interrupt for firmware that picks device or host mode at run time: dispatches to
+/// the mode the port was last initialised in.
+pub struct DualRoleInterruptHandler<T: Instance> {
+    _usb: PhantomData<T>,
+}
+impl<T: Instance> Handler<T::Interrupt> for DualRoleInterruptHandler<T> {
+    unsafe fn on_interrupt() {
+        // SAFETY: as above; the mode is the one `init_*_mode` recorded.
+        unsafe {
+            match role(T::PORT) {
+                Role::Host => hcd_int_handler(T::PORT),
+                Role::Device => dcd_int_handler(T::PORT),
+            }
+        }
+    }
+}
+
+/// A handler that serves port `T` in device mode.
+pub trait ServesDevice<T: Instance>: Handler<T::Interrupt> + sealed::Sealed {}
+/// A handler that serves port `T` in host mode.
+pub trait ServesHost<T: Instance>: Handler<T::Interrupt> + sealed::Sealed {}
+
+impl<T: Instance> sealed::Sealed for DeviceInterruptHandler<T> {}
+impl<T: Instance> sealed::Sealed for HostInterruptHandler<T> {}
+impl<T: Instance> sealed::Sealed for DualRoleInterruptHandler<T> {}
+impl<T: Instance> ServesDevice<T> for DeviceInterruptHandler<T> {}
+impl<T: Instance> ServesDevice<T> for DualRoleInterruptHandler<T> {}
+impl<T: Instance> ServesHost<T> for HostInterruptHandler<T> {}
+impl<T: Instance> ServesHost<T> for DualRoleInterruptHandler<T> {}
+
+// ---------------------------------------------------------------------------
 // Mode markers
 // ---------------------------------------------------------------------------
 
@@ -205,9 +300,7 @@ pub struct Host;
 /// A handle representing ownership of one RUSB1 port in a given `MODE`.
 ///
 /// Created by [`init_device_mode`] or [`init_host_mode`]; not constructible
-/// directly.  Dropping this type does not disable the hardware — call
-/// [`UsbPort::into_device_mode`] or [`UsbPort::into_host_mode`] explicitly to
-/// switch modes at runtime.
+/// directly.  Dropping this type does not disable the hardware.
 pub struct UsbPort<MODE> {
     port: u8,
     _mode: PhantomData<MODE>,
@@ -220,131 +313,68 @@ impl<M> UsbPort<M> {
     }
 }
 
-impl UsbPort<Device> {
-    /// Re-enter host mode.  Disables pull-up, reconfigures DCFM, re-enables.
-    ///
-    /// # Safety
-    /// No active USB traffic must be in progress.
-    pub unsafe fn into_host_mode(self) -> (UsbPort<Host>, Rusb1HostDriver) {
-        unsafe {
-            quiesce_port(self.port);
-            let hd = Rusb1HostDriver::new(self.port);
-            (
-                UsbPort {
-                    port: self.port,
-                    _mode: PhantomData,
-                },
-                hd,
-            )
-        }
-    }
-}
-
-impl UsbPort<Host> {
-    /// Re-enter device mode.
-    ///
-    /// # Safety
-    /// No active USB traffic must be in progress.
-    pub unsafe fn into_device_mode(self) -> (UsbPort<Device>, Rusb1Driver) {
-        unsafe {
-            quiesce_port(self.port);
-            let drv = Rusb1Driver::new(self.port);
-            (
-                UsbPort {
-                    port: self.port,
-                    _mode: PhantomData,
-                },
-                drv,
-            )
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Convenience initialisation functions
 // ---------------------------------------------------------------------------
 
-/// Enable the USB clock, initialise the RUSB1 hardware in **device** mode,
-/// and return an ownership handle plus the `embassy-usb-driver` driver.
+/// Bring port `T` up in **device** mode: module clock, then the RUSB1 device driver for
+/// `embassy-usb`. `irq` binds a handler that serves device mode; the driver unmasks the
+/// interrupt when it starts.
 ///
-/// Call once per port; typically at startup before `embassy_usb::UsbDevice`
-/// is created.
-///
-/// # Safety
-/// Must only be called once per port.  Caller must ensure the PLL (UPLLE) and
-/// the USB clock select (UCKSEL) have been configured in SYSCFG0 before this
-/// call if an external clock is used (the Deluge board uses the internal PLL).
-pub unsafe fn init_device_mode(port: u8) -> (UsbPort<Device>, Rusb1Driver) {
+/// The driver borrows `usb` for `'d`, so the port can't be brought up again while it lives.
+/// Firmware that brings it up once per session [`disconnect`]s the previous session first.
+pub fn init_device_mode<'d, T: Instance, H: ServesDevice<T>>(
+    _usb: Peri<'d, T>,
+    irq: impl Binding<T::Interrupt, H>,
+) -> (UsbPort<Device>, Rusb1Driver<'d>) {
+    interrupt::bind(irq);
+    set_host_mode(T::PORT, false);
+    // SAFETY: port T is owned for 'd; its clock and driver are this call's.
     unsafe {
-        module_clock_enable(port);
-        let drv = Rusb1Driver::new(port);
+        module_clock_enable(T::PORT);
         (
             UsbPort {
-                port,
+                port: T::PORT,
                 _mode: PhantomData,
             },
-            drv,
+            Rusb1Driver::new(T::PORT),
         )
     }
 }
 
-/// Enable the USB clock, initialise the RUSB1 hardware in **host** mode, and
-/// return an ownership handle plus the [`Rusb1HostDriver`].
-///
-/// The driver implements [`embassy_usb_driver::host::UsbHostController`] and
-/// is ready to hand to `embassy_usb_host::bus` for enumeration.
-///
-/// # Safety
-/// Must only be called once per port.
-pub unsafe fn init_host_mode(port: u8) -> (UsbPort<Host>, Rusb1HostDriver) {
+/// Bring port `T` up in **host** mode: module clock, then the RUSB1 host driver for
+/// `embassy-usb-host`, which unmasks the interrupt. `irq` binds a handler that serves host mode.
+pub fn init_host_mode<'d, T: Instance, H: ServesHost<T>>(
+    _usb: Peri<'d, T>,
+    irq: impl Binding<T::Interrupt, H>,
+) -> (UsbPort<Host>, Rusb1HostDriver<'d>) {
+    interrupt::bind(irq);
+    set_host_mode(T::PORT, true);
+    // SAFETY: as above.
     unsafe {
-        module_clock_enable(port);
-        let hd = Rusb1HostDriver::new(port);
+        module_clock_enable(T::PORT);
         (
             UsbPort {
-                port,
+                port: T::PORT,
                 _mode: PhantomData,
             },
-            hd,
+            Rusb1HostDriver::new(T::PORT),
         )
     }
 }
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-/// Disconnect a device-mode port from the host and disable the SIE.
-///
-/// Clears the D+ pull-up (host sees SE0 / unplug), masks all USB interrupts, and
-/// clears `USBE`.  Use this to leave a USB mode cleanly; a later
-/// [`init_device_mode`] re-attaches and re-enumerates.
-///
-/// # Safety
-/// Writes USB registers; no transfer may be in flight.
-pub unsafe fn disconnect(port: u8) {
+/// Disconnect a device-mode port from the host and stop its SIE: the D+ pull-up off (the host
+/// sees an unplug), USB interrupts masked, `USBE` cleared. A later [`init_device_mode`]
+/// re-attaches.
+pub fn disconnect<T: Instance>(_usb: Peri<'_, T>) {
+    // SAFETY: port T is owned; its old driver's session is over.
     unsafe {
         use regs::{Rusb1Regs, SYSCFG_DPRPU, SYSCFG_USBE, rmw, wr};
+        let port = T::PORT;
         int_disable(port);
         let regs = Rusb1Regs::ptr(port);
         // Pull-up off: host sees a disconnect.
         rmw(core::ptr::addr_of_mut!((*regs).syscfg0), SYSCFG_DPRPU, 0);
-        wr(core::ptr::addr_of_mut!((*regs).intenb0), 0);
-        wr(core::ptr::addr_of_mut!((*regs).brdyenb), 0);
-        wr(core::ptr::addr_of_mut!((*regs).bempenb), 0);
-        // Clear USBE to reset the SIE.
-        let cur = regs::rd(core::ptr::addr_of!((*regs).syscfg0));
-        wr(core::ptr::addr_of_mut!((*regs).syscfg0), cur & !SYSCFG_USBE);
-    }
-}
-
-/// Bring a port to a quiescent state (USBE=0, interrupts off) before a mode
-/// switch.
-unsafe fn quiesce_port(port: u8) {
-    unsafe {
-        use regs::{Rusb1Regs, SYSCFG_USBE, wr};
-        int_disable(port);
-        let regs = Rusb1Regs::ptr(port);
         wr(core::ptr::addr_of_mut!((*regs).intenb0), 0);
         wr(core::ptr::addr_of_mut!((*regs).brdyenb), 0);
         wr(core::ptr::addr_of_mut!((*regs).bempenb), 0);
@@ -374,5 +404,15 @@ mod tests {
     fn base_fn() {
         assert_eq!(base(0), USB0_BASE);
         assert_eq!(base(1), USB1_BASE);
+    }
+
+    #[test]
+    fn dual_role_dispatch_follows_the_recorded_mode() {
+        set_host_mode(1, false);
+        assert_eq!(role(1), Role::Device);
+        set_host_mode(1, true);
+        assert_eq!(role(1), Role::Host);
+        set_host_mode(1, false);
+        assert_eq!(role(1), Role::Device);
     }
 }

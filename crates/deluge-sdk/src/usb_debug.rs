@@ -114,11 +114,13 @@ impl Write for FmtBuf {
 ///
 /// Takes USB0: only one of `usb-log` and `usb-serial` can own it. Call before interrupts are
 /// enabled (the runtime does).
-pub fn build(_usb0: rza1l_hal::Peri<'static, rza1l_hal::peripherals::USB0>) -> (
-    UsbDevice<'static, Rusb1Driver>,
-    Sender<'static, Rusb1Driver>,
+pub fn build(
+    usb0: rza1l_hal::Peri<'static, rza1l_hal::peripherals::USB0>,
+) -> (
+    UsbDevice<'static, Rusb1Driver<'static>>,
+    Sender<'static, Rusb1Driver<'static>>,
 ) {
-    let (_port, driver) = unsafe { init_device_mode(0) };
+    let (_port, driver) = init_device_mode(usb0, crate::usb0::Irqs);
 
     let mut config = Config::new(0x16D0, 0x0EDA);
     config.manufacturer = Some("Synthstrom Audible");
@@ -134,10 +136,6 @@ pub fn build(_usb0: rza1l_hal::Peri<'static, rza1l_hal::peripherals::USB0>) -> (
         unsafe { &mut *core::ptr::addr_of_mut!(USB_MSOS_DESC) },
         unsafe { &mut *core::ptr::addr_of_mut!(USB_CONTROL_BUF) },
     );
-
-    // Register the USB0 ISR before build() enables the interrupt source. Device
-    // mode only, so always dispatch to the device handler.
-    rza1l_hal::interrupt::bind(crate::usb0::Irqs);
 
     // 512-byte bulk endpoints: the RUSB1 PHY negotiates high speed, and USB 2.0
     // requires HS bulk endpoints to advertise wMaxPacketSize 512.
@@ -157,8 +155,8 @@ pub fn build(_usb0: rza1l_hal::Peri<'static, rza1l_hal::peripherals::USB0>) -> (
 pub fn spawn(
     spawner: Spawner,
     bits: (
-        UsbDevice<'static, Rusb1Driver>,
-        Sender<'static, Rusb1Driver>,
+        UsbDevice<'static, Rusb1Driver<'static>>,
+        Sender<'static, Rusb1Driver<'static>>,
     ),
 ) {
     let (device, tx) = bits;
@@ -168,13 +166,13 @@ pub fn spawn(
 
 /// Run the USB device stack (enumeration, control transfers, endpoints).
 #[embassy_executor::task]
-async fn usb_run(mut device: UsbDevice<'static, Rusb1Driver>) {
+async fn usb_run(mut device: UsbDevice<'static, Rusb1Driver<'static>>) {
     device.run().await;
 }
 
 /// Stream buffered log bytes out the CDC IN endpoint while a host is connected.
 #[embassy_executor::task]
-async fn drain(mut tx: Sender<'static, Rusb1Driver>) {
+async fn drain(mut tx: Sender<'static, Rusb1Driver<'static>>) {
     let mut buf = [0u8; 256];
     loop {
         // Wait for the host to open the port (DTR / endpoint enabled).

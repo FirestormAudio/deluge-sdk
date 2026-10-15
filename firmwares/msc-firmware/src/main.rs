@@ -33,8 +33,11 @@ use embassy_executor::{Executor, Spawner};
 use rza1_alloc as allocator;
 use deluge_bsp::cv_gate;
 use deluge_bsp::uart as bsp_uart;
-use rza1l_hal::gic;
-use rza1l_hal::usb::{dcd_int_handler, init_device_mode};
+use rza1l_hal::usb::init_device_mode;
+
+rza1l_hal::bind_interrupts!(struct UsbIrqs {
+    USB0 => rza1l_hal::usb::DeviceInterruptHandler<rza1l_hal::peripherals::USB0>;
+});
 
 unsafe extern "C" {
     /// Start of the free SRAM heap region (set by the linker script).
@@ -124,15 +127,8 @@ pub extern "C" fn main() -> ! {
     info!("RSPI0: initialised via cv_gate::init");
 
     // ── USB0 device mode ──────────────────────────────────────────────────
-    // Register the USB0 ISR *before* IRQ is globally enabled.
-    unsafe {
-        gic::register(rza1l_hal::usb::USB0_IRQ, || {
-            dcd_int_handler(0);
-        });
-    }
-
     let (usb_device, ep_out, ep_in) = unsafe {
-        let (_port, driver) = init_device_mode(0);
+        let (_port, driver) = init_device_mode(board.usb0, UsbIrqs);
         // Example/development USB identity — self-contained, NOT a product ID.
         // See `deluge_bsp::usb::ids` for the product-identity rules and why
         // distinct PIDs matter on macOS. TODO: use IDs you own (e.g. a pid.codes

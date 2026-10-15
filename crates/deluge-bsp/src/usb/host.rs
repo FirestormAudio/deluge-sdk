@@ -412,10 +412,9 @@ mod runtime {
     ///
     /// Spawn this instead of a bare enumerate-and-log task when the port is in
     /// host mode. The `driver` must have been initialised via
-    /// [`rza1l_hal::usb::init_host_mode`] and the ISR wired to
-    /// [`rza1l_hal::usb::hcd_int_handler`].
+    /// [`rza1l_hal::usb::init_host_mode`], whose binding serves host mode.
     #[embassy_executor::task]
-    pub async fn usb_host_supervisor(driver: Rusb1HostDriver, spawner: Spawner) {
+    pub async fn usb_host_supervisor(driver: Rusb1HostDriver<'static>, spawner: Spawner) {
         static BUS_STATE: BusState = BusState::new();
         let (mut controller, handle) = bus(driver, &BUS_STATE);
         let mut config_buf = [0u8; 512];

@@ -200,21 +200,20 @@ static PORT_ALLOC: [critical_section::Mutex<core::cell::UnsafeCell<PortAlloc>>; 
 
 /// The top-level USB device-mode driver for one RUSB1 port (0 or 1).
 ///
-/// ## Safety invariant
-/// Only one `Rusb1Driver` may exist per port at a time; this is why
-/// [`Rusb1Driver::new`] and [`init_device_mode`](super::init_device_mode) are
-/// `unsafe`.
-pub struct Rusb1Driver {
+/// It borrows its port for `'d` ([`init_device_mode`](super::init_device_mode)), so only one
+/// exists per port at a time.
+pub struct Rusb1Driver<'d> {
     port: u8,
+    _usb: core::marker::PhantomData<&'d mut ()>,
 }
 
-impl Rusb1Driver {
+impl<'d> Rusb1Driver<'d> {
     /// Create a driver for `port` (0 or 1).
     ///
     /// # Safety
     /// Caller must ensure this is the only active driver for this port, and
     /// that `crate::usb::module_clock_enable(port)` has already been called.
-    pub unsafe fn new(port: u8) -> Self {
+    pub(crate) unsafe fn new(port: u8) -> Self {
         unsafe {
             debug_assert!(port <= 1);
             // A fresh device-mode bring-up re-enumerates from scratch and the
@@ -228,12 +227,15 @@ impl Rusb1Driver {
             // Set BUSWAIT early so register accesses after USBE=1 are safe.
             let regs = Rusb1Regs::ptr(port);
             wr(core::ptr::addr_of_mut!((*regs).buswait), BUSWAIT_VALUE);
-            Self { port }
+            Self {
+                port,
+                _usb: core::marker::PhantomData,
+            }
         }
     }
 }
 
-impl<'d> Driver<'d> for Rusb1Driver {
+impl<'d> Driver<'d> for Rusb1Driver<'d> {
     type EndpointOut = Rusb1EndpointOut;
     type EndpointIn = Rusb1EndpointIn;
     type ControlPipe = Rusb1ControlPipe;

@@ -15,7 +15,7 @@ use embassy_usb::{Builder, Config, UsbDevice};
 use rza1l_hal::usb::{Rusb1Driver, init_device_mode};
 
 /// The `embassy-usb` driver for the Deluge's USB0 device port.
-pub type Driver = Rusb1Driver;
+pub type Driver = Rusb1Driver<'static>;
 
 /// How the serial device identifies itself to the host.
 #[derive(Clone, Copy, Debug)]
@@ -57,10 +57,9 @@ use rza1l_hal::peripherals::USB0;
 static PORT: Mutex<CriticalSectionRawMutex, RefCell<Option<Peri<'static, USB0>>>> =
     Mutex::new(RefCell::new(None));
 
-/// Hold USB0 for [`Deluge::usb_serial`](crate::Deluge::usb_serial) and bind its interrupt. The
-/// runtime calls this before interrupts are enabled.
+/// Hold USB0 for [`Deluge::usb_serial`](crate::Deluge::usb_serial). The runtime calls this
+/// before interrupts are enabled.
 pub(crate) fn stash(usb0: Peri<'static, USB0>) {
-    rza1l_hal::interrupt::bind(crate::usb0::Irqs);
     PORT.lock(|port| *port.borrow_mut() = Some(usb0));
 }
 
@@ -71,11 +70,11 @@ pub(crate) fn take_port() -> Option<Peri<'static, USB0>> {
 
 /// Build the CDC-ACM device and spawn its task. Called once, via
 /// [`Deluge::usb_serial`](crate::Deluge::usb_serial)'s take-once guard.
-pub(crate) fn start(spawner: Spawner, id: UsbIdentity, _usb0: Peri<'static, USB0>) -> UsbSerial {
-    // SAFETY: owning USB0 (`_usb0`, taken once from the runtime's stash) makes this the only
-    // caller, so USB0 is initialised once and the `static mut` buffers are borrowed exactly once.
+pub(crate) fn start(spawner: Spawner, id: UsbIdentity, usb0: Peri<'static, USB0>) -> UsbSerial {
+    let (_port, driver) = init_device_mode(usb0, crate::usb0::Irqs);
+    // SAFETY: owning USB0 (`usb0`, taken once from the runtime's stash) makes this the only
+    // caller, so the `static mut` buffers are borrowed exactly once.
     let (device, cdc) = unsafe {
-        let (_port, driver) = init_device_mode(0);
         let mut config = Config::new(id.vid, id.pid);
         config.manufacturer = Some(id.manufacturer);
         config.product = Some(id.product);

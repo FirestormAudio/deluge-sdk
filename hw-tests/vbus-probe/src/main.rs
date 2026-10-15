@@ -29,6 +29,10 @@ use rza1_alloc as allocator;
 use deluge_bsp::cv_gate;
 use deluge_bsp::uart as bsp_uart;
 
+rza1l_hal::bind_interrupts!(struct UsbIrqs {
+    USB0 => rza1l_hal::usb::HostInterruptHandler<rza1l_hal::peripherals::USB0>;
+});
+
 unsafe extern "C" {
     /// Start of the free SRAM heap region (set by the linker script).
     static __sram_heap_start: u8;
@@ -90,8 +94,8 @@ pub extern "C" fn main() -> ! {
 
     // Bring USB0 up in host mode so VBSTS reflects the real host-mode VBUS
     // state. The returned driver is unused — this firmware only reads the VBUS
-    // monitor; no ISR is registered, so USB interrupts stay masked at the GIC.
-    let (_port, _driver) = unsafe { rza1l_hal::usb::init_host_mode(0) };
+    // monitor; the host handler services whatever interrupts the port raises.
+    let (_port, _driver) = rza1l_hal::usb::init_host_mode(board.usb0, UsbIrqs);
     info!("USB: USB0 in host mode (VBUS sense only)");
 
     unsafe { cortex_ar::interrupt::enable() };

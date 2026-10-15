@@ -644,6 +644,10 @@ pub mod __rt {
             let usb0 = board.usb0;
             #[cfg(feature = "usb-serial")]
             crate::usb_serial::stash(usb0);
+            #[cfg(not(any(feature = "usb-log", feature = "usb-serial")))]
+            let usb0_part = Some(usb0);
+            #[cfg(any(feature = "usb-log", feature = "usb-serial"))]
+            let usb0_part = None;
 
             // The rest of the board waits for the capability that drives it, or for the app to
             // take it through `deluge::parts`.
@@ -664,6 +668,7 @@ pub mod __rt {
                 ssi_tx_dma: Some(board.dma.ssi_tx),
                 ssi_rx_dma: Some(board.dma.ssi_rx),
                 scux_ffd0_dma: Some(board.dma.scux_ffd0),
+                usb0: usb0_part,
             });
 
             // App's synchronous, interrupts-masked initialisation.

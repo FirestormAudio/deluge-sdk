@@ -19,15 +19,14 @@
 //! address as it arrives, checksummed incrementally, and launched once the CRC
 //! verifies.
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::Ordering;
 
 use embassy_futures::join::join;
 use embassy_time::{Duration, Timer};
 use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver, State};
 use log::{info, warn};
 
-use rza1l_hal::gic;
-use rza1l_hal::usb::{Rusb1Driver, USB0_IRQ, dcd_int_handler, disconnect, init_device_mode};
+use rza1l_hal::usb::{Rusb1Driver, disconnect, init_device_mode};
 
 use deluge_image::Crc32;
 use deluge_image::elf::{MAX_PHDRS, SDRAM_HI, SDRAM_LO, StreamRouter};
@@ -68,8 +67,9 @@ static mut USB_MSOS_DESC: [u8; 0] = [];
 static mut USB_CONTROL_BUF: [u8; 64] = [0; 64];
 static mut CDC_STATE: State = State::new();
 
-/// Ensures the USB0 ISR is wired into the GIC exactly once across mode entries.
-static USB_IRQ_REGISTERED: AtomicBool = AtomicBool::new(false);
+rza1l_hal::bind_interrupts!(struct UsbIrqs {
+    USB0 => rza1l_hal::usb::DeviceInterruptHandler<rza1l_hal::peripherals::USB0>;
+});
 
 /// A brought-up dev-upload USB device, ready to listen.
 ///
@@ -80,8 +80,8 @@ static USB_IRQ_REGISTERED: AtomicBool = AtomicBool::new(false);
 /// loop). [`run`](Listener::run) then drives it concurrently
 /// with the menu selector.
 pub struct Listener {
-    device: embassy_usb::UsbDevice<'static, Rusb1Driver>,
-    rx: Receiver<'static, Rusb1Driver>,
+    device: embassy_usb::UsbDevice<'static, Rusb1Driver<'static>>,
+    rx: Receiver<'static, Rusb1Driver<'static>>,
 }
 
 /// Bring up the dev-upload CDC device. Call this **before** the menu selector
@@ -113,16 +113,14 @@ impl Listener {
 /// # Safety
 /// Mutates the module's `'static` descriptor buffers; one listener at a time.
 unsafe fn build_usb() -> (
-    embassy_usb::UsbDevice<'static, Rusb1Driver>,
-    CdcAcmClass<'static, Rusb1Driver>,
+    embassy_usb::UsbDevice<'static, Rusb1Driver<'static>>,
+    CdcAcmClass<'static, Rusb1Driver<'static>>,
 ) {
     unsafe {
-        // Wire the USB0 ISR once (global IRQs are already enabled by boot_task).
-        if !USB_IRQ_REGISTERED.swap(true, Ordering::AcqRel) {
-            gic::register(USB0_IRQ, || dcd_int_handler(0));
-        }
-
-        let (_port, driver) = init_device_mode(0);
+        // SAFETY: one listener at a time (this function's contract): the previous session's
+        // driver is gone, so this session is USB0's only user.
+        let usb0 = rza1l_hal::peripherals::USB0::steal();
+        let (_port, driver) = init_device_mode(usb0, UsbIrqs);
         let mut config = embassy_usb::Config::new(
             deluge_bsp::usb::ids::VID,
             deluge_bsp::usb::ids::PID_APP_LOADER_CDC,
@@ -173,7 +171,7 @@ unsafe fn route_bytes(router: &StreamRouter, mut off: u32, mut data: &[u8]) {
 /// Receive framed uploads forever.  Returns only by loading and launching an
 /// image (so the return type is `!`); a malformed/short/CRC-bad frame is logged,
 /// reported on the OLED, and listening resumes.
-async fn receive(rx: Receiver<'static, Rusb1Driver>) -> ! {
+async fn receive(rx: Receiver<'static, Rusb1Driver<'static>>) -> ! {
     let mut reader = PacketReader::new(rx);
     loop {
         // Resync to the frame magic, then read the fixed header tail.
@@ -326,7 +324,8 @@ async fn handoff(result: elf::LoadResult) -> ! {
     // Unplug from the host: it sees a clean disconnect and re-enumerates the
     // launched app's own USB stack (e.g. the usb-log CDC for `cargo deluge run
     // --log`).
-    unsafe { disconnect(0) };
+    // SAFETY: the listener's session is over: nothing drives USB0 past this point.
+    disconnect(unsafe { rza1l_hal::peripherals::USB0::steal() });
 
     cortex_ar::interrupt::disable();
     unsafe { crate::quiesce_for_handoff() };
@@ -343,7 +342,7 @@ async fn handoff(result: elf::LoadResult) -> ! {
 /// Buffered reader over the CDC OUT endpoint: `read_packet` only yields whole
 /// packets, so this re-packetises into byte / fixed-length / bulk reads.
 struct PacketReader {
-    rx: Receiver<'static, Rusb1Driver>,
+    rx: Receiver<'static, Rusb1Driver<'static>>,
     buf: [u8; MAX_PACKET as usize],
     pos: usize,
     fill: usize,
@@ -351,7 +350,7 @@ struct PacketReader {
 }
 
 impl PacketReader {
-    fn new(rx: Receiver<'static, Rusb1Driver>) -> Self {
+    fn new(rx: Receiver<'static, Rusb1Driver<'static>>) -> Self {
         Self {
             rx,
             buf: [0u8; MAX_PACKET as usize],
