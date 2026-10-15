@@ -24,11 +24,7 @@ pub unsafe fn init_with_link_descriptor(ch: u8, descriptor: *const u32, dmars_va
             dmars_val
         );
         // 1. Clear group DCTRL (priority mode / round-robin reset)
-        log::trace!(
-            "dmac: ch{} writing DCTRL={:#010x}",
-            ch,
-            dctrl_reg(ch).0
-        );
+        log::trace!("dmac: ch{} writing DCTRL={:#010x}", ch, dctrl_reg(ch).0);
         crate::mmio::write32(dctrl_reg(ch).0, 0);
         log::trace!("dmac: ch{} DCTRL ok", ch);
 
@@ -101,7 +97,11 @@ pub unsafe fn stop(ch: u8) {
         // its request line and starve the next program's channel. Only this
         // channel's half: the other half routes its pair.
         let dmars = dmars_reg(ch).0;
-        let keep = if ch % 2 == 0 { 0xFFFF_0000 } else { 0x0000_FFFF };
+        let keep = if ch % 2 == 0 {
+            0xFFFF_0000
+        } else {
+            0x0000_FFFF
+        };
         crate::mmio::write32(dmars, crate::mmio::read32(dmars) & keep);
     }
 }

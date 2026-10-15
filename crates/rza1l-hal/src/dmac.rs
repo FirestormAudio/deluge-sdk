@@ -192,14 +192,20 @@ impl<'d> Dma<'d> {
             crate::gic::set_priority(C::Interrupt::ID, DMAC_IRQ_PRIORITY);
             crate::gic::enable(C::Interrupt::ID);
         }
-        Self { ch: C::NUMBER, _channel: PhantomData }
+        Self {
+            ch: C::NUMBER,
+            _channel: PhantomData,
+        }
     }
 
     /// Take channel `C` for a transfer nobody awaits (a polled ring): its completion interrupt is
     /// masked at the GIC and nothing is bound to it. A ring with DEM clear raises DMAINT on every
     /// pass, so an enabled line with no one clearing TC would storm.
     pub fn new_without_interrupt<C: Channel>(_channel: Peri<'d, C>) -> Self {
-        let mut dma = Self { ch: C::NUMBER, _channel: PhantomData };
+        let mut dma = Self {
+            ch: C::NUMBER,
+            _channel: PhantomData,
+        };
         dma.mask_interrupt();
         dma
     }
@@ -212,7 +218,10 @@ impl<'d> Dma<'d> {
     /// The channel's owner must not run while the stolen handle is in use (interrupts masked, or
     /// the owner gone for good).
     pub unsafe fn steal<C: Channel>() -> Dma<'static> {
-        Dma { ch: C::NUMBER, _channel: PhantomData }
+        Dma {
+            ch: C::NUMBER,
+            _channel: PhantomData,
+        }
     }
 
     /// The channel number.
@@ -351,7 +360,12 @@ impl<'d> BlockDma<'d> {
             crate::gic::set_priority(C::Interrupt::ID, DMAC_IRQ_PRIORITY);
             crate::gic::enable(C::Interrupt::ID);
         }
-        Self { dma: Dma { ch: C::NUMBER, _channel: PhantomData } }
+        Self {
+            dma: Dma {
+                ch: C::NUMBER,
+                _channel: PhantomData,
+            },
+        }
     }
 
     /// Wait for the next block to complete. Recurring: call it in a loop. Takes `&self`, so a
@@ -584,10 +598,7 @@ mod tests {
             "CHCFG from desc[4]"
         );
         // Even channel → DMARS resource selector in the low 16 bits.
-        assert_eq!(
-            crate::mmio::test::peek32(dmars_reg(ch).0),
-            0x0000_00E1
-        );
+        assert_eq!(crate::mmio::test::peek32(dmars_reg(ch).0), 0x0000_00E1);
         assert_eq!(
             crate::mmio::test::peek32(ch_reg(ch, OFF_NXLA).0),
             desc.as_ptr() as u32,
@@ -652,7 +663,9 @@ mod typed_tests {
     use super::*;
     use crate::interrupt::{Handler, Interrupt};
     use crate::mmio::test;
-    use crate::peripherals::{DMA_CH0, DMA_CH3, DMA_CH4, DMA_CH5, DMA_CH7, DMA_CH9, DMA_CH10, DMA_CH13, DMA_CH15};
+    use crate::peripherals::{
+        DMA_CH0, DMA_CH3, DMA_CH4, DMA_CH5, DMA_CH7, DMA_CH9, DMA_CH10, DMA_CH13, DMA_CH15,
+    };
     use core::future::Future;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -791,7 +804,10 @@ mod typed_tests {
         assert_eq!(ring.number(), 5, "derefs to its Dma");
         assert!(crate::gic::handler(46).is_some(), "DMAINT5 bound");
         // Priority 13 into IPRIORITYR11 lane 2, then ISENABLER1 bit 14.
-        assert_eq!(test::writes(), [(0xE820_142C, (13 << 3) << 16), (0xE820_1104, 1 << 14)]);
+        assert_eq!(
+            test::writes(),
+            [(0xE820_142C, (13 << 3) << 16), (0xE820_1104, 1 << 14)]
+        );
 
         test::reset();
         unsafe { <BlockInterruptHandler<DMA_CH5> as Handler<_>>::on_interrupt() };

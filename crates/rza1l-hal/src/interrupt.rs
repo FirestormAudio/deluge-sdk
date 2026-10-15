@@ -210,11 +210,19 @@ mod tests {
         );
         // SDHIn: status (card detect), operation, SDIO.
         assert_eq!(
-            [typelevel::SDHI0_STATUS::ID, typelevel::SDHI0_OP::ID, typelevel::SDHI0_SDIO::ID],
+            [
+                typelevel::SDHI0_STATUS::ID,
+                typelevel::SDHI0_OP::ID,
+                typelevel::SDHI0_SDIO::ID
+            ],
             [302, 303, 304]
         );
         assert_eq!(
-            [typelevel::SDHI1_STATUS::ID, typelevel::SDHI1_OP::ID, typelevel::SDHI1_SDIO::ID],
+            [
+                typelevel::SDHI1_STATUS::ID,
+                typelevel::SDHI1_OP::ID,
+                typelevel::SDHI1_SDIO::ID
+            ],
             [305, 306, 307]
         );
     }
