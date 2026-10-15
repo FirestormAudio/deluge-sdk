@@ -93,6 +93,7 @@ pub const INTENB0_VBSE: u16 = 0x8000;
 // ---------------------------------------------------------------------------
 pub const INTENB1_SACKE: u16 = 0x0010; // Setup ACK enable
 pub const INTENB1_SIGNE: u16 = 0x0020; // Setup IGNORE (NAK/error) enable
+pub const INTENB1_EOFERRE: u16 = 0x0040;
 pub const INTENB1_ATTCHE: u16 = 0x0800;
 pub const INTENB1_DTCHE: u16 = 0x1000;
 pub const INTENB1_BCHGE: u16 = 0x4000;
@@ -134,6 +135,7 @@ pub const CTSQ_WRITE_ZLP: u16 = 0b101;
 // ---------------------------------------------------------------------------
 pub const INTSTS1_SACK: u16 = 0x0010; // Setup ACK received
 pub const INTSTS1_SIGN: u16 = 0x0020; // Setup IGNORE (NAK/error)
+pub const INTSTS1_EOFERR: u16 = 0x0040; // EOF error: the controller stopped the port
 pub const INTSTS1_ATTCH: u16 = 0x0800;
 pub const INTSTS1_DTCH: u16 = 0x1000;
 

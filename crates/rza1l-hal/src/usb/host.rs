@@ -68,15 +68,15 @@ use super::regs::{
     DEVADD_USBSPD_HS, DEVADD_USBSPD_LS, DVSTCTR0_RHST, DVSTCTR0_RHST_FS, DVSTCTR0_RHST_HS,
     DVSTCTR0_RHST_LS, DVSTCTR0_UACT, DVSTCTR0_USBRST, FIFOCTR_BCLR, FIFOCTR_BVAL,
     FIFOCTR_DTLN_MASK, FIFOCTR_FRDY, FIFOSEL_CURPIPE_MASK, FIFOSEL_ISEL, FIFOSEL_MBW_SHIFT,
-    INTENB0_BEMPE, INTENB0_BRDYE, INTENB0_NRDYE, INTENB1_ATTCHE, INTENB1_DTCHE, INTENB1_SACKE,
-    INTENB1_SIGNE, INTSTS0_BEMP, INTSTS0_BRDY, INTSTS0_NRDY, INTSTS1_ATTCH, INTSTS1_DTCH,
-    INTSTS1_SACK, INTSTS1_SIGN, MBW_32, PIPEBUF_BUFNMB_MASK, PIPEBUF_BUFSIZE_MASK,
-    PIPEBUF_BUFSIZE_SHIFT, PIPECFG_DBLB, PIPECFG_EPNUM_MASK, PIPECFG_SHTNAK, PIPECFG_TYPE_BULK,
-    PIPECFG_TYPE_INTR, PIPECFG_TYPE_ISO, PIPECTR_ACLRM, PIPECTR_BSTS, PIPECTR_PBUSY,
-    PIPECTR_PID_BUF, PIPECTR_PID_MASK, PIPECTR_PID_NAK, PIPECTR_SQCLR, PIPECTR_SQSET,
-    PIPEMAXP_DEVSEL_SHIFT, PIPEMAXP_MXPS_MASK, PIPEPERI_IITV_MASK, PKT_BUF_BLOCK_SIZE,
-    SUSPMODE_SUSPM, SYSCFG_DCFM, SYSCFG_DPRPU, SYSCFG_DRPD, SYSCFG_HSE, SYSCFG_UPLLE, SYSCFG_USBE,
-    SYSSTS0_LNST, pipectr, usb,
+    INTENB0_BEMPE, INTENB0_BRDYE, INTENB0_NRDYE, INTENB1_ATTCHE, INTENB1_DTCHE, INTENB1_EOFERRE,
+    INTENB1_SACKE, INTENB1_SIGNE, INTSTS0_BEMP, INTSTS0_BRDY, INTSTS0_NRDY, INTSTS1_ATTCH,
+    INTSTS1_DTCH, INTSTS1_EOFERR, INTSTS1_SACK, INTSTS1_SIGN, MBW_32, PIPEBUF_BUFNMB_MASK,
+    PIPEBUF_BUFSIZE_MASK, PIPEBUF_BUFSIZE_SHIFT, PIPECFG_DBLB, PIPECFG_EPNUM_MASK, PIPECFG_SHTNAK,
+    PIPECFG_TYPE_BULK, PIPECFG_TYPE_INTR, PIPECFG_TYPE_ISO, PIPECTR_ACLRM, PIPECTR_BSTS,
+    PIPECTR_PBUSY, PIPECTR_PID_BUF, PIPECTR_PID_MASK, PIPECTR_PID_NAK, PIPECTR_SQCLR,
+    PIPECTR_SQSET, PIPEMAXP_DEVSEL_SHIFT, PIPEMAXP_MXPS_MASK, PIPEPERI_IITV_MASK,
+    PKT_BUF_BLOCK_SIZE, SUSPMODE_SUSPM, SYSCFG_DCFM, SYSCFG_DPRPU, SYSCFG_DRPD, SYSCFG_HSE,
+    SYSCFG_UPLLE, SYSCFG_USBE, SYSSTS0_LNST, pipectr, usb,
 };
 use crate::pac::usb::Usb;
 
@@ -152,6 +152,9 @@ static HCD_PIPE_DONE: AtomicU16 = AtomicU16::new(0);
 static HCD_PIPE_NRDY: AtomicU16 = AtomicU16::new(0);
 /// Bit N set → pipe N endpoint STALLed.
 static HCD_PIPE_STALL: AtomicU16 = AtomicU16::new(0);
+/// Bit N set → pipe N is an isochronous OUT pipe, whose NRDY reports an underrun
+/// (a zero-length packet sent for want of data), not a failed transfer.
+static HCD_PIPE_ISO_OUT: AtomicU16 = AtomicU16::new(0);
 
 static HCD_PIPE_WAKERS: [AtomicWaker; HCD_PIPE_COUNT] = {
     #[allow(clippy::declare_interior_mutable_const)]
@@ -362,7 +365,7 @@ impl<'d> Rusb1HostDriver<'d> {
             u.intsts(1).write_value(0);
             PROBE_PENDING[port as usize].store(true, Ordering::Release);
             u.intenb(1)
-                .write_value(INTENB1_SACKE | INTENB1_SIGNE | INTENB1_ATTCHE);
+                .write_value(INTENB1_SACKE | INTENB1_SIGNE | INTENB1_EOFERRE | INTENB1_ATTCHE);
 
             // Enable BEMP/NRDY/BRDY for pipe 0 (the DCP).
             u.bempenb().write_value(1);
@@ -536,6 +539,16 @@ impl<'d> Rusb1HostDriver<'d> {
         }
     }
 
+    /// `Err(Canceled)` when the port is stopped (UACT=0: no device reset yet, or a detach or
+    /// EOF error stopped it). A transfer started then would never be sent and never complete.
+    fn port_active(&self) -> Result<(), PipeError> {
+        if usb(self.port).dvstctr0().read() & DVSTCTR0_UACT == 0 {
+            Err(PipeError::Canceled)
+        } else {
+            Ok(())
+        }
+    }
+
     /// Watch for detach instead of attach: a device is on the port.
     fn watch_for_detach(&self) {
         let u = usb(self.port);
@@ -559,7 +572,7 @@ impl<'d> Rusb1HostDriver<'d> {
         let lnst = usb(self.port).syssts0().read() & SYSSTS0_LNST;
         let speed = self.bus_reset().await;
         log::info!(
-            "usb{}: host start: line {:02b}, probing reset → {:?}",
+            "usb{}: probe: line {:02b}, bus reset → {:?}",
             self.port,
             lnst,
             speed
@@ -704,6 +717,7 @@ impl<'d> Rusb1HostDriver<'d> {
     /// USB byte order (bmRequestType, bRequest, wValue, wIndex, wLength).
     pub async fn setup_send(&self, dev_addr: u8, setup: &[u8; 8]) -> Result<(), PipeError> {
         debug_assert!((dev_addr as usize) < HCD_MAX_DEV);
+        self.port_active()?;
         unsafe {
             let u = usb(self.port);
             let p = self.port as usize;
@@ -987,6 +1001,12 @@ impl<'d> Rusb1HostDriver<'d> {
                 u.brdyenb().modify(|r| *r |= 1 << pipe);
                 u.nrdyenb().modify(|r| *r |= 1 << pipe);
 
+                if ep_type == EndpointType::Isochronous && !dir_in {
+                    HCD_PIPE_ISO_OUT.fetch_or(1 << pipe, Ordering::Release);
+                } else {
+                    HCD_PIPE_ISO_OUT.fetch_and(!(1 << pipe), Ordering::Release);
+                }
+
                 // OUT pipes are armed immediately (host will send on demand);
                 // IN pipes wait until xfer_in() is called.
                 if !dir_in {
@@ -1014,6 +1034,7 @@ impl<'d> Rusb1HostDriver<'d> {
         let pipe = self
             .ep_to_pipe(dev_addr, ep_addr)
             .ok_or(PipeError::Canceled)?;
+        self.port_active()?;
 
         critical_section::with(|cs| unsafe {
             let xfer = &mut *HCD_XFER[pipe].borrow(cs).get();
@@ -1042,6 +1063,7 @@ impl<'d> Rusb1HostDriver<'d> {
         let pipe = self
             .ep_to_pipe(dev_addr, ep_addr)
             .ok_or(PipeError::Canceled)?;
+        self.port_active()?;
 
         critical_section::with(|cs| unsafe {
             let xfer = &mut *HCD_XFER[pipe].borrow(cs).get();
@@ -1224,7 +1246,8 @@ pub unsafe fn hcd_int_handler(port: u8) {
         let is1 = u.intsts(1).read();
 
         // Clear sticky bits by writing 0 to each bit that was set (RC-W0 protocol).
-        const STICKY1: u16 = INTSTS1_SACK | INTSTS1_SIGN | INTSTS1_ATTCH | INTSTS1_DTCH;
+        const STICKY1: u16 =
+            INTSTS1_SACK | INTSTS1_SIGN | INTSTS1_EOFERR | INTSTS1_ATTCH | INTSTS1_DTCH;
         u.intsts(1).write_value(!(STICKY1 & is1));
         const STICKY0: u16 = INTSTS0_BRDY | INTSTS0_NRDY | INTSTS0_BEMP;
         u.intsts(0).write_value(!(STICKY0 & is0));
@@ -1265,8 +1288,12 @@ pub unsafe fn hcd_int_handler(port: u8) {
             HCD_EVENT_WAKER.wake();
         }
 
-        // ── DTCH: the device was removed ─────────────────────────────────────
-        if is1 & INTSTS1_DTCH != 0 {
+        // ── DTCH: the device was removed; EOFERR: the port was stopped ───────
+        // An EOF error (activity past the end of a (micro)frame) makes the
+        // controller clear UACT just as a detach does (TRM §28.3.4 UACT): no
+        // transfer will complete. Handled the same way, so the device, still on
+        // the line, is reset and enumerated again on its next attach.
+        if is1 & (INTSTS1_DTCH | INTSTS1_EOFERR) != 0 {
             u.dvstctr0().modify(|r| *r &= !DVSTCTR0_UACT);
             // Cancel any pending SETUP.
             let dcpctr = pipectr(u, 0).read();
@@ -1287,6 +1314,10 @@ pub unsafe fn hcd_int_handler(port: u8) {
                 HCD_PIPE_NRDY.fetch_or(1u16 << n, Ordering::Release);
                 waker.wake();
             }
+            // The device may still be on the line with no edge left to raise
+            // ATTCH (an EOF error leaves it attached): probe again once the loss
+            // has been reported.
+            PROBE_PENDING[port as usize].store(true, Ordering::Release);
             HCD_EVENTS.fetch_or(EVT_DETACH | EVT_SIGN, Ordering::Release);
             HCD_EVENT_WAKER.wake();
         }
@@ -1527,6 +1558,12 @@ unsafe fn pipe_brdy(u: Usb, n: usize) {
 
 /// Handle NRDY (NAK or STALL) for pipe `n`.
 unsafe fn pipe_nrdy(u: Usb, n: usize) {
+    // An isochronous OUT pipe's NRDY means its turn came with nothing to send, and a
+    // zero-length packet went instead (TRM §28.4.2 (3)): an underrun, not a failure of the
+    // transfer queued now.
+    if HCD_PIPE_ISO_OUT.load(Ordering::Acquire) & (1 << n) != 0 {
+        return;
+    }
     let pid = pipectr(u, n).read() & PIPECTR_PID_MASK;
     // PID 0b10 or 0b11 = STALL; otherwise = NAK / general failure.
     if pid & 0b10 != 0 {
@@ -1571,6 +1608,7 @@ impl<T: pipe::Type, D: pipe::Direction> Drop for Rusb1Pipe<T, D> {
 
         let u = usb(self.port);
         pipectr(u, pipe).write_value(0);
+        HCD_PIPE_ISO_OUT.fetch_and(!(1 << pipe), Ordering::Release);
         u.nrdyenb().modify(|r| *r &= !(1 << pipe));
         u.brdyenb().modify(|r| *r &= !(1 << pipe));
         u.pipesel().write_value(pipe as u16);
@@ -1597,12 +1635,16 @@ impl<'d> UsbHostController<'d> for Rusb1HostDriver<'d> {
     }
 
     async fn wait_for_device_event(&mut self) -> DeviceEvent {
-        if PROBE_PENDING[self.port as usize].swap(false, Ordering::AcqRel)
-            && let Some(speed) = self.probe_present().await
-        {
-            return DeviceEvent::Connected(speed);
-        }
         loop {
+            // Probe for a device already on the bus (host start, or after a detach or
+            // EOF error), but only once any pending detach has been reported.
+            if HCD_EVENTS.load(Ordering::Acquire) & EVT_DETACH == 0
+                && PROBE_PENDING[self.port as usize].swap(false, Ordering::AcqRel)
+                && let Some(speed) = self.probe_present().await
+            {
+                return DeviceEvent::Connected(speed);
+            }
+
             // Wait for either attach or detach.
             let ev = core::future::poll_fn(|cx| {
                 HCD_EVENT_WAKER.register(cx.waker());
@@ -1856,6 +1898,136 @@ mod tests {
         test::poke16(u.dvstctr0().addr(), rhst);
         HCD_EVENTS.store(0, Ordering::Relaxed);
         unsafe { Rusb1HostDriver::new(0) }
+    }
+
+    /// An EOF error (activity past the end of a (micro)frame) stops the port: the controller
+    /// clears UACT, so no transfer completes and a pending SETUP is never sent (on hardware,
+    /// right after a high-speed reset, enumeration hung). It is handled as a detach: in-flight
+    /// transfers fail, the event wait reports it, and attach detection is re-armed so the
+    /// device, still on the line, is reset and enumerated again.
+    #[test]
+    fn an_eof_error_is_handled_as_a_detach() {
+        use crate::mmio::test;
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = host_with_bus(0b00, DVSTCTR0_RHST_HS);
+        let u = usb(0);
+        assert_ne!(
+            u.intenb(1).read() & INTENB1_EOFERRE,
+            0,
+            "EOFERR enabled at host start"
+        );
+        h.watch_for_detach();
+        HCD_EVENTS.store(0, Ordering::Relaxed);
+        HCD_PIPE_NRDY.store(0, Ordering::Relaxed);
+        test::poke16(u.intsts(1).addr(), INTSTS1_EOFERR);
+        unsafe { hcd_int_handler(0) };
+        let ev = HCD_EVENTS.load(Ordering::Acquire);
+        assert_ne!(ev & EVT_DETACH, 0, "reported as a detach");
+        assert_ne!(ev & EVT_SIGN, 0, "a pending SETUP fails");
+        assert_ne!(
+            HCD_PIPE_NRDY.load(Ordering::Acquire) & 1,
+            0,
+            "in-flight transfers fail"
+        );
+        assert_eq!(
+            u.intenb(1).read() & (INTENB1_ATTCHE | INTENB1_DTCHE),
+            INTENB1_ATTCHE,
+            "watching for attach again"
+        );
+        assert_eq!(
+            test::peek16(u.intsts(1).addr()) & INTSTS1_EOFERR,
+            0,
+            "status cleared"
+        );
+    }
+
+    /// A SETUP on a stopped port (UACT=0, as a detach or EOF error leaves it) would never be
+    /// sent and never complete. It fails at once, so a caller's retry cannot hang either.
+    #[test]
+    fn a_setup_on_a_stopped_port_fails_at_once() {
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = host_with_bus(0b01, 0); // UACT clear
+        let setup = [0x80, 0x06, 0x00, 0x01, 0x00, 0x00, 0x08, 0x00];
+        assert_eq!(
+            drive(h.setup_send(0, &setup), 5),
+            Some(Err(PipeError::Canceled))
+        );
+    }
+
+    /// The same for a data transfer: on a stopped port it fails at once instead of waiting
+    /// for an interrupt that will not come.
+    #[test]
+    fn a_data_transfer_on_a_stopped_port_fails_at_once() {
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = host_with_bus(0b01, 0); // UACT clear
+        critical_section::with(|cs| unsafe { *HCD_ALLOC[0].borrow(cs).get() = HcdAlloc::new() });
+        h.edpt_open(1, 0x81, EndpointType::Bulk, 512, 0).unwrap();
+        let mut buf = [0u8; 64];
+        assert_eq!(
+            drive(h.xfer_in(1, 0x81, &mut buf), 5),
+            Some(Err(PipeError::Canceled))
+        );
+    }
+
+    /// After a detach or EOF error the device may still be on the line, holding it at J with
+    /// no edge to raise ATTCH. The host reports the loss, then probes again: the device is
+    /// found and enumerated anew (an empty bus probes to nothing and waits for an attach).
+    #[test]
+    fn after_an_eof_error_the_host_reports_it_then_finds_the_device_again() {
+        use crate::mmio::test;
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut h = host_with_bus(0b01, DVSTCTR0_RHST_HS);
+        assert!(
+            drive(h.wait_for_device_event(), 200).is_some(),
+            "first found at start"
+        );
+        let u = usb(0);
+        test::poke16(u.intsts(1).addr(), INTSTS1_EOFERR);
+        unsafe { hcd_int_handler(0) };
+        assert_eq!(
+            drive(h.wait_for_device_event(), 200),
+            Some(DeviceEvent::Disconnected)
+        );
+        assert_eq!(
+            drive(h.wait_for_device_event(), 200),
+            Some(DeviceEvent::Connected(Speed::High)),
+            "re-probed and found"
+        );
+    }
+
+    /// An isochronous OUT pipe raises NRDY in each microframe it has nothing to send (TRM
+    /// §28.4.2 (3): it sends a zero-length packet and sets OVRN). That reports an underrun, not a
+    /// failed transfer: a packet still queued in the other buffer bank must not be reported
+    /// lost. On a bulk OUT pipe NRDY (three errors, or a STALL) does fail the transfer.
+    #[test]
+    fn nrdy_on_an_isochronous_out_pipe_does_not_fail_its_transfer() {
+        use crate::mmio::test;
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = host_with_bus(0b00, 0);
+        let u = usb(0);
+        test::rcw0(u.intsts(0).addr());
+        test::rcw0(u.nrdysts().addr());
+        critical_section::with(|cs| unsafe { *HCD_ALLOC[0].borrow(cs).get() = HcdAlloc::new() });
+        h.edpt_open(1, 0x01, EndpointType::Isochronous, 400, 1)
+            .unwrap();
+        h.edpt_open(1, 0x02, EndpointType::Bulk, 512, 0).unwrap();
+        let iso = h.ep_to_pipe(1, 0x01).unwrap();
+        let bulk = h.ep_to_pipe(1, 0x02).unwrap();
+        HCD_PIPE_NRDY.store(0, Ordering::Relaxed);
+        test::poke16(u.intsts(0).addr(), INTSTS0_NRDY);
+        test::poke16(u.nrdysts().addr(), (1 << iso) | (1 << bulk));
+        unsafe { hcd_int_handler(0) };
+        let nrdy = HCD_PIPE_NRDY.load(Ordering::Acquire);
+        assert_eq!(
+            nrdy & (1 << iso),
+            0,
+            "isochronous OUT underrun is not a failure"
+        );
+        assert_ne!(
+            nrdy & (1 << bulk),
+            0,
+            "bulk OUT NRDY still fails its transfer"
+        );
     }
 
     /// A previous program's latched ATTCH/DTCH must not survive host start: the first real
