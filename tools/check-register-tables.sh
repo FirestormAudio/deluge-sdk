@@ -11,7 +11,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # Modules under crates/rza1l-hal/src that take every register from rza1_pac.
-MIGRATED=(cpg.rs stb.rs bsc.rs ostm.rs adc.rs cache.rs mtu2.rs uart.rs rspi.rs)
+MIGRATED=(cpg.rs stb.rs bsc.rs ostm.rs adc.rs cache.rs mtu2.rs uart.rs rspi.rs gpio.rs)
 
 status=0
 for m in "${MIGRATED[@]}"; do
