@@ -9,7 +9,7 @@
 //! (cancelled), the port is disconnected, and the function returns.
 
 use core::mem::MaybeUninit;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::Ordering;
 
 use embassy_futures::join::join;
 use embassy_futures::select::select;
@@ -18,9 +18,8 @@ use log::info;
 
 use deluge_bsp::oled::{self, text};
 use deluge_bsp::usb::sd_block::SdBlock;
-use rza1l_hal::gic;
 use rza1l_hal::usb::{
-    Rusb1Driver, Rusb1EndpointIn, Rusb1EndpointOut, dcd_int_handler, disconnect, init_device_mode,
+    Rusb1Driver, Rusb1EndpointIn, Rusb1EndpointOut, disconnect, init_device_mode,
 };
 use usb_classes::bot::{self, BlockDevice};
 use usb_classes::msc::MscClass;
@@ -32,8 +31,9 @@ static mut USB_MSOS_DESC: [u8; 0] = [];
 static mut USB_CONTROL_BUF: [u8; 64] = [0; 64];
 static mut MSC_CLASS_BUF: MaybeUninit<MscClass> = MaybeUninit::uninit();
 
-/// Ensures the USB0 ISR is wired into the GIC exactly once across mode entries.
-static USB_IRQ_REGISTERED: AtomicBool = AtomicBool::new(false);
+rza1l_hal::bind_interrupts!(struct UsbIrqs {
+    USB0 => rza1l_hal::usb::DeviceInterruptHandler<rza1l_hal::peripherals::USB0>;
+});
 
 /// Enter SD-card DATA TRANSFER (USB mass storage) mode.  Returns on BACK.
 pub async fn run_data_transfer_mode() {
@@ -61,7 +61,8 @@ async fn run_session<B: BlockDevice>(dev: B, product: &'static str) {
 
     // Drop back to the menu: unplug from the host so it doesn't see a stale
     // unresponsive device.
-    unsafe { disconnect(0) };
+    // SAFETY: the session is over: its driver went with `proto` and `usb`.
+    disconnect(unsafe { rza1l_hal::peripherals::USB0::steal() });
     info!("USB: mode exited (BACK)");
 }
 
@@ -72,19 +73,15 @@ async fn run_session<B: BlockDevice>(dev: B, product: &'static str) {
 unsafe fn build_usb(
     product: &'static str,
 ) -> (
-    embassy_usb::UsbDevice<'static, Rusb1Driver>,
+    embassy_usb::UsbDevice<'static, Rusb1Driver<'static>>,
     Rusb1EndpointIn,
     Rusb1EndpointOut,
 ) {
     unsafe {
-        // Wire the USB0 ISR once (global IRQs are already enabled by boot_task).
-        if !USB_IRQ_REGISTERED.swap(true, Ordering::AcqRel) {
-            gic::register(rza1l_hal::usb::USB0_IRQ, || {
-                dcd_int_handler(0);
-            });
-        }
-
-        let (_port, driver) = init_device_mode(0);
+        // SAFETY: one USB session at a time (this function's contract): the previous session's
+        // driver is gone, so this session is USB0's only user.
+        let usb0 = rza1l_hal::peripherals::USB0::steal();
+        let (_port, driver) = init_device_mode(usb0, UsbIrqs);
         let mut config = embassy_usb::Config::new(
             deluge_bsp::usb::ids::VID,
             deluge_bsp::usb::ids::PID_APP_LOADER_MSC,

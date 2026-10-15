@@ -8,7 +8,8 @@
 //!
 //! ## Initialization sequence
 //! Call [`init`] once before enabling global IRQ (`cpsie i`).
-//! Register handlers via [`register`], enable individual sources via [`enable`].
+//! Drivers install handlers through [`crate::interrupt::bind`], and enable individual sources via
+//! [`enable`].
 //!
 //! ## IRQ dispatch
 //! The assembly IRQ handler in `startup.rs` calls `gic_dispatch` with the raw
@@ -152,7 +153,7 @@ fn is_plausible_in(addr: usize, sdram: core::ops::Range<usize>) -> bool {
 /// Initialized to `None` (unhandled = silently EOI'd).
 ///
 /// # Safety contract
-/// [`register`] must only be called before global IRQ is enabled.
+/// Handlers are installed ([`set_handler`]) before global IRQ is enabled.
 /// [`gic_dispatch`] is only called from the IRQ handler with IRQ masked,
 /// so no data race is possible on single-core.
 static HANDLERS: [HandlerCell; INT_ID_TOTAL] = {
@@ -212,7 +213,7 @@ static ICDICFR_INIT: [u32; 37] = [
 /// Initialise the GIC distributor and CPU interface.
 ///
 /// Mirrors `R_INTC_Init()` from `intc.c`. Must be called once, with global
-/// IRQ disabled, before any [`register`] / [`enable`] calls.
+/// IRQ disabled, before any handler is bound or [`enable`] is called.
 ///
 /// ## Priority filter (PMR)
 ///
@@ -356,7 +357,7 @@ unsafe fn end_stale_active(n_words: usize) {
 unsafe fn end_stale_active(_n_words: usize) {}
 
 /// Install `handler` for interrupt `id`. Out-of-range IDs are ignored.
-pub fn set_handler(id: u16, handler: HandlerFn) {
+pub(crate) fn set_handler(id: u16, handler: HandlerFn) {
     log::trace!("gic: register IRQ {}", id);
     if (id as usize) < INT_ID_TOTAL {
         HANDLERS[id as usize].set(handler);
@@ -366,15 +367,6 @@ pub fn set_handler(id: u16, handler: HandlerFn) {
 /// The handler installed for `id`, if any.
 pub(crate) fn handler(id: u16) -> Option<HandlerFn> {
     HANDLERS.get(id as usize).and_then(HandlerCell::get)
-}
-
-/// Register a Rust function as the handler for interrupt `id`.
-///
-/// # Safety
-/// None beyond [`set_handler`]'s; kept `unsafe` for the callers Phase 4b migrates to
-/// [`crate::interrupt::bind`].
-pub unsafe fn register(id: u16, handler: HandlerFn) {
-    set_handler(id, handler);
 }
 
 /// Enable (unmask) interrupt `id` in the GIC distributor.

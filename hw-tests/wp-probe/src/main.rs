@@ -81,6 +81,8 @@ pub extern "C" fn main() -> ! {
 
     info!("UART: initialising PIC...");
     bsp_uart::init_pic(board.pic_uart, board.dma.pic_rx, board.dma.pic_tx, 31_250);
+    // The SD slot's controller, once; `sd::init` identifies the card when it is needed.
+    deluge_bsp::sd::init_hw(board.sd_card, board.dma.sd_tx, board.dma.sd_rx);
 
     // RSPI0 is shared between OLED (8-bit) and CV DAC (32-bit). The bus brings it up;
     // cv_gate::init() runs the DAC's linearity sequence; oled::init() then switches

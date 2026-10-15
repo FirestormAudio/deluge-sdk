@@ -29,8 +29,9 @@ const TRIG_PIN: u8 = 14;
 /// External interrupt number used by `P1_14`'s PFC alt-2 routing.
 const TRIG_IRQ: u8 = 6;
 
-/// GIC interrupt ID for IRQ6 (= 32 + 6).
-const TRIG_GIC_ID: u16 = 38;
+/// GIC interrupt ID for IRQ6 (= 32 + 6), from its typed binding so the two can't disagree.
+const TRIG_GIC_ID: u16 =
+    <rza1l_hal::interrupt::typelevel::IRQ6 as rza1l_hal::interrupt::Interrupt>::ID;
 
 /// Same priority as the encoders — well below audio (5) and OLED DMA (13).
 const TRIG_PRIORITY: u8 = 14;
@@ -53,6 +54,22 @@ fn trig_irq_handler() {
     EDGE_WAKER.wake();
 }
 
+/// P1_14's IRQ6: one trigger-clock edge.
+#[cfg(target_os = "none")]
+struct TriggerHandler;
+
+#[cfg(target_os = "none")]
+impl rza1l_hal::interrupt::Handler<rza1l_hal::interrupt::typelevel::IRQ6> for TriggerHandler {
+    unsafe fn on_interrupt() {
+        trig_irq_handler();
+    }
+}
+
+#[cfg(target_os = "none")]
+rza1l_hal::bind_interrupts!(struct TriggerIrqs {
+    IRQ6 => TriggerHandler;
+});
+
 /// Initialise the trigger-clock input.
 ///
 /// Must be called before global IRQs are enabled (`cortex_ar::interrupt::enable()`).
@@ -73,7 +90,7 @@ pub unsafe fn irq_init() {
         // so the external rising edge appears as a falling edge on P1_14.
         rza1l_hal::gic::set_irq_falling_edge(TRIG_IRQ);
 
-        rza1l_hal::gic::register(TRIG_GIC_ID, trig_irq_handler);
+        rza1l_hal::interrupt::bind(TriggerIrqs);
         rza1l_hal::gic::clear_irq_pending(TRIG_IRQ);
         rza1l_hal::gic::set_priority(TRIG_GIC_ID, TRIG_PRIORITY);
         rza1l_hal::gic::enable(TRIG_GIC_ID);

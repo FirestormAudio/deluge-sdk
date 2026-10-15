@@ -72,7 +72,7 @@
 //! | 8      | FFU0_2 → SRAM   | DMATU2_CIM   | 2      |
 //! | 9      | FFU0_3 → SRAM   | DMATU3_CIM   | 2      |
 
-use crate::dmac;
+use crate::dmac::Dma;
 
 // ── Uncached mirror ───────────────────────────────────────────────────────────
 
@@ -81,16 +81,6 @@ use crate::UNCACHED_MIRROR_OFFSET;
 
 mod regs;
 
-/// Load the DMA channel a path's `init` recorded in `slot`.
-///
-/// Each path starts with `u8::MAX` in its channel slots. Reading a DMA position
-/// before `init` would otherwise read the registers of a channel that doesn't
-/// exist, so this panics instead.
-fn recorded_dma_channel(slot: &core::sync::atomic::AtomicU8) -> u8 {
-    let ch = slot.load(core::sync::atomic::Ordering::Relaxed);
-    assert!(ch != u8::MAX, "scux path used before init");
-    ch
-}
 /// CPU → SCUX DVU → SSI0 output path (hardware volume, ramps, zero-cross mute).
 pub mod dvu_path;
 /// CPU → SCUX async SRC → CPU path, for bridging two clock domains.
@@ -286,20 +276,39 @@ pub struct MixConfig {
 #[repr(C, align(32))]
 struct LinkDesc([u32; 8]);
 
-// Stored DMA channel numbers — set at init_ffd_dma / init_ffu_dma time so
-// start() can channel_start() the correct channels from a bitmask alone.
-static FFD_DMA_CH_STORED: [core::sync::atomic::AtomicU8; 4] = [
-    core::sync::atomic::AtomicU8::new(0),
-    core::sync::atomic::AtomicU8::new(0),
-    core::sync::atomic::AtomicU8::new(0),
-    core::sync::atomic::AtomicU8::new(0),
-];
-static FFU_DMA_CH_STORED: [core::sync::atomic::AtomicU8; 4] = [
-    core::sync::atomic::AtomicU8::new(0),
-    core::sync::atomic::AtomicU8::new(0),
-    core::sync::atomic::AtomicU8::new(0),
-    core::sync::atomic::AtomicU8::new(0),
-];
+/// Each FIFO's DMA channel, once its path's `init` has handed it over: `start` starts the
+/// channels a bitmask names, and the paths read their positions.
+type FifoChannels = embassy_sync::blocking_mutex::Mutex<
+    embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
+    core::cell::RefCell<[Option<Dma<'static>>; 4]>,
+>;
+static FFD_DMA: FifoChannels =
+    embassy_sync::blocking_mutex::Mutex::new(core::cell::RefCell::new([None, None, None, None]));
+static FFU_DMA: FifoChannels =
+    embassy_sync::blocking_mutex::Mutex::new(core::cell::RefCell::new([None, None, None, None]));
+
+/// Run `f` on FIFO `n`'s channel in `table`.
+///
+/// # Panics
+/// If no path has handed that FIFO a channel: reading a DMA position before `init` would read a
+/// channel that isn't there.
+fn with_fifo<R>(table: &FifoChannels, n: usize, f: impl FnOnce(&mut Dma<'static>) -> R) -> R {
+    table.lock(|t| {
+        f(t.borrow_mut()[n]
+            .as_mut()
+            .expect("scux path used before init"))
+    })
+}
+
+/// FFD `n`'s DMA read position (CRSA).
+pub(crate) fn ffd_current_src(n: usize) -> u32 {
+    with_fifo(&FFD_DMA, n, |d| d.current_src())
+}
+
+/// FFU `n`'s DMA write position (CRDA).
+pub(crate) fn ffu_current_dst(n: usize) -> u32 {
+    with_fifo(&FFU_DMA, n, |d| d.current_dst())
+}
 
 static mut FFD0_DESC: LinkDesc = LinkDesc([
     DESC_HEADER,                        // LDEN + NXA + valid (see DESC_HEADER)
@@ -830,9 +839,15 @@ pub unsafe fn set_ssictrl(val: u32) {
 /// - `src_buf` must remain valid and DMA-accessible for the lifetime of the
 ///   transfer.
 /// - Writes to static link-descriptor memory and DMAC registers.
-pub unsafe fn init_ffd_dma(ffd_ch: u8, dma_ch: u8, src_buf: *const u32, buf_bytes: usize) {
+pub unsafe fn init_ffd_dma(
+    ffd_ch: u8,
+    mut dma: Dma<'static>,
+    src_buf: *const u32,
+    buf_bytes: usize,
+) {
     unsafe {
-        FFD_DMA_CH_STORED[ffd_ch as usize].store(dma_ch, core::sync::atomic::Ordering::Relaxed);
+        // An FFD ring raises DMAINT every pass (DEM clear); nothing awaits it.
+        dma.mask_interrupt();
         let (desc_ptr, cim_dmatd_off, dmars) = match ffd_ch {
             0 => (
                 core::ptr::addr_of_mut!(FFD0_DESC),
@@ -868,11 +883,12 @@ pub unsafe fn init_ffd_dma(ffd_ch: u8, dma_ch: u8, src_buf: *const u32, buf_byte
         // Patch: transfer byte count
         desc_u.add(3).write_volatile(buf_bytes as u32);
         // Patch: CHCFG (computed from dma_ch at runtime)
-        desc_u.add(4).write_volatile(ffd_chcfg(dma_ch));
+        desc_u.add(4).write_volatile(ffd_chcfg(dma.number()));
         // Patch: self-referential NXLA (uncached alias)
         desc_u.add(7).write_volatile(desc_u as u32);
 
-        dmac::raw::init_with_link_descriptor(dma_ch, desc_u as *const u32, dmars);
+        dma.init_with_link_descriptor(desc_u as *const u32, dmars);
+        FFD_DMA.lock(|t| t.borrow_mut()[ffd_ch as usize] = Some(dma));
     }
 }
 
@@ -880,9 +896,9 @@ pub unsafe fn init_ffd_dma(ffd_ch: u8, dma_ch: u8, src_buf: *const u32, buf_byte
 ///
 /// # Safety
 /// Same requirements as [`init_ffd_dma`].
-pub unsafe fn init_ffu_dma(ffu_ch: u8, dma_ch: u8, dst_buf: *mut u32, buf_bytes: usize) {
+pub unsafe fn init_ffu_dma(ffu_ch: u8, mut dma: Dma<'static>, dst_buf: *mut u32, buf_bytes: usize) {
     unsafe {
-        FFU_DMA_CH_STORED[ffu_ch as usize].store(dma_ch, core::sync::atomic::Ordering::Relaxed);
+        dma.mask_interrupt();
         let (desc_ptr, cim_dmatu_off, dmars) = match ffu_ch {
             0 => (
                 core::ptr::addr_of_mut!(FFU0_DESC),
@@ -918,11 +934,12 @@ pub unsafe fn init_ffu_dma(ffu_ch: u8, dma_ch: u8, dst_buf: *mut u32, buf_bytes:
         // Patch: byte count
         desc_u.add(3).write_volatile(buf_bytes as u32);
         // Patch: CHCFG (computed from dma_ch at runtime)
-        desc_u.add(4).write_volatile(ffu_chcfg(dma_ch));
+        desc_u.add(4).write_volatile(ffu_chcfg(dma.number()));
         // Patch: NXLA
         desc_u.add(7).write_volatile(desc_u as u32);
 
-        dmac::raw::init_with_link_descriptor(dma_ch, desc_u as *const u32, dmars);
+        dma.init_with_link_descriptor(desc_u as *const u32, dmars);
+        FFU_DMA.lock(|t| t.borrow_mut()[ffu_ch as usize] = Some(dma));
     }
 }
 
@@ -972,16 +989,12 @@ pub unsafe fn start(
         // Start DMA channels
         for ch in 0..4u8 {
             if ffd_mask & (1 << ch) != 0 {
-                dmac::raw::channel_start(
-                    FFD_DMA_CH_STORED[ch as usize].load(core::sync::atomic::Ordering::Relaxed),
-                );
+                with_fifo(&FFD_DMA, ch as usize, |d| d.channel_start());
             }
         }
         for ch in 0..4u8 {
             if ffu_mask & (1 << ch) != 0 {
-                dmac::raw::channel_start(
-                    FFU_DMA_CH_STORED[ch as usize].load(core::sync::atomic::Ordering::Relaxed),
-                );
+                with_fifo(&FFU_DMA, ch as usize, |d| d.channel_start());
             }
         }
 
@@ -1079,16 +1092,12 @@ pub unsafe fn start_path(
         // Start new DMA channels only.
         for ch in 0..4u8 {
             if ffd_mask & (1 << ch) != 0 {
-                dmac::raw::channel_start(
-                    FFD_DMA_CH_STORED[ch as usize].load(core::sync::atomic::Ordering::Relaxed),
-                );
+                with_fifo(&FFD_DMA, ch as usize, |d| d.channel_start());
             }
         }
         for ch in 0..4u8 {
             if ffu_mask & (1 << ch) != 0 {
-                dmac::raw::channel_start(
-                    FFU_DMA_CH_STORED[ch as usize].load(core::sync::atomic::Ordering::Relaxed),
-                );
+                with_fifo(&FFU_DMA, ch as usize, |d| d.channel_start());
             }
         }
 
@@ -1264,10 +1273,13 @@ pub unsafe fn stop() {
 
 /// Returns the DMA channel number assigned to the given FFD path.
 ///
-/// Valid after [`init_ffd_dma`] has been called for `ffd_ch`.  Used by the
-/// firmware to register a GIC completion handler (DMAINT = 41 + ch).
+/// `u8::MAX` until [`init_ffd_dma`] has been called for `ffd_ch`.
 pub fn ffd_dma_ch(ffd_ch: u8) -> u8 {
-    FFD_DMA_CH_STORED[ffd_ch as usize].load(core::sync::atomic::Ordering::Relaxed)
+    FFD_DMA.lock(|t| {
+        t.borrow()[ffd_ch as usize]
+            .as_ref()
+            .map_or(u8::MAX, |d| d.number())
+    })
 }
 
 #[cfg(all(test, not(target_os = "none")))]

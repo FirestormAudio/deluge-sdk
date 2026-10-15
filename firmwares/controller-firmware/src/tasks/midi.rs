@@ -28,7 +28,7 @@ use rza1l_hal::usb::Rusb1Driver;
 /// Reads 4-byte USB MIDI packets, decodes the CIN to determine payload byte
 /// count, and writes the raw MIDI bytes to SCIF0 TX.
 #[embassy_executor::task]
-pub(crate) async fn midi_usb_rx_task(mut receiver: Receiver<'static, Rusb1Driver>) {
+pub(crate) async fn midi_usb_rx_task(mut receiver: Receiver<'static, Rusb1Driver<'static>>) {
     // Must be >= the bulk OUT max packet size (512 at high speed).  One USB
     // packet can carry many 4-byte MIDI events, so iterate over all of them.
     let mut pkt = [0u8; 512];
@@ -56,7 +56,7 @@ pub(crate) async fn midi_usb_rx_task(mut receiver: Receiver<'static, Rusb1Driver
 /// status, SysEx, realtime), and writes complete 4-byte USB MIDI packets to
 /// the USB IN endpoint.
 #[embassy_executor::task]
-pub(crate) async fn midi_din_tx_task(mut sender: Sender<'static, Rusb1Driver>) {
+pub(crate) async fn midi_din_tx_task(mut sender: Sender<'static, Rusb1Driver<'static>>) {
     let mut parser = midi_stream::DinParser::default();
     loop {
         sender.wait_connection().await;

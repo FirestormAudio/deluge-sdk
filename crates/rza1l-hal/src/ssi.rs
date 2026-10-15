@@ -13,7 +13,7 @@
 //!
 //!
 //! ## DMA layout
-//! Channels come from [`SsiConfig`]; the Deluge uses:
+//! The channels are the board's: the `Dma` handles passed to [`init`]. The Deluge uses:
 //!
 //! | Channel | Direction       | GIC IRQ |
 //! |---------|-----------------|---------|
@@ -37,30 +37,34 @@
 //! [`tx_buf_start`], [`tx_buf_end`], [`rx_buf_start`], [`rx_buf_end`],
 //! [`tx_current_ptr`], and [`rx_current_ptr`] all return uncached pointers.
 
-use crate::dmac;
+use embassy_sync::once_lock::OnceLock;
+
+use crate::Peri;
+use crate::dmac::{BlockDma, Dma};
+use crate::peripherals::SSIF0;
 
 // ── Channel / resource constants ────────────────────────────────────────────
 
 /// SSI hardware channel used for audio (SSI0).
 pub const SSI_CH: u8 = 0;
 
-/// Stored DMA channel numbers (set by [`init`] / [`init_rx_only`]).
-/// Used by [`tx_current_ptr`] and [`rx_current_ptr`] without needing the
-/// original config reference.
-static TX_DMA_CH_ACTIVE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
-static RX_DMA_CH_ACTIVE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+/// SSI0's rings, once an `init*` has run: the pointer accessors read their positions.
+static TX_DMA: OnceLock<Dma<'static>> = OnceLock::new();
+static RX_DMA: OnceLock<Dma<'static>> = OnceLock::new();
+/// The RX ring when it runs with per-block interrupts ([`init_block_irq`]).
+static RX_BLOCK: OnceLock<BlockDma<'static>> = OnceLock::new();
 
-/// Board-specific SSI0 configuration.
-///
-/// Pass to [`init`] and [`init_rx_only`] so the HAL does not hard-code
-/// Deluge-specific DMA channels or clock settings.
-pub struct SsiConfig {
-    /// SSICR initialisation value (master/slave mode, clock divider, word length).
-    pub ssicr: u32,
-    /// DMA channel number for SSI0 TX (SRAM → SSIFTDR).
-    pub tx_dma_ch: u8,
-    /// DMA channel number for SSI0 RX (SSIFRDR → SRAM).
-    pub rx_dma_ch: u8,
+fn keep<T>(slot: &OnceLock<T>, value: T) {
+    if slot.init(value).is_err() {
+        unreachable!("SSI0 and its DMA channels are owned once");
+    }
+}
+
+/// The RX ring, polled or block-interrupt.
+fn rx_dma() -> Option<&'static Dma<'static>> {
+    RX_DMA
+        .try_get()
+        .or_else(|| RX_BLOCK.try_get().map(|ring| &**ring))
 }
 
 /// DMARS resource-selector value for SSI0 transmit.
@@ -95,7 +99,7 @@ const SSITDMR_OFF: usize = 0x20; // TDM mode register
 //   - CKDV=0010 (7:4)  : AUDIO_X1 ÷ 4 = 5.6448 MHz BCLK
 //
 // The Deluge value is 0x002B_C020 (DWL bits [21:19] = 0b101 = 24-bit; DWL=0b111
-// is prohibited), held in `deluge_bsp::system::SSI_CONFIG.ssicr`.
+// is prohibited), held in `deluge_bsp::system::SSICR`.
 
 /// SSIFCR bit positions (verified against vendor/rbsp ssif.h SSIF_FCR_SHIFT_*).
 const SSIFCR_RFRST: u32 = 1 << 0; // RX FIFO reset (active high)
@@ -139,8 +143,6 @@ const SWRSTCR1: usize = 0xFCFE_0460;
 /// Add this offset to any cached internal-SRAM virtual address to obtain its
 /// uncached alias.  DMA transfers go directly to the physical bus, bypassing
 /// the CPU cache, so the CPU must access DMA buffers through this alias.
-// UNCACHED_MIRROR_OFFSET is defined at crate root (crate::UNCACHED_MIRROR_OFFSET).
-use crate::UNCACHED_MIRROR_OFFSET;
 
 // ── TX / RX sample buffers ───────────────────────────────────────────────────
 
@@ -274,11 +276,61 @@ static mut RX_DESC: LinkDesc = LinkDesc([
 // ── Register helpers ─────────────────────────────────────────────────────────
 
 #[inline(always)]
-fn ssi_reg(off: usize) -> *mut u32 {
-    (SSI0_BASE + off) as *mut u32
+fn ssi_reg(off: usize) -> crate::mmio::Reg32 {
+    crate::mmio::Reg32(SSI0_BASE + off)
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
+
+/// Start SSI0 as I²S master at `ssicr` (mode, clock divider, word length), its TX and RX rings
+/// on `tx`/`rx`, streaming the TX buffer to the codec and the codec into the RX buffer
+/// indefinitely. The rings are polled (see [`tx_current_ptr`]), so their completion interrupts
+/// stay masked.
+///
+/// **Call order:** the SSIF0 module clock is running ([`crate::stb::init`]) and the board's I²S
+/// pins are muxed; the codec is powered after this returns.
+pub fn init(_ssi: Peri<'static, SSIF0>, mut tx: Dma<'static>, mut rx: Dma<'static>, ssicr: u32) {
+    tx.mask_interrupt();
+    rx.mask_interrupt();
+    // SAFETY: SSI0 and both channels are owned.
+    unsafe { start(ssicr, &mut tx, &mut rx) };
+    keep(&TX_DMA, tx);
+    keep(&RX_DMA, rx);
+}
+
+/// [`init`] with the RX ring split into blocks whose interrupts [`wait_rx_block`] waits on.
+pub fn init_block_irq(
+    _ssi: Peri<'static, SSIF0>,
+    mut tx: Dma<'static>,
+    mut rx: BlockDma<'static>,
+    ssicr: u32,
+) {
+    tx.mask_interrupt();
+    // SAFETY: SSI0 and both channels are owned; `rx`'s block interrupt is already bound and on.
+    unsafe { start_block_irq(ssicr, &mut tx, &mut rx) };
+    keep(&TX_DMA, tx);
+    keep(&RX_BLOCK, rx);
+}
+
+/// Start SSI0 with only its RX ring (TX comes from SCUX).
+pub fn init_rx_only(_ssi: Peri<'static, SSIF0>, mut rx: Dma<'static>, ssicr: u32) {
+    rx.mask_interrupt();
+    // SAFETY: SSI0 and the channel are owned.
+    unsafe { start_rx_only(ssicr, &mut rx) };
+    keep(&RX_DMA, rx);
+}
+
+/// Wait for the next RX block of the ring [`init_block_irq`] started.
+///
+/// # Panics
+/// If [`init_block_irq`] hasn't run.
+pub async fn wait_rx_block() {
+    RX_BLOCK
+        .try_get()
+        .expect("ssi::init_block_irq hasn't run")
+        .wait_block()
+        .await
+}
 
 /// Initialise SSI0 and start continuous DMA-driven I²S streaming.
 ///
@@ -295,69 +347,63 @@ fn ssi_reg(off: usize) -> *mut u32 {
 /// # Safety
 /// Must be called exactly once, from a single-threaded boot context, before
 /// any audio task accesses the buffer pointers.
-pub unsafe fn init(cfg: &SsiConfig) {
+unsafe fn start(ssicr: u32, tx: &mut Dma<'_>, rx: &mut Dma<'_>) {
     unsafe {
-        TX_DMA_CH_ACTIVE.store(cfg.tx_dma_ch, core::sync::atomic::Ordering::Relaxed);
-        RX_DMA_CH_ACTIVE.store(cfg.rx_dma_ch, core::sync::atomic::Ordering::Relaxed);
         log::debug!(
             "ssi: init SSI0 (44.1 kHz I\u{00B2}S, DMA ch{}/{})",
-            cfg.tx_dma_ch,
-            cfg.rx_dma_ch
+            tx.number(),
+            rx.number()
         );
         // 1. Patch self-referential fields in the link descriptors.
         //    Write through the uncached alias so the DMAC sees the correct values
         //    without needing a cache flush (DMAC reads physical SRAM directly).
         //    The NXLA pointer must also be the uncached alias address so every
         //    reload of the descriptor by the DMAC is coherent.
-        let tx_desc_u =
-            (core::ptr::addr_of!(TX_DESC) as usize + UNCACHED_MIRROR_OFFSET) as *mut u32;
-        let rx_desc_u =
-            (core::ptr::addr_of!(RX_DESC) as usize + UNCACHED_MIRROR_OFFSET) as *mut u32;
+        let tx_desc_u = crate::uncached(core::ptr::addr_of!(TX_DESC) as *mut u32);
+        let rx_desc_u = crate::uncached(core::ptr::addr_of!(RX_DESC) as *mut u32);
 
         tx_desc_u
             .add(1)
             .write_volatile(core::ptr::addr_of!(TX_BUF.0[0]) as u32);
-        tx_desc_u.add(4).write_volatile(tx_chcfg(cfg.tx_dma_ch));
+        tx_desc_u.add(4).write_volatile(tx_chcfg(tx.number()));
         tx_desc_u.add(7).write_volatile(tx_desc_u as u32);
 
         rx_desc_u
             .add(2)
             .write_volatile(core::ptr::addr_of!(RX_BUF.0[0]) as u32);
-        rx_desc_u.add(4).write_volatile(rx_chcfg(cfg.rx_dma_ch));
+        rx_desc_u.add(4).write_volatile(rx_chcfg(rx.number()));
         rx_desc_u.add(7).write_volatile(rx_desc_u as u32);
 
         // 2. SSI0 software reset via CPG SWRSTCR1 bit 6.
-        let swrstcr = SWRSTCR1 as *mut u8;
+        let swrstcr = crate::mmio::Reg8(SWRSTCR1);
         let reset_bit = 1u8 << (6 - SSI_CH);
-        swrstcr.write_volatile(swrstcr.read_volatile() | reset_bit);
-        let _ = swrstcr.read_volatile(); // mandatory dummy read
-        swrstcr.write_volatile(swrstcr.read_volatile() & !reset_bit);
-        let _ = swrstcr.read_volatile(); // mandatory dummy read
+        swrstcr.write(swrstcr.read() | reset_bit);
+        let _ = swrstcr.read(); // mandatory dummy read
+        swrstcr.write(swrstcr.read() & !reset_bit);
+        let _ = swrstcr.read(); // mandatory dummy read
 
         // 3. Configure SSI registers.
         // SSITDMR: CONT=1 (WS continue mode, required for master mode);
         //   TDM=0 (normal stereo, not TDM).
         //   BSP sets SCUX_SSITDMR_CONT_SET when mode_master=true.
-        ssi_reg(SSITDMR_OFF).write_volatile(SSITDMR_CONT);
-        ssi_reg(SSICR_OFF).write_volatile(cfg.ssicr); // master, 24-bit/32-bit, ÷4
-        ssi_reg(SSIFCR_OFF).write_volatile(SSIFCR_INIT); // FIFOs in reset
+        ssi_reg(SSITDMR_OFF).write(SSITDMR_CONT);
+        ssi_reg(SSICR_OFF).write(ssicr); // master, 24-bit/32-bit, ÷4
+        ssi_reg(SSIFCR_OFF).write(SSIFCR_INIT); // FIFOs in reset
 
         // 4. Initialise and connect DMA channels to the link descriptors.
         //    Pass uncached alias addresses so the DMAC can re-fetch them coherently.
-        let tx_desc_u =
-            (core::ptr::addr_of!(TX_DESC) as usize + UNCACHED_MIRROR_OFFSET) as *const u32;
-        let rx_desc_u =
-            (core::ptr::addr_of!(RX_DESC) as usize + UNCACHED_MIRROR_OFFSET) as *const u32;
-        dmac::raw::init_with_link_descriptor(cfg.tx_dma_ch, tx_desc_u, DMARS_SSI0_TX);
-        dmac::raw::init_with_link_descriptor(cfg.rx_dma_ch, rx_desc_u, DMARS_SSI0_RX);
+        let tx_desc_u = crate::uncached(core::ptr::addr_of!(TX_DESC) as *mut u32) as *const u32;
+        let rx_desc_u = crate::uncached(core::ptr::addr_of!(RX_DESC) as *mut u32) as *const u32;
+        tx.init_with_link_descriptor(tx_desc_u, DMARS_SSI0_TX);
+        rx.init_with_link_descriptor(rx_desc_u, DMARS_SSI0_RX);
 
         // 5. Start both DMA channels (software-reset then enable).
-        dmac::raw::channel_start(cfg.tx_dma_ch);
-        dmac::raw::channel_start(cfg.rx_dma_ch);
+        tx.channel_start();
+        rx.channel_start();
         log::debug!(
             "ssi: DMA TX ch{} + RX ch{} started",
-            cfg.tx_dma_ch,
-            cfg.rx_dma_ch
+            tx.number(),
+            rx.number()
         );
 
         // 6. Release the FIFOs from reset and enable TX/RX.
@@ -365,15 +411,15 @@ pub unsafe fn init(cfg: &SsiConfig) {
         let fcr = ssi_reg(SSIFCR_OFF);
 
         // Release TX FIFO from reset, enable TX DMA trigger
-        fcr.write_volatile(fcr.read_volatile() & !SSIFCR_TFRST);
-        fcr.write_volatile(fcr.read_volatile() | SSIFCR_TIE);
+        fcr.write(fcr.read() & !SSIFCR_TFRST);
+        fcr.write(fcr.read() | SSIFCR_TIE);
         // Release RX FIFO from reset, enable RX DMA trigger
-        fcr.write_volatile(fcr.read_volatile() & !SSIFCR_RFRST);
-        fcr.write_volatile(fcr.read_volatile() | SSIFCR_RIE);
+        fcr.write(fcr.read() & !SSIFCR_RFRST);
+        fcr.write(fcr.read() | SSIFCR_RIE);
 
         // Enable transmit and receive
         let cr = ssi_reg(SSICR_OFF);
-        cr.write_volatile(cr.read_volatile() | SSICR_TEN | SSICR_REN);
+        cr.write(cr.read() | SSICR_TEN | SSICR_REN);
         log::debug!("ssi: TX+RX enabled, streaming");
     }
 }
@@ -392,7 +438,7 @@ static mut RX_RING: [LinkDesc; RX_RING_DESCS] = [const { LinkDesc([0u32; 8]) }; 
 /// (each [`RX_IRQ_BLOCK_FRAMES`] long, with the END interrupt **enabled**) that
 /// tile the *same* contiguous `RX_BUF`. The RX DMAINT therefore fires once per
 /// block instead of once per full buffer, giving an interrupt-driven block clock
-/// ([`crate::dmac::raw::register_block_irq`] / [`crate::dmac::raw::wait_block`]).
+/// ([`crate::dmac::BlockDma`] / [`wait_rx_block`]).
 ///
 /// Because the descriptors tile one contiguous buffer, [`rx_current_ptr`] (CRDA)
 /// still sweeps linearly, exactly as with [`init`]. TX is the same single
@@ -401,66 +447,63 @@ static mut RX_RING: [LinkDesc; RX_RING_DESCS] = [const { LinkDesc([0u32; 8]) }; 
 /// # Safety
 /// Same contract as [`init`]; call exactly one of `init` / `init_rx_only` /
 /// `init_block_irq`.
-pub unsafe fn init_block_irq(cfg: &SsiConfig) {
+unsafe fn start_block_irq(ssicr: u32, tx: &mut Dma<'_>, rx: &mut Dma<'_>) {
     unsafe {
-        TX_DMA_CH_ACTIVE.store(cfg.tx_dma_ch, core::sync::atomic::Ordering::Relaxed);
-        RX_DMA_CH_ACTIVE.store(cfg.rx_dma_ch, core::sync::atomic::Ordering::Relaxed);
-
         // ── TX: single self-referential descriptor (as in `init`). ────────────
-        let tx_desc_u =
-            (core::ptr::addr_of!(TX_DESC) as usize + UNCACHED_MIRROR_OFFSET) as *mut u32;
+        let tx_desc_u = crate::uncached(core::ptr::addr_of!(TX_DESC) as *mut u32);
         tx_desc_u
             .add(1)
             .write_volatile(core::ptr::addr_of!(TX_BUF.0[0]) as u32);
-        tx_desc_u.add(4).write_volatile(tx_chcfg(cfg.tx_dma_ch));
+        tx_desc_u.add(4).write_volatile(tx_chcfg(tx.number()));
         tx_desc_u.add(7).write_volatile(tx_desc_u as u32);
 
         // ── RX: ring of block-sized descriptors tiling RX_BUF. ────────────────
         let chunk_slots = RX_IRQ_BLOCK_FRAMES * 2; // i32 slots per block
         let chunk_bytes = (chunk_slots * core::mem::size_of::<i32>()) as u32;
         for i in 0..RX_RING_DESCS {
-            let d = (core::ptr::addr_of!(RX_RING[i]) as usize + UNCACHED_MIRROR_OFFSET) as *mut u32;
-            let next = (core::ptr::addr_of!(RX_RING[(i + 1) % RX_RING_DESCS]) as usize
-                + UNCACHED_MIRROR_OFFSET) as u32;
+            let d = crate::uncached(core::ptr::addr_of!(RX_RING[i]) as *mut u32);
+            let next =
+                crate::uncached(core::ptr::addr_of!(RX_RING[(i + 1) % RX_RING_DESCS]) as *mut u32)
+                    as u32;
             d.add(0).write_volatile(DESC_HEADER);
             d.add(1).write_volatile((SSI0_BASE + SSIFRDR_OFF) as u32); // src = SSIFRDR (fixed)
             d.add(2)
                 .write_volatile(core::ptr::addr_of!(RX_BUF.0[i * chunk_slots]) as u32); // dst slice
             d.add(3).write_volatile(chunk_bytes);
-            d.add(4).write_volatile(rx_chcfg(cfg.rx_dma_ch)); // DEM=0 → per-descriptor END IRQ
+            d.add(4).write_volatile(rx_chcfg(rx.number())); // DEM=0 → per-descriptor END IRQ
             d.add(5).write_volatile(0);
             d.add(6).write_volatile(0);
             d.add(7).write_volatile(next); // NXLA → next descriptor (loops)
         }
         let rx_ring_head =
-            (core::ptr::addr_of!(RX_RING[0]) as usize + UNCACHED_MIRROR_OFFSET) as *const u32;
+            crate::uncached(core::ptr::addr_of!(RX_RING[0]) as *mut u32) as *const u32;
 
         // ── SSI0 software reset + register config (identical to `init`). ──────
-        let swrstcr = SWRSTCR1 as *mut u8;
+        let swrstcr = crate::mmio::Reg8(SWRSTCR1);
         let reset_bit = 1u8 << (6 - SSI_CH);
-        swrstcr.write_volatile(swrstcr.read_volatile() | reset_bit);
-        let _ = swrstcr.read_volatile();
-        swrstcr.write_volatile(swrstcr.read_volatile() & !reset_bit);
-        let _ = swrstcr.read_volatile();
+        swrstcr.write(swrstcr.read() | reset_bit);
+        let _ = swrstcr.read();
+        swrstcr.write(swrstcr.read() & !reset_bit);
+        let _ = swrstcr.read();
 
-        ssi_reg(SSITDMR_OFF).write_volatile(SSITDMR_CONT);
-        ssi_reg(SSICR_OFF).write_volatile(cfg.ssicr);
-        ssi_reg(SSIFCR_OFF).write_volatile(SSIFCR_INIT);
+        ssi_reg(SSITDMR_OFF).write(SSITDMR_CONT);
+        ssi_reg(SSICR_OFF).write(ssicr);
+        ssi_reg(SSIFCR_OFF).write(SSIFCR_INIT);
 
         // ── Connect DMA: TX single descriptor, RX descriptor ring. ───────────
-        dmac::raw::init_with_link_descriptor(cfg.tx_dma_ch, tx_desc_u as *const u32, DMARS_SSI0_TX);
-        dmac::raw::init_with_link_descriptor(cfg.rx_dma_ch, rx_ring_head, DMARS_SSI0_RX);
-        dmac::raw::channel_start(cfg.tx_dma_ch);
-        dmac::raw::channel_start(cfg.rx_dma_ch);
+        tx.init_with_link_descriptor(tx_desc_u as *const u32, DMARS_SSI0_TX);
+        rx.init_with_link_descriptor(rx_ring_head, DMARS_SSI0_RX);
+        tx.channel_start();
+        rx.channel_start();
 
         // ── Release FIFOs + enable TX/RX (identical to `init`). ──────────────
         let fcr = ssi_reg(SSIFCR_OFF);
-        fcr.write_volatile(fcr.read_volatile() & !SSIFCR_TFRST);
-        fcr.write_volatile(fcr.read_volatile() | SSIFCR_TIE);
-        fcr.write_volatile(fcr.read_volatile() & !SSIFCR_RFRST);
-        fcr.write_volatile(fcr.read_volatile() | SSIFCR_RIE);
+        fcr.write(fcr.read() & !SSIFCR_TFRST);
+        fcr.write(fcr.read() | SSIFCR_TIE);
+        fcr.write(fcr.read() & !SSIFCR_RFRST);
+        fcr.write(fcr.read() | SSIFCR_RIE);
         let cr = ssi_reg(SSICR_OFF);
-        cr.write_volatile(cr.read_volatile() | SSICR_TEN | SSICR_REN);
+        cr.write(cr.read() | SSICR_TEN | SSICR_REN);
         log::debug!("ssi: TX + block-IRQ RX ({} descs) streaming", RX_RING_DESCS);
     }
 }
@@ -476,54 +519,51 @@ pub unsafe fn init_block_irq(cfg: &SsiConfig) {
 /// # Safety
 /// Same requirements as [`init`].  Do not call both [`init`] and this
 /// function — call exactly one of the two.
-pub unsafe fn init_rx_only(cfg: &SsiConfig) {
+unsafe fn start_rx_only(ssicr: u32, rx: &mut Dma<'_>) {
     unsafe {
-        RX_DMA_CH_ACTIVE.store(cfg.rx_dma_ch, core::sync::atomic::Ordering::Relaxed);
         log::debug!(
             "ssi: init SSI0 RX-only (44.1 kHz I\u{00B2}S, DMA ch{} RX, TX owned by SCUX)",
-            cfg.rx_dma_ch
+            rx.number()
         );
 
         // 1. Patch RX link descriptor only.
-        let rx_desc_u =
-            (core::ptr::addr_of!(RX_DESC) as usize + UNCACHED_MIRROR_OFFSET) as *mut u32;
+        let rx_desc_u = crate::uncached(core::ptr::addr_of!(RX_DESC) as *mut u32);
         rx_desc_u
             .add(2)
             .write_volatile(core::ptr::addr_of!(RX_BUF.0[0]) as u32);
-        rx_desc_u.add(4).write_volatile(rx_chcfg(cfg.rx_dma_ch));
+        rx_desc_u.add(4).write_volatile(rx_chcfg(rx.number()));
         rx_desc_u.add(7).write_volatile(rx_desc_u as u32);
 
         // 2. SSI0 software reset.
-        let swrstcr = SWRSTCR1 as *mut u8;
+        let swrstcr = crate::mmio::Reg8(SWRSTCR1);
         let reset_bit = 1u8 << (6 - SSI_CH);
-        swrstcr.write_volatile(swrstcr.read_volatile() | reset_bit);
-        let _ = swrstcr.read_volatile();
-        swrstcr.write_volatile(swrstcr.read_volatile() & !reset_bit);
-        let _ = swrstcr.read_volatile();
+        swrstcr.write(swrstcr.read() | reset_bit);
+        let _ = swrstcr.read();
+        swrstcr.write(swrstcr.read() & !reset_bit);
+        let _ = swrstcr.read();
 
         // 3. Configure SSI registers (same as full init).
-        ssi_reg(SSITDMR_OFF).write_volatile(SSITDMR_CONT); // WS continue mode (master)
-        ssi_reg(SSICR_OFF).write_volatile(cfg.ssicr);
-        ssi_reg(SSIFCR_OFF).write_volatile(SSIFCR_INIT); // both FIFOs held in reset
+        ssi_reg(SSITDMR_OFF).write(SSITDMR_CONT); // WS continue mode (master)
+        ssi_reg(SSICR_OFF).write(ssicr);
+        ssi_reg(SSIFCR_OFF).write(SSIFCR_INIT); // both FIFOs held in reset
 
         // 4. Initialise and start RX DMA only.
-        let rx_desc_u =
-            (core::ptr::addr_of!(RX_DESC) as usize + UNCACHED_MIRROR_OFFSET) as *const u32;
-        dmac::raw::init_with_link_descriptor(cfg.rx_dma_ch, rx_desc_u, DMARS_SSI0_RX);
-        dmac::raw::channel_start(cfg.rx_dma_ch);
+        let rx_desc_u = crate::uncached(core::ptr::addr_of!(RX_DESC) as *mut u32) as *const u32;
+        rx.init_with_link_descriptor(rx_desc_u, DMARS_SSI0_RX);
+        rx.channel_start();
         log::debug!(
             "ssi: DMA RX ch{} started (TX skipped — SCUX owns TX)",
-            cfg.rx_dma_ch
+            rx.number()
         );
 
         // 5. Release RX FIFO only; leave TX FIFO in reset (TFRST stays set).
         let fcr = ssi_reg(SSIFCR_OFF);
-        fcr.write_volatile(fcr.read_volatile() & !SSIFCR_RFRST);
-        fcr.write_volatile(fcr.read_volatile() | SSIFCR_RIE);
+        fcr.write(fcr.read() & !SSIFCR_RFRST);
+        fcr.write(fcr.read() | SSIFCR_RIE);
 
         // 6. Enable receive only (TEN stays 0 — SCUX owns TX).
         let cr = ssi_reg(SSICR_OFF);
-        cr.write_volatile(cr.read_volatile() | SSICR_REN);
+        cr.write(cr.read() | SSICR_REN);
         log::debug!("ssi: RX-only enabled, streaming");
     }
 }
@@ -544,9 +584,9 @@ pub unsafe fn init_rx_only(cfg: &SsiConfig) {
 pub unsafe fn enable_tx() {
     unsafe {
         let fcr = ssi_reg(SSIFCR_OFF);
-        fcr.write_volatile(fcr.read_volatile() & !SSIFCR_TFRST);
+        fcr.write(fcr.read() & !SSIFCR_TFRST);
         let cr = ssi_reg(SSICR_OFF);
-        cr.write_volatile(cr.read_volatile() | SSICR_TEN);
+        cr.write(cr.read() | SSICR_TEN);
         log::debug!("ssi: TX enabled (SCUX direct-drive mode), TX FIFO released");
     }
 }
@@ -561,11 +601,14 @@ pub unsafe fn enable_tx() {
 ///
 /// Write audio samples *ahead of* this pointer.  Wrap at [`tx_buf_end`].
 pub fn tx_current_ptr() -> *mut i32 {
-    let ch = TX_DMA_CH_ACTIVE.load(core::sync::atomic::Ordering::Relaxed);
-    let crsa = unsafe { dmac::raw::current_src(ch) };
+    let crsa = TX_DMA
+        .try_get()
+        .map_or(unsafe { core::ptr::addr_of!(TX_BUF.0[0]) } as u32, |d| {
+            d.current_src()
+        });
     // Align down to a stereo frame (2 × i32 = 8 bytes).
     let aligned = crsa & STEREO_FRAME_ALIGN_MASK;
-    (aligned as usize + UNCACHED_MIRROR_OFFSET) as *mut i32
+    crate::uncached(aligned as usize as *mut i32)
 }
 
 /// Current DMA write position in the RX buffer (uncached), aligned to one
@@ -573,15 +616,16 @@ pub fn tx_current_ptr() -> *mut i32 {
 ///
 /// Read received samples *behind* this pointer.  Wrap at [`rx_buf_start`].
 pub fn rx_current_ptr() -> *const i32 {
-    let ch = RX_DMA_CH_ACTIVE.load(core::sync::atomic::Ordering::Relaxed);
-    let crda = unsafe { dmac::raw::current_dst(ch) };
+    let crda = rx_dma().map_or(unsafe { core::ptr::addr_of!(RX_BUF.0[0]) } as u32, |d| {
+        d.current_dst()
+    });
     let aligned = crda & STEREO_FRAME_ALIGN_MASK;
-    (aligned as usize + UNCACHED_MIRROR_OFFSET) as *const i32
+    crate::uncached(aligned as usize as *mut i32) as *const i32
 }
 
 /// Pointer to the first sample in the TX buffer (uncached view).
 pub fn tx_buf_start() -> *mut i32 {
-    (unsafe { core::ptr::addr_of!(TX_BUF.0[0]) as usize } + UNCACHED_MIRROR_OFFSET) as *mut i32
+    crate::uncached(unsafe { core::ptr::addr_of!(TX_BUF.0[0]) } as *mut i32)
 }
 
 /// One-past-the-end pointer for the TX buffer (uncached view).
@@ -591,7 +635,7 @@ pub fn tx_buf_end() -> *mut i32 {
 
 /// Pointer to the first sample in the RX buffer (uncached view).
 pub fn rx_buf_start() -> *const i32 {
-    (unsafe { core::ptr::addr_of!(RX_BUF.0[0]) as usize } + UNCACHED_MIRROR_OFFSET) as *const i32
+    crate::uncached(unsafe { core::ptr::addr_of!(RX_BUF.0[0]) } as *mut i32) as *const i32
 }
 
 /// One-past-the-end pointer for the RX buffer (uncached view).
@@ -605,7 +649,7 @@ pub fn rx_buf_end() -> *const i32 {
 /// called.  Used by the firmware to register a GIC completion handler
 /// (DMAINT = 41 + ch).
 pub fn rx_dma_ch() -> u8 {
-    RX_DMA_CH_ACTIVE.load(core::sync::atomic::Ordering::Relaxed)
+    rx_dma().map_or(0, |d| d.number())
 }
 
 /// Returns the DMA channel number assigned to the SSI TX path.
@@ -613,7 +657,7 @@ pub fn rx_dma_ch() -> u8 {
 /// Valid after [`init`] or [`init_block_irq`] has been called.  Used by the
 /// firmware to register a GIC completion handler (DMAINT = 41 + ch).
 pub fn tx_dma_ch() -> u8 {
-    TX_DMA_CH_ACTIVE.load(core::sync::atomic::Ordering::Relaxed)
+    TX_DMA.try_get().map_or(0, |d| d.number())
 }
 
 #[cfg(all(test, not(target_os = "none")))]
@@ -674,5 +718,57 @@ mod tests {
         assert_eq!(tx_chcfg(0) & common, common);
         assert_eq!(rx_chcfg(0) & common, common);
         assert_ne!(tx_chcfg(0), rx_chcfg(0), "direction bits differ");
+    }
+}
+
+#[cfg(all(test, not(target_os = "none")))]
+mod typed_tests {
+    use super::*;
+    use crate::dmac::{self, BlockDma, Dma};
+    use crate::mmio::test;
+    use crate::peripherals::{DMA_CH6, DMA_CH7, SSIF0};
+
+    crate::bind_interrupts!(struct BlockIrqs {
+        DMAINT7 => dmac::BlockInterruptHandler<DMA_CH7>;
+    });
+
+    crate::bind_interrupts!(struct CompletionIrqs {
+        DMAINT6 => dmac::InterruptHandler<DMA_CH6>;
+        DMAINT7 => dmac::InterruptHandler<DMA_CH7>;
+    });
+
+    #[test]
+    fn ssi_rings_keep_their_completion_interrupts_masked() {
+        test::reset();
+        // Channels whose completion interrupts are enabled: `init` must mask them itself.
+        let tx = Dma::new(unsafe { DMA_CH6::steal() }, CompletionIrqs);
+        let rx = Dma::new(unsafe { DMA_CH7::steal() }, CompletionIrqs);
+        let built = test::writes().len();
+        init(unsafe { SSIF0::steal() }, tx, rx, 0x002B_C020);
+        assert_eq!((tx_dma_ch(), rx_dma_ch()), (6, 7));
+        // DMAINT6/7 (GIC 47/48) cleared in GICD_ICENABLER1 (0xE820_1184), bits 15 and 16.
+        let writes = test::writes();
+        let after = &writes[built..];
+        assert!(after.contains(&(0xE820_1184, 1 << 15)), "DMAINT6 masked");
+        assert!(after.contains(&(0xE820_1184, 1 << 16)), "DMAINT7 masked");
+        // SSI0's TX/RX request routes: DMARS3 (channels 6 and 7) holds 0xE1 low, 0xE2 high.
+        assert_eq!(test::peek32(0xFCFE_100C), 0x00E2_00E1);
+    }
+
+    #[test]
+    fn the_block_ring_binds_its_interrupt_before_starting() {
+        test::reset();
+        let mut tx = Dma::new_without_interrupt(unsafe { DMA_CH6::steal() });
+        let mut rx = BlockDma::new(unsafe { DMA_CH7::steal() }, BlockIrqs);
+        let enabled_at = test::writes()
+            .iter()
+            .position(|w| *w == (0xE820_1104, 1 << 16));
+        // The private bring-up, not `init_block_irq`: SSI's statics hold one ring set per
+        // process, and `ssi_rings_keep_their_completion_interrupts_masked` stores it.
+        unsafe { start_block_irq(0x002B_C020, &mut tx, &mut rx) };
+        // Channel 7's SETEN (CHCTRL at 0xE820_01E8, value 1) comes after its interrupt is enabled.
+        let started_at = test::writes().iter().rposition(|w| *w == (0xE820_01E8, 1));
+        assert!(enabled_at.is_some() && started_at.is_some() && enabled_at < started_at);
+        assert!(crate::gic::handler(48).is_some(), "DMAINT7 bound");
     }
 }

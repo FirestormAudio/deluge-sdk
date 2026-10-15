@@ -30,9 +30,9 @@
 //!
 //! Pass `0x0010_0000` for unity gain after init.
 
-use core::sync::atomic::{AtomicU8, Ordering};
-
-use crate::ssi::SsiConfig;
+use crate::Peri;
+use crate::dmac::Dma;
+use crate::peripherals::SSIF0;
 use crate::{
     UNCACHED_MIRROR_OFFSET,
     scux::{
@@ -73,9 +73,6 @@ const SRC_PAIR: u8 = 0;
 // With SSI0TX set, the SSI0 TX DMA (ch 6) must NOT be running simultaneously.
 use crate::scux::{FDTSEL_DIVEN, FDTSEL_SCKSEL_SSIF0_WS, SSICTRL_SSI0TX};
 
-/// The DMA channel this path was initialised with (`u8::MAX` = not yet initialised).
-static FFD_DMA_CH: AtomicU8 = AtomicU8::new(u8::MAX);
-
 // TSEL_SSIF0_WS: DIVEN=1 (bit 8) | SCKSEL=SSIF0_WS (value 8 = 0b1000).
 // BSP: FDTSEL_CIM_DIVEN_SET | FDTSEL_CIM_SCKSEL_SSIF0_WS_SET
 const TSEL_SSIF0_WS: u32 = FDTSEL_DIVEN | FDTSEL_SCKSEL_SSIF0_WS;
@@ -94,20 +91,19 @@ const TSEL_SSIF0_WS: u32 = FDTSEL_DIVEN | FDTSEL_SCKSEL_SSIF0_WS;
 /// separately — doing so starts the SSI0 TX DMA on ch 6, which conflicts with
 /// the SCUX direct-drive path on SSIF0.
 ///
-/// `ssi` is the board's SSI0 configuration and `ffd_dma_ch` the DMA channel the board
-/// assigns to SCUX FFD0; the channel is remembered for [`tx_current_ptr`].
+/// `ssi_rx` is the board's SSI0 receive channel and `ffd` the DMA channel it assigns to SCUX
+/// FFD0; SCUX keeps `ffd`, with its completion interrupt masked, for [`tx_current_ptr`].
 ///
 /// # Safety
 /// Must be called once from a single-threaded boot context after
 /// `crate::stb::init()` and SSI0 pin-mux setup.
-pub unsafe fn init(ssi: &SsiConfig, ffd_dma_ch: u8) {
-    FFD_DMA_CH.store(ffd_dma_ch, Ordering::Relaxed);
+pub unsafe fn init(ssi: Peri<'static, SSIF0>, ssi_rx: Dma<'static>, ssicr: u32, ffd: Dma<'static>) {
     unsafe {
         log::debug!("scux_dvu_path: init DVU output path (FFD0→IPC0→2SRC0→DVU0→OPC0→SSIF0)");
 
         // Start SSI0 RX DMA (codec → memory) but intentionally skip SSI0 TX DMA —
         // the SCUX drives SSIF0 TX directly via SSICTRL.SSI0TX (step 5).
-        ssi::init_rx_only(ssi);
+        ssi::init_rx_only(ssi, ssi_rx, ssicr);
 
         // 1. Software-reset the SCUX block.
         scux::reset();
@@ -116,7 +112,7 @@ pub unsafe fn init(ssi: &SsiConfig, ffd_dma_ch: u8) {
         //    set up DMA channel 0 → FFD0_0.
         let buf_ptr = core::ptr::addr_of!(DVU_TX_BUF.0[0]) as *const u32;
         let buf_bytes = DVU_PATH_BUF_LEN * core::mem::size_of::<i32>();
-        scux::init_ffd_dma(FFD_CH, ffd_dma_ch, buf_ptr, buf_bytes);
+        scux::init_ffd_dma(FFD_CH, ffd, buf_ptr, buf_bytes);
 
         // 3. Configure sub-blocks (all INIT bits = 1 after reset — OK to write).
 
@@ -216,23 +212,28 @@ pub unsafe fn init(ssi: &SsiConfig, ffd_dma_ch: u8) {
 /// 2SRC0/0 block converts them to 44.1 kHz before passing to the DVU and
 /// ultimately to the SSI0 codec.
 ///
-/// `ssi` is the board's SSI0 configuration and `ffd_dma_ch` the DMA channel the board
-/// assigns to SCUX FFD0; the channel is remembered for [`tx_current_ptr`].
+/// `ssi_rx` is the board's SSI0 receive channel and `ffd` the DMA channel it assigns to SCUX
+/// FFD0; SCUX keeps `ffd`, with its completion interrupt masked, for [`tx_current_ptr`].
 ///
 /// # Safety
 /// Must be called once from a single-threaded boot context after
 /// `crate::stb::init()` and SSI0 pin-mux setup.
-pub unsafe fn init_with_src(ssi: &SsiConfig, ffd_dma_ch: u8, engine_hz: u32) {
-    FFD_DMA_CH.store(ffd_dma_ch, Ordering::Relaxed);
+pub unsafe fn init_with_src(
+    ssi: Peri<'static, SSIF0>,
+    ssi_rx: Dma<'static>,
+    ssicr: u32,
+    ffd: Dma<'static>,
+    engine_hz: u32,
+) {
     unsafe {
         log::debug!("scux_dvu_path: init with SRC {} Hz → 44100 Hz", engine_hz);
 
-        ssi::init_rx_only(ssi);
+        ssi::init_rx_only(ssi, ssi_rx, ssicr);
         scux::reset();
 
         let buf_ptr = core::ptr::addr_of!(DVU_TX_BUF.0[0]) as *const u32;
         let buf_bytes = DVU_PATH_BUF_LEN * core::mem::size_of::<i32>();
-        scux::init_ffd_dma(FFD_CH, ffd_dma_ch, buf_ptr, buf_bytes);
+        scux::init_ffd_dma(FFD_CH, ffd, buf_ptr, buf_bytes);
 
         scux::configure_ipc(IPC_CH, IpcSel::FfdToSrcAsync);
         scux::configure_opc(OPC_CH, OpcSel::ToSsi);
@@ -344,7 +345,7 @@ pub fn tx_buf_end() -> *mut i32 {
 /// Mirrors `crate::ssi::tx_current_ptr` in signature and semantics — write
 /// audio samples *ahead of* this pointer.
 pub fn tx_current_ptr() -> *mut i32 {
-    let crsa = unsafe { crate::dmac::raw::current_src(scux::recorded_dma_channel(&FFD_DMA_CH)) };
+    let crsa = scux::ffd_current_src(FFD_CH as usize);
     let aligned = crsa & !7u32;
     (aligned as usize + UNCACHED_MIRROR_OFFSET) as *mut i32
 }

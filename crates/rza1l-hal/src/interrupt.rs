@@ -54,6 +54,8 @@ pub mod typelevel {
         // Software-generated interrupts: an executor run from an SGI handler raises its own.
         SGI0 = 0, SGI1 = 1, SGI2 = 2, SGI3 = 3, SGI4 = 4, SGI5 = 5, SGI6 = 6, SGI7 = 7,
         SGI8 = 8, SGI9 = 9, SGI10 = 10, SGI11 = 11, SGI12 = 12, SGI13 = 13, SGI14 = 14, SGI15 = 15,
+        // External pin interrupts IRQ0–IRQ7.
+        IRQ0 = 32, IRQ1 = 33, IRQ2 = 34, IRQ3 = 35, IRQ4 = 36, IRQ5 = 37, IRQ6 = 38, IRQ7 = 39,
         // DMAC channel n's completion interrupt is GIC ID 41 + n.
         DMAINT0 = 41, DMAINT1 = 42, DMAINT2 = 43, DMAINT3 = 44,
         DMAINT4 = 45, DMAINT5 = 46, DMAINT6 = 47, DMAINT7 = 48,
@@ -67,6 +69,9 @@ pub mod typelevel {
         // SCIF channel n's receive error and transmit-FIFO-empty.
         ERI0 = 222, TXI0 = 224, ERI1 = 226, TXI1 = 228, ERI2 = 230, TXI2 = 232,
         ERI3 = 234, TXI3 = 236, ERI4 = 238, TXI4 = 240,
+        // SDHI channel n's status (card detect), operation and SDIO interrupts.
+        SDHI0_STATUS = 302, SDHI0_OP = 303, SDHI0_SDIO = 304,
+        SDHI1_STATUS = 305, SDHI1_OP = 306, SDHI1_SDIO = 307,
     }
 }
 
@@ -185,5 +190,40 @@ mod tests {
         unsafe { crate::gic::disable(73) };
         // GICD_ICENABLER2 (0xE820_1180 + 2*4), bit 73 - 64 = 9.
         assert_eq!(test::writes(), [(0xE820_1188, 1 << 9)]);
+    }
+
+    #[test]
+    fn the_4c_interrupt_ids_match_the_hardware_manual() {
+        // IRQn (external pin interrupts) are GIC 32 + n.
+        assert_eq!(
+            [
+                typelevel::IRQ0::ID,
+                typelevel::IRQ1::ID,
+                typelevel::IRQ2::ID,
+                typelevel::IRQ3::ID,
+                typelevel::IRQ4::ID,
+                typelevel::IRQ5::ID,
+                typelevel::IRQ6::ID,
+                typelevel::IRQ7::ID
+            ],
+            [32, 33, 34, 35, 36, 37, 38, 39]
+        );
+        // SDHIn: status (card detect), operation, SDIO.
+        assert_eq!(
+            [
+                typelevel::SDHI0_STATUS::ID,
+                typelevel::SDHI0_OP::ID,
+                typelevel::SDHI0_SDIO::ID
+            ],
+            [302, 303, 304]
+        );
+        assert_eq!(
+            [
+                typelevel::SDHI1_STATUS::ID,
+                typelevel::SDHI1_OP::ID,
+                typelevel::SDHI1_SDIO::ID
+            ],
+            [305, 306, 307]
+        );
     }
 }

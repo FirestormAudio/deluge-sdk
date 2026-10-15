@@ -47,12 +47,15 @@ pub type PicScif = SCIF1;
 pub type GateTimer = MTU2_2;
 /// MTU2 channel 3: the encoder pin poll ([`crate::encoder`]).
 pub type EncoderPollTimer = MTU2_3;
+/// SDHI1: the SD card slot ([`crate::sd`]).
+pub type SdCard = SDHI1;
+/// SSIF0: the codec's I²S port ([`crate::audio`]).
+pub type AudioSsi = SSIF0;
 
 /// Every DMA channel, by the role the Deluge gives it.
 ///
-/// The OLED, PIC and MIDI channels are taken by `bus::init` and `uart::init_*`. Until Phase 4c the
-/// SCUX, SSI and SD channels are still programmed by number, through `dmac::raw`, by their BSP
-/// drivers: don't build a `dmac::Dma` from one of those roles alongside its driver.
+/// Each role's driver takes its channel (`bus::init`, `uart::init_*`, `sd::init_hw`, `audio::init*`);
+/// a channel the board's firmware doesn't use stays here, unused.
 pub struct BoardDma {
     pub scux_ffd0: Peri<'static, ScuxFfd0Dma>,
     pub scux_ffu0: Peri<'static, ScuxFfu0Dma>,
@@ -88,6 +91,10 @@ pub struct Board {
     pub gate_timer: Peri<'static, GateTimer>,
     /// MTU2 channel 3, the encoder pin poll.
     pub encoder_poll_timer: Peri<'static, EncoderPollTimer>,
+    /// SDHI1, the SD card slot.
+    pub sd_card: Peri<'static, SdCard>,
+    /// SSIF0, the codec's I²S port.
+    pub audio_ssi: Peri<'static, AudioSsi>,
     pub dma: BoardDma,
 }
 
@@ -122,6 +129,8 @@ impl Board {
             pic_uart: p.SCIF1,
             gate_timer: p.MTU2_2,
             encoder_poll_timer: p.MTU2_3,
+            sd_card: p.SDHI1,
+            audio_ssi: p.SSIF0,
             dma: BoardDma {
                 scux_ffd0: p.DMA_CH0,
                 scux_ffu0: p.DMA_CH1,
@@ -162,8 +171,9 @@ mod tests {
         assert_eq!(ScuxFfu1Dma::NUMBER, SCUX_FFU1_DMA_CH);
         assert_eq!(ScuxFfu2Dma::NUMBER, SCUX_FFU2_DMA_CH);
         assert_eq!(ScuxFfu3Dma::NUMBER, SCUX_FFU3_DMA_CH);
-        assert_eq!(SsiTxDma::NUMBER, SSI_CONFIG.tx_dma_ch);
-        assert_eq!(SsiRxDma::NUMBER, SSI_CONFIG.rx_dma_ch);
+        // SSI's channels are the board's choice, made here: the codec ring's TX on 6, RX on 7.
+        assert_eq!(SsiTxDma::NUMBER, 6);
+        assert_eq!(SsiRxDma::NUMBER, 7);
         assert_eq!(OledDma::NUMBER, crate::oled::OLED_DMA_CH);
         assert_eq!(PicTxDma::NUMBER, PIC_DMA_TX_CH);
         assert_eq!(PicRxDma::NUMBER, PIC_DMA_RX_CH);

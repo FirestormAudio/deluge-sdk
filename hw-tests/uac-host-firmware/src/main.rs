@@ -18,8 +18,11 @@ use log::{error, info};
 
 use rza1_alloc as allocator;
 use deluge_bsp::{cv_gate, uart as bsp_uart};
-use rza1l_hal::gic;
-use rza1l_hal::usb::{hcd_int_handler, init_host_mode};
+use rza1l_hal::usb::init_host_mode;
+
+rza1l_hal::bind_interrupts!(struct UsbIrqs {
+    USB0 => rza1l_hal::usb::HostInterruptHandler<rza1l_hal::peripherals::USB0>;
+});
 
 unsafe extern "C" {
     static __sram_heap_start: u8;
@@ -62,14 +65,7 @@ pub extern "C" fn main() -> ! {
     deluge_bsp::bus::init(board.shared_spi, board.dma.oled);
     unsafe { cv_gate::init() };
 
-    // USB0 host-mode ISR.
-    unsafe {
-        gic::register(rza1l_hal::usb::USB0_IRQ, || {
-            hcd_int_handler(0);
-        });
-    }
-
-    let (_port, host_driver) = unsafe { init_host_mode(0) };
+    let (_port, host_driver) = init_host_mode(board.usb0, UsbIrqs);
     info!("USB: host driver ready (USB0 host mode)");
 
     unsafe { cortex_ar::interrupt::enable() };

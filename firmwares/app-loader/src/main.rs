@@ -114,6 +114,8 @@ pub extern "C" fn main() -> ! {
     // executor starts (global IRQs still masked).  Without it the OLED
     // chip-select echo handshake can never be received and `oled::init` hangs.
     deluge_bsp::uart::init_pic(board.pic_uart, board.dma.pic_rx, board.dma.pic_tx, 31_250);
+    // The SD slot's controller, once; `sd::init` identifies the card when it is needed.
+    deluge_bsp::sd::init_hw(board.sd_card, board.dma.sd_tx, board.dma.sd_rx);
 
     // The bus brings RSPI0 up; cv_gate::init runs the DAC's linearity sequence on it.
     deluge_bsp::bus::init(board.shared_spi, board.dma.oled);
@@ -485,7 +487,8 @@ async fn boot_task(spawner: Spawner) {
         // The menu branch won (or dev mode is off): if a CDC listener was brought
         // up, tear it down so the port is free for a later DATA TRANSFER MSC init.
         if cfg.dev_mode {
-            unsafe { rza1l_hal::usb::disconnect(0) };
+            // SAFETY: the listener's session is over.
+            rza1l_hal::usb::disconnect(unsafe { rza1l_hal::peripherals::USB0::steal() });
         }
 
         // ---- Long-press on an SD `/APPS` ELF: store it to the flash slot ----

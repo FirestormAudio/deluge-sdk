@@ -36,7 +36,7 @@ testing.
 | [`trigger_clock`] | Analog trigger-clock input |
 | [`rgb`] | RGB pad-LED surface for the 18 × 8 grid |
 | [`battery`] | Battery-voltage sense via the ADC |
-| [`board`] | `Board::new(rza1l_hal::init(system::BOARD_CONFIG))`: the rest of the bring-up, then the Deluge's peripherals by role (USB0/1, RSPI0, SCIF0/1, MTU2 2/3, the 16 DMA channels) |
+| [`board`] | `Board::new(rza1l_hal::init(system::BOARD_CONFIG))`: the rest of the bring-up, then the Deluge's peripherals by role (USB0/1, RSPI0, SCIF0/1, MTU2 2/3, SDHI1 `sd_card`, SSIF0 `audio_ssi`, the 16 DMA channels) |
 | [`flash`] | SPI-NOR chip profile and board flash map (feature `flash`) |
 | [`host_panel`] | Host builds: the hook a simulated front panel plugs into (`deluge-sdk`'s simulator backend installs one) |
 
@@ -91,10 +91,9 @@ A typical boot sequence (`Board::new` also brings up the MMU, caches and the SDR
 let board = deluge_bsp::Board::new(rza1l_hal::init(deluge_bsp::system::BOARD_CONFIG));
 deluge_bsp::uart::init_pic(board.pic_uart, board.dma.pic_rx, board.dma.pic_tx, 31_250);
 deluge_bsp::bus::init(board.shared_spi, board.dma.oled);
-unsafe {
-    deluge_bsp::audio::init();
-    deluge_bsp::cv_gate::init();
-}
+deluge_bsp::sd::init_hw(board.sd_card, board.dma.sd_tx, board.dma.sd_rx);
+deluge_bsp::audio::init(board.audio_ssi, board.dma.ssi_tx, board.dma.ssi_rx);
+unsafe { deluge_bsp::cv_gate::init() };
 ```
 
 Apps built on the `deluge` SDK get all of this from `#[deluge::app]` and don't

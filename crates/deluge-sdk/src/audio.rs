@@ -73,11 +73,12 @@ fn ensure_init() {
     if DONE.swap(true, Ordering::Relaxed) {
         return;
     }
-    // SAFETY: runs once. Brings up the codec on the direct SSI TX+RX DMA path
-    // (no SCUX — that's only for rate conversion); blocks ~5 ms internally.
-    // Acquire `audio()` before the main loop. Owns the codec — incompatible with
-    // the USB UAC2 device tasks.
-    unsafe { deluge_bsp::audio::init() };
+    // Brings up the codec on the direct SSI TX+RX DMA path (no SCUX); blocks ~5 ms. Owns the
+    // codec, so it is incompatible with the USB UAC2 device tasks.
+    let ssi = crate::parts::take("SSIF0 (the codec's I²S port)", |p| p.audio_ssi.take());
+    let tx = crate::parts::take("the SSI transmit DMA channel", |p| p.ssi_tx_dma.take());
+    let rx = crate::parts::take("the SSI receive DMA channel", |p| p.ssi_rx_dma.take());
+    deluge_bsp::audio::init(ssi, tx, rx);
 }
 
 /// The codec audio path, taken once from [`Deluge::audio`](crate::Deluge::audio).

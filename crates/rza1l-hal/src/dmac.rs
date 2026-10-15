@@ -115,10 +115,11 @@ fn dmars_reg(ch: u8) -> crate::mmio::Reg32 {
 // again.  Completion is signalled via a GIC interrupt (DMAINT_n, GIC IDs
 // 41–56 for channels 0–15).
 
-#[doc(hidden)]
-pub mod raw;
+/// The DMAC by channel number: `Dma`'s implementation.
+mod raw;
 
-// The table handlers and tests below call the channel-number functions by name.
+// The tests below call the channel-number functions by name.
+#[cfg(all(test, not(target_os = "none")))]
 use raw::*;
 
 use core::future::poll_fn;
@@ -187,12 +188,27 @@ impl<'d> Dma<'d> {
         irq: impl Binding<C::Interrupt, InterruptHandler<C>> + 'd,
     ) -> Self {
         interrupt::bind(irq);
-        // SAFETY: this channel's own interrupt, at the DMAC priority raw::register_completion_irq uses.
+        // SAFETY: this channel's own interrupt, at the DMAC priority.
         unsafe {
             crate::gic::set_priority(C::Interrupt::ID, DMAC_IRQ_PRIORITY);
             crate::gic::enable(C::Interrupt::ID);
         }
-        Self { ch: C::NUMBER, _channel: PhantomData }
+        Self {
+            ch: C::NUMBER,
+            _channel: PhantomData,
+        }
+    }
+
+    /// Take channel `C` for a transfer nobody awaits (a polled ring): its completion interrupt is
+    /// masked at the GIC and nothing is bound to it. A ring with DEM clear raises DMAINT on every
+    /// pass, so an enabled line with no one clearing TC would storm.
+    pub fn new_without_interrupt<C: Channel>(_channel: Peri<'d, C>) -> Self {
+        let mut dma = Self {
+            ch: C::NUMBER,
+            _channel: PhantomData,
+        };
+        dma.mask_interrupt();
+        dma
     }
 
     /// Channel `C` without its singleton, for code that can't reach the channel's owner: a fault
@@ -203,7 +219,10 @@ impl<'d> Dma<'d> {
     /// The channel's owner must not run while the stolen handle is in use (interrupts masked, or
     /// the owner gone for good).
     pub unsafe fn steal<C: Channel>() -> Dma<'static> {
-        Dma { ch: C::NUMBER, _channel: PhantomData }
+        Dma {
+            ch: C::NUMBER,
+            _channel: PhantomData,
+        }
     }
 
     /// The channel number.
@@ -218,7 +237,9 @@ impl<'d> Dma<'d> {
         unsafe { crate::gic::disable(DMAINT_BASE + self.ch as u16) }
     }
 
-    /// See [`raw::init_register_mode`].
+    /// Set the channel up in register mode for memory→peripheral block transfers to the fixed
+    /// address `dst`, and leave it idle: each [`start_transfer`](Self::start_transfer) sends one
+    /// block.
     ///
     /// # Safety
     /// `dst` is the bus address every transfer writes to.
@@ -226,7 +247,9 @@ impl<'d> Dma<'d> {
         unsafe { raw::init_register_mode(self.ch, chcfg, dst, dmars) }
     }
 
-    /// See [`raw::init_register_mode_rx`].
+    /// Set the channel up in register mode for peripheral→memory block transfers from the fixed
+    /// address `src`, and leave it idle: each [`start_transfer_rx`](Self::start_transfer_rx)
+    /// receives one block.
     ///
     /// # Safety
     /// `src` is the bus address every transfer reads from.
@@ -234,7 +257,8 @@ impl<'d> Dma<'d> {
         unsafe { raw::init_register_mode_rx(self.ch, chcfg, src, dmars) }
     }
 
-    /// See [`raw::init_with_link_descriptor`].
+    /// Set the channel up in link-descriptor mode: `CHCFG` from word 4 of `descriptor`, then the
+    /// DMARS selector and `NXLA`. [`channel_start`](Self::channel_start) runs it.
     ///
     /// # Safety
     /// `descriptor` is the bus address of a 32-byte-aligned, 8-word link descriptor that stays
@@ -243,7 +267,7 @@ impl<'d> Dma<'d> {
         unsafe { raw::init_with_link_descriptor(self.ch, descriptor, dmars) }
     }
 
-    /// See [`raw::channel_start`].
+    /// Start the channel's descriptor chain: software reset, then set-enable.
     ///
     /// # Safety
     /// [`init_with_link_descriptor`](Self::init_with_link_descriptor) has run, and its
@@ -252,7 +276,7 @@ impl<'d> Dma<'d> {
         unsafe { raw::channel_start(self.ch) }
     }
 
-    /// See [`raw::start_transfer`].
+    /// Send one block of `count` bytes from `src` on a channel in register mode.
     ///
     /// # Safety
     /// `src..src + count` must stay valid and unaliased until the transfer completes.
@@ -260,7 +284,7 @@ impl<'d> Dma<'d> {
         unsafe { raw::start_transfer(self.ch, src, count) }
     }
 
-    /// See [`raw::start_transfer_rx`].
+    /// Receive one block of `count` bytes to `dst` on a channel in register mode.
     ///
     /// # Safety
     /// `dst..dst + count` must stay valid and unaliased until the transfer completes.
@@ -311,6 +335,65 @@ pub unsafe fn stop_all() {
     }
 }
 
+/// Channel `C`'s per-block interrupt, for a descriptor ring whose descriptors each end with an
+/// interrupt: clears TC without stopping the ring and wakes [`BlockDma::wait_block`].
+pub struct BlockInterruptHandler<C: Channel> {
+    _channel: PhantomData<C>,
+}
+
+impl<C: Channel> Handler<C::Interrupt> for BlockInterruptHandler<C> {
+    unsafe fn on_interrupt() {
+        on_block_int(C::NUMBER);
+    }
+}
+
+/// An owned DMAC channel running a descriptor ring with a per-block interrupt. It derefs to
+/// its [`Dma`], which programs the ring.
+pub struct BlockDma<'d> {
+    dma: Dma<'d>,
+}
+
+impl<'d> BlockDma<'d> {
+    /// Take channel `C`, install its block handler, and enable its interrupt: before the ring
+    /// starts, so no block's interrupt is lost.
+    pub fn new<C: Channel>(
+        _channel: Peri<'d, C>,
+        irq: impl Binding<C::Interrupt, BlockInterruptHandler<C>> + 'd,
+    ) -> Self {
+        interrupt::bind(irq);
+        // SAFETY: this channel's own interrupt, at the DMAC priority.
+        unsafe {
+            crate::gic::set_priority(C::Interrupt::ID, DMAC_IRQ_PRIORITY);
+            crate::gic::enable(C::Interrupt::ID);
+        }
+        Self {
+            dma: Dma {
+                ch: C::NUMBER,
+                _channel: PhantomData,
+            },
+        }
+    }
+
+    /// Wait for the next block to complete. Recurring: call it in a loop. Takes `&self`, so a
+    /// ring kept in a static can be waited on.
+    pub async fn wait_block(&self) {
+        raw::wait_block(self.dma.ch).await
+    }
+}
+
+impl<'d> core::ops::Deref for BlockDma<'d> {
+    type Target = Dma<'d>;
+    fn deref(&self) -> &Dma<'d> {
+        &self.dma
+    }
+}
+
+impl<'d> core::ops::DerefMut for BlockDma<'d> {
+    fn deref_mut(&mut self) -> &mut Dma<'d> {
+        &mut self.dma
+    }
+}
+
 /// GIC interrupt ID base for DMAC completion interrupts.
 /// DMAINT0 = GIC ID 41; channels 0–15 map to IDs 41–56 (RZ/A1L TRM §A.2).
 const DMAINT_BASE: u16 = 41;
@@ -335,62 +418,6 @@ static DMAC_WAKERS: [AtomicWaker; 16] = [
     AtomicWaker::new(),
 ];
 
-// Per-channel ISR dispatch table (16 entries; only populated channels matter).
-fn dma_int_0() {
-    on_dma_int(0);
-}
-fn dma_int_1() {
-    on_dma_int(1);
-}
-fn dma_int_2() {
-    on_dma_int(2);
-}
-fn dma_int_3() {
-    on_dma_int(3);
-}
-fn dma_int_4() {
-    on_dma_int(4);
-}
-fn dma_int_5() {
-    on_dma_int(5);
-}
-fn dma_int_6() {
-    on_dma_int(6);
-}
-fn dma_int_7() {
-    on_dma_int(7);
-}
-fn dma_int_8() {
-    on_dma_int(8);
-}
-fn dma_int_9() {
-    on_dma_int(9);
-}
-fn dma_int_10() {
-    on_dma_int(10);
-}
-fn dma_int_11() {
-    on_dma_int(11);
-}
-fn dma_int_12() {
-    on_dma_int(12);
-}
-fn dma_int_13() {
-    on_dma_int(13);
-}
-fn dma_int_14() {
-    on_dma_int(14);
-}
-fn dma_int_15() {
-    on_dma_int(15);
-}
-
-type HandlerFn = fn();
-static DMA_INT_HANDLERS: [HandlerFn; 16] = [
-    dma_int_0, dma_int_1, dma_int_2, dma_int_3, dma_int_4, dma_int_5, dma_int_6, dma_int_7,
-    dma_int_8, dma_int_9, dma_int_10, dma_int_11, dma_int_12, dma_int_13, dma_int_14, dma_int_15,
-];
-
 // ── Recurring per-block (descriptor-ring) interrupt support ────────────────────
 //
 // For a channel running a ring of link descriptors (e.g. the SSI RX block ring),
@@ -411,31 +438,6 @@ fn on_block_int(ch: u8) {
     DMAC_BLOCK_READY[ch as usize].store(true, Ordering::Release);
     DMAC_WAKERS[ch as usize].wake();
 }
-
-macro_rules! block_handlers {
-    ($($name:ident = $ch:literal),* $(,)?) => {
-        $( fn $name() { on_block_int($ch); } )*
-        static DMA_BLOCK_HANDLERS: [HandlerFn; 16] = [ $($name),* ];
-    };
-}
-block_handlers!(
-    dbi_0 = 0,
-    dbi_1 = 1,
-    dbi_2 = 2,
-    dbi_3 = 3,
-    dbi_4 = 4,
-    dbi_5 = 5,
-    dbi_6 = 6,
-    dbi_7 = 7,
-    dbi_8 = 8,
-    dbi_9 = 9,
-    dbi_10 = 10,
-    dbi_11 = 11,
-    dbi_12 = 12,
-    dbi_13 = 13,
-    dbi_14 = 14,
-    dbi_15 = 15,
-);
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
@@ -521,10 +523,7 @@ mod tests {
             "CHCFG from desc[4]"
         );
         // Even channel → DMARS resource selector in the low 16 bits.
-        assert_eq!(
-            crate::mmio::test::peek32(dmars_reg(ch).0),
-            0x0000_00E1
-        );
+        assert_eq!(crate::mmio::test::peek32(dmars_reg(ch).0), 0x0000_00E1);
         assert_eq!(
             crate::mmio::test::peek32(ch_reg(ch, OFF_NXLA).0),
             desc.as_ptr() as u32,
@@ -589,7 +588,10 @@ mod typed_tests {
     use super::*;
     use crate::interrupt::{Handler, Interrupt};
     use crate::mmio::test;
-    use crate::peripherals::{DMA_CH0, DMA_CH4, DMA_CH7, DMA_CH9, DMA_CH10, DMA_CH13, DMA_CH15};
+    use crate::peripherals::{
+        DMA_CH0, DMA_CH3, DMA_CH4, DMA_CH5, DMA_CH7, DMA_CH9, DMA_CH10, DMA_CH13, DMA_CH15,
+    };
+    use core::future::Future;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::task::{Wake, Waker};
@@ -612,8 +614,7 @@ mod typed_tests {
         let dma = Dma::new(unsafe { DMA_CH4::steal() }, Irqs);
         assert_eq!(dma.number(), 4);
         assert!(crate::gic::handler(45).is_some(), "DMAINT4 has a handler");
-        // Priority 13 into IPRIORITYR11 lane 1, then ISENABLER1 bit 13: what
-        // raw::register_completion_irq(4) writes.
+        // Priority 13 into IPRIORITYR11 lane 1, then ISENABLER1 bit 13.
         assert_eq!(
             test::writes(),
             [(0xE820_142C, (13 << 3) << 8), (0xE820_1104, 1 << 13)]
@@ -704,5 +705,43 @@ mod typed_tests {
                 (0xFCFE_1008, 0x121),
             ]
         );
+    }
+
+    crate::bind_interrupts!(struct BlockIrqs {
+        DMAINT5 => BlockInterruptHandler<DMA_CH5>;
+    });
+
+    #[test]
+    fn a_channel_without_interrupt_masks_its_line_and_binds_nothing() {
+        test::reset();
+        let dma = Dma::new_without_interrupt(unsafe { DMA_CH3::steal() });
+        assert_eq!(dma.number(), 3);
+        // GICD_ICENABLER1 (0xE820_1184), bit 44 - 32 = 12; nothing set-enabled, no handler.
+        assert_eq!(test::writes(), [(0xE820_1184, 1 << 12)]);
+        assert!(crate::gic::handler(44).is_none());
+    }
+
+    #[test]
+    fn a_block_interrupt_clears_tc_and_wakes_the_waiter_once() {
+        test::reset();
+        let ring = BlockDma::new(unsafe { DMA_CH5::steal() }, BlockIrqs);
+        assert_eq!(ring.number(), 5, "derefs to its Dma");
+        assert!(crate::gic::handler(46).is_some(), "DMAINT5 bound");
+        // Priority 13 into IPRIORITYR11 lane 2, then ISENABLER1 bit 14.
+        assert_eq!(
+            test::writes(),
+            [(0xE820_142C, (13 << 3) << 16), (0xE820_1104, 1 << 14)]
+        );
+
+        test::reset();
+        unsafe { <BlockInterruptHandler<DMA_CH5> as Handler<_>>::on_interrupt() };
+        // CHCTRL (channel 5 at 0xE820_0140 + 0x28) gets CLRTC only: the ring keeps running.
+        assert_eq!(test::writes(), [(0xE820_0168, 1 << 6)]);
+        embassy_futures::block_on(ring.wait_block());
+        // Consumed: a second wait would pend. Poll it once to show it isn't ready.
+        let mut second = core::pin::pin!(ring.wait_block());
+        let waker = Waker::from(Arc::new(CountWakes(AtomicU32::new(0))));
+        let mut cx = core::task::Context::from_waker(&waker);
+        assert!(second.as_mut().poll(&mut cx).is_pending());
     }
 }

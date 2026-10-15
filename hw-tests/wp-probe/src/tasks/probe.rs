@@ -22,9 +22,6 @@ use log::info;
 use deluge_bsp::oled::{self, text};
 use deluge_bsp::{pic, sd};
 
-/// The SD card is on SDHI port 1 (its WP/CD pins are P7_*).
-const SD_PORT: u8 = 1;
-
 /// First on-screen pixel row (the top rows sit off the visible panel area).
 const TOP: usize = 10;
 
@@ -49,7 +46,7 @@ pub(crate) async fn probe_task() {
         let card = sd::is_inserted();
         let ready = sd::is_ready();
         // SDHI's view: INFO7 != 0 (the driver's "write protected" test).
-        let info7 = unsafe { rza1l_hal::sdhi::card_write_protected(SD_PORT) };
+        let info7 = sd::controller().card_write_protected();
         // Raw live pin level on P7_1.
         let pin_high = unsafe { rza1l_hal::gpio::read_pin(7, 1) };
 

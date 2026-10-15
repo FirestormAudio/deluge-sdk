@@ -192,7 +192,7 @@ impl RxState {
 ///
 /// The encoded message (3 header bytes + `data`) must fit in 64 bytes.
 async fn send_msg(
-    tx: &mut Sender<'static, Rusb1Driver>,
+    tx: &mut Sender<'static, Rusb1Driver<'static>>,
     type_byte: u8,
     data: &[u8],
 ) -> Result<(), embassy_usb::driver::EndpointError> {
@@ -366,7 +366,7 @@ async fn handle_message(type_byte: u8, data: &[u8]) {
 ///
 /// The `select` here is over two channel receives, which are cancel-safe: the
 /// loser is merely de-registered, never losing a queued item.
-async fn tx_loop(tx: &mut Sender<'static, Rusb1Driver>) {
+async fn tx_loop(tx: &mut Sender<'static, Rusb1Driver<'static>>) {
     loop {
         let result = match select(REPLY_CHANNEL.receive(), EVENT_CHANNEL.receive()).await {
             Either::First(reply) => match reply {
@@ -401,7 +401,7 @@ async fn tx_loop(tx: &mut Sender<'static, Rusb1Driver>) {
 /// command frames and dispatches them; replies that must go back to the host are
 /// pushed to [`REPLY_CHANNEL`] for [`tx_loop`].  Returns on the first endpoint
 /// error (host disconnect).
-async fn rx_loop(rx: &mut Receiver<'static, Rusb1Driver>) {
+async fn rx_loop(rx: &mut Receiver<'static, Rusb1Driver<'static>>) {
     let mut rx_state = RxState::new();
     // Must be >= the bulk OUT max packet size (512 at high speed).  embassy-usb's
     // `read_packet` requires a buffer large enough to hold one full packet; a
@@ -436,7 +436,7 @@ async fn rx_loop(rx: &mut Receiver<'static, Rusb1Driver>) {
 /// until the host disconnects.  On disconnect, clears the host-driven pad
 /// matrix and OLED, then falls back to waiting for the next connection.
 #[embassy_executor::task]
-pub(crate) async fn cdc_task(class: CdcAcmClass<'static, Rusb1Driver>) {
+pub(crate) async fn cdc_task(class: CdcAcmClass<'static, Rusb1Driver<'static>>) {
     let (mut tx, mut rx) = class.split();
     loop {
         // Wait for the host to open the port (DTR asserted / endpoint enabled).
