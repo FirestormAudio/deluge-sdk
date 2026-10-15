@@ -63,8 +63,7 @@ static mut USB_BOS_DESC: [u8; 64] = [0; 64];
 static mut USB_MSOS_DESC: [u8; 0] = [];
 static mut USB_CONTROL_BUF: [u8; 64] = [0; 64];
 /// Backing storage for the MSC class handler (must be `'static`).
-static mut MSC_CLASS_BUF: MaybeUninit<usb_classes::msc::MscClass> =
-    MaybeUninit::uninit();
+static mut MSC_CLASS_BUF: MaybeUninit<usb_classes::msc::MscClass> = MaybeUninit::uninit();
 
 static mut EXECUTOR: MaybeUninit<Executor> = MaybeUninit::uninit();
 

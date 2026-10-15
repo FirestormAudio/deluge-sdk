@@ -27,7 +27,6 @@ use self::out::{PlaybackResampler, encode_s24le};
 use self::resample::{PiController, Resampler};
 use self::ring::SampleRing;
 
-
 /// Errors from the host UAC capture driver.
 #[derive(Debug)]
 pub enum UacError {
@@ -1186,7 +1185,10 @@ mod tests {
         let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
 
         block_on(Uac::try_register(&alloc, 1, None, &cfg, 48_000)).expect("register at 48 kHz");
-        assert!(!state.setups.borrow().iter().any(|s| is_set_cur(s)), "no SET CUR expected");
+        assert!(
+            !state.setups.borrow().iter().any(|s| is_set_cur(s)),
+            "no SET CUR expected"
+        );
     }
 
     #[test]
@@ -1205,6 +1207,9 @@ mod tests {
         let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
 
         let err = block_on(Uac::try_register(&alloc, 1, None, &cfg, 44_100)).err();
-        assert!(matches!(err, Some(UacError::UnsupportedRate)), "got {err:?}");
+        assert!(
+            matches!(err, Some(UacError::UnsupportedRate)),
+            "got {err:?}"
+        );
     }
 }

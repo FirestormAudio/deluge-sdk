@@ -33,6 +33,9 @@ pub mod fat;
 /// the `flash` feature — only the app-loader writes to flash.
 #[cfg(feature = "flash")]
 pub mod flash;
+/// Host builds: the hook a simulated front panel plugs into.
+#[cfg(not(target_os = "none"))]
+pub mod host_panel;
 pub mod jacks;
 #[cfg(target_os = "none")]
 pub mod midi_gate;
@@ -51,9 +54,6 @@ pub mod scux_usb_tx_path;
 /// disk image standing in for the card on host/QEMU. See the module docs.
 pub mod sd;
 pub mod sdram;
-/// Host builds: the hook a simulated front panel plugs into.
-#[cfg(not(target_os = "none"))]
-pub mod host_panel;
 pub mod system;
 #[cfg(target_os = "none")]
 pub mod trigger_clock;

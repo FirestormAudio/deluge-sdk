@@ -1,6 +1,6 @@
 //! USB-MIDI 1.0 event packets, passed through whole.
 //!
-//! The byte API in `usb::classes::midi` (device builds only) decodes received
+//! The byte API in `usb_classes::midi` (device builds only) decodes received
 //! packets into 3-byte messages and re-packetises a raw byte stream on the way
 //! out, which suits apps that think in MIDI messages but cannot carry SysEx or
 //! virtual cable numbers. A consumer that already speaks USB-MIDI 1.0 event

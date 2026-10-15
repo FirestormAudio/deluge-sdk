@@ -12,5 +12,6 @@ use deluge_sim_link::SharedPanel;
 
 /// The process-wide shared panel. Panics if called before the host runtime installs it.
 pub(crate) fn panel() -> &'static SharedPanel {
-    crate::plat::sim_panel::panel().expect("host panel not initialised (run via `cargo deluge sim`)")
+    crate::plat::sim_panel::panel()
+        .expect("host panel not initialised (run via `cargo deluge sim`)")
 }

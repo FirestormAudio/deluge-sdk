@@ -22,7 +22,7 @@ use embassy_futures::select::{Either, select};
 use embassy_time::{Duration, Instant, Timer};
 use log::{error, info, warn};
 
-use embassy_usb_driver::{Endpoint, EndpointIn, EndpointOut};
+use embassy_usb_driver::{EndpointIn, EndpointOut};
 
 use crate::msc::take_reset;
 
@@ -139,7 +139,11 @@ pub trait BlockDevice {
 static NEVER_EXIT: AtomicBool = AtomicBool::new(false);
 
 /// Run the Bulk-Only Transport / SCSI command loop against `dev`.  Never returns.
-pub async fn run<B: BlockDevice, EI: EndpointIn, EO: EndpointOut>(dev: B, ep_in: EI, ep_out: EO) -> ! {
+pub async fn run<B: BlockDevice, EI: EndpointIn, EO: EndpointOut>(
+    dev: B,
+    ep_in: EI,
+    ep_out: EO,
+) -> ! {
     run_until(dev, ep_in, ep_out, &NEVER_EXIT).await;
     // `NEVER_EXIT` is never set, so `run_until` never returns.
     unreachable!()

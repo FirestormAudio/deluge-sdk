@@ -18,12 +18,12 @@ use log::info;
 
 use deluge_bsp::oled::{self, text};
 use deluge_bsp::usb::sd_block::SdBlock;
-use usb_classes::bot::{self, BlockDevice};
-use usb_classes::msc::MscClass;
 use rza1l_hal::gic;
 use rza1l_hal::usb::{
     Rusb1Driver, Rusb1EndpointIn, Rusb1EndpointOut, dcd_int_handler, disconnect, init_device_mode,
 };
+use usb_classes::bot::{self, BlockDevice};
+use usb_classes::msc::MscClass;
 
 // USB descriptor static buffers — must be `'static` for `embassy_usb::Builder`.
 static mut USB_CONFIG_DESC: [u8; 256] = [0; 256];

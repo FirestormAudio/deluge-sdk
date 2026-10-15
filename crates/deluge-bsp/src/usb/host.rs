@@ -72,7 +72,7 @@ static MIDI_TX: [Channel<CriticalSectionRawMutex, [u8; 4], MIDI_TX_DEPTH>; MIDI_
 
 /// Non-blocking read of the next hosted-MIDI packet, if any.
 ///
-/// Mirrors the device-side idiom (`usb::classes::midi::try_recv_from_host`).
+/// Mirrors the device-side idiom (`usb_classes::midi::try_recv_from_host`).
 pub fn try_recv_midi() -> Option<(DeviceId, [u8; 4])> {
     MIDI_RX.try_receive().ok()
 }
@@ -221,7 +221,13 @@ mod runtime {
         use usb_classes::host::uac::Uac;
 
         let addr = dev_info.device_address;
-        match embassy_futures::block_on(Uac::try_register(handle, addr, dev_info.split(), cfg, crate::audio_block::SAMPLE_RATE_HZ)) {
+        match embassy_futures::block_on(Uac::try_register(
+            handle,
+            addr,
+            dev_info.split(),
+            cfg,
+            crate::audio_block::SAMPLE_RATE_HZ,
+        )) {
             Ok(host) => {
                 info!(
                     "usb_host: UAC capture device VID={:04x} PID={:04x} addr={} channels={}",
