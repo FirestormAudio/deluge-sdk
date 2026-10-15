@@ -44,8 +44,8 @@ flowchart TD
 `deluge-bsp` holds the board drivers (OLED, PIC, audio, SD, …); `rza1l-hal` is the
 register-level HAL (GIC, DMAC, SSI, …).
 
-The `deluge` facade **re-exports the board layer**, so most apps need only one
-dependency:
+Most apps need only the `deluge` facade, which re-exports the pieces an app uses
+directly:
 
 ```rust
 use deluge::prelude::*;
@@ -315,7 +315,7 @@ executor from starting). If your driver instead registers its ISR lazily on firs
 (the BSP does this for several peripherals), you don't need `setup` — but be aware
 the first call then runs with IRQs already enabled.
 
-`gic::init()` itself is already done for you inside `system::init_clocks()`.
+`gic::init()` itself is already done for you inside `rza1l_hal::init(BOARD_CONFIG)`.
 
 ---
 
@@ -612,7 +612,8 @@ table and bootloader metadata in [`rza1-rt`](../crates/rza1-rt/README.md).
 
 | Module | What |
 |--------|------|
-| `system` | `init_clocks()` master bring-up; board `StbConfig`/`SsiConfig` |
+| `system` | `BOARD_CONFIG` (the chip config for `rza1l_hal::init`); board `StbConfig`/`SsiConfig` |
+| `board` | `Board::new(rza1l_hal::init(BOARD_CONFIG))`: the rest of bring-up, then the peripherals by role |
 | `bus` | RSPI0 ownership guard (`lock_rspi0`, `enter_8bit/32bit`, `steal_rspi0`) |
 | `pic` | PIC co-processor: parser, `Event`, handshakes |
 | `audio_block` | ring-following audio tap (`Frame`, `BLOCK_FRAMES`, `SAMPLE_RATE_HZ`) |

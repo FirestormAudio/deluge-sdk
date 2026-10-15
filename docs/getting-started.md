@@ -475,8 +475,8 @@ missing from the menu) see the [App Loader Manual](app-loader.md#recovery).
   your computer.
 - **Lower layers** — the board support package
   ([`crates/deluge-bsp`](../crates/deluge-bsp/README.md)) and HAL
-  ([`crates/rza1l-hal`](../crates/rza1l-hal/README.md)) are re-exported from
-  `deluge` for advanced use.
+  ([`crates/rza1l-hal`](../crates/rza1l-hal/README.md)), for advanced use: add
+  them as dependencies alongside `deluge` (it doesn't re-export them).
 - **Repository overview** — the [root README](../README.md).
 
 [Synthstrom Deluge]: https://synthstrom.com/product/deluge/

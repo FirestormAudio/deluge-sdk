@@ -38,6 +38,10 @@ pub type SdRxDma = DMA_CH14;
 pub type ScuxFfd3Dma = DMA_CH15;
 
 /// Every DMA channel, by the role the Deluge gives it.
+///
+/// Until Phase 4b each channel is already in use by the matching BSP driver (OLED, SD, audio,
+/// PIC/MIDI UARTs, SCUX paths), which still programs it by number through `dmac::raw`. Don't
+/// build a `dmac::Dma` from a role here alongside that driver: the channel would have two owners.
 pub struct BoardDma {
     pub scux_ffd0: Peri<'static, ScuxFfd0Dma>,
     pub scux_ffu0: Peri<'static, ScuxFfu0Dma>,
