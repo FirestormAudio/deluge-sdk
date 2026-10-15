@@ -38,9 +38,6 @@ pub struct FifoPort {
     pub ctr: Reg<u16, RW>,
 }
 
-// Safety: FifoPort names memory-mapped registers; it holds no memory of its own.
-unsafe impl Send for FifoPort {}
-
 impl FifoPort {
     /// The CFIFO port of USB port `u`.
     pub fn cfifo(u: Usb) -> Self {
@@ -320,6 +317,13 @@ mod tests {
     use super::*;
     use crate::mmio::test;
     use crate::usb::regs::usb;
+
+    /// A `FifoPort` moves between contexts (it was `unsafe impl Send`; its `Reg`s now make it so).
+    #[test]
+    fn a_fifo_port_is_send() {
+        fn send<T: Send>() {}
+        send::<FifoPort>();
+    }
 
     #[test]
     fn sw_to_hw_roundtrip() {
