@@ -1621,7 +1621,7 @@ impl<'d> Sdhi<'d> {
         unsafe { set_clock_div(self.port, div) }
     }
 
-    /// The fast (25 MHz) clock.
+    /// The default-speed clock (P1/4, ~16.7 MHz).
     pub fn set_clock_fast(&self) {
         // SAFETY: the owned controller.
         unsafe { set_clock_fast(self.port) }

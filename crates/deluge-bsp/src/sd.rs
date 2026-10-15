@@ -98,8 +98,8 @@ pub(crate) fn parse_switch_status(buf: &[u8; 64]) -> SwitchStatus {
 
 #[cfg(target_os = "none")]
 pub use device::{
-    controller, init, init_hw, invalidate, is_hc, is_hs, is_inserted, is_ready, is_write_protected,
-    read_sectors, take_card_detect_events, total_sectors, write_sectors,
+    controller, hw_ready, init, init_hw, invalidate, is_hc, is_hs, is_inserted, is_ready,
+    is_write_protected, read_sectors, take_card_detect_events, total_sectors, write_sectors,
 };
 // The embedded-sdmmc adapters only exist when the `fat` feature pulls that crate in.
 #[cfg(all(target_os = "none", feature = "fat"))]
@@ -118,6 +118,8 @@ pub use host::{
 mod device {
     use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 
+    use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+    use embassy_sync::mutex::Mutex;
     use embassy_sync::once_lock::OnceLock;
     use rza1l_hal::Peri;
     use rza1l_hal::UNCACHED_MIRROR_OFFSET;
@@ -137,6 +139,11 @@ mod device {
 
     /// The SD host controller (SDHI1, the Deluge's slot), once [`init_hw`] has run.
     static SDHI: OnceLock<Sdhi<'static>> = OnceLock::new();
+
+    /// Held across each card operation ([`init`] and the sector reads and writes): the card
+    /// protocol runs one command and transfer at a time, through one DMA bounce buffer, so an
+    /// operation on a preempting executor waits here instead of interleaving its commands.
+    static CARD: Mutex<CriticalSectionRawMutex, ()> = Mutex::new(());
 
     /// Bring the SD slot's hardware up, once: pins, SDHI1 with its DMA channels and interrupts.
     /// [`init`] then identifies the card, and runs again after a card change.
@@ -166,6 +173,11 @@ mod device {
         if SDHI.init(sdhi).is_err() {
             unreachable!("SDHI1 is owned once");
         }
+    }
+
+    /// Whether [`init_hw`] has run: the slot's controller is up, whoever brought it up.
+    pub fn hw_ready() -> bool {
+        SDHI.try_get().is_some()
     }
 
     /// The SD host controller, for code that drives it directly (clock experiments).
@@ -333,6 +345,11 @@ mod device {
     /// # Returns
     /// `Ok(())` on success; `Err(SdError)` on any failure.
     pub async fn init() -> Result<(), SdError> {
+        let _card = CARD.lock().await;
+        init_unlocked().await
+    }
+
+    async fn init_unlocked() -> Result<(), SdError> {
         log::debug!("sd: init");
         CARD_READY.store(false, Ordering::Release);
         // Reset the cached RCA to 0 *before* re-identifying.  During identification
@@ -595,6 +612,11 @@ mod device {
     /// * `lba`  — sector number (0-based).
     /// * `buf`  — destination buffer; must be exactly 512 bytes.
     pub async fn read_sector(lba: u32, buf: &mut [u8; 512]) -> Result<(), SdError> {
+        let _card = CARD.lock().await;
+        read_sector_unlocked(lba, buf).await
+    }
+
+    async fn read_sector_unlocked(lba: u32, buf: &mut [u8; 512]) -> Result<(), SdError> {
         if !CARD_READY.load(Ordering::Acquire) {
             return Err(SdError::NotInitialized);
         }
@@ -619,6 +641,11 @@ mod device {
     /// * `lba`  — sector number (0-based).
     /// * `buf`  — source data; must be exactly 512 bytes.
     pub async fn write_sector(lba: u32, buf: &[u8; 512]) -> Result<(), SdError> {
+        let _card = CARD.lock().await;
+        write_sector_unlocked(lba, buf).await
+    }
+
+    async fn write_sector_unlocked(lba: u32, buf: &[u8; 512]) -> Result<(), SdError> {
         if !CARD_READY.load(Ordering::Acquire) {
             return Err(SdError::NotInitialized);
         }
@@ -648,6 +675,11 @@ mod device {
     /// * `count` — number of sectors.
     /// * `buf`   — destination; must hold exactly `count * 512` bytes.
     pub async fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> Result<(), SdError> {
+        let _card = CARD.lock().await;
+        read_sectors_unlocked(lba, count, buf).await
+    }
+
+    async fn read_sectors_unlocked(lba: u32, count: u32, buf: &mut [u8]) -> Result<(), SdError> {
         if !CARD_READY.load(Ordering::Acquire) {
             return Err(SdError::NotInitialized);
         }
@@ -659,7 +691,7 @@ mod device {
         }
         if count == 1 {
             let arr = buf[..512].as_mut_ptr() as *mut [u8; 512];
-            return read_sector(lba, unsafe { &mut *arr }).await;
+            return read_sector_unlocked(lba, unsafe { &mut *arr }).await;
         }
 
         unsafe {
@@ -706,6 +738,11 @@ mod device {
     ///
     /// Uses CMD25 (WRITE_MULTIPLE_BLOCK) when `count > 1`, CMD24 otherwise.
     pub async fn write_sectors(lba: u32, count: u32, buf: &[u8]) -> Result<(), SdError> {
+        let _card = CARD.lock().await;
+        write_sectors_unlocked(lba, count, buf).await
+    }
+
+    async fn write_sectors_unlocked(lba: u32, count: u32, buf: &[u8]) -> Result<(), SdError> {
         if !CARD_READY.load(Ordering::Acquire) {
             return Err(SdError::NotInitialized);
         }
@@ -717,7 +754,7 @@ mod device {
         }
         if count == 1 {
             let arr = buf[..512].as_ptr() as *const [u8; 512];
-            return write_sector(lba, unsafe { &*arr }).await;
+            return write_sector_unlocked(lba, unsafe { &*arr }).await;
         }
 
         unsafe {

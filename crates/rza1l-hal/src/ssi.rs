@@ -732,15 +732,25 @@ mod typed_tests {
         DMAINT7 => dmac::BlockInterruptHandler<DMA_CH7>;
     });
 
+    crate::bind_interrupts!(struct CompletionIrqs {
+        DMAINT6 => dmac::InterruptHandler<DMA_CH6>;
+        DMAINT7 => dmac::InterruptHandler<DMA_CH7>;
+    });
+
     #[test]
     fn ssi_rings_keep_their_completion_interrupts_masked() {
         test::reset();
-        let tx = Dma::new_without_interrupt(unsafe { DMA_CH6::steal() });
-        let rx = Dma::new_without_interrupt(unsafe { DMA_CH7::steal() });
+        // Channels whose completion interrupts are enabled: `init` must mask them itself.
+        let tx = Dma::new(unsafe { DMA_CH6::steal() }, CompletionIrqs);
+        let rx = Dma::new(unsafe { DMA_CH7::steal() }, CompletionIrqs);
+        let built = test::writes().len();
         init(unsafe { SSIF0::steal() }, tx, rx, 0x002B_C020);
         assert_eq!((tx_dma_ch(), rx_dma_ch()), (6, 7));
-        // DMAINT6/7 (GIC 47/48) never set-enabled: GICD_ISENABLER1 (0xE820_1104) bits 15, 16.
-        assert_eq!(test::peek32(0xE820_1104) & ((1 << 15) | (1 << 16)), 0);
+        // DMAINT6/7 (GIC 47/48) cleared in GICD_ICENABLER1 (0xE820_1184), bits 15 and 16.
+        let writes = test::writes();
+        let after = &writes[built..];
+        assert!(after.contains(&(0xE820_1184, 1 << 15)), "DMAINT6 masked");
+        assert!(after.contains(&(0xE820_1184, 1 << 16)), "DMAINT7 masked");
         // SSI0's TX/RX request routes: DMARS3 (channels 6 and 7) holds 0xE1 low, 0xE2 high.
         assert_eq!(test::peek32(0xFCFE_100C), 0x00E2_00E1);
     }

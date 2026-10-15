@@ -323,6 +323,11 @@ impl<M> UsbPort<M> {
 ///
 /// The driver borrows `usb` for `'d`, so the port can't be brought up again while it lives.
 /// Firmware that brings it up once per session [`disconnect`]s the previous session first.
+/// The endpoints it hands out carry no lifetime: drop them with the driver.
+///
+/// There is no live mode switch. To bring a port up in the other mode, drop the old driver
+/// and [`disconnect`] the port first: an interrupt the old mode left pending would otherwise
+/// reach the new mode's handler under [`DualRoleInterruptHandler`].
 pub fn init_device_mode<'d, T: Instance, H: ServesDevice<T>>(
     _usb: Peri<'d, T>,
     irq: impl Binding<T::Interrupt, H>,
@@ -344,6 +349,9 @@ pub fn init_device_mode<'d, T: Instance, H: ServesDevice<T>>(
 
 /// Bring port `T` up in **host** mode: module clock, then the RUSB1 host driver for
 /// `embassy-usb-host`, which unmasks the interrupt. `irq` binds a handler that serves host mode.
+///
+/// As with [`init_device_mode`], a port that ran in device mode is [`disconnect`]ed, its driver
+/// dropped, before it comes up here.
 pub fn init_host_mode<'d, T: Instance, H: ServesHost<T>>(
     _usb: Peri<'d, T>,
     irq: impl Binding<T::Interrupt, H>,

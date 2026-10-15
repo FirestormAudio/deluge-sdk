@@ -80,7 +80,7 @@ documented in each peripheral module.
 
 | Module  | Description |
 |---------|-------------|
-| `sdhi`  | SD Host Interface — two ports (SDHI0/SDHI1). `Sdhi::new(Peri<SDHIn>, tx: Dma, rx: Dma, Irqs, sd_option)` binds the status and operation interrupts; its methods give async `send_cmd`, `read_blocks_sw` / `write_blocks_sw` (PIO with `AtomicWaker`), `read_blocks_dma` / `write_blocks_dma` (DMAC-backed), and polling variants for use outside the executor. |
+| `sdhi`  | SD Host Interface — two ports (SDHI0/SDHI1). `Sdhi::new(Peri<SDHIn>, tx: Dma, rx: Dma, Irqs, sd_option)` binds the status and operation interrupts; its methods give async `send_cmd`, `read_blocks_sw` / `write_blocks_sw` (PIO with `AtomicWaker`) and `read_blocks_dma` / `write_blocks_dma` (DMAC-backed); `reset` returns it to the identification clock before a card is re-identified. |
 | `uart`  | SCIF async serial, five channels (SCIF0–4). `Uart::new(Peri<SCIFn>, rx_dma, tx_dma, Irqs, baud)` receives into a DMA ring (SCIF0/1) and transmits by DMA or through the FIFO; `split()` gives `UartRx`/`UartTx`. |
 | `rspi`  | SPI master (RSPI0–4): `Rspi::new(Peri<RSPIn>, bit_rate)`, 32-bit or 8-bit frames, blocking sends. Used for CV DAC and OLED. |
 | `gpio`  | GPIO port registers (P1–P11, PMC0–PMC11). `set_pin_mux`, `set_as_output` / `set_as_input`, `write`, `read_pin`, plus a const-generic `Pin` type (`Pin::steal()`) implementing the `embedded-hal` `InputPin` / `OutputPin` traits. |

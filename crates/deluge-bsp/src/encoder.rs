@@ -111,9 +111,6 @@ const WIRING: [Wiring; NUM_ENCODERS] = [
     },
 ];
 
-/// Every encoder's decoder. Shared by the encoder interrupts and the poll interrupt, which run at the
-/// same priority and so never preempt one another; the critical section only states that, as
-/// interrupts are already masked in a handler.
 // Each encoder's A pin is bound to the typed interrupt below; its GIC ID must agree.
 #[cfg(target_os = "none")]
 const _: () = {
@@ -123,6 +120,9 @@ const _: () = {
     assert!(WIRING[4].gic_id == IRQ0::ID && WIRING[5].gic_id == IRQ7::ID);
 };
 
+/// Every encoder's decoder. Shared by the encoder interrupts and the poll interrupt, which run at the
+/// same priority and so never preempt one another; the critical section only states that, as
+/// interrupts are already masked in a handler.
 #[cfg(target_os = "none")]
 static DECODERS: critical_section::Mutex<core::cell::RefCell<[QuadratureDecoder; NUM_ENCODERS]>> =
     critical_section::Mutex::new(core::cell::RefCell::new(

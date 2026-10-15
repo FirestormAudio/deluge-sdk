@@ -269,9 +269,9 @@ pub(crate) fn jacks_set_speaker(on: bool) {
 }
 
 pub(crate) async fn sd_init_card() -> Result<(), deluge_bsp::sd::SdError> {
-    // The slot's hardware comes up once; the card protocol runs on every call.
-    static HW_UP: AtomicBool = AtomicBool::new(false);
-    if !HW_UP.swap(true, Ordering::Relaxed) {
+    // The slot's hardware comes up once, here unless the app brought it up itself through
+    // `deluge::parts`; the card protocol runs on every call.
+    if !deluge_bsp::sd::hw_ready() {
         let card = crate::parts::take("SDHI1 (the SD card slot)", |p| p.sd_card.take());
         let tx = crate::parts::take("the SD transmit DMA channel", |p| p.sd_tx_dma.take());
         let rx = crate::parts::take("the SD receive DMA channel", |p| p.sd_rx_dma.take());
