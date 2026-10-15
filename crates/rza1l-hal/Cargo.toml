@@ -48,6 +48,9 @@ unlock-bootloader = []
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
 critical-section = { workspace = true, features = ["std"] }
 embassy-futures = { workspace = true }
+# Host tests have no executor or OSTM: `mock-driver` supplies a time driver to link against, and
+# `generic-queue-8` a timer queue, for code that reaches `embassy_time::Timer`.
+embassy-time = { workspace = true, features = ["mock-driver", "generic-queue-8"] }
 
 
 [lints.rust]

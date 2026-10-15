@@ -71,6 +71,7 @@ const PER: u16 = 1 << 2; // Parity Error
 const FER: u16 = 1 << 3; // Framing Error
 const BRK: u16 = 1 << 4; // Break detected
 const TDFE: u16 = 1 << 5; // TX FIFO Data Empty  (count ≤ trigger)
+const TEND: u16 = 1 << 6; // Transmit End  (FIFO empty and the last byte shifted out)
 const ER: u16 = 1 << 7; // Receive Error
 
 // TX FIFO depth
@@ -576,6 +577,8 @@ impl<'d> UartRx<'d> {
             desc.add(5).write_volatile(0); // interval
             desc.add(6).write_volatile(0); // extension
             desc.add(7).write_volatile(desc_addr); // next: itself, so the ring loops
+            // Polled, never awaited: no completion interrupt, as the descriptor and CHCFG also say.
+            dma.mask_interrupt();
             dma.init_with_link_descriptor(desc_addr as *const u32, rx_dmars(ch));
             dma.channel_start();
             RX_DMA_ACTIVE[ch].store(true, Ordering::Relaxed);
@@ -679,6 +682,18 @@ impl<'d> UartTx<'d> {
         }
     }
 
+    /// Wait until everything written so far has left the shift register (TEND), so a
+    /// [`set_baud`](Self::set_baud) after it can't garble the tail. No interrupt reports TEND,
+    /// so this polls it every 100 µs; it holds the writer lock meanwhile, so no write starts.
+    pub async fn flush(&self) {
+        let _writer = self.dma.lock().await;
+        let b = base(self.ch);
+        // SAFETY: a read of the owned SCIF's status.
+        while unsafe { rr16(b + SCFSR) } & TEND == 0 {
+            embassy_time::Timer::after_micros(100).await;
+        }
+    }
+
     /// Put as much of `buf` in the transmit FIFO as fits now, and return how much that was.
     /// Doesn't wait: for short, latency-sensitive messages such as a MIDI clock byte.
     pub fn try_write(&self, buf: &[u8]) -> usize {
@@ -747,10 +762,7 @@ impl embedded_io_async::Write for UartTx<'_> {
     }
 
     async fn flush(&mut self) -> Result<(), Infallible> {
-        // A DMA write returns once its transfer is complete; a FIFO write may leave bytes queued.
-        if self.dma.lock().await.is_none() {
-            wait_tdfe(self.ch).await;
-        }
+        UartTx::flush(self).await;
         Ok(())
     }
 }
@@ -845,7 +857,7 @@ mod typed_tests {
         test::reset();
         let rx_dma = Dma::new(unsafe { DMA_CH13::steal() }, Irqs);
         let tx_dma = Dma::new(unsafe { DMA_CH10::steal() }, Irqs);
-        let (rx, tx) =
+        let (rx, mut tx) =
             Uart::new(unsafe { SCIF0::steal() }, rx_dma, Some(tx_dma), Irqs, 31_250).split();
 
         let b = base(0);
@@ -865,6 +877,11 @@ mod typed_tests {
             assert_eq!(*desc.add(7), desc as u32);
         }
         assert_eq!(rx.read, rx.base, "the ring starts empty");
+        // The ring raises no completion interrupt, so its DMAINT stays masked at the GIC as it was
+        // before typed DMA; the transmit channel's is how a write learns it finished.
+        // GICD_ICENABLER1 (0xE820_1184): DMAINT13 = 54 is bit 22, DMAINT10 = 51 is bit 19.
+        assert_ne!(test::peek32(0xE820_1184) & (1 << 22), 0, "receive DMAINT masked");
+        assert_eq!(test::peek32(0xE820_1184) & (1 << 19), 0, "transmit DMAINT left enabled");
 
         // A write is one DMA transfer from the staging buffer; the DMAC's TC flag (CHSTAT bit 6),
         // set here as the hardware would, completes it.
@@ -873,6 +890,16 @@ mod typed_tests {
         assert_eq!(test::peek32(chreg(10, 0x08)), 5, "N0TB: the byte count");
         let staged = test::peek32(chreg(10, 0x00)) as *const u8;
         assert_eq!(unsafe { core::slice::from_raw_parts(staged, 5) }, b"hello");
+
+        // A flush waits for the last byte to leave the shift register (SCFSR.TEND), not just for
+        // the DMA to hand it to the FIFO: a baud change after it must not garble the tail.
+        let scfsr_reads = || {
+            test::log().iter().filter(|a| !a.write && a.addr == b + SCFSR).count()
+        };
+        let before = scfsr_reads();
+        test::poke16(b + SCFSR, 1 << 6);
+        embassy_futures::block_on(embedded_io_async::Write::flush(&mut tx)).unwrap();
+        assert!(scfsr_reads() > before, "flush checked TEND");
 
         // A baud change keeps both DMA requests enabled.
         tx.set_baud(200_000);

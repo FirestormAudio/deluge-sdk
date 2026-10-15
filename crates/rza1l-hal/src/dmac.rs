@@ -211,6 +211,13 @@ impl<'d> Dma<'d> {
         self.ch
     }
 
+    /// Mask the channel's completion interrupt at the GIC, for a channel that never awaits
+    /// completion (a circular ring read by polling).
+    pub fn mask_interrupt(&mut self) {
+        // SAFETY: this owned channel's own interrupt.
+        unsafe { crate::gic::disable(DMAINT_BASE + self.ch as u16) }
+    }
+
     /// See [`raw::init_register_mode`].
     ///
     /// # Safety
