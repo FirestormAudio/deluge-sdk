@@ -465,7 +465,7 @@ pub unsafe fn set_clock_fast(port: u8) {
 pub unsafe fn register_irqs(port: u8) {
     unsafe {
         let irqs = if port == 0 { SDHI0_IRQS } else { SDHI1_IRQS };
-        let handlers: [gic::Handler; 3] = if port == 0 {
+        let handlers: [gic::HandlerFn; 3] = if port == 0 {
             [irq_sdhi0_cd, irq_sdhi0_op, irq_sdhi0_io]
         } else {
             [irq_sdhi1_cd, irq_sdhi1_op, irq_sdhi1_io]

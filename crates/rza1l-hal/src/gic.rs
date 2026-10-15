@@ -74,13 +74,8 @@ pub const INT_ID_TOTAL: usize = 587;
 
 /// Interrupt handler type. The handler is called with IRQ re-enabled
 /// (nested interrupts supported), already in SYS mode.
-pub type Handler = fn();
+pub type HandlerFn = fn();
 
-/// Wrapper making `UnsafeCell<Option<Handler>>` `Sync`.
-///
-/// Sound on this target because access is single-core: registration happens
-/// before `cpsie i`, and dispatch only runs in the IRQ context (IRQ masked
-/// for the caller).
 /// One dispatch-table slot: the handler's address, 0 when empty. Atomic, so a handler can be
 /// installed while interrupts run (a word store; `gic_dispatch` reads it with one load).
 struct HandlerCell(core::sync::atomic::AtomicUsize);
@@ -89,14 +84,14 @@ impl HandlerCell {
     const fn new() -> Self {
         HandlerCell(core::sync::atomic::AtomicUsize::new(0))
     }
-    fn set(&self, h: Handler) {
+    fn set(&self, h: HandlerFn) {
         self.0.store(h as usize, core::sync::atomic::Ordering::Release);
     }
-    fn get(&self) -> Option<Handler> {
+    fn get(&self) -> Option<HandlerFn> {
         match self.0.load(core::sync::atomic::Ordering::Acquire) {
             0 => None,
-            // SAFETY: every non-zero value was stored by `set` from a `Handler`.
-            addr => Some(unsafe { core::mem::transmute::<usize, Handler>(addr) }),
+            // SAFETY: every non-zero value was stored by `set` from a `HandlerFn`.
+            addr => Some(unsafe { core::mem::transmute::<usize, HandlerFn>(addr) }),
         }
     }
 }
@@ -361,7 +356,7 @@ unsafe fn end_stale_active(n_words: usize) {
 unsafe fn end_stale_active(_n_words: usize) {}
 
 /// Install `handler` for interrupt `id`. Out-of-range IDs are ignored.
-pub fn set_handler(id: u16, handler: Handler) {
+pub fn set_handler(id: u16, handler: HandlerFn) {
     log::trace!("gic: register IRQ {}", id);
     if (id as usize) < INT_ID_TOTAL {
         HANDLERS[id as usize].set(handler);
@@ -369,7 +364,7 @@ pub fn set_handler(id: u16, handler: Handler) {
 }
 
 /// The handler installed for `id`, if any.
-pub(crate) fn handler(id: u16) -> Option<Handler> {
+pub(crate) fn handler(id: u16) -> Option<HandlerFn> {
     HANDLERS.get(id as usize).and_then(HandlerCell::get)
 }
 
@@ -378,7 +373,7 @@ pub(crate) fn handler(id: u16) -> Option<Handler> {
 /// # Safety
 /// None beyond [`set_handler`]'s; kept `unsafe` for the callers Phase 4b migrates to
 /// [`crate::interrupt::bind`].
-pub unsafe fn register(id: u16, handler: Handler) {
+pub unsafe fn register(id: u16, handler: HandlerFn) {
     set_handler(id, handler);
 }
 

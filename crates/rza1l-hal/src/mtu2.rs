@@ -33,7 +33,7 @@
 //! ## Usage (one-shot)
 //! ```rust,no_run
 //! # use rza1l_hal::mtu2;
-//! // `gic::Handler` is a safe `fn()`, so the unsafe work goes inside.
+//! // `gic::HandlerFn` is a safe `fn()`, so the unsafe work goes inside.
 //! fn gate_handler() { unsafe { mtu2::clear_flag(2) } /* ... */ }
 //! unsafe {
 //!     mtu2::enable_write();
@@ -266,7 +266,7 @@ pub unsafe fn count(ch: u8) -> u16 {
 /// # Safety
 /// Writes to memory-mapped MTU2 and GIC registers.  [`enable_write`] and
 /// [`crate::gic::init`] must have been called first.
-pub unsafe fn setup_one_shot(ch: u8, prescaler: u16, handler: crate::gic::Handler, priority: u8) {
+pub unsafe fn setup_one_shot(ch: u8, prescaler: u16, handler: crate::gic::HandlerFn, priority: u8) {
     unsafe {
         if ch > 4 {
             return;

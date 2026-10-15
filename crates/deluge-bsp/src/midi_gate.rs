@@ -60,7 +60,7 @@ static GATE_CH: AtomicU8 = AtomicU8::new(NO_ACTION);
 
 // ---------------------------------------------------------------------------
 // Interrupt handler — called by the GIC dispatch from the IRQ exception handler.
-// Must be `fn()` (no arguments, no return value) to match `gic::Handler`.
+// Must be `fn()` (no arguments, no return value) to match `gic::HandlerFn`.
 // ---------------------------------------------------------------------------
 
 fn handler() {
