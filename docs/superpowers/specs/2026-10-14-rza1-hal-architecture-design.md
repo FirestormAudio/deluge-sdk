@@ -110,7 +110,9 @@ tied to it.
 **Done (2026-10-14 plan):** classes went into one `usb-classes` crate (features per class, unpublished);
 the simulator moved behind `deluge_bsp::host_panel`; MAX5136 became `drivers/max5136`. SPI-NOR needed no
 extraction — `rza1l_hal::spibsc` already holds the generic controller and `FlashMap`, and
-`deluge_bsp::flash` is only the Deluge's part size and flash layout.
+`deluge_bsp::flash` is only the Deluge's part size and flash layout. The SSD1309 OLED stayed in
+the BSP: its CS, DC and reset lines are PIC32 UART commands (`pic::CMD_*`), not GPIOs, so an
+embedded-hal `SpiDevice` driver would still need Deluge-specific glue around every transfer.
 
 ### Phase 3: runtime and memory layout
 

@@ -37,7 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `usb-classes` crate (one feature per class). **Breaking:** import them from `usb_classes::…`.
     The SD-backed `SdBlock` is now `deluge_bsp::usb::sd_block::SdBlock`. `bot::run`/`run_until`
     are generic over any `embassy_usb_driver` endpoints. `Uac::try_register` takes the sample
-    rate to negotiate.
+    rate to negotiate, and `usb_classes::host::uac::shared` is public. Firmware that uses a
+    class now depends on `usb-classes` itself, with that class's feature (`device-audio`,
+    `device-midi`, `device-msc`, `host-midi`, `host-uac`). `SdBlock` needs the new
+    `deluge-bsp/usb-msc` feature.
   - The MAX5136 CV DAC protocol is the new `max5136` embedded-hal driver crate.
     `deluge_bsp::cv_gate::cv_set` (and so `deluge::Cv::set`) now ignores, with a warning, a
     channel the Deluge doesn't wire (anything but 0–1) instead of sending the DAC a wrong command.
@@ -48,6 +51,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `deluge_bsp::host_panel` for it. **Breaking:** the `deluge-bsp/sim-link` feature and
     `deluge_bsp::sim` are gone. The PIC command constants the simulator uses
     (`deluge_bsp::pic::CMD_*`) are now public.
+    Installing a panel needs the new `deluge-bsp/host-panel` feature, which `deluge-sdk`'s `sim`
+    feature turns on.
+  - The `rza1l_hal::scux` path pointer accessors (`tx_current_ptr`, `rx_current_ptr`) panic
+    if called before their path's `init`, instead of reading a non-existent DMA channel.
 - `rza1l-hal` is now board-agnostic. The board registers its crystal with
   `rza1l_hal::clocks::init(ClockConfig::new(extal_hz))` (the Deluge's is
   `deluge_bsp::system::CLOCKS`, registered by `init_clocks`). OSTM delays, the RSPI and SCIF baud
