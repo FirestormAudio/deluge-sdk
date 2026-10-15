@@ -657,6 +657,9 @@ pub mod __rt {
                 pic_tx_dma: Some(board.dma.pic_tx),
                 gate_timer: Some(board.gate_timer),
                 encoder_poll_timer: Some(board.encoder_poll_timer),
+                sd_card: Some(board.sd_card),
+                sd_tx_dma: Some(board.dma.sd_tx),
+                sd_rx_dma: Some(board.dma.sd_rx),
             });
 
             // App's synchronous, interrupts-masked initialisation.

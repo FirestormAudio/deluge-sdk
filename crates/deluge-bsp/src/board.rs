@@ -47,6 +47,8 @@ pub type PicScif = SCIF1;
 pub type GateTimer = MTU2_2;
 /// MTU2 channel 3: the encoder pin poll ([`crate::encoder`]).
 pub type EncoderPollTimer = MTU2_3;
+/// SDHI1: the SD card slot ([`crate::sd`]).
+pub type SdCard = SDHI1;
 
 /// Every DMA channel, by the role the Deluge gives it.
 ///
@@ -88,6 +90,8 @@ pub struct Board {
     pub gate_timer: Peri<'static, GateTimer>,
     /// MTU2 channel 3, the encoder pin poll.
     pub encoder_poll_timer: Peri<'static, EncoderPollTimer>,
+    /// SDHI1, the SD card slot.
+    pub sd_card: Peri<'static, SdCard>,
     pub dma: BoardDma,
 }
 
@@ -122,6 +126,7 @@ impl Board {
             pic_uart: p.SCIF1,
             gate_timer: p.MTU2_2,
             encoder_poll_timer: p.MTU2_3,
+            sd_card: p.SDHI1,
             dma: BoardDma {
                 scux_ffd0: p.DMA_CH0,
                 scux_ffu0: p.DMA_CH1,

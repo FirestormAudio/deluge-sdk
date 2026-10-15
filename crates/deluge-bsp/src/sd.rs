@@ -98,8 +98,8 @@ pub(crate) fn parse_switch_status(buf: &[u8; 64]) -> SwitchStatus {
 
 #[cfg(target_os = "none")]
 pub use device::{
-    init, invalidate, is_hc, is_hs, is_inserted, is_ready, is_write_protected, read_sectors,
-    take_card_detect_events, total_sectors, write_sectors,
+    controller, init, init_hw, invalidate, is_hc, is_hs, is_inserted, is_ready, is_write_protected,
+    read_sectors, take_card_detect_events, total_sectors, write_sectors,
 };
 // The embedded-sdmmc adapters only exist when the `fat` feature pulls that crate in.
 #[cfg(all(target_os = "none", feature = "fat"))]
@@ -118,16 +118,63 @@ pub use host::{
 mod device {
     use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 
+    use embassy_sync::once_lock::OnceLock;
+    use rza1l_hal::Peri;
     use rza1l_hal::UNCACHED_MIRROR_OFFSET;
     use rza1l_hal::cache;
-    use rza1l_hal::dmac;
-    use rza1l_hal::sdhi::{self, SdhiError};
+    use rza1l_hal::dmac::{self, Dma};
+    use rza1l_hal::sdhi::{self, Sdhi};
 
     use super::SdError;
-    use crate::system::{SD_DMA_MAX_SECTORS, SD_DMA_RX_CH, SD_DMA_TX_CH};
+    use crate::board::{SdCard, SdRxDma, SdTxDma};
+    use crate::system::SD_DMA_MAX_SECTORS;
 
-    // The Deluge SD card is on SDHI port 1.
-    const SD_PORT: u8 = 1;
+    rza1l_hal::bind_interrupts!(struct Irqs {
+        SDHI1_STATUS => sdhi::StatusInterruptHandler<SdCard>;
+        SDHI1_OP => sdhi::OperationInterruptHandler<SdCard>;
+        DMAINT14 => dmac::InterruptHandler<SdRxDma>;
+    });
+
+    /// The SD host controller (SDHI1, the Deluge's slot), once [`init_hw`] has run.
+    static SDHI: OnceLock<Sdhi<'static>> = OnceLock::new();
+
+    /// Bring the SD slot's hardware up, once: pins, SDHI1 with its DMA channels and interrupts.
+    /// [`init`] then identifies the card, and runs again after a card change.
+    pub fn init_hw(
+        card: Peri<'static, SdCard>,
+        tx: Peri<'static, SdTxDma>,
+        rx: Peri<'static, SdRxDma>,
+    ) {
+        // SAFETY: P7_0–7 are the SD slot's, mux 3 (SDHI1).
+        unsafe {
+            rza1l_hal::gpio::set_pin_mux(7, 0, 3); // SD_CD1  — card detect
+            rza1l_hal::gpio::set_pin_mux(7, 1, 3); // SD_WP1  — write protect
+            rza1l_hal::gpio::set_pin_mux(7, 2, 3); // SD_D11  — data bit 1
+            rza1l_hal::gpio::set_pin_mux(7, 3, 3); // SD_D01  — data bit 0
+            rza1l_hal::gpio::set_pin_mux(7, 4, 3); // SD_CLK1 — clock
+            rza1l_hal::gpio::set_pin_mux(7, 5, 3); // SD_CMD1 — command
+            rza1l_hal::gpio::set_pin_mux(7, 6, 3); // SD_D31  — data bit 3
+            rza1l_hal::gpio::set_pin_mux(7, 7, 3); // SD_D21  — data bit 2
+        }
+        let sdhi = Sdhi::new(
+            card,
+            Dma::new_without_interrupt(tx),
+            Dma::new(rx, Irqs),
+            Irqs,
+            crate::system::SD_OPTION,
+        );
+        if SDHI.init(sdhi).is_err() {
+            unreachable!("SDHI1 is owned once");
+        }
+    }
+
+    /// The SD host controller, for code that drives it directly (clock experiments).
+    ///
+    /// # Panics
+    /// Before [`init_hw`].
+    pub fn controller() -> &'static Sdhi<'static> {
+        SDHI.try_get().expect("deluge_bsp::sd::init_hw hasn't run")
+    }
 
     // ---------------------------------------------------------------------------
     // Well-known SD command register values (written to SD_CMD register).
@@ -237,14 +284,12 @@ mod device {
 
     /// Issue CMD55 (APP_CMD prefix) with the current RCA, then issue `acmd`.
     async unsafe fn send_acmd(acmd: u16, arg: u32) -> Result<(), SdError> {
-        unsafe {
-            let rca = CARD_RCA.load(Ordering::Relaxed);
-            sdhi::set_arg(SD_PORT, (rca as u32) << 16);
-            sdhi::send_cmd(SD_PORT, CMD55).await?;
-            sdhi::set_arg(SD_PORT, arg);
-            sdhi::send_cmd(SD_PORT, acmd).await?;
-            Ok(())
-        }
+        let rca = CARD_RCA.load(Ordering::Relaxed);
+        controller().set_arg((rca as u32) << 16);
+        controller().send_cmd(CMD55).await?;
+        controller().set_arg(arg);
+        controller().send_cmd(acmd).await?;
+        Ok(())
     }
 
     /// Attempt the CMD6 switch to High-Speed mode (SD spec ≥ 1.10 cards).
@@ -255,39 +300,40 @@ mod device {
     /// back to the default-speed clock.  Pre-1.10 cards reject CMD6 as an
     /// illegal command → surfaces here as a response error → fallback.
     async unsafe fn try_high_speed() -> Result<(), SdError> {
-        unsafe {
-            let mut status = [0u8; 64];
+        let mut status = [0u8; 64];
 
-            // Mode 0 (query): does the card support group-1 function 1?
-            sdhi::read_status_block_sw(SD_PORT, CMD6_DATA, CMD6_ARG_QUERY_HS, &mut status).await?;
-            let st = super::parse_switch_status(&status);
-            if !st.hs_supported {
-                return Err(SdError::UnsupportedCard);
-            }
-
-            // Mode 1 (switch): actually switch to High-Speed.
-            sdhi::read_status_block_sw(SD_PORT, CMD6_DATA, CMD6_ARG_SWITCH_HS, &mut status).await?;
-            let st = super::parse_switch_status(&status);
-            if st.group1_selected != 0x1 {
-                return Err(SdError::Protocol);
-            }
-            Ok(())
+        // Mode 0 (query): does the card support group-1 function 1?
+        controller()
+            .read_status_block_sw(CMD6_DATA, CMD6_ARG_QUERY_HS, &mut status)
+            .await?;
+        let st = super::parse_switch_status(&status);
+        if !st.hs_supported {
+            return Err(SdError::UnsupportedCard);
         }
+
+        // Mode 1 (switch): actually switch to High-Speed.
+        controller()
+            .read_status_block_sw(CMD6_DATA, CMD6_ARG_SWITCH_HS, &mut status)
+            .await?;
+        let st = super::parse_switch_status(&status);
+        if st.group1_selected != 0x1 {
+            return Err(SdError::Protocol);
+        }
+        Ok(())
     }
 
     // ---------------------------------------------------------------------------
     // Public API
     // ---------------------------------------------------------------------------
 
-    /// Initialize the SD card (hardware + protocol).
+    /// Identify the card and bring it to the transfer state (the card protocol).
     ///
-    /// Must be called once, with the GIC initialized and SDHI IRQs registered.
-    /// Safe to call again after a card-swap event.
+    /// Call after [`init_hw`]; call again after a card-swap event.
     ///
     /// # Returns
     /// `Ok(())` on success; `Err(SdError)` on any failure.
     pub async fn init() -> Result<(), SdError> {
-        log::debug!("sd: init port {}", SD_PORT);
+        log::debug!("sd: init");
         CARD_READY.store(false, Ordering::Release);
         // Reset the cached RCA to 0 *before* re-identifying.  During identification
         // the card sits in idle/ready state with RCA = 0, so the CMD55 that prefixes
@@ -302,25 +348,9 @@ mod device {
         // report a stale `true` from the previous session.
         CARD_HS.store(false, Ordering::Release);
 
-        // ---- Bring up the SDHI controller + pins (once) ----
+        // The controller, pins and interrupts came up once, in `init_hw`; this is the card's
+        // protocol, which runs again after every card change.
         unsafe {
-            // ---- SD pin mux: P7_0–7 → SDHI1 (function 3) ----
-            rza1l_hal::gpio::set_pin_mux(7, 0, 3); // SD_CD1  — card detect
-            rza1l_hal::gpio::set_pin_mux(7, 1, 3); // SD_WP1  — write protect
-            rza1l_hal::gpio::set_pin_mux(7, 2, 3); // SD_D11  — data bit 1
-            rza1l_hal::gpio::set_pin_mux(7, 3, 3); // SD_D01  — data bit 0
-            rza1l_hal::gpio::set_pin_mux(7, 4, 3); // SD_CLK1 — clock
-            rza1l_hal::gpio::set_pin_mux(7, 5, 3); // SD_CMD1 — command
-            rza1l_hal::gpio::set_pin_mux(7, 6, 3); // SD_D31  — data bit 3
-            rza1l_hal::gpio::set_pin_mux(7, 7, 3); // SD_D21  — data bit 2
-
-            sdhi::init(SD_PORT, crate::system::SD_OPTION);
-            sdhi::register_irqs(SD_PORT);
-
-            // Register the DMAC completion IRQ for the RX channel so that
-            // read_blocks_dma can await DMAC TC after DATA_TRNS.
-            dmac::raw::register_completion_irq(SD_DMA_RX_CH);
-
             // Clean-invalidate the DMA bounce buffer's cacheable alias.  BSS
             // zeroing wrote dirty lines there; if those lines were later evicted
             // after a DMA fill via the uncached mirror, they would corrupt the
@@ -356,13 +386,12 @@ mod device {
                     // Consume the card-detect edges accumulated up to here: they
                     // describe the arrival of the card we have just identified, so
                     // reporting them onward would ask a caller to redo this work.
-                    // Must come after the bring-up above, not before it —
-                    // `sdhi::init` is what ungates the SDHI module clock, and the
-                    // INFO1 read is only valid once it has. If the card was pulled
+                    // `init_hw` ungated the SDHI module clock, so the INFO1 read is
+                    // valid here. If the card was pulled
                     // mid-init this discards that removal edge too, which is what
                     // `deluge_block_poll_card_event`'s level check is there to
                     // catch.
-                    unsafe { sdhi::take_card_detect_events(SD_PORT) };
+                    controller().take_card_detect_events();
                     log::debug!(
                         "sd: card ready on attempt {}/{} (HC={})",
                         attempt,
@@ -409,7 +438,7 @@ mod device {
         CARD_HC.store(false, Ordering::Release);
         CARD_HS.store(false, Ordering::Release);
         // total_sectors() must not answer with the old card's capacity either.
-        sdhi::set_card_blocks(SD_PORT, 0);
+        controller().set_card_blocks(0);
     }
 
     /// Consume the latched card insert/remove edges: `(removed, inserted)`.
@@ -420,7 +449,7 @@ mod device {
     pub fn take_card_detect_events() -> (bool, bool) {
         // SAFETY: reads/clears SD_INFO1's card-detect latch for the port this
         // module owns; the clear is written so no other status flag is disturbed.
-        unsafe { sdhi::take_card_detect_events(SD_PORT) }
+        controller().take_card_detect_events()
     }
 
     /// Run the SD v2 card bring-up protocol (CMD0 … high-speed clock) once against
@@ -430,14 +459,14 @@ mod device {
         unsafe {
             // ---- CMD0: reset to IDLE ----
             // No response expected; ignore timeout.
-            sdhi::set_arg(SD_PORT, 0);
-            let _ = sdhi::send_cmd(SD_PORT, CMD0).await;
+            controller().set_arg(0);
+            let _ = controller().send_cmd(CMD0).await;
 
             embassy_time::Timer::after_millis(1).await;
 
             // ---- CMD8: check voltage — determines SD v2 / SDHC capability ----
-            sdhi::set_arg(SD_PORT, CMD8_ARG);
-            let cmd8_ok = sdhi::send_cmd(SD_PORT, CMD8).await.is_ok();
+            controller().set_arg(CMD8_ARG);
+            let cmd8_ok = controller().send_cmd(CMD8).await.is_ok();
 
             // ---- ACMD41: initialize card ----
             // Loop until the card clears the busy bit in OCR (card-power-up done).
@@ -445,7 +474,7 @@ mod device {
             let mut retries = 0u32;
             let ocr = loop {
                 send_acmd(ACMD41, hcs_arg).await?;
-                let ocr = sdhi::read_r1(SD_PORT); // R3 OCR comes via same regs
+                let ocr = controller().read_r1(); // R3 OCR comes via same regs
 
                 // Bit 31 set → card no longer busy (initialization complete)
                 if ocr & OCR_BUSY != 0 {
@@ -470,14 +499,14 @@ mod device {
             );
 
             // ---- CMD2: get CID (ignore content, just consume response) ----
-            sdhi::set_arg(SD_PORT, 0);
-            sdhi::send_cmd(SD_PORT, CMD2).await?;
-            let _ = sdhi::read_r2(SD_PORT); // CID — discard
+            controller().set_arg(0);
+            controller().send_cmd(CMD2).await?;
+            let _ = controller().read_r2(); // CID — discard
 
             // ---- CMD3: get RCA ----
-            sdhi::set_arg(SD_PORT, 0);
-            sdhi::send_cmd(SD_PORT, CMD3).await?;
-            let r6 = sdhi::read_r1(SD_PORT);
+            controller().set_arg(0);
+            controller().send_cmd(CMD3).await?;
+            let r6 = controller().read_r1();
             // R6 = [31:16] new RCA, [15:0] card status
             let rca = (r6 >> 16) as u16;
             CARD_RCA.store(rca, Ordering::Release);
@@ -485,14 +514,14 @@ mod device {
             // ---- CMD9: get CSD (decode capacity for BlockDevice) ----
             // CMD9 requires the card to be in Stand-by state (post CMD3) with its RCA.
             // Per TRM/SD spec: argument = RCA in bits [31:16], lower 16 bits = 0.
-            sdhi::set_arg(SD_PORT, (rca as u32) << 16);
-            if sdhi::send_cmd(SD_PORT, 9u16).await.is_ok() {
+            controller().set_arg((rca as u32) << 16);
+            if controller().send_cmd(9u16).await.is_ok() {
                 // The RZ/A1 SDHI returns R2 (CID/CSD) as the 120-bit content
                 // CSD[127:8] right-justified — i.e. the array holds (full_CSD >> 8)
                 // with the trailing CRC byte stripped.  Shift the four words left by
                 // 8 bits to restore the canonical 128-bit CSD layout that
                 // `decode_csd_capacity` (which uses spec bit positions) expects.
-                let raw = sdhi::read_r2(SD_PORT);
+                let raw = controller().read_r2();
                 let csd = [
                     (raw[0] << 8) | (raw[1] >> 24),
                     (raw[1] << 8) | (raw[2] >> 24),
@@ -509,12 +538,12 @@ mod device {
                     csd[0] >> 30,
                     total
                 );
-                sdhi::set_card_blocks(SD_PORT, total);
+                controller().set_card_blocks(total);
             }
 
             // ---- CMD7: select card (transition to Transfer state) ----
-            sdhi::set_arg(SD_PORT, (rca as u32) << 16);
-            sdhi::send_cmd(SD_PORT, CMD7).await?;
+            controller().set_arg((rca as u32) << 16);
+            controller().send_cmd(CMD7).await?;
 
             // ---- ACMD6: set 4-bit bus ----
             // Argument 0x2 = 4-bit, 0x0 = 1-bit.
@@ -522,8 +551,8 @@ mod device {
 
             // ---- CMD16: set block length to 512 bytes (SDSC cards) ----
             if !hc {
-                sdhi::set_arg(SD_PORT, 512);
-                sdhi::send_cmd(SD_PORT, CMD16).await?;
+                controller().set_arg(512);
+                controller().send_cmd(CMD16).await?;
             }
 
             // ---- Clock: default-speed data clock BEFORE CMD6 ----
@@ -533,7 +562,7 @@ mod device {
             // the data-phase wait until the SD_OPTION timeout — 2^24 SD_CLK
             // cycles ≈ 2 minutes at 130 kHz).  16.7 MHz is legal for every
             // card in Transfer state, and puts that timeout at ~1 s.
-            sdhi::set_clock_fast(SD_PORT);
+            controller().set_clock_fast();
 
             // ---- Try CMD6 High-Speed (33.3 MHz), else stay at 16.7 MHz ----
             // The card is in Transfer state; CMD6 needs the data lines, so this
@@ -542,7 +571,7 @@ mod device {
             // (awaited inside read_status_block_sw) is past that point.
             match try_high_speed().await {
                 Ok(()) => {
-                    sdhi::set_clock_div(SD_PORT, sdhi::CLK_DIV_2);
+                    controller().set_clock_div(sdhi::CLK_DIV_2);
                     CARD_HS.store(true, Ordering::Release);
                     log::info!("sd: High-Speed mode, SD_CLK = 33.3 MHz (P1/2)");
                 }
@@ -573,9 +602,9 @@ mod device {
         unsafe {
             let dma_ptr =
                 (core::ptr::addr_of!(SD_DMA_BUF.0[0]) as usize + UNCACHED_MIRROR_OFFSET) as *mut u8;
-            sdhi::set_block_count(SD_PORT, 1);
-            sdhi::set_arg(SD_PORT, addr);
-            sdhi::read_blocks_dma(SD_PORT, cmd, dma_ptr, 1, SD_DMA_RX_CH).await?;
+            controller().set_block_count(1);
+            controller().set_arg(addr);
+            controller().read_blocks_dma(cmd, dma_ptr, 1).await?;
             buf.copy_from_slice(core::slice::from_raw_parts(dma_ptr, 512));
         }
         Ok(())
@@ -598,9 +627,11 @@ mod device {
             let dma_ptr =
                 (core::ptr::addr_of!(SD_DMA_BUF.0[0]) as usize + UNCACHED_MIRROR_OFFSET) as *mut u8;
             core::ptr::copy_nonoverlapping(buf.as_ptr(), dma_ptr, 512);
-            sdhi::set_block_count(SD_PORT, 1);
-            sdhi::set_arg(SD_PORT, addr);
-            sdhi::write_blocks_dma(SD_PORT, cmd, dma_ptr as *const u8, 1, SD_DMA_TX_CH).await?;
+            controller().set_block_count(1);
+            controller().set_arg(addr);
+            controller()
+                .write_blocks_dma(cmd, dma_ptr as *const u8, 1)
+                .await?;
         }
         Ok(())
     }
@@ -638,9 +669,9 @@ mod device {
                 let chunk = remaining.min(SD_DMA_MAX_SECTORS as u32);
                 let chunk_addr = lba_to_addr(cur_lba);
                 let cmd = if chunk > 1 { CMD18_MULTI } else { CMD17 };
-                sdhi::set_block_count(SD_PORT, chunk);
-                sdhi::set_arg(SD_PORT, chunk_addr);
-                let xfer = sdhi::read_blocks_dma(SD_PORT, cmd, dma_ptr, chunk, SD_DMA_RX_CH).await;
+                controller().set_block_count(chunk);
+                controller().set_arg(chunk_addr);
+                let xfer = controller().read_blocks_dma(cmd, dma_ptr, chunk).await;
                 // CMD18 (READ_MULTIPLE_BLOCK) runs in extended mode with auto-CMD12
                 // disabled (CMD18 | 0x7C00, [15:14]=01), so the card keeps streaming
                 // data until it receives STOP_TRANSMISSION.  The SD_STOP SEC bit only
@@ -651,7 +682,7 @@ mod device {
                 // the next sd::init) times out.  Propagate the transfer error first
                 // since it's the more relevant failure, then any stop error.
                 let stop = if chunk > 1 {
-                    sdhi::stop_transfer(SD_PORT).await
+                    controller().stop_transfer().await
                 } else {
                     Ok(())
                 };
@@ -698,9 +729,10 @@ mod device {
                 let cmd = if chunk > 1 { CMD25 } else { CMD24 };
                 let chunk_bytes = (chunk as usize) * 512;
                 core::ptr::copy_nonoverlapping(buf.as_ptr().add(buf_offset), dma_ptr, chunk_bytes);
-                sdhi::set_block_count(SD_PORT, chunk);
-                sdhi::set_arg(SD_PORT, chunk_addr);
-                sdhi::write_blocks_dma(SD_PORT, cmd, dma_ptr as *const u8, chunk, SD_DMA_TX_CH)
+                controller().set_block_count(chunk);
+                controller().set_arg(chunk_addr);
+                controller()
+                    .write_blocks_dma(cmd, dma_ptr as *const u8, chunk)
                     .await?;
                 remaining -= chunk;
                 cur_lba += chunk;
@@ -729,7 +761,7 @@ mod device {
 
     /// Returns `true` if a card is physically present (CD pin).
     pub fn is_inserted() -> bool {
-        unsafe { sdhi::card_inserted(SD_PORT) }
+        controller().card_inserted()
     }
 
     /// Returns `true` if the card's physical write-protect (lock) tab is engaged.
@@ -740,7 +772,7 @@ mod device {
         if !CARD_READY.load(Ordering::Acquire) {
             return false;
         }
-        unsafe { sdhi::card_write_protected(SD_PORT) }
+        controller().card_write_protected()
     }
 
     /// Total number of 512-byte sectors on the card.
@@ -751,7 +783,7 @@ mod device {
         if !CARD_READY.load(Ordering::Acquire) {
             return 0;
         }
-        sdhi::card_size_blocks(SD_PORT)
+        controller().card_size_blocks()
     }
 
     // ---------------------------------------------------------------------------
@@ -854,22 +886,22 @@ mod device {
             // transfers.
             embassy_futures::block_on(async {
                 unsafe {
-                    sdhi::set_block_count(SD_PORT, count);
-                    sdhi::set_arg(SD_PORT, addr);
-                    sdhi::send_cmd(SD_PORT, cmd).await?;
-                    let xfer = sdhi::read_blocks_sw(SD_PORT, ptr, count).await;
+                    controller().set_block_count(count);
+                    controller().set_arg(addr);
+                    controller().send_cmd(cmd).await?;
+                    let xfer = controller().read_blocks_sw(ptr, count).await;
                     // CMD18 multi-block read leaves auto-CMD12 disabled (see
                     // `read_sectors`); stop the card explicitly — even if the data
                     // phase failed — so a bailed-out read never leaves the card
                     // streaming into the next command or the next sd::init.
                     let stop = if count > 1 {
-                        sdhi::stop_transfer(SD_PORT).await
+                        controller().stop_transfer().await
                     } else {
                         Ok(())
                     };
                     xfer?;
                     stop?;
-                    Ok::<(), SdhiError>(())
+                    Ok::<(), sdhi::SdhiError>(())
                 }
             })
             .map_err(SdError::from)
@@ -896,10 +928,10 @@ mod device {
             // Interrupt-driven PIO transfer (see `read` above).
             embassy_futures::block_on(async {
                 unsafe {
-                    sdhi::set_block_count(SD_PORT, count);
-                    sdhi::set_arg(SD_PORT, addr);
-                    sdhi::send_cmd(SD_PORT, cmd).await?;
-                    sdhi::write_blocks_sw(SD_PORT, ptr, count).await
+                    controller().set_block_count(count);
+                    controller().set_arg(addr);
+                    controller().send_cmd(cmd).await?;
+                    controller().write_blocks_sw(ptr, count).await
                 }
             })
             .map_err(SdError::from)
@@ -909,7 +941,7 @@ mod device {
             if !CARD_READY.load(Ordering::Acquire) {
                 return Err(SdError::NotInitialized);
             }
-            let n = sdhi::card_size_blocks(SD_PORT);
+            let n = controller().card_size_blocks();
             Ok(embedded_sdmmc::BlockCount(n))
         }
     }

@@ -96,6 +96,15 @@ fn setup() {
     );
     info!("UART: SCIF0/1 @ 31 250 baud");
 
+    // The SD slot's controller, once; `sd::init` identifies the card when the SD task needs it.
+    let (card, sd_tx, sd_rx) =
+        deluge::parts::with(|p| (p.sd_card.take(), p.sd_tx_dma.take(), p.sd_rx_dma.take()));
+    deluge_bsp::sd::init_hw(
+        card.expect("SDHI1 is free"),
+        sd_tx.expect("the SD TX DMA channel is free"),
+        sd_rx.expect("the SD RX DMA channel is free"),
+    );
+
     info!("audio: initialising SSI0...");
     unsafe { deluge_bsp::audio::init_with_scux() };
     info!("audio: SSI0 + DMA + codec running");
