@@ -76,7 +76,7 @@ use super::regs::{
     PIPECTR_PID_BUF, PIPECTR_PID_MASK, PIPECTR_PID_NAK, PIPECTR_SQCLR, PIPECTR_SQSET,
     PIPEMAXP_DEVSEL_SHIFT, PIPEMAXP_MXPS_MASK, PIPEPERI_IITV_MASK, PKT_BUF_BLOCK_SIZE, Rusb1Regs,
     SUSPMODE_SUSPM, SYSCFG_DCFM, SYSCFG_DPRPU, SYSCFG_DRPD, SYSCFG_HSE, SYSCFG_UPLLE, SYSCFG_USBE,
-    SYSSTS0_LNST, devadd_ptr, pipectr_ptr, rd, rmw, wr,
+    SYSSTS0_LNST, devadd_ptr, pipectr_ptr, rd, rmw, usb_of, wr,
 };
 
 // ---------------------------------------------------------------------------
@@ -865,7 +865,7 @@ impl<'d> Rusb1HostDriver<'d> {
                     return Err(PipeError::Canceled);
                 }
                 let len = buf.len().min(ctl_mps);
-                let fifo = FifoPort::cfifo(regs);
+                let fifo = FifoPort::cfifo(usb_of(regs));
                 sw_to_hw_fifo(&fifo, buf.as_ptr(), len);
                 if len < ctl_mps {
                     wr(core::ptr::addr_of_mut!((*regs).cfifoctr), FIFOCTR_BVAL);
@@ -1104,7 +1104,7 @@ impl<'d> Rusb1HostDriver<'d> {
                 wr(core::ptr::addr_of_mut!(e.pipesel), 0);
 
                 let len = buf.len().min(mps);
-                let fifo = FifoPort::d0fifo(regs);
+                let fifo = FifoPort::d0fifo(usb_of(regs));
                 sw_to_hw_fifo(&fifo, buf.as_ptr(), len);
                 if len < mps {
                     fifo_bval(&fifo); // short packet — commit now
@@ -1426,7 +1426,7 @@ unsafe fn pipe0_out_bemp(regs: *mut Rusb1Regs) {
 
         let mps = (rd(core::ptr::addr_of!((*regs).dcpmaxp)) & DCPMAXP_MXPS_MASK) as usize;
         let len = rem.min(mps);
-        let fifo = FifoPort::cfifo(regs);
+        let fifo = FifoPort::cfifo(usb_of(regs));
         sw_to_hw_fifo(&fifo, xfer.buf, len);
         if len < mps {
             wr(core::ptr::addr_of_mut!((*regs).cfifoctr), FIFOCTR_BVAL);
@@ -1526,7 +1526,7 @@ unsafe fn pipe_brdy_out(regs: *mut Rusb1Regs, n: usize) {
         let mps = (rd(core::ptr::addr_of!((*regs).pipemaxp)) & PIPEMAXP_MXPS_MASK) as usize;
         wr(core::ptr::addr_of_mut!((*regs).pipesel), 0);
         let len = rem.min(mps);
-        let fifo = FifoPort::d0fifo(regs);
+        let fifo = FifoPort::d0fifo(usb_of(regs));
         sw_to_hw_fifo(&fifo, xfer.buf, len);
         if len < mps {
             fifo_bval(&fifo);

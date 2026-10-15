@@ -16,8 +16,11 @@
 //! Naming follows the C `usb_iobitmask.h` file with the `USB_` prefix removed
 //! and snake_case used for the shift variants.
 
-use super::{USB0_BASE, USB1_BASE};
 use core::ptr::{read_volatile, write_volatile};
+
+use crate::pac::common::{RW, Reg};
+use crate::pac::usb::Usb;
+use crate::pac::{USB200, USB201};
 
 // ---------------------------------------------------------------------------
 // SYSCFG0
@@ -415,8 +418,34 @@ impl Rusb1Regs {
     /// all accesses use `read_volatile` / `write_volatile`.
     #[inline]
     pub unsafe fn ptr(port: u8) -> *mut Self {
-        let base = if port == 0 { USB0_BASE } else { USB1_BASE };
-        base as *mut Self
+        usb(port).syscfg0().addr() as *mut Self
+    }
+}
+
+/// USB port `port`'s registers: `USB200` for port 0, `USB201` for port 1.
+#[inline]
+pub fn usb(port: u8) -> Usb {
+    if port == 0 { USB200 } else { USB201 }
+}
+
+/// The port whose `Rusb1Regs` block `regs` points at.  A bridge for `driver.rs`/`host.rs`
+/// while they still hold `Rusb1Regs` pointers; it goes with `Rusb1Regs`.
+#[inline]
+pub(super) fn usb_of(regs: *mut Rusb1Regs) -> Usb {
+    if regs as usize == USB200.syscfg0().addr() {
+        USB200
+    } else {
+        USB201
+    }
+}
+
+/// Pipe `pipe`'s control register: `DCPCTR` for pipe 0, `PIPEnCTR` for pipes 1-15.
+#[inline]
+pub fn pipectr(u: Usb, pipe: usize) -> Reg<u16, RW> {
+    if pipe == 0 {
+        u.dcpctr()
+    } else {
+        u.pipectr(pipe - 1)
     }
 }
 
@@ -515,6 +544,60 @@ pub unsafe fn devadd_ptr(regs: *mut Rusb1Regs, dev_addr: u8) -> *mut u16 {
 mod tests {
     use super::*;
     use core::mem::offset_of;
+
+    /// Every `Rusb1Regs` field sits where the PAC puts the register of the same name: the struct
+    /// can go once nothing reads through it.
+    #[test]
+    fn the_pac_names_every_rusb1regs_field() {
+        use crate::pac::USB200 as U;
+        let off = |a: usize| a - 0xE801_0000;
+        let pairs = [
+            (offset_of!(Rusb1Regs, syscfg0), off(U.syscfg0().addr())),
+            (offset_of!(Rusb1Regs, buswait), off(U.buswait().addr())),
+            (offset_of!(Rusb1Regs, syssts0), off(U.syssts0().addr())),
+            (offset_of!(Rusb1Regs, dvstctr0), off(U.dvstctr0().addr())),
+            (offset_of!(Rusb1Regs, cfifo), off(U.cfifo().addr())),
+            (offset_of!(Rusb1Regs, d0fifo), off(U.d0fifo().addr())),
+            (offset_of!(Rusb1Regs, d1fifo), off(U.d1fifo().addr())),
+            (offset_of!(Rusb1Regs, cfifosel), off(U.cfifosel().addr())),
+            (offset_of!(Rusb1Regs, cfifoctr), off(U.cfifoctr().addr())),
+            (offset_of!(Rusb1Regs, d0fifosel), off(U.d0fifosel().addr())),
+            (offset_of!(Rusb1Regs, d0fifoctr), off(U.d0fifoctr().addr())),
+            (offset_of!(Rusb1Regs, d1fifosel), off(U.d1fifosel().addr())),
+            (offset_of!(Rusb1Regs, d1fifoctr), off(U.d1fifoctr().addr())),
+            (offset_of!(Rusb1Regs, intenb0), off(U.intenb(0).addr())),
+            (offset_of!(Rusb1Regs, intenb1), off(U.intenb(1).addr())),
+            (offset_of!(Rusb1Regs, brdyenb), off(U.brdyenb().addr())),
+            (offset_of!(Rusb1Regs, nrdyenb), off(U.nrdyenb().addr())),
+            (offset_of!(Rusb1Regs, bempenb), off(U.bempenb().addr())),
+            (offset_of!(Rusb1Regs, intsts0), off(U.intsts(0).addr())),
+            (offset_of!(Rusb1Regs, intsts1), off(U.intsts(1).addr())),
+            (offset_of!(Rusb1Regs, brdysts), off(U.brdysts().addr())),
+            (offset_of!(Rusb1Regs, nrdysts), off(U.nrdysts().addr())),
+            (offset_of!(Rusb1Regs, bempsts), off(U.bempsts().addr())),
+            (offset_of!(Rusb1Regs, usbaddr), off(U.usbaddr().addr())),
+            (offset_of!(Rusb1Regs, usbreq), off(U.usbreq().addr())),
+            (offset_of!(Rusb1Regs, usbval), off(U.usbval().addr())),
+            (offset_of!(Rusb1Regs, usbindx), off(U.usbindx().addr())),
+            (offset_of!(Rusb1Regs, usbleng), off(U.usbleng().addr())),
+            (offset_of!(Rusb1Regs, dcpcfg), off(U.dcpcfg().addr())),
+            (offset_of!(Rusb1Regs, dcpmaxp), off(U.dcpmaxp().addr())),
+            (offset_of!(Rusb1Regs, dcpctr), off(U.dcpctr().addr())),
+            (offset_of!(Rusb1Regs, pipesel), off(U.pipesel().addr())),
+            (offset_of!(Rusb1Regs, pipecfg), off(U.pipecfg().addr())),
+            (offset_of!(Rusb1Regs, pipebuf), off(U.pipebuf().addr())),
+            (offset_of!(Rusb1Regs, pipemaxp), off(U.pipemaxp().addr())),
+            (offset_of!(Rusb1Regs, pipeperi), off(U.pipeperi().addr())),
+            (offset_of!(Rusb1Regs, pipe1ctr), off(U.pipectr(0).addr())),
+            (offset_of!(Rusb1Regs, pipefctr), off(U.pipectr(14).addr())),
+            (offset_of!(Rusb1Regs, devadd0), off(U.devadd(0).addr())),
+            (offset_of!(Rusb1Regs, suspmode), off(U.suspmode().addr())),
+        ];
+        for (i, (field, pac)) in pairs.iter().enumerate() {
+            assert_eq!(field, pac, "pair {i}");
+        }
+        assert_eq!(crate::pac::USB201.syscfg0().addr(), 0xE820_7000);
+    }
 
     #[test]
     fn reg_offsets() {
