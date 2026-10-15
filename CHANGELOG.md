@@ -42,12 +42,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `memory_rtt.x` and reduce its `build.rs` to the `-Tlink.x` line (`cargo deluge new` now
   scaffolds that). The stack sizes are `PROVIDE`d: override one with
   `cargo:rustc-link-arg-bins=--defsym=PROGRAM_STACK_SIZE=<bytes>`, printed *before* the
-  `-Tlink.x` line (lld applies `--defsym` in command-line order). If your app's build
-  directory is on the linker search path (a `cc`-built C/C++ library puts it there), run
-  `cargo clean -p <app>` once so a `memory.x` your old `build.rs` copied there can't shadow the
-  BSP's.
+  `-Tlink.x` line (lld applies `--defsym` in command-line order). To bring your own layout
+  instead, turn off `deluge-bsp`'s default `memory-x` feature and put your `memory.x` on the
+  search path. If you keep the BSP's layout and your app's build directory is on the linker
+  search path (a `cc`-built C/C++ library puts it there), run `cargo clean -p <app>` once so an
+  old `memory.x` your previous `build.rs` copied there can't shadow it.
 - The boot and fault blink use the status LED the board's `memory.x` names
   (`RZA1_STATUS_LED_PORT`/`_PIN`, P6_7 on the Deluge) instead of a hard-coded pin.
+  **Breaking:** a custom `memory.x` must define both (`RZA1_STATUS_LED_PORT = 6;`
+  `RZA1_STATUS_LED_PIN = 7;` for the Deluge), or the link fails.
 - `rza1l_hal::time_driver` is behind the `time-driver-ostm` feature, on by default.
 - `deluge-alloc` is renamed `rza1-alloc`. Apps using `deluge::deluge_alloc` are unaffected.
 - `deluge-bsp` holds only Deluge wiring now:

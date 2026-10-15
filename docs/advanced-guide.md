@@ -605,9 +605,9 @@ and `x86_64-unknown-linux-gnu` for pure-logic crates. Run everything with
 | `spibsc` | SPI NOR-flash controller (guarded erase/program) |
 | `adc` / `mtu2` | A/D converter, multi-function timer |
 | `usb` | RUSB1 device + host drivers (`embassy-usb-driver`) |
-| `startup` | reset/boot assembly, vector table, bootloader metadata |
 
-The SRAM/SDRAM heaps are in the separate `rza1_alloc` crate.
+The SRAM/SDRAM heaps are in the separate `rza1-alloc` crate, and the reset/boot assembly, vector
+table and bootloader metadata in [`rza1-rt`](../crates/rza1-rt/README.md).
 
 **`deluge_bsp`** ([`crates/deluge-bsp/src/lib.rs`](../crates/deluge-bsp/src/lib.rs)):
 

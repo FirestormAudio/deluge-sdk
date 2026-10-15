@@ -76,9 +76,7 @@ myapp/
 ├── Cargo.toml            # depends on `deluge` + embassy-executor/-time
 ├── rust-toolchain.toml   # pinned nightly + armv7a-none-eabihf
 ├── .cargo/config.toml    # target triple, Cortex-A9/NEON flags
-├── build.rs              # selects the memory layout / linker script
-├── memory.x              # default layout
-├── memory_rtt.x          # layout with the RTT buffer reserved
+├── build.rs              # selects the linker script (the memory layout comes from deluge-bsp)
 ├── rza1_debug.JLinkScript
 ├── .vscode/              # rust-analyzer settings, cargo deluge tasks, J-Link debug config
 └── src/main.rs           # a working blinky
@@ -390,7 +388,7 @@ All features are **off by default**.
 | Feature | Effect | Build implication |
 |---------|--------|-------------------|
 | `usb-log` | Route `log` to a USB CDC serial port (no probe). | Wins over `rtt` (one logger). |
-| `rtt` | SEGGER RTT logging over a debug probe. | Reserves SRAM (uses `memory_rtt.x`). |
+| `rtt` | SEGGER RTT logging over a debug probe. | Reserves SRAM (`deluge-bsp`'s `memory_rtt.x`). |
 | `audio-irq` | Drift-free, DMA-clocked audio (same `process()` API). | — |
 | `alloc` | Register the on-chip SRAM heap as the global allocator (needed by the GPL UI toolkit). | Needs `-Zbuild-std=core,alloc` (`cargo deluge build` and `cargo build-fw` already pass it). |
 | `usb-serial` | Take USB0 as your own CDC-ACM serial device via `Deluge::usb_serial`. | Device-only; can't be combined with `usb-log` at runtime. |

@@ -24,7 +24,11 @@ test = false
 ## BlockDevice/TimeSource adapters in `sd`). Opt-in, so firmware that mounts
 ## the card another way doesn't carry a second filesystem.
 fat = ["dep:embedded-sdmmc"]
-default = []
+default = ["memory-x"]
+## Put the Deluge's memory layout (`memory.x`, or `memory_rtt.x` with `rtt`) on the linker
+## search path for rza1-rt's `link.x`. Turn default features off to supply your own `memory.x`;
+## it must define what `link.x`'s header lists, including RZA1_STATUS_LED_PORT/PIN.
+memory-x = []
 ## SEGGER RTT: fault dumps to RTT channel 0 and the RTT memory layout.
 rtt = ["rza1-rt/rtt"]
 ## Hand CPU faults to the application's `rza1_cpu_fault_report` (see `rza1-rt`).
