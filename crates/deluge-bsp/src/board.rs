@@ -37,6 +37,17 @@ pub type SdRxDma = DMA_CH14;
 /// DMA channel 15: SCUX FFD3.
 pub type ScuxFfd3Dma = DMA_CH15;
 
+/// RSPI0: the OLED and the CV DAC share it ([`crate::bus`]).
+pub type SharedSpi = RSPI0;
+/// SCIF0: DIN MIDI ([`crate::uart::init_midi`]).
+pub type MidiScif = SCIF0;
+/// SCIF1: the PIC32 link ([`crate::uart::init_pic`]).
+pub type PicScif = SCIF1;
+/// MTU2 channel 2: the MIDI/CV gate one-shot ([`crate::midi_gate`]).
+pub type GateTimer = MTU2_2;
+/// MTU2 channel 3: the encoder pin poll ([`crate::encoder`]).
+pub type EncoderPollTimer = MTU2_3;
+
 /// Every DMA channel, by the role the Deluge gives it.
 ///
 /// Until Phase 4b each channel is already in use by the matching BSP driver (OLED, SD, audio,
@@ -67,6 +78,16 @@ pub struct Board {
     pub usb0: Peri<'static, USB0>,
     /// USB1: not wired on the Deluge.
     pub usb1: Peri<'static, USB1>,
+    /// RSPI0, shared by the OLED and the CV DAC.
+    pub shared_spi: Peri<'static, SharedSpi>,
+    /// SCIF0, DIN MIDI.
+    pub midi_uart: Peri<'static, MidiScif>,
+    /// SCIF1, the PIC32 link.
+    pub pic_uart: Peri<'static, PicScif>,
+    /// MTU2 channel 2, the MIDI/CV gate one-shot.
+    pub gate_timer: Peri<'static, GateTimer>,
+    /// MTU2 channel 3, the encoder pin poll.
+    pub encoder_poll_timer: Peri<'static, EncoderPollTimer>,
     pub dma: BoardDma,
 }
 
@@ -91,6 +112,11 @@ impl Board {
         Self {
             usb0: p.USB0,
             usb1: p.USB1,
+            shared_spi: p.RSPI0,
+            midi_uart: p.SCIF0,
+            pic_uart: p.SCIF1,
+            gate_timer: p.MTU2_2,
+            encoder_poll_timer: p.MTU2_3,
             dma: BoardDma {
                 scux_ffd0: p.DMA_CH0,
                 scux_ffu0: p.DMA_CH1,

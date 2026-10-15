@@ -94,6 +94,9 @@ mod leds;
 mod midi;
 pub mod oled;
 mod pads;
+/// The board's peripherals no capability has claimed yet (device-only).
+#[cfg(target_os = "none")]
+pub mod parts;
 mod pic_service;
 mod plat;
 mod sd;
@@ -636,6 +639,19 @@ pub mod __rt {
             #[cfg(feature = "usb-serial")]
             crate::usb_serial::stash(usb0);
 
+            // The rest of the board waits for the capability that drives it, or for the app to
+            // take it through `deluge::parts`.
+            crate::parts::stash(crate::parts::Parts {
+                shared_spi: Some(board.shared_spi),
+                oled_dma: Some(board.dma.oled),
+                midi_uart: Some(board.midi_uart),
+                midi_rx_dma: Some(board.dma.midi_rx),
+                pic_uart: Some(board.pic_uart),
+                pic_rx_dma: Some(board.dma.pic_rx),
+                pic_tx_dma: Some(board.dma.pic_tx),
+                gate_timer: Some(board.gate_timer),
+                encoder_poll_timer: Some(board.encoder_poll_timer),
+            });
 
             // App's synchronous, interrupts-masked initialisation.
             setup();
