@@ -75,6 +75,7 @@ pub mod clocks;
 mod cpg;
 pub mod dmac;
 pub mod gic;
+pub mod interrupt;
 /// Pure memory-system math (cache-line ranges + MMU section table) used by the
 /// bare-metal-only `cache`/`mmu` modules; non-gated so it unit-tests on host.
 pub mod memmap;

@@ -81,24 +81,23 @@ pub type Handler = fn();
 /// Sound on this target because access is single-core: registration happens
 /// before `cpsie i`, and dispatch only runs in the IRQ context (IRQ masked
 /// for the caller).
-struct HandlerCell(core::cell::UnsafeCell<Option<Handler>>);
-
-// SAFETY: bare-metal single-core; no actual concurrent access.
-unsafe impl Sync for HandlerCell {}
+/// One dispatch-table slot: the handler's address, 0 when empty. Atomic, so a handler can be
+/// installed while interrupts run (a word store; `gic_dispatch` reads it with one load).
+struct HandlerCell(core::sync::atomic::AtomicUsize);
 
 impl HandlerCell {
     const fn new() -> Self {
-        HandlerCell(core::cell::UnsafeCell::new(None))
+        HandlerCell(core::sync::atomic::AtomicUsize::new(0))
     }
-    /// Write a new handler.  Caller must ensure no concurrent read.
-    unsafe fn set(&self, h: Handler) {
-        unsafe {
-            *self.0.get() = Some(h);
+    fn set(&self, h: Handler) {
+        self.0.store(h as usize, core::sync::atomic::Ordering::Release);
+    }
+    fn get(&self) -> Option<Handler> {
+        match self.0.load(core::sync::atomic::Ordering::Acquire) {
+            0 => None,
+            // SAFETY: every non-zero value was stored by `set` from a `Handler`.
+            addr => Some(unsafe { core::mem::transmute::<usize, Handler>(addr) }),
         }
-    }
-    /// Read the current handler.  Caller must ensure no concurrent write.
-    unsafe fn get(&self) -> Option<Handler> {
-        unsafe { *self.0.get() }
     }
 }
 
@@ -361,19 +360,26 @@ unsafe fn end_stale_active(n_words: usize) {
 #[cfg(not(target_os = "none"))]
 unsafe fn end_stale_active(_n_words: usize) {}
 
+/// Install `handler` for interrupt `id`. Out-of-range IDs are ignored.
+pub fn set_handler(id: u16, handler: Handler) {
+    log::trace!("gic: register IRQ {}", id);
+    if (id as usize) < INT_ID_TOTAL {
+        HANDLERS[id as usize].set(handler);
+    }
+}
+
+/// The handler installed for `id`, if any.
+pub(crate) fn handler(id: u16) -> Option<Handler> {
+    HANDLERS.get(id as usize).and_then(HandlerCell::get)
+}
+
 /// Register a Rust function as the handler for interrupt `id`.
 ///
-/// Must only be called while global IRQ is disabled (before `cpsie i`).
-///
 /// # Safety
-/// The handler table is unsynchronised: must be called before IRQ is enabled.
+/// None beyond [`set_handler`]'s; kept `unsafe` for the callers Phase 4b migrates to
+/// [`crate::interrupt::bind`].
 pub unsafe fn register(id: u16, handler: Handler) {
-    unsafe {
-        log::trace!("gic: register IRQ {}", id);
-        if (id as usize) < INT_ID_TOTAL {
-            HANDLERS[id as usize].set(handler);
-        }
-    }
+    set_handler(id, handler);
 }
 
 /// Enable (unmask) interrupt `id` in the GIC distributor.
@@ -390,8 +396,7 @@ pub unsafe fn enable(id: u16) {
         if (id as usize) >= INT_ID_TOTAL {
             return;
         }
-        let addr = (GICD_ISENABLER0 as *mut u32).add((id >> 5) as usize);
-        addr.write_volatile(1u32 << (id & 31));
+        crate::mmio::write32(GICD_ISENABLER0 + 4 * (id >> 5) as usize, 1u32 << (id & 31));
     }
 }
 
@@ -434,12 +439,12 @@ pub unsafe fn set_priority(id: u16, priority: u8) {
         if (id as usize) >= INT_ID_TOTAL || priority >= 32 {
             return;
         }
-        let addr = (GICD_IPRIORITYR0 as *mut u32).add((id / 4) as usize);
+        let addr = GICD_IPRIORITYR0 + 4 * (id / 4) as usize;
         let shift = ((id % 4) * 8) as u32;
-        let mut val = addr.read_volatile();
+        let mut val = crate::mmio::read32(addr);
         val &= !(0xFFu32 << shift);
         val |= ((priority as u32) << GIC_PRIORITY_SHIFT) << shift; // bits [7:3] are the valid field
-        addr.write_volatile(val);
+        crate::mmio::write32(addr, val);
     }
 }
 
