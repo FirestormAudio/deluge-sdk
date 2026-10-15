@@ -154,6 +154,7 @@ on crates.io, so it was renamed to `rza1-alloc` without a re-export crate.
 - Decide whether the facade keeps `pub use deluge_bsp` once `Board` exists.
 
 **Exit:** no public `unsafe fn new()` constructors; enabling both `usb-log` and `usb-serial`
+fails to compile instead of panicking.
 
 **4a done (2026-10-15 plan):** `peripherals!` singletons (RZ/A1L counts: SCIF0–4, SSIF0–3),
 `rza1l_hal::init(Config)` with CPG/STB/GIC (CPG moved from the BSP, FRQCR in `Config`), typed GIC
@@ -162,7 +163,6 @@ channels with the number-based functions in `dmac::raw`, and `deluge_bsp::Board`
 and the 16 DMA channels by role. USB0 has one owner in the SDK runtime, so `usb-log` + `usb-serial`
 fails to compile. The facade dropped `pub use deluge_bsp`. Phase 4b migrates the drivers, removes
 `raw` and the `unsafe fn new()` constructors, and migrates DelugeFirmware#next.
-fails to compile instead of panicking.
 
 ### Phase 5: PAC
 

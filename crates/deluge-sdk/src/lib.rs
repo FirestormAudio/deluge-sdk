@@ -1,8 +1,9 @@
 //! # Deluge SDK
 //!
 //! Build apps for the Synthstrom Deluge (Renesas RZ/A1L, Cortex-A9). This crate
-//! wraps the board support package ([`deluge_bsp`]) behind a single dependency
-//! (the chip HAL, `rza1l_hal`, is not re-exported), and provides the [`#[deluge::app]`](macro@app)
+//! builds on the board support package (`deluge_bsp`) and exposes the Deluge's
+//! hardware as capability handles behind a single dependency (neither the BSP nor
+//! the chip HAL is re-exported), and provides the [`#[deluge::app]`](macro@app)
 //! attribute that absorbs the platform bring-up boilerplate.
 //!
 //! ```ignore

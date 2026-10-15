@@ -90,7 +90,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     if called before their path's `init`, instead of reading a non-existent DMA channel.
 - `rza1l-hal` is now board-agnostic. The board registers its crystal with
   `rza1l_hal::clocks::init(ClockConfig::new(extal_hz))` (the Deluge's is
-  `deluge_bsp::system::CLOCKS`, registered by `init_clocks`). OSTM delays, the RSPI and SCIF baud
+  `deluge_bsp::system::CLOCKS`, which `rza1l_hal::init(BOARD_CONFIG)` registers). OSTM delays, the RSPI and SCIF baud
   dividers and the Embassy time driver derive their rates from it. **Breaking:** `ostm::OSTM_HZ`
   and `mtu2::MTU2_P0_HZ` are removed; use `rza1l_hal::clocks::get().p0_hz()` or
   `deluge_bsp::system::CLOCKS.p0_hz()`.

@@ -33,9 +33,9 @@ peripheral as `Peri<'d, T>`.
 |---------------|-------------|
 | `mmu`         | Flat-map L1 Translation Table (VA = PA, 1 MB sections) covering the full 4 GB address space with correct cache attributes per region (SRAM cached, I/O strongly-ordered, uncached mirror at +0x4000_0000). |
 | `cache`       | L1 D/I-cache + Cortex-A9 branch predictor enable; PL310 L2 cache init. Call `mmu::init_and_enable` first. |
-| `clocks`      | The clock tree, from the board's EXTAL crystal: `clocks::init(ClockConfig::new(extal_hz))` once at boot, then P0φ/P1φ (and the exact P0 ticks-per-µs ratio) are derived for every driver. Call it first. |
-| `stb`         | CPG Standby Control Register (STBCR2–STBCR12) init — ungate module clocks for all required peripherals via a `StbConfig` struct. |
-| `gic`         | ARM GIC-400 (GICD/GICC) driver. `gic::init` → `gic::register(id, handler)` → `gic::enable(id)`. The IRQ assembly shim calls `gic::dispatch`. |
+| `clocks`      | The clock tree, from the board's EXTAL crystal: `clocks::init(ClockConfig::new(extal_hz))` once at boot (`rza1l_hal::init` does it), then P0φ/P1φ (and the exact P0 ticks-per-µs ratio) are derived for every driver. |
+| `stb`         | CPG Standby Control Register (STBCR2–STBCR12) init — ungate module clocks for all required peripherals via a `StbConfig` struct (`rza1l_hal::init` applies `Config::stb`). |
+| `gic`         | ARM GIC-400 (GICD/GICC) driver. `rza1l_hal::init` runs `gic::init`; drivers install handlers through `interrupt::bind` (or, until Phase 4b, `gic::register(id, handler)`) and unmask with `gic::enable(id)`. The IRQ assembly shim calls `gic_dispatch`. |
 | `interrupt`   | Typed GIC interrupts (`interrupt::typelevel`), `Handler`/`Binding` and `bind_interrupts!`: a driver's constructor takes the binding and installs its handler. |
 | `bsc`         | Bus State Controller CS0/CS1 timing (NOR flash). |
 | `memmap`      | Pure memory-map and cache-line arithmetic shared by `mmu` and `cache` (host-testable). |
