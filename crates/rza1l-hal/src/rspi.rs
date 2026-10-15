@@ -293,7 +293,7 @@ mod sealed {
 
 /// An RSPI channel singleton (`peripherals::RSPI0`–`RSPI2`; the RZ/A1L has three channels).
 pub trait Instance: crate::PeripheralType + sealed::Sealed + 'static {
-    /// The channel number, 0–4.
+    /// The channel number, 0–2 (the RZ/A1L has three).
     const INDEX: u8;
 }
 

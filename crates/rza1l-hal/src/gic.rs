@@ -209,11 +209,11 @@ static ICDICFR_INIT: [u32; 34] = [
 pub unsafe fn init() {
     unsafe {
         log::debug!("gic: init ({} IRQ sources)", INT_ID_TOTAL);
-        let n_isr = (INT_ID_TOTAL / 32) + 1; // 19 — ICDISR count
-        let _n_icfr = ICDICFR_INIT.len(); // 37 — ICDICFR count
-        let n_ipr = (INT_ID_TOTAL / 4) + 1; // 147 — ICDIPR count
-        let n_iptr = n_ipr; // 147 — ICDIPTR count
-        let n_icer = n_isr; // 19  — ICDICER count
+        let n_isr = (INT_ID_TOTAL / 32) + 1; // 17 — ICDISR count
+        let _n_icfr = ICDICFR_INIT.len(); // 34 — ICDICFR count
+        let n_ipr = (INT_ID_TOTAL / 4) + 1; // 135 — ICDIPR count
+        let n_iptr = n_ipr; // 135 — ICDIPTR count
+        let n_icer = n_isr; // 17  — ICDICER count
 
         // 0. End what a debugger's reset left active. A probe's halt-only reset restarts the core
         //    but not the GIC, so an interrupt acknowledged before it stays active and holds the CPU
@@ -274,7 +274,8 @@ pub unsafe fn init() {
 
 /// The most urgent active interrupt in `active` (one bit per interrupt ID, 32 IDs a word, as the
 /// active bit registers hold them), by `priority` (a lower value is more urgent; the lower ID on a
-/// tie), or `None` when none is active.
+/// tie), or `None` when none is active. Bits past the last interrupt ID (`INT_ID_TOTAL`) name no
+/// interrupt and are ignored: the last active word covers IDs the chip doesn't have.
 fn most_urgent_active(active: &[u32], priority: impl Fn(usize) -> u8) -> Option<usize> {
     let mut best: Option<(u8, usize)> = None;
     for (word, &bits) in active.iter().enumerate() {
@@ -282,6 +283,9 @@ fn most_urgent_active(active: &[u32], priority: impl Fn(usize) -> u8) -> Option<
         while rest != 0 {
             let id = word * 32 + rest.trailing_zeros() as usize;
             rest &= rest - 1;
+            if id >= INT_ID_TOTAL {
+                continue;
+            }
             let p = priority(id);
             if best.is_none_or(|(q, _)| p < q) {
                 best = Some((p, id));
@@ -310,8 +314,8 @@ unsafe fn end_stale_active(n_words: usize) {
             // SAFETY: ICDABR0..n_words are readable GIC distributor registers.
             *word = INTC.icdabr(i).read();
         }
-        // SAFETY: every id below n_words × 32 ≤ INT_ID_TOTAL has an IPRIORITYR byte.
-        // The RZ/A1L gives the priority registers 32-bit access only (manual Table 46.1): read the
+        // `most_urgent_active` asks only for IDs below INT_ID_TOTAL, each with a priority byte in
+        // ICDIPR0–134. The RZ/A1L gives the priority registers 32-bit access only (manual Table 46.1): read the
         // word and take the ID's byte.
         let priority = |id: usize| (INTC.icdipr(id / 4).read() >> ((id % 4) * 8)) as u8;
         let Some(id) = most_urgent_active(words, priority) else {
@@ -629,14 +633,30 @@ mod tests {
         );
     }
 
-    /// rza1-rt's IRQ shim (`src/startup.rs`, `.equ GICC_*_ADDR`) acknowledges and ends every
-    /// interrupt at these addresses; `global_asm!` can't take them from the PAC, so pin them here.
+    #[test]
+    fn an_active_bit_past_the_last_interrupt_id_is_ignored() {
+        // ICDABR16 covers IDs 512–543, but the RZ/A1L stops at 537: bit 28 (ID 540) names no
+        // interrupt and has no priority register to look up.
+        let mut active = [0u32; 17];
+        active[16] = (1 << 28) | (1 << 25); // IDs 540 and 537
+        let priority = |id: usize| {
+            assert!(id < INT_ID_TOTAL, "looked up the priority of ID {id}");
+            0
+        };
+        assert_eq!(most_urgent_active(&active, priority), Some(537));
+    }
+
+    /// rza1-rt's IRQ shim (`src/startup.rs`, `.equ GICC_*_ADDR` and `GICD_IPR0_ADDR`) acknowledges
+    /// and ends every interrupt at these addresses; `global_asm!` can't take them from the PAC, so
+    /// pin them here.
     #[test]
     fn the_irq_shims_gicc_addresses_are_the_pacs() {
         use crate::pac::INTC;
         assert_eq!(INTC.icciar().addr(), 0xE820_200C);
         assert_eq!(INTC.icceoir().addr(), 0xE820_2010);
         assert_eq!(INTC.icchpir().addr(), 0xE820_2018);
+        // `.equ GICD_IPR0_ADDR`: the errata-733075 path's read-modify-write of priority word 0.
+        assert_eq!(INTC.icdipr(0).addr(), 0xE820_1400);
     }
 
     /// The RZ/A1L's distributor: interrupt IDs 0–537 (manual Table 7.3), so 17 words of enable

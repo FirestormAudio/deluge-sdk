@@ -84,7 +84,7 @@ mod tests {
     use super::*;
     use crate::mmio;
 
-    /// 0xFCFE_0424 = 0b00000111 enables SCIF0–SCIF4 (bits 7–3 = 0) and keeps
+    /// STBCR4 = 0b00000111 enables SCIF0–SCIF4 (bits 7–3 = 0) and keeps
     /// reserved bits 2–0 = 1.  SCIF5 (bit 2) does not exist on RZ/A1L.
     #[test]
     fn stbcr4_enables_all_scif() {
@@ -93,7 +93,7 @@ mod tests {
         assert_eq!(val & 0b11111000, 0, "SCIF bits should all be 0 (enabled)");
     }
 
-    /// 0xFCFE_0428 = 0b11111100 enables OSTM0 (bit 0) and OSTM1 (bit 1).
+    /// STBCR5 = 0b11111100 enables OSTM0 (bit 0) and OSTM1 (bit 1).
     #[test]
     fn stbcr5_enables_ostm() {
         let val: u8 = 0b11111100;
@@ -101,7 +101,7 @@ mod tests {
     }
 
     /// Drive `init` through the MMIO seam and assert the exact register-write
-    /// sequence: 0xFCFE_0024..12 each written with its config byte, in order.
+    /// sequence: STBCR2..12 each written with its config byte, in order.
     #[test]
     fn init_writes_every_stbcr_in_order() {
         mmio::test::reset();
