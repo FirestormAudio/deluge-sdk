@@ -146,7 +146,12 @@ pub type Rspi0Guard = MappedMutexGuard<'static, CriticalSectionRawMutex, Rspi0>;
 /// Firmware calls it once with the [`crate::Board`]'s `shared_spi` and `dma.oled`, before
 /// [`crate::cv_gate::init`] or [`crate::oled::init`]. The SDK calls it the first time an app
 /// uses either.
+///
+/// # Panics
+/// If the bus is already up (only reachable with stolen peripherals).
 pub fn init(spi: Peri<'static, SharedSpi>, oled_dma: Peri<'static, OledDma>) {
+    // Before touching RSPI0: reconfiguring a live bus would corrupt its transfer in flight.
+    assert!(!is_initialised(), "RSPI0's bus is already up: bus::init runs once");
     // SAFETY: RSPI0's own pins, which only this bus drives.
     unsafe {
         rza1l_hal::gpio::set_pin_mux(SCK.0, SCK.1, SCK.2);
@@ -165,7 +170,7 @@ pub fn init(spi: Peri<'static, SharedSpi>, oled_dma: Peri<'static, OledDma>) {
     };
     let bus = Rspi0 { mode: Mode::Bits32, rspi, oled_dma };
     match RSPI0.try_lock() {
-        // RSPI0 is owned once, so the slot is empty.
+        // Checked empty above, and nothing can fill it in between: RSPI0 is owned once.
         Ok(mut slot) => *slot = Some(bus),
         Err(_) => unreachable!("RSPI0's bus is locked before it exists"),
     }
@@ -251,5 +256,10 @@ mod tests {
         // SCK (P6_0) and MOSI (P6_2) are muxed to RSPI0: without them RSPI0 shifts the OLED's
         // frames out to nothing. PMC6 at 0xFCFE_3418 marks both pins as peripheral functions.
         assert_eq!(test::peek16(0xFCFE_3418) & 0b101, 0b101);
+        drop(bus);
+
+        // A second bus over the same RSPI0 would silently drop the live one and its DMA channel.
+        let again = std::panic::catch_unwind(|| init(unsafe { RSPI0::steal() }, unsafe { DMA_CH4::steal() }));
+        assert!(again.is_err(), "bus::init must refuse to replace a live bus");
     }
 }
