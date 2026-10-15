@@ -39,6 +39,9 @@ impl Midi {
     }
 
     /// Take the next received byte if one is buffered, without awaiting.
+    ///
+    /// Returns `None` while a [`recv`](Self::recv) is waiting, since that call is draining the
+    /// same buffer: read with one or the other, not both at once.
     #[inline]
     pub fn try_recv(&self) -> Option<u8> {
         crate::plat::midi_try_recv()

@@ -352,10 +352,10 @@ impl Deluge {
         Pads::new()
     }
 
-    /// Take the CV (control-voltage) outputs. Takeable once.
+    /// Take the CV (control-voltage) outputs. Takeable once. See [`Cv`].
     ///
-    /// Best acquired before entering the main loop (its one-time DAC bring-up
-    /// reconfigures RSPI0). See [`Cv`].
+    /// Take it before anything draws to the [`Oled`]: its one-time DAC bring-up needs RSPI0,
+    /// which the display shares, and panics if an OLED frame holds the bus at that moment.
     pub fn cv(&self) -> Cv {
         use core::sync::atomic::{AtomicBool, Ordering};
         static TAKEN: AtomicBool = AtomicBool::new(false);
@@ -366,6 +366,9 @@ impl Deluge {
     }
 
     /// Take the gate outputs. Takeable once. See [`Gate`].
+    ///
+    /// Take it before anything draws to the [`Oled`]: its one-time DAC bring-up needs RSPI0,
+    /// which the display shares, and panics if an OLED frame holds the bus at that moment.
     pub fn gate(&self) -> Gate {
         use core::sync::atomic::{AtomicBool, Ordering};
         static TAKEN: AtomicBool = AtomicBool::new(false);
@@ -420,6 +423,9 @@ impl Deluge {
     /// ```
     ///
     /// See [`ClockOut`].
+    ///
+    /// Take it before anything draws to the [`Oled`]: its one-time DAC bring-up needs RSPI0,
+    /// which the display shares, and panics if an OLED frame holds the bus at that moment.
     pub fn clock_out(&self, gate_ch: u8) -> ClockOut {
         use core::sync::atomic::{AtomicBool, Ordering};
         static TAKEN: AtomicBool = AtomicBool::new(false);
