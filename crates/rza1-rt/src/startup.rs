@@ -86,6 +86,29 @@ _reset_handler:
     bl _boot_led_write_low
 
     /*
+     * 1. Stop every DMAC channel the previous program left running. A debugger
+     * load or a jump from a loader is not a chip reset, so a circular channel
+     * (an SSI or SCIF RX ring in link-descriptor mode) keeps writing into
+     * memory this image now owns: BSS zeroed below would be overwritten again.
+     * Per channel, CLREN then SWRST (as the HAL's dmac::raw::stop does); then
+     * release all DMARS request routes, which SWRST does not reset.
+     */
+    ldr r0, =0xE8200028           /* CHCTRL_0; channels 0-7 every 0x40 */
+    mov r2, #8
+    bl _dmac_stop_group
+    ldr r0, =0xE8200428           /* CHCTRL_8; channels 8-15 every 0x40 */
+    mov r2, #8
+    bl _dmac_stop_group
+    ldr r0, =0xFCFE1000           /* DMARS0..7 */
+    mov r1, #0
+    mov r2, #8
+1:
+    str r1, [r0], #4
+    subs r2, r2, #1
+    bne 1b
+    dsb
+
+    /*
      * 1a. Disable MMU, D-cache, I-cache — leave HIVEC alone for now.
      *
      * Do NOT clear HIVEC here. HIVEC must stay set (ROM vectors) until VBAR
@@ -302,6 +325,21 @@ _reset_handler:
     /* 6. Branch to Rust entry point (never returns) */
     bl main
     b .                           /* Safety: infinite loop        */
+
+_dmac_stop_group:
+    /* Stop r2 DMAC channels whose CHCTRL registers start at r0, 0x40 apart:
+     * CLREN (bit 1) ends the transfer, then SWRST (bit 3) clears the channel's
+     * status. Clobbers r0-r3. */
+    mov r1, #(1 << 1)
+    mov r3, #(1 << 3)
+2:
+    str r1, [r0]
+    dsb
+    str r3, [r0]
+    add r0, r0, #0x40
+    subs r2, r2, #1
+    bne 2b
+    bx lr
 
 _boot_led_setup:
     /* The board's status LED (memory.x: RZA1_STATUS_LED_PORT/PIN; link.x derives the
