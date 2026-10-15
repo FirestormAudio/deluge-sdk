@@ -25,12 +25,7 @@
 use core::arch::asm;
 
 // PL310 register addresses
-const L2C_BASE: usize = 0x3FFF_F000;
-const L2C_REG1_CONTROL: usize = L2C_BASE + 0x100;
-const L2C_REG2_INT_CLR: usize = L2C_BASE + 0x220;
-const L2C_REG7_INV_WAY: usize = L2C_BASE + 0x77C;
-const L2C_REG9_D_LOCK0: usize = L2C_BASE + 0x900;
-const L2C_REG9_I_LOCK0: usize = L2C_BASE + 0x904;
+use crate::pac::L2C;
 
 const L2C_8WAY: u32 = 0x0000_00FF; // bitmask for all 8 ways (REG7_INV_WAY)
 
@@ -115,33 +110,31 @@ pub unsafe fn l1_enable() {
 /// Writes to memory-mapped PL310 registers.  Must be called after
 /// [`l1_enable`].
 pub unsafe fn l2_init() {
-    unsafe {
-        log::debug!("cache: initialising L2 (PL310)");
-        // 1. Disable L2 cache.
-        wr32(L2C_REG1_CONTROL, 0x0000_0000);
+    log::debug!("cache: initialising L2 (PL310)");
+    // 1. Disable L2 cache.
+    L2C.reg1_control().write_value(0x0000_0000);
 
-        // 2. Flush all 8 ways — poll until hardware clears all bits.
-        wr32(L2C_REG7_INV_WAY, L2C_8WAY);
-        log::trace!("cache: L2 invalidating all 8 ways...");
-        while rd32(L2C_REG7_INV_WAY) & L2C_8WAY != 0 {}
-        log::trace!("cache: L2 all ways invalidated");
+    // 2. Flush all 8 ways — poll until hardware clears all bits.
+    L2C.reg7_inv_way().write_value(L2C_8WAY);
+    log::trace!("cache: L2 invalidating all 8 ways...");
+    while L2C.reg7_inv_way().read() & L2C_8WAY != 0 {}
+    log::trace!("cache: L2 all ways invalidated");
 
-        // 3. Clear all interrupt sources in one write (bits [8:0]).
-        wr32(L2C_REG2_INT_CLR, L2C_INT_CLR_ALL);
+    // 3. Clear all interrupt sources in one write (bits [8:0]).
+    L2C.reg2_int_clear().write_value(L2C_INT_CLR_ALL);
 
-        // 4. Unlock both D-cache and I-cache ways (all 8 ways active).
-        //    DMA coherency is handled at the MMU level: all DMA buffers are
-        //    accessed exclusively through the OCRAM non-cacheable mirror alias
-        //    (0x60000000–0x609FFFFF, PARA_NORMAL_NOT_CACHE), which prevents L2
-        //    from allocating lines for DMA accesses regardless of lockdown.
-        //    Only one AXI master (the Cortex-A9) is connected on RZ/A1L so only
-        //    LOCKDOWN0 needs to be written (masters 1–7 are unused).
-        wr32(L2C_REG9_D_LOCK0, 0x0000_0000);
-        wr32(L2C_REG9_I_LOCK0, 0x0000_0000);
+    // 4. Unlock both D-cache and I-cache ways (all 8 ways active).
+    //    DMA coherency is handled at the MMU level: all DMA buffers are
+    //    accessed exclusively through the OCRAM non-cacheable mirror alias
+    //    (0x60000000–0x609FFFFF, PARA_NORMAL_NOT_CACHE), which prevents L2
+    //    from allocating lines for DMA accesses regardless of lockdown.
+    //    Only one AXI master (the Cortex-A9) is connected on RZ/A1L so only
+    //    LOCKDOWN0 needs to be written (masters 1–7 are unused).
+    L2C.reg9_d_lockdown0().write_value(0x0000_0000);
+    L2C.reg9_i_lockdown0().write_value(0x0000_0000);
 
-        // 5. Enable L2 cache.
-        wr32(L2C_REG1_CONTROL, L2C_ENABLE);
-    }
+    // 5. Enable L2 cache.
+    L2C.reg1_control().write_value(L2C_ENABLE);
 }
 
 // ---------------------------------------------------------------------------
@@ -385,8 +378,6 @@ pub unsafe fn dma_clean_inv_range(start: usize, end: usize) {
 // L2 cache (PL310) additional operations
 // ---------------------------------------------------------------------------
 
-const L2C_REG7_CACHE_SYNC: usize = L2C_BASE + 0x730;
-
 /// Disable the PL310 L2 cache.
 ///
 /// Port of `L2CacheDisable()` from `cache.c`.
@@ -398,9 +389,7 @@ const L2C_REG7_CACHE_SYNC: usize = L2C_BASE + 0x730;
 /// # Safety
 /// Writes to `REG1_CONTROL`.
 pub unsafe fn l2_disable() {
-    unsafe {
-        wr32(L2C_REG1_CONTROL, 0x0000_0000);
-    }
+    L2C.reg1_control().write_value(0x0000_0000);
 }
 
 /// Invalidate all 8 ways of the PL310 L2 cache (poll until complete).
@@ -411,23 +400,58 @@ pub unsafe fn l2_disable() {
 /// Writes to `REG7_INV_WAY` and polls it.  L2 must be disabled first to avoid
 /// cache coherency hazards with the CPU.
 pub unsafe fn l2_invalidate_all() {
-    unsafe {
-        wr32(L2C_REG7_INV_WAY, L2C_8WAY);
-        while rd32(L2C_REG7_INV_WAY) & L2C_8WAY != 0 {}
-        // Issue a cache sync to ensure the operation is complete before
-        // subsequent accesses.
-        wr32(L2C_REG7_CACHE_SYNC, 0);
-    }
+    L2C.reg7_inv_way().write_value(L2C_8WAY);
+    while L2C.reg7_inv_way().read() & L2C_8WAY != 0 {}
+    // Issue a cache sync to ensure the operation is complete before
+    // subsequent accesses.
+    L2C.reg7_cache_sync().write_value(0);
 }
 
-#[inline(always)]
-unsafe fn wr32(addr: usize, val: u32) {
-    unsafe {
-        core::ptr::write_volatile(addr as *mut u32, val);
-    }
-}
+#[cfg(all(test, not(target_os = "none")))]
+mod tests {
+    use super::*;
+    use crate::mmio::test;
 
-#[inline(always)]
-unsafe fn rd32(addr: usize) -> u32 {
-    unsafe { core::ptr::read_volatile(addr as *const u32) }
+    #[test]
+    fn the_pac_names_the_same_pl310_registers() {
+        use crate::pac::L2C;
+        assert_eq!(
+            (L2C.reg1_control().addr(), L2C.reg1_control().width()),
+            (0x3FFF_F100, 4)
+        );
+        assert_eq!(
+            (L2C.reg2_int_clear().addr(), L2C.reg2_int_clear().width()),
+            (0x3FFF_F220, 4)
+        );
+        assert_eq!(
+            (L2C.reg7_inv_way().addr(), L2C.reg7_inv_way().width()),
+            (0x3FFF_F77C, 4)
+        );
+        assert_eq!(
+            (L2C.reg7_cache_sync().addr(), L2C.reg7_cache_sync().width()),
+            (0x3FFF_F730, 4)
+        );
+        assert_eq!(
+            (
+                L2C.reg9_d_lockdown0().addr(),
+                L2C.reg9_d_lockdown0().width()
+            ),
+            (0x3FFF_F900, 4)
+        );
+        assert_eq!(
+            (
+                L2C.reg9_i_lockdown0().addr(),
+                L2C.reg9_i_lockdown0().width()
+            ),
+            (0x3FFF_F904, 4)
+        );
+    }
+
+    #[test]
+    fn disabling_the_l2_clears_its_control_register() {
+        test::reset();
+        test::poke32(0x3FFF_F100, 1);
+        unsafe { l2_disable() };
+        assert_eq!(test::writes(), [(0x3FFF_F100, 0)]);
+    }
 }

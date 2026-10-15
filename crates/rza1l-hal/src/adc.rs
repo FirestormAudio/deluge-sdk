@@ -9,14 +9,7 @@
 //! board clock init). The `AN0..AN7` inputs are dedicated analog pins on this
 //! family, so no GPIO pin-mux is required.
 
-use crate::mmio;
-
-/// ADC peripheral base (RZ/A1L).
-const ADC_BASE: usize = 0xE800_5800;
-/// `ADDRA` — first channel result register (offset 0x00); channel `n` is `+2*n`.
-const ADDR0: usize = ADC_BASE;
-/// `ADCSR` — A/D control/status register (offset 0x60).
-const ADCSR: usize = ADC_BASE + 0x60;
+use crate::pac::ADC;
 
 /// `ADCSR.ADST` — start a single conversion (bit 13).
 const ADCSR_ADST: u16 = 1 << 13;
@@ -35,7 +28,8 @@ const CH_MASK: u16 = 0x7;
 /// # Safety
 /// Writes a memory-mapped ADC register; the ADC module clock must be ungated.
 pub unsafe fn start(channel: u8) {
-    unsafe { mmio::write16(ADCSR, ADCSR_ADST | ADCSR_CKS | (channel as u16 & CH_MASK)) };
+    ADC.csr()
+        .write_value(ADCSR_ADST | ADCSR_CKS | (channel as u16 & CH_MASK));
 }
 
 /// Read the result of the conversion on `channel` if it has completed.
@@ -46,8 +40,23 @@ pub unsafe fn start(channel: u8) {
 /// # Safety
 /// Reads memory-mapped ADC registers.
 pub unsafe fn read(channel: u8) -> Option<u16> {
-    if unsafe { mmio::read16(ADCSR) } & ADCSR_ADF == 0 {
+    if ADC.csr().read() & ADCSR_ADF == 0 {
         return None;
     }
-    Some(unsafe { mmio::read16(ADDR0 + (channel as usize) * 2) })
+    Some(ADC.dr(channel as usize).read())
+}
+
+#[cfg(all(test, not(target_os = "none")))]
+mod tests {
+    #[test]
+    fn the_pac_names_the_same_converter_registers() {
+        use crate::pac::ADC;
+        for ch in 0..8 {
+            assert_eq!(
+                (ADC.dr(ch).addr(), ADC.dr(ch).width()),
+                (0xE800_5800 + ch * 2, 2)
+            );
+        }
+        assert_eq!((ADC.csr().addr(), ADC.csr().width()), (0xE800_5860, 2));
+    }
 }

@@ -4877,6 +4877,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rza1-pac"
+version = "0.1.0"
+
+[[package]]
 name = "rza1-rt"
 version = "0.1.0"
 
@@ -4897,6 +4901,7 @@ dependencies = [
  "embedded-hal-async",
  "embedded-io-async 0.7.0",
  "log",
+ "rza1-pac",
 ]
 
 [[package]]

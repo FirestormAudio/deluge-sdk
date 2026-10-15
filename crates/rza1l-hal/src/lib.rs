@@ -1,4 +1,4 @@
-//! `rza1l-hal` — Embassy HAL for the Renesas RZ/A1L (Cortex-A9, R7S721001).
+//! `rza1l-hal` — Embassy HAL for the Renesas RZ/A1L (Cortex-A9, R7S721020).
 //!
 //! Peripheral base addresses are taken from the RZ/A1L Hardware Manual.
 
@@ -26,10 +26,16 @@ pub(crate) fn uncached<T>(p: *mut T) -> *mut T {
 }
 
 pub use embassy_hal_internal::{Peri, PeripheralType};
+/// The RZ/A1L's registers, generated from the vendor SVD and checked against the RZ/A1L manual
+/// ([`rza1_pac`], built with its `rza1l` feature).
+pub use rza1_pac as pac;
+/// The MMIO seam every register access goes through (real volatile on the device, a shadow with
+/// an access log under host tests).
+pub use rza1_pac::mmio;
 
 embassy_hal_internal::peripherals! {
     OSTM0, OSTM1,
-    RSPI0, RSPI1, RSPI2, RSPI3, RSPI4,
+    RSPI0, RSPI1, RSPI2,
     SCIF0, SCIF1, SCIF2, SCIF3, SCIF4,
     SSIF0, SSIF1, SSIF2, SSIF3,
     SDHI0, SDHI1,
@@ -83,7 +89,9 @@ pub mod adc;
 // mmu and cache use ARM coprocessor instructions and cannot compile on the host. The reset
 // vector and exception entry live in the `rza1-rt` crate.
 pub mod bsc;
-#[cfg(target_os = "none")]
+// Host tests run on 32-bit ARM Linux (QEMU), where the coprocessor instructions assemble; only
+// the PL310 register paths run there.
+#[cfg(any(target_os = "none", all(test, target_arch = "arm")))]
 pub mod cache;
 /// The clock tree, derived from the board's crystal (set once at boot by the BSP).
 pub mod clocks;
@@ -94,9 +102,6 @@ pub mod interrupt;
 /// Pure memory-system math (cache-line ranges + MMU section table) used by the
 /// bare-metal-only `cache`/`mmu` modules; non-gated so it unit-tests on host.
 pub mod memmap;
-/// MMIO seam: real volatile access on firmware, a shadow + access log under
-/// test, so register write *sequences* can be asserted on the host.
-pub mod mmio;
 #[cfg(target_os = "none")]
 pub mod mmu;
 pub mod mtu2;

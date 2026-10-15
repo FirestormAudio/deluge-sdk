@@ -39,12 +39,12 @@ fi
 # The chip crates are board-agnostic: no Deluge names in their code or linker scripts (comments
 # may cite the Deluge as an example). Their dependencies are checked against Cargo's graph at the
 # end.
-CHIP_DIRS=(crates/rza1l-hal crates/rza1-rt crates/rza1-alloc)
+CHIP_DIRS=(crates/rza1-pac crates/rza1l-hal crates/rza1-rt crates/rza1-alloc)
 chip_code_hits="$(grep -rniE --include='*.rs' --include='*.x' 'deluge' "${CHIP_DIRS[@]}" \
   | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)' || true)"
 if [ -n "$chip_code_hits" ]; then
   printf '%s\n' "$chip_code_hits"
-  echo "error: a chip crate (rza1l-hal, rza1-rt, rza1-alloc) names the Deluge; board facts belong in deluge-bsp" >&2
+  echo "error: a chip crate (rza1-pac, rza1l-hal, rza1-rt, rza1-alloc) names the Deluge; board facts belong in deluge-bsp" >&2
   exit 1
 fi
 # Startup and exception entry are rza1-rt's: the HAL has no global_asm! (spec, Phase 3 exit).
@@ -103,6 +103,8 @@ def closure(start):
 RULES = [
     ("crates/rza1l-hal/", lambda n: n.startswith("deluge-"),
      "rza1l-hal depends on a deluge-* crate; board facts belong in deluge-bsp"),
+    ("crates/rza1-pac/", lambda n: n.startswith("deluge-"),
+     "rza1-pac depends on a deluge-* crate; board facts belong in deluge-bsp"),
     ("crates/rza1-rt/", lambda n: n.startswith("deluge-"),
      "rza1-rt depends on a deluge-* crate; board facts belong in deluge-bsp"),
     ("crates/rza1-alloc/", lambda n: n.startswith("deluge-"),

@@ -1,0 +1,7 @@
+transforms:
+  - !DeleteFieldsets
+    from: '^INTC::regs::ICD(ISR|ISER|ICER|ISPR|ICPR|ABR|IPR|IPTR|ICFR)\d+$'
+  - !MakeRegisterArray
+    blocks: ^INTC::INTC$
+    from: '^ICD(ISR|ISER|ICER|ISPR|ICPR|ABR|IPR|IPTR|ICFR)\d+$'
+    to: ICD$1

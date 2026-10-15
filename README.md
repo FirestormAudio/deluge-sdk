@@ -9,7 +9,7 @@ encoders, LEDs, audio DSP, CV/gate, MIDI, the SD card, and more. No `unsafe`,
 no register pokes, no linker flags.
 
 It is built on [Embassy] and targets the Deluge's onboard Renesas RZ/A1L
-(ARM Cortex-A9, R7S721001).
+(ARM Cortex-A9, R7S721020).
 
 ```rust
 #![no_std]
@@ -218,7 +218,7 @@ in the GPL UI toolkit, so an app stays permissively licensed unless it opts in.
 | Property | Value |
 |----------|-------|
 | CPU | ARM Cortex-A9, ARMv7-A, 400 MHz |
-| SoC | Renesas RZ/A1L (R7S721001) |
+| SoC | Renesas RZ/A1L (R7S721020) |
 | RAM | 3 MB on-chip SRAM + 64 MB SDRAM |
 | Rust target | `armv7a-none-eabihf` |
 | Rust channel | nightly (pinned in [`rust-toolchain.toml`](rust-toolchain.toml)) |

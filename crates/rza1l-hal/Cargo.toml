@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme = "README.md"
-description = "Embassy HAL for the Renesas RZ/A1L (ARM Cortex-A9, R7S721001)."
+description = "Embassy HAL for the Renesas RZ/A1L (ARM Cortex-A9, R7S721020)."
 categories = ["embedded", "no-std", "hardware-support"]
 keywords = ["rza1", "renesas", "cortex-a9", "embassy", "hal"]
 
@@ -26,6 +26,7 @@ test = false
 cortex-ar = { workspace = true, features = ["critical-section-single-core"] }
 
 [dependencies]
+rza1-pac = { path = "../rza1-pac", version = "0.1.0", features = ["rza1l"] }
 critical-section = { workspace = true }
 embassy-sync = { workspace = true }
 embassy-hal-internal = { workspace = true }

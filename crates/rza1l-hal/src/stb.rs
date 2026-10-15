@@ -25,18 +25,6 @@
 //! | STBCR11  | 0xFCFE_0440     |
 //! | STBCR12  | 0xFCFE_0444     |
 
-const STBCR2: usize = 0xFCFE_0024;
-const STBCR3: usize = 0xFCFE_0420;
-const STBCR4: usize = 0xFCFE_0424;
-const STBCR5: usize = 0xFCFE_0428;
-const STBCR6: usize = 0xFCFE_042C;
-const STBCR7: usize = 0xFCFE_0430;
-const STBCR8: usize = 0xFCFE_0434;
-const STBCR9: usize = 0xFCFE_0438;
-const STBCR10: usize = 0xFCFE_043C;
-const STBCR11: usize = 0xFCFE_0440;
-const STBCR12: usize = 0xFCFE_0444;
-
 /// Board-specific clock-gate configuration for CPG.STBCR2–STBCR12.
 ///
 /// Each field maps directly to the corresponding STBCR register (0 bit =
@@ -66,22 +54,23 @@ pub struct StbConfig {
 /// Writes to memory-mapped CPG registers.
 pub unsafe fn init(config: &StbConfig) {
     use crate::mmio;
+    use crate::pac::CPG;
     unsafe {
         log::debug!("stb: enabling module clocks");
         // Each register is written then immediately read back; the dummy read
         // flushes the write buffer before the next access (HW manual §10).
         for &(addr, val) in &[
-            (STBCR2, config.stbcr2),
-            (STBCR3, config.stbcr3),
-            (STBCR4, config.stbcr4),
-            (STBCR5, config.stbcr5),
-            (STBCR6, config.stbcr6),
-            (STBCR7, config.stbcr7),
-            (STBCR8, config.stbcr8),
-            (STBCR9, config.stbcr9),
-            (STBCR10, config.stbcr10),
-            (STBCR11, config.stbcr11),
-            (STBCR12, config.stbcr12),
+            (CPG.stbcr2().addr(), config.stbcr2),
+            (CPG.stbcr3().addr(), config.stbcr3),
+            (CPG.stbcr4().addr(), config.stbcr4),
+            (CPG.stbcr5().addr(), config.stbcr5),
+            (CPG.stbcr6().addr(), config.stbcr6),
+            (CPG.stbcr7().addr(), config.stbcr7),
+            (CPG.stbcr8().addr(), config.stbcr8),
+            (CPG.stbcr9().addr(), config.stbcr9),
+            (CPG.stbcr10().addr(), config.stbcr10),
+            (CPG.stbcr11().addr(), config.stbcr11),
+            (CPG.stbcr12().addr(), config.stbcr12),
         ] {
             mmio::write8(addr, val);
             let _ = mmio::read8(addr); // dummy read
@@ -94,40 +83,6 @@ pub unsafe fn init(config: &StbConfig) {
 mod tests {
     use super::*;
     use crate::mmio;
-
-    /// Verify every STBCRn address against the RZ/A1L HW Manual §10 table.
-    /// CPG base = 0xFCFE_0010 (FRQCR offset from module base 0xFCFE_0000).
-    #[test]
-    fn stbcr_register_addresses() {
-        assert_eq!(STBCR2, 0xFCFE_0024);
-        assert_eq!(STBCR3, 0xFCFE_0420);
-        assert_eq!(STBCR4, 0xFCFE_0424);
-        assert_eq!(STBCR5, 0xFCFE_0428);
-        assert_eq!(STBCR6, 0xFCFE_042C);
-        assert_eq!(STBCR7, 0xFCFE_0430);
-        assert_eq!(STBCR8, 0xFCFE_0434);
-        assert_eq!(STBCR9, 0xFCFE_0438);
-        assert_eq!(STBCR10, 0xFCFE_043C);
-        assert_eq!(STBCR11, 0xFCFE_0440);
-        assert_eq!(STBCR12, 0xFCFE_0444);
-    }
-
-    /// STBCR3–STBCR12 are contiguous 4-byte-stride registers.
-    #[test]
-    fn stbcr3_to_stbcr12_are_contiguous() {
-        let regs = [
-            STBCR3, STBCR4, STBCR5, STBCR6, STBCR7, STBCR8, STBCR9, STBCR10, STBCR11, STBCR12,
-        ];
-        for window in regs.windows(2) {
-            assert_eq!(
-                window[1] - window[0],
-                4,
-                "gap between {:08X} and {:08X} is not 4",
-                window[0],
-                window[1]
-            );
-        }
-    }
 
     /// STBCR4 = 0b00000111 enables SCIF0–SCIF4 (bits 7–3 = 0) and keeps
     /// reserved bits 2–0 = 1.  SCIF5 (bit 2) does not exist on RZ/A1L.
@@ -168,17 +123,17 @@ mod tests {
         assert_eq!(
             mmio::test::writes(),
             [
-                (STBCR2, 0x02),
-                (STBCR3, 0x03),
-                (STBCR4, 0x04),
-                (STBCR5, 0x05),
-                (STBCR6, 0x06),
-                (STBCR7, 0x07),
-                (STBCR8, 0x08),
-                (STBCR9, 0x09),
-                (STBCR10, 0x0A),
-                (STBCR11, 0x0B),
-                (STBCR12, 0x0C),
+                (0xFCFE_0024, 0x02),
+                (0xFCFE_0420, 0x03),
+                (0xFCFE_0424, 0x04),
+                (0xFCFE_0428, 0x05),
+                (0xFCFE_042C, 0x06),
+                (0xFCFE_0430, 0x07),
+                (0xFCFE_0434, 0x08),
+                (0xFCFE_0438, 0x09),
+                (0xFCFE_043C, 0x0A),
+                (0xFCFE_0440, 0x0B),
+                (0xFCFE_0444, 0x0C),
             ]
         );
     }
@@ -213,5 +168,40 @@ mod tests {
             );
             assert_eq!(pair[0].width, 1, "STBCR is 8-bit");
         }
+    }
+
+    /// The PAC's STBCRn are the registers (and widths) this module wrote by address.
+    #[test]
+    fn the_pac_names_the_same_stbcr_registers() {
+        use crate::pac::CPG;
+        let regs = [
+            (CPG.stbcr2().addr(), CPG.stbcr2().width()),
+            (CPG.stbcr3().addr(), CPG.stbcr3().width()),
+            (CPG.stbcr4().addr(), CPG.stbcr4().width()),
+            (CPG.stbcr5().addr(), CPG.stbcr5().width()),
+            (CPG.stbcr6().addr(), CPG.stbcr6().width()),
+            (CPG.stbcr7().addr(), CPG.stbcr7().width()),
+            (CPG.stbcr8().addr(), CPG.stbcr8().width()),
+            (CPG.stbcr9().addr(), CPG.stbcr9().width()),
+            (CPG.stbcr10().addr(), CPG.stbcr10().width()),
+            (CPG.stbcr11().addr(), CPG.stbcr11().width()),
+            (CPG.stbcr12().addr(), CPG.stbcr12().width()),
+        ];
+        assert_eq!(
+            regs,
+            [
+                (0xFCFE_0024, 1),
+                (0xFCFE_0420, 1),
+                (0xFCFE_0424, 1),
+                (0xFCFE_0428, 1),
+                (0xFCFE_042C, 1),
+                (0xFCFE_0430, 1),
+                (0xFCFE_0434, 1),
+                (0xFCFE_0438, 1),
+                (0xFCFE_043C, 1),
+                (0xFCFE_0440, 1),
+                (0xFCFE_0444, 1),
+            ]
+        );
     }
 }

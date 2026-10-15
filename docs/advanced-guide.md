@@ -271,7 +271,7 @@ SD I/O) coordinating through atomics, shared buffers, and signals.
 
 ## 5. Interrupts & the GIC
 
-The interrupt controller is a GIC-400 with 587 sources, wrapped in
+The interrupt controller is a GIC-400 with 538 sources (IDs 0–537 on the RZ/A1L), wrapped in
 [`crates/rza1l-hal/src/gic.rs`](../crates/rza1l-hal/src/gic.rs). A handler is a type that
 implements `interrupt::Handler` for one typed interrupt; `bind_interrupts!` names the pairing and
 `interrupt::bind` installs it. Priority and enable stay `unsafe` GIC calls:

@@ -19,30 +19,11 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-// ------- GIC Distributor register addresses (base 0xE820_1000) --------------
-const GICD_BASE: usize = 0xE820_1000;
-
-const GICD_CTLR: usize = GICD_BASE; // Distributor Control
-const GICD_IGROUPR0: usize = GICD_BASE + 0x080; // Interrupt Security (ICDISR0)
-const GICD_ISENABLER0: usize = GICD_BASE + 0x100; // Set-Enable (ICDISER0)
-const GICD_ICENABLER0: usize = GICD_BASE + 0x180; // Clear-Enable (ICDICER0)
-const GICD_ICPENDR0: usize = GICD_BASE + 0x280; // Clear-Pending (ICDICPR0)
-const GICD_ISACTIVER0: usize = GICD_BASE + 0x300; // Active Bit (ICDABR0), read-only on GICv1
-const GICD_IPRIORITYR0: usize = GICD_BASE + 0x400; // Priority (ICDIPR0)
-const GICD_ITARGETSR0: usize = GICD_BASE + 0x800; // Target (ICDIPTR0)
-const GICD_ICFGR0: usize = GICD_BASE + 0xC00; // Configuration (ICDICFR0)
-
-// ------- GIC CPU Interface register addresses (base 0xE820_2000) -------------
-const GICC_BASE: usize = 0xE820_2000;
-
-pub(crate) const GICC_CTLR_ADDR: usize = GICC_BASE; // CPU Interface Control (ICCICR)
-pub(crate) const GICC_PMR_ADDR: usize = GICC_BASE + 0x004; // Priority Mask (ICCPMR)
-pub(crate) const GICC_BPR_ADDR: usize = GICC_BASE + 0x008; // Binary Point (ICCBPR)
-pub(crate) const GICC_IAR_ADDR: usize = GICC_BASE + 0x00C; // Interrupt Acknowledge (ICCIAR)
-pub(crate) const GICC_EOIR_ADDR: usize = GICC_BASE + 0x010; // End of Interrupt (ICCEOIR)
-pub(crate) const GICC_HPPIR_ADDR: usize = GICC_BASE + 0x018; // Highest-Priority Pending (ICCHPIR)
-
-pub(crate) const GICD_IPRIORITYR0_ADDR: usize = GICD_IPRIORITYR0;
+// ------- Registers, from rza1-pac ------------------------------------------------
+// The distributor at 0xE820_1000 and the CPU interface at 0xE820_2000 are `INTC`; so are the
+// RZ/A1L's external-interrupt registers ICR1/IRQRR at 0xFCFE_F802/0xFCFE_F804.
+use crate::pac::INTC;
+use crate::pac::intc::regs::{Iccbpr, Iccicr, Iccpmr, Icddcr, Icr1, Irqrr};
 
 // ---------------------------------------------------------------------------
 // Priority field constants
@@ -70,8 +51,8 @@ const ICCIAR_SPURIOUS: u32 = 0x3FE;
 
 // ---------------------------------------------------------------------------
 
-/// Total number of interrupt sources on RZ/A1L.
-pub const INT_ID_TOTAL: usize = 587;
+/// Total number of interrupt sources on the RZ/A1L: IDs 0–537 (hardware manual Table 7.3).
+pub const INT_ID_TOTAL: usize = 538;
 
 /// Interrupt handler type. The handler is called with IRQ re-enabled
 /// (nested interrupts supported), already in SYS mode.
@@ -162,11 +143,12 @@ static HANDLERS: [HandlerCell; INT_ID_TOTAL] = {
     [NONE; INT_ID_TOTAL]
 };
 
-/// Initial ICDICFR edge/level configuration values (37 registers × 32 bits).
-/// Taken verbatim from the Renesas `intc_icdicfrn_table[]` in `intc.c`.
+/// Initial ICDICFR edge/level configuration values (34 registers × 32 bits, the RZ/A1L's).
+/// Taken verbatim from the Renesas `intc_icdicfrn_table[]` in `intc.c`, less its last three
+/// words (IDs 544–586, which only the RZ/A1H has).
 /// Each 2-bit field: bit[1] = 1 → edge-triggered, 0 → level-sensitive (GIC architecture);
 /// bit[0] is implementation-defined.
-static ICDICFR_INIT: [u32; 37] = [
+static ICDICFR_INIT: [u32; 34] = [
     0xAAAAAAAA, /* ICDICFR0  :  15 to   0 */
     0x00000055, /* ICDICFR1  :  19 to  16 */
     0xFFFD5555, /* ICDICFR2  :  47 to  32 */
@@ -201,9 +183,6 @@ static ICDICFR_INIT: [u32; 37] = [
     0x55555555, /* ICDICFR31 : 511 to 496 */
     0x55555555, /* ICDICFR32 : 527 to 512 */
     0x55555555, /* ICDICFR33 : 543 to 528 */
-    0x55555555, /* ICDICFR34 : 559 to 544 */
-    0x55555555, /* ICDICFR35 : 575 to 560 */
-    0x00155555, /* ICDICFR36 : 586 to 576 */
 ];
 
 // ---------------------------------------------------------------------------
@@ -230,11 +209,11 @@ static ICDICFR_INIT: [u32; 37] = [
 pub unsafe fn init() {
     unsafe {
         log::debug!("gic: init ({} IRQ sources)", INT_ID_TOTAL);
-        let n_isr = (INT_ID_TOTAL / 32) + 1; // 19 — ICDISR count
-        let _n_icfr = ICDICFR_INIT.len(); // 37 — ICDICFR count
-        let n_ipr = (INT_ID_TOTAL / 4) + 1; // 147 — ICDIPR count
-        let n_iptr = n_ipr; // 147 — ICDIPTR count
-        let n_icer = n_isr; // 19  — ICDICER count
+        let n_isr = (INT_ID_TOTAL / 32) + 1; // 17 — ICDISR count
+        let _n_icfr = ICDICFR_INIT.len(); // 34 — ICDICFR count
+        let n_ipr = (INT_ID_TOTAL / 4) + 1; // 135 — ICDIPR count
+        let n_iptr = n_ipr; // 135 — ICDIPTR count
+        let n_icer = n_isr; // 17  — ICDICER count
 
         // 0. End what a debugger's reset left active. A probe's halt-only reset restarts the core
         //    but not the GIC, so an interrupt acknowledged before it stays active and holds the CPU
@@ -242,64 +221,61 @@ pub unsafe fn init() {
         //    is then never signalled (the time driver's OSTM among them, so no timer ever fires).
         //    Read before step 3 rewrites the priorities.
         end_stale_active(n_isr);
-        let icpendr = GICD_ICPENDR0 as *mut u32;
         for i in 0..n_isr {
-            icpendr.add(i).write_volatile(0xFFFF_FFFF);
+            INTC.icdicpr(i).write_value(0xFFFF_FFFF);
         }
 
         // 1. Mark all interrupts as secure (Group 0), matching the C driver.
-        let igroupr = GICD_IGROUPR0 as *mut u32;
         for i in 0..n_isr {
-            igroupr.add(i).write_volatile(0);
+            INTC.icdisr(i).write_value(0);
         }
 
         // 2. Edge/level configuration — Renesas-specific table from intc.c.
         //    ICDICFR0 (index 0) is read-only per TRM (SGIs are always edge); skip it.
-        let icfgr = GICD_ICFGR0 as *mut u32;
         for (i, &val) in ICDICFR_INIT.iter().enumerate().skip(1) {
-            icfgr.add(i).write_volatile(val);
+            INTC.icdicfr(i).write_value(val);
         }
 
         // 3. Set all interrupt priorities to the lowest active level (31).
         //    Priority field is [7:3], so 31 << 3 = 0xF8 per byte.
-        let ipr = GICD_IPRIORITYR0 as *mut u32;
         for i in 0..n_ipr {
-            ipr.add(i).write_volatile(GIC_PRIORITY_LOWEST_WORD);
+            INTC.icdipr(i).write_value(GIC_PRIORITY_LOWEST_WORD);
         }
 
         // 4. Route all SPI interrupts (IDs 32+) to CPU 0 (target byte = 0x01).
         //    ICDIPTR0–ICDIPTR7 (IDs 0–31) are CPU-local and must not be touched.
-        let iptr = GICD_ITARGETSR0 as *mut u32;
         for i in 8..n_iptr {
-            iptr.add(i).write_volatile(0x0101_0101);
+            INTC.icdiptr(i).write_value(0x0101_0101);
         }
 
         // 5. Disable all interrupts (ICDICER — write-1-to-clear).
-        let icer = GICD_ICENABLER0 as *mut u32;
         for i in 0..n_icer {
-            icer.add(i).write_volatile(0xFFFF_FFFF);
+            INTC.icdicer(i).write_value(0xFFFF_FFFF);
         }
 
         // 6. CPU interface: priority mask — accept all priorities 0–30.
         //    ICCPMR bit field [7:3] is valid; 31 << 3 = 0xF8.
-        (GICC_PMR_ADDR as *mut u32).write_volatile(31u32 << GIC_PRIORITY_SHIFT);
+        INTC.iccpmr()
+            .write_value(Iccpmr(31u32 << GIC_PRIORITY_SHIFT));
 
         // 7. Binary point: group priority [7:3], sub-priority [2:0] unused.
-        (GICC_BPR_ADDR as *mut u32).write_volatile(2);
+        INTC.iccbpr().write_value(Iccbpr(2));
 
         // 8. Enable CPU interface — forward both Group 0 (secure) and Group 1
         //    (non-secure) interrupts.
-        (GICC_CTLR_ADDR as *mut u32).write_volatile(ICCICR_ENABLES | ICCICR_ENABLENS);
+        INTC.iccicr()
+            .write_value(Iccicr(ICCICR_ENABLES | ICCICR_ENABLENS));
 
         // 9. Enable GIC distributor.
-        (GICD_CTLR as *mut u32).write_volatile(1);
+        INTC.icddcr().write_value(Icddcr(1));
         log::debug!("gic: distributor + CPU interface enabled");
     }
 }
 
 /// The most urgent active interrupt in `active` (one bit per interrupt ID, 32 IDs a word, as the
 /// active bit registers hold them), by `priority` (a lower value is more urgent; the lower ID on a
-/// tie), or `None` when none is active.
+/// tie), or `None` when none is active. Bits past the last interrupt ID (`INT_ID_TOTAL`) name no
+/// interrupt and are ignored: the last active word covers IDs the chip doesn't have.
 fn most_urgent_active(active: &[u32], priority: impl Fn(usize) -> u8) -> Option<usize> {
     let mut best: Option<(u8, usize)> = None;
     for (word, &bits) in active.iter().enumerate() {
@@ -307,6 +283,9 @@ fn most_urgent_active(active: &[u32], priority: impl Fn(usize) -> u8) -> Option<
         while rest != 0 {
             let id = word * 32 + rest.trailing_zeros() as usize;
             rest &= rest - 1;
+            if id >= INT_ID_TOTAL {
+                continue;
+            }
             let p = priority(id);
             if best.is_none_or(|(q, _)| p < q) {
                 best = Some((p, id));
@@ -333,11 +312,12 @@ unsafe fn end_stale_active(n_words: usize) {
     while ended < MAX_ENDS {
         for (i, word) in words.iter_mut().enumerate() {
             // SAFETY: ICDABR0..n_words are readable GIC distributor registers.
-            *word = unsafe { (GICD_ISACTIVER0 as *const u32).add(i).read_volatile() };
+            *word = INTC.icdabr(i).read();
         }
-        // SAFETY: every id below n_words × 32 ≤ INT_ID_TOTAL has an IPRIORITYR byte.
-        let priority =
-            |id: usize| unsafe { (GICD_IPRIORITYR0 as *const u8).add(id).read_volatile() };
+        // `most_urgent_active` asks only for IDs below INT_ID_TOTAL, each with a priority byte in
+        // ICDIPR0–134. The RZ/A1L gives the priority registers 32-bit access only (manual Table 46.1): read the
+        // word and take the ID's byte.
+        let priority = |id: usize| (INTC.icdipr(id / 4).read() >> ((id % 4) * 8)) as u8;
         let Some(id) = most_urgent_active(words, priority) else {
             break;
         };
@@ -347,7 +327,8 @@ unsafe fn end_stale_active(n_words: usize) {
         );
         // SAFETY: ICCEOIR takes the ID of an active interrupt; this core is CPU 0, the source an
         // SGI's EOI names.
-        unsafe { (GICC_EOIR_ADDR as *mut u32).write_volatile(id as u32) };
+        INTC.icceoir()
+            .write_value(crate::pac::intc::regs::Icceoir(id as u32));
         ended += 1;
     }
 }
@@ -379,12 +360,11 @@ pub(crate) fn handler(id: u16) -> Option<HandlerFn> {
 /// # Safety
 /// Writes to memory-mapped peripheral registers.
 pub unsafe fn enable(id: u16) {
-    unsafe {
-        if (id as usize) >= INT_ID_TOTAL {
-            return;
-        }
-        crate::mmio::write32(GICD_ISENABLER0 + 4 * (id >> 5) as usize, 1u32 << (id & 31));
+    if (id as usize) >= INT_ID_TOTAL {
+        return;
     }
+    INTC.icdiser((id >> 5) as usize)
+        .write_value(1u32 << (id & 31));
 }
 
 /// Disable (mask) interrupt `id` in the GIC distributor.
@@ -392,12 +372,11 @@ pub unsafe fn enable(id: u16) {
 /// # Safety
 /// Writes to memory-mapped peripheral registers.
 pub unsafe fn disable(id: u16) {
-    unsafe {
-        if (id as usize) >= INT_ID_TOTAL {
-            return;
-        }
-        crate::mmio::write32(GICD_ICENABLER0 + 4 * (id >> 5) as usize, 1u32 << (id & 31));
+    if (id as usize) >= INT_ID_TOTAL {
+        return;
     }
+    INTC.icdicer((id >> 5) as usize)
+        .write_value(1u32 << (id & 31));
 }
 
 /// Shut the GIC down entirely: turn off the distributor and the CPU
@@ -410,10 +389,8 @@ pub unsafe fn disable(id: u16) {
 /// # Safety
 /// Writes the GIC distributor and CPU-interface control registers.
 pub unsafe fn shutdown() {
-    unsafe {
-        (GICC_CTLR_ADDR as *mut u32).write_volatile(0); // CPU interface off
-        (GICD_CTLR as *mut u32).write_volatile(0); // distributor off
-    }
+    INTC.iccicr().write_value(Iccicr(0)); // CPU interface off
+    INTC.icddcr().write_value(Icddcr(0)); // distributor off
 }
 
 /// Set priority for interrupt `id` (0 = highest, 31 = lowest).
@@ -421,17 +398,15 @@ pub unsafe fn shutdown() {
 /// # Safety
 /// Writes to memory-mapped peripheral registers.
 pub unsafe fn set_priority(id: u16, priority: u8) {
-    unsafe {
-        if (id as usize) >= INT_ID_TOTAL || priority >= 32 {
-            return;
-        }
-        let addr = GICD_IPRIORITYR0 + 4 * (id / 4) as usize;
-        let shift = ((id % 4) * 8) as u32;
-        let mut val = crate::mmio::read32(addr);
-        val &= !(0xFFu32 << shift);
-        val |= ((priority as u32) << GIC_PRIORITY_SHIFT) << shift; // bits [7:3] are the valid field
-        crate::mmio::write32(addr, val);
+    if (id as usize) >= INT_ID_TOTAL || priority >= 32 {
+        return;
     }
+    let ipr = INTC.icdipr((id / 4) as usize);
+    let shift = ((id % 4) * 8) as u32;
+    let mut val = ipr.read();
+    val &= !(0xFFu32 << shift);
+    val |= ((priority as u32) << GIC_PRIORITY_SHIFT) << shift; // bits [7:3] are the valid field
+    ipr.write_value(val);
 }
 
 // ---------------------------------------------------------------------------
@@ -446,15 +421,12 @@ pub unsafe fn set_priority(id: u16, priority: u8) {
 /// # Safety
 /// Writes to MMIO.  Call before enabling the interrupt in the GIC.
 pub unsafe fn set_irq_both_edges(irq_num: u8) {
-    unsafe {
-        const ICR1: usize = 0xFCFE_F802;
-        let shift = (irq_num * 2) as u32;
-        let mask = 0b11u16 << shift;
-        let ptr = ICR1 as *mut u16;
-        let cleared = ptr.read_volatile() & !mask; // clear to level-low (00) first
-        ptr.write_volatile(cleared);
-        ptr.write_volatile(cleared | (0b11u16 << shift)); // then both-edges (11)
-    }
+    let shift = (irq_num * 2) as u32;
+    let mask = 0b11u16 << shift;
+    let icr1 = INTC.icr1();
+    let cleared = icr1.read().0 & !mask; // clear to level-low (00) first
+    icr1.write_value(Icr1(cleared));
+    icr1.write_value(Icr1(cleared | (0b11u16 << shift))); // then both-edges (11)
 }
 
 /// Configure external interrupt `irq_num` (0–7) for **falling-edge** detection.
@@ -465,15 +437,12 @@ pub unsafe fn set_irq_both_edges(irq_num: u8) {
 /// # Safety
 /// Writes to MMIO.  Call before enabling the interrupt in the GIC.
 pub unsafe fn set_irq_falling_edge(irq_num: u8) {
-    unsafe {
-        const ICR1: usize = 0xFCFE_F802;
-        let shift = (irq_num * 2) as u32;
-        let mask = 0b11u16 << shift;
-        let ptr = ICR1 as *mut u16;
-        let cleared = ptr.read_volatile() & !mask;
-        ptr.write_volatile(cleared);
-        ptr.write_volatile(cleared | (0b01u16 << shift));
-    }
+    let shift = (irq_num * 2) as u32;
+    let mask = 0b11u16 << shift;
+    let icr1 = INTC.icr1();
+    let cleared = icr1.read().0 & !mask;
+    icr1.write_value(Icr1(cleared));
+    icr1.write_value(Icr1(cleared | (0b01u16 << shift)));
 }
 
 /// Clear the pending flag for external interrupt `irq_num` (0–7) in IRQRR.
@@ -484,11 +453,8 @@ pub unsafe fn set_irq_falling_edge(irq_num: u8) {
 /// # Safety
 /// Writes to MMIO register at `0xFCFEF804`.
 pub unsafe fn clear_irq_pending(irq_num: u8) {
-    unsafe {
-        const IRQRR: usize = 0xFCFE_F804;
-        let ptr = IRQRR as *mut u16;
-        ptr.write_volatile(ptr.read_volatile() & !(1u16 << irq_num));
-    }
+    let irqrr = INTC.irqrr();
+    irqrr.write_value(Irqrr(irqrr.read().0 & !(1u16 << irq_num)));
 }
 
 // ---------------------------------------------------------------------------
@@ -558,17 +524,9 @@ pub unsafe extern "C" fn gic_dispatch(icciar: u32) {
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
     use super::{
-        GICC_BASE, GICC_CTLR_ADDR, GICC_EOIR_ADDR, GICC_IAR_ADDR, GICC_PMR_ADDR, GICD_BASE,
-        GICD_ICFGR0, GICD_ICPENDR0, GICD_IPRIORITYR0, GICD_ISACTIVER0, GICD_ISENABLER0,
-        ICDICFR_INIT, INT_ID_TOTAL, SDRAM_CODE_AREAS, is_plausible_code_address, is_plausible_in,
-        most_urgent_active, set_sdram_code_window,
+        ICDICFR_INIT, INT_ID_TOTAL, SDRAM_CODE_AREAS, init, is_plausible_code_address,
+        is_plausible_in, most_urgent_active, set_irq_both_edges, set_sdram_code_window,
     };
-
-    #[test]
-    fn stale_state_register_addresses() {
-        assert_eq!(GICD_ICPENDR0, 0xE820_1280); // ICDICPR0
-        assert_eq!(GICD_ISACTIVER0, 0xE820_1300); // ICDABR0
-    }
 
     #[test]
     fn no_active_interrupt_ends_nothing() {
@@ -600,59 +558,12 @@ mod tests {
         assert_eq!(most_urgent_active(&[0b1010_0000, 1], |_| 0x70), Some(5));
     }
 
-    #[test]
-    fn int_id_total() {
-        // RZ/A1L has 587 interrupt sources (IDs 0–586).
-        assert_eq!(INT_ID_TOTAL, 587);
-    }
-
-    #[test]
-    fn gicd_base_address() {
-        assert_eq!(GICD_BASE, 0xE820_1000);
-    }
-
-    #[test]
-    fn gicc_base_address() {
-        assert_eq!(GICC_BASE, 0xE820_2000);
-    }
-
-    /// Spot-check key CPU-interface register addresses against the HW manual.
-    #[test]
-    fn gicc_register_addresses() {
-        assert_eq!(GICC_CTLR_ADDR, 0xE820_2000); // ICCICR
-        assert_eq!(GICC_PMR_ADDR, 0xE820_2004); // ICCPMR
-        assert_eq!(GICC_IAR_ADDR, 0xE820_200C); // ICCIAR
-        assert_eq!(GICC_EOIR_ADDR, 0xE820_2010); // ICCEOIR
-    }
-
-    /// ICDICFR0 starts at GICD+0xC00; there must be exactly 37 entries to
-    /// cover all 587 interrupt sources at 2 bits each (37×16 = 592 ≥ 587).
-    #[test]
-    fn icdicfr_table_length() {
-        assert_eq!(ICDICFR_INIT.len(), 37);
-    }
-
-    #[test]
-    fn icdicfr_base_address() {
-        assert_eq!(GICD_ICFGR0, GICD_BASE + 0xC00);
-    }
-
     /// First and last ICDICFR entries from the Renesas intc.c table.
     #[test]
     fn icdicfr_spot_values() {
         assert_eq!(ICDICFR_INIT[0], 0xAAAAAAAA); // ICDICFR0 : IDs 15–0
         assert_eq!(ICDICFR_INIT[1], 0x00000055); // ICDICFR1 : IDs 19–16
-        assert_eq!(ICDICFR_INIT[36], 0x00155555); // ICDICFR36: IDs 586–576
-    }
-
-    #[test]
-    fn gicd_isenabler_base_address() {
-        assert_eq!(GICD_ISENABLER0, GICD_BASE + 0x100);
-    }
-
-    #[test]
-    fn gicd_ipriorityr_base_address() {
-        assert_eq!(GICD_IPRIORITYR0, GICD_BASE + 0x400);
+        assert_eq!(ICDICFR_INIT[33], 0x55555555); // ICDICFR33: IDs 543–528, the RZ/A1L's last
     }
 
     #[test]
@@ -694,5 +605,113 @@ mod tests {
     fn a_window_outside_cs2_cs3_is_rejected() {
         // Validated before anything is stored, so this doesn't disturb the global window.
         set_sdram_code_window(0x2000_0000..0x2030_0000);
+    }
+
+    #[test]
+    fn the_pac_names_the_same_gic_registers() {
+        use crate::pac::INTC;
+        assert_eq!(INTC.icddcr().addr(), 0xE820_1000);
+        assert_eq!(INTC.icdisr(0).addr(), 0xE820_1080);
+        assert_eq!(INTC.icdiser(0).addr(), 0xE820_1100);
+        assert_eq!(INTC.icdicer(0).addr(), 0xE820_1180);
+        assert_eq!(INTC.icdicpr(0).addr(), 0xE820_1280);
+        assert_eq!(INTC.icdabr(0).addr(), 0xE820_1300);
+        assert_eq!(
+            (INTC.icdipr(0).addr(), INTC.icdipr(0).width()),
+            (0xE820_1400, 4)
+        );
+        assert_eq!(INTC.icdipr(134).addr(), 0xE820_1618);
+        assert_eq!(INTC.icdiptr(0).addr(), 0xE820_1800);
+        assert_eq!(INTC.icdicfr(0).addr(), 0xE820_1C00);
+        assert_eq!(INTC.iccicr().addr(), 0xE820_2000);
+        assert_eq!(INTC.iccpmr().addr(), 0xE820_2004);
+        assert_eq!(INTC.iccbpr().addr(), 0xE820_2008);
+        assert_eq!((INTC.icr1().addr(), INTC.icr1().width()), (0xFCFE_F802, 2));
+        assert_eq!(
+            (INTC.irqrr().addr(), INTC.irqrr().width()),
+            (0xFCFE_F804, 2)
+        );
+    }
+
+    #[test]
+    fn an_active_bit_past_the_last_interrupt_id_is_ignored() {
+        // ICDABR16 covers IDs 512–543, but the RZ/A1L stops at 537: bit 28 (ID 540) names no
+        // interrupt and has no priority register to look up.
+        let mut active = [0u32; 17];
+        active[16] = (1 << 28) | (1 << 25); // IDs 540 and 537
+        let priority = |id: usize| {
+            assert!(id < INT_ID_TOTAL, "looked up the priority of ID {id}");
+            0
+        };
+        assert_eq!(most_urgent_active(&active, priority), Some(537));
+    }
+
+    /// rza1-rt's IRQ shim (`src/startup.rs`, `.equ GICC_*_ADDR` and `GICD_IPR0_ADDR`) acknowledges
+    /// and ends every interrupt at these addresses; `global_asm!` can't take them from the PAC, so
+    /// pin them here.
+    #[test]
+    fn the_irq_shims_gicc_addresses_are_the_pacs() {
+        use crate::pac::INTC;
+        assert_eq!(INTC.icciar().addr(), 0xE820_200C);
+        assert_eq!(INTC.icceoir().addr(), 0xE820_2010);
+        assert_eq!(INTC.icchpir().addr(), 0xE820_2018);
+        // `.equ GICD_IPR0_ADDR`: the errata-733075 path's read-modify-write of priority word 0.
+        assert_eq!(INTC.icdipr(0).addr(), 0xE820_1400);
+    }
+
+    /// The RZ/A1L's distributor: interrupt IDs 0–537 (manual Table 7.3), so 17 words of enable
+    /// bits, 135 of priorities and 34 of configuration (Table 46.1).
+    #[test]
+    fn the_gic_is_sized_for_the_rza1l() {
+        assert_eq!(INT_ID_TOTAL, 538);
+        assert_eq!(ICDICFR_INIT.len(), 34);
+        assert!(std::panic::catch_unwind(|| crate::pac::INTC.icdiser(17)).is_err());
+        assert!(std::panic::catch_unwind(|| crate::pac::INTC.icdipr(135)).is_err());
+    }
+
+    #[test]
+    fn init_masks_everything_then_enables_the_interfaces_last() {
+        crate::mmio::test::reset();
+        unsafe { init() };
+        let w = crate::mmio::test::writes();
+        // Every ICDICER word written all-ones (interrupts off), and none past the RZ/A1L's 17.
+        for i in 0..17 {
+            assert!(
+                w.contains(&(0xE820_1180 + 4 * i, 0xFFFF_FFFF)),
+                "ICDICER{i}"
+            );
+        }
+        assert!(
+            !w.iter().any(|&(a, _)| a == 0xE820_1180 + 4 * 17),
+            "no ICDICER17 on the RZ/A1L"
+        );
+        // SPIs (words 8..) routed to CPU 0; the CPU-local words untouched.
+        assert!(w.contains(&(0xE820_1800 + 4 * 8, 0x0101_0101)));
+        assert!(
+            !w.iter()
+                .any(|&(a, _)| (0xE820_1800..0xE820_1820).contains(&a))
+        );
+        // Priority mask 31, then the CPU interface, then the distributor, last.
+        let n = w.len();
+        assert_eq!(
+            &w[n - 4..],
+            [
+                (0xE820_2004, 31 << 3),
+                (0xE820_2008, 2),
+                (0xE820_2000, 3),
+                (0xE820_1000, 1)
+            ]
+        );
+    }
+
+    #[test]
+    fn an_irq_pin_is_set_to_both_edges_through_level_low() {
+        crate::mmio::test::reset();
+        crate::mmio::test::poke16(0xFCFE_F802, 0b01 << 6);
+        unsafe { set_irq_both_edges(3) };
+        assert_eq!(
+            crate::mmio::test::writes(),
+            [(0xFCFE_F802, 0), (0xFCFE_F802, 0b11 << 6)]
+        );
     }
 }

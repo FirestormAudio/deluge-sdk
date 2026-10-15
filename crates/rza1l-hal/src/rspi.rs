@@ -13,11 +13,9 @@
 //! | RSPI0   | `0xE800_C800` | CV DAC + OLED display |
 //! | RSPI1   | `0xE800_D000` | (unused)              |
 //! | RSPI2   | `0xE800_D800` | (unused)              |
-//! | RSPI3   | `0xE800_E000` | (unused)              |
-//! | RSPI4   | `0xE800_E800` | (unused)              |
 //!
 //! ## Clock gating
-//! RSPI0–4 clocks are enabled in `stb::init()` via STBCR10.
+//! RSPI0–2 (the RZ/A1L has three channels) are clocked by `stb::init()` via STBCR10.
 //!
 //! ## Register offsets inside `struct st_rspi`
 //! | Register | Offset | Width | Description                     |
@@ -39,24 +37,8 @@
 //! | SPBFDR   | 0x22   | u16   | Buffer data count               |
 
 // ── Peripheral base addresses ─────────────────────────────────────────────────
-const RSPI0_BASE: usize = 0xE800_C800;
-const RSPI_STRIDE: usize = 0x800;
 
 // ── Register offsets ──────────────────────────────────────────────────────────
-const OFF_SPCR: usize = 0x00;
-const OFF_SSLP: usize = 0x01;
-const OFF_SPPCR: usize = 0x02;
-const OFF_SPSR: usize = 0x03;
-const OFF_SPDR: usize = 0x04;
-const OFF_SPSCR: usize = 0x08;
-const OFF_SPSSR: usize = 0x09;
-const OFF_SPBR: usize = 0x0A;
-const OFF_SPDCR: usize = 0x0B;
-const OFF_SPCKD: usize = 0x0C;
-const OFF_SSLND: usize = 0x0D;
-const OFF_SPND: usize = 0x0E;
-const OFF_SPCMD0: usize = 0x10;
-const OFF_SPBFCR: usize = 0x20;
 
 // ── SPCR bits ─────────────────────────────────────────────────────────────────
 /// SPE — SPI function enable
@@ -109,26 +91,9 @@ fn spbr_for(p1_hz: u32, bit_rate: u32) -> u8 {
 
 // ── Register access helpers ───────────────────────────────────────────────────
 
-#[inline]
-fn base(ch: u8) -> usize {
-    RSPI0_BASE + RSPI_STRIDE * (ch as usize)
-}
-
-// Register handles route through the MMIO seam (real volatile on firmware,
-// shadow + log under test), so the init sequence is unit-testable.
-#[inline]
-fn reg8(ch: u8, off: usize) -> crate::mmio::Reg8 {
-    crate::mmio::Reg8(base(ch) + off)
-}
-
-#[inline]
-fn reg16(ch: u8, off: usize) -> crate::mmio::Reg16 {
-    crate::mmio::Reg16(base(ch) + off)
-}
-
-#[inline]
-fn reg32(ch: u8, off: usize) -> crate::mmio::Reg32 {
-    crate::mmio::Reg32(base(ch) + off)
+/// RSPI channel `ch`'s registers (the RZ/A1L has channels 0–2).
+fn rspi(ch: u8) -> crate::pac::rspi::Rspi {
+    [crate::pac::RSPI0, crate::pac::RSPI1, crate::pac::RSPI2][ch as usize]
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -151,55 +116,53 @@ fn reg32(ch: u8, off: usize) -> crate::mmio::Reg32 {
 /// Writes to memory-mapped RSPI registers; must be called once before any
 /// SPI transfers on channel `ch`.
 unsafe fn init(ch: u8, bit_rate: u32) {
-    unsafe {
-        // SPPCR = 0 (no loopback, MOSI idle = low)
-        reg8(ch, OFF_SPPCR).write(0);
-        let _ = reg8(ch, OFF_SPPCR).read();
+    // SPPCR = 0 (no loopback, MOSI idle = low)
+    rspi(ch).sppcr().write_value(0);
+    let _ = rspi(ch).sppcr().read();
 
-        // SPBR: baud rate divisor. SPBR = ceil(P1/(bitRate×2)) - 1
-        let spbr = spbr_for(crate::clocks::get().p1_hz(), bit_rate);
-        reg8(ch, OFF_SPBR).write(spbr);
-        let _ = reg8(ch, OFF_SPBR).read();
+    // SPBR: baud rate divisor. SPBR = ceil(P1/(bitRate×2)) - 1
+    let spbr = spbr_for(crate::clocks::get().p1_hz(), bit_rate);
+    rspi(ch).spbr().write_value(spbr);
+    let _ = rspi(ch).spbr().read();
 
-        // SPDCR: 32-bit longword data
-        reg8(ch, OFF_SPDCR).write(SPDCR_32BIT);
-        let _ = reg8(ch, OFF_SPDCR).read();
+    // SPDCR: 32-bit longword data
+    rspi(ch).spdcr().write_value(SPDCR_32BIT);
+    let _ = rspi(ch).spdcr().read();
 
-        // SPSCR, SPCKD, SSLND, SPND, SSLP, SPSSR: all zero (defaults)
-        reg8(ch, OFF_SPSCR).write(0);
-        let _ = reg8(ch, OFF_SPSCR).read();
-        reg8(ch, OFF_SPCKD).write(0);
-        let _ = reg8(ch, OFF_SPCKD).read();
-        reg8(ch, OFF_SSLND).write(0);
-        let _ = reg8(ch, OFF_SSLND).read();
-        reg8(ch, OFF_SPND).write(0);
-        let _ = reg8(ch, OFF_SPND).read();
-        reg8(ch, OFF_SSLP).write(0);
-        let _ = reg8(ch, OFF_SSLP).read();
-        reg8(ch, OFF_SPSSR).write(0);
-        let _ = reg8(ch, OFF_SPSSR).read();
+    // SPSCR, SPCKD, SSLND, SPND, SSLP, SPSSR: all zero (defaults)
+    rspi(ch).spscr().write_value(0);
+    let _ = rspi(ch).spscr().read();
+    rspi(ch).spckd().write_value(0);
+    let _ = rspi(ch).spckd().read();
+    rspi(ch).sslnd().write_value(0);
+    let _ = rspi(ch).sslnd().read();
+    rspi(ch).spnd().write_value(0);
+    let _ = rspi(ch).spnd().read();
+    rspi(ch).sslp().write_value(0);
+    let _ = rspi(ch).sslp().read();
+    rspi(ch).spssr().write_value(0);
+    let _ = rspi(ch).spssr().read();
 
-        // SPBFCR: TX trigger=4 bytes free, RX trigger=2 bytes
-        reg8(ch, OFF_SPBFCR).write(SPBFCR_INIT_32BIT);
-        let _ = reg8(ch, OFF_SPBFCR).read();
+    // SPBFCR: TX trigger=4 bytes free, RX trigger=2 bytes
+    rspi(ch).spbfcr().write_value(SPBFCR_INIT_32BIT);
+    let _ = rspi(ch).spbfcr().read();
 
-        // SPCMD0: 32-bit frame, mode 0
-        reg16(ch, OFF_SPCMD0).write(SPCMD0_32BIT);
-        let _ = reg16(ch, OFF_SPCMD0).read();
+    // SPCMD0: 32-bit frame, mode 0
+    rspi(ch).spcmd0().write_value(SPCMD0_32BIT);
+    let _ = rspi(ch).spcmd0().read();
 
-        // SPCR: master mode, TX interrupt enable (for DMA trigger compatibility)
-        let v = reg8(ch, OFF_SPCR).read();
-        reg8(ch, OFF_SPCR).write(v | SPCR_MSTR | SPCR_SPTIE);
-        let _ = reg8(ch, OFF_SPCR).read();
+    // SPCR: master mode, TX interrupt enable (for DMA trigger compatibility)
+    let v = rspi(ch).spcr().read();
+    rspi(ch).spcr().write_value(v | SPCR_MSTR | SPCR_SPTIE);
+    let _ = rspi(ch).spcr().read();
 
-        // ---- R_RSPI_Start: clear errors, set SPE --------------------------------
-        let _ = reg8(ch, OFF_SPSR).read(); // clear error sources
-        reg8(ch, OFF_SPSR).write(0x00);
+    // ---- R_RSPI_Start: clear errors, set SPE --------------------------------
+    let _ = rspi(ch).spsr().read(); // clear error sources
+    rspi(ch).spsr().write_value(0x00);
 
-        let v = reg8(ch, OFF_SPCR).read();
-        reg8(ch, OFF_SPCR).write(v | SPCR_SPE);
-        let _ = reg8(ch, OFF_SPCR).read();
-    }
+    let v = rspi(ch).spcr().read();
+    rspi(ch).spcr().write_value(v | SPCR_SPE);
+    let _ = rspi(ch).spcr().read();
 }
 
 /// Blocking 32-bit SPI send without interrupt — wait for TEND.
@@ -210,52 +173,50 @@ unsafe fn init(ch: u8, bit_rate: u32) {
 /// # Safety
 /// Channel must have been initialised with [`init`].
 unsafe fn send32_blocking(ch: u8, data: u32) {
-    unsafe {
-        log::debug!(
-            "rspi: ch{} blocking send {:#010x}, SPSR={:#04x}",
-            ch,
-            data,
-            reg8(ch, OFF_SPSR).read()
-        );
-        // Wait for TX buffer space (bounded to guard against ungated clock).
-        // ~1 M polls ≈ a few ms at 400 MHz; SPTEF should assert in microseconds.
-        let mut ready = false;
-        for _ in 0..1_000_000u32 {
-            if reg8(ch, OFF_SPSR).read() & SPSR_SPTEF != 0 {
-                ready = true;
-                break;
-            }
+    log::debug!(
+        "rspi: ch{} blocking send {:#010x}, SPSR={:#04x}",
+        ch,
+        data,
+        rspi(ch).spsr().read()
+    );
+    // Wait for TX buffer space (bounded to guard against ungated clock).
+    // ~1 M polls ≈ a few ms at 400 MHz; SPTEF should assert in microseconds.
+    let mut ready = false;
+    for _ in 0..1_000_000u32 {
+        if rspi(ch).spsr().read() & SPSR_SPTEF != 0 {
+            ready = true;
+            break;
         }
-        if !ready {
-            log::warn!(
-                "rspi: ch{} send32_blocking: SPTEF timeout (STBCR10 cleared?)",
-                ch
-            );
-        }
-        log::debug!("rspi: ch{} SPTEF ok", ch);
-
-        // Reset RX buffer (prevents overflow)
-        let v = reg8(ch, OFF_SPBFCR).read();
-        reg8(ch, OFF_SPBFCR).write(v | SPBFCR_RX_RESET);
-
-        // Write data
-        reg32(ch, OFF_SPDR).write(data);
-        log::debug!("rspi: ch{} SPDR written, waiting TEND", ch);
-
-        // Wait for all bits to be shifted out (bounded; TEND should follow SPTEF
-        // by at most frame_bits / SCK_freq ≈ 32 / 10 MHz = 3.2 µs).
-        let mut done = false;
-        for _ in 0..1_000_000u32 {
-            if reg8(ch, OFF_SPSR).read() & SPSR_TEND != 0 {
-                done = true;
-                break;
-            }
-        }
-        if !done {
-            log::warn!("rspi: ch{} send32_blocking: TEND timeout", ch);
-        }
-        log::debug!("rspi: ch{} TEND ok", ch);
     }
+    if !ready {
+        log::warn!(
+            "rspi: ch{} send32_blocking: SPTEF timeout (STBCR10 cleared?)",
+            ch
+        );
+    }
+    log::debug!("rspi: ch{} SPTEF ok", ch);
+
+    // Reset RX buffer (prevents overflow)
+    let v = rspi(ch).spbfcr().read();
+    rspi(ch).spbfcr().write_value(v | SPBFCR_RX_RESET);
+
+    // Write data
+    rspi(ch).spdr().write_value(data);
+    log::debug!("rspi: ch{} SPDR written, waiting TEND", ch);
+
+    // Wait for all bits to be shifted out (bounded; TEND should follow SPTEF
+    // by at most frame_bits / SCK_freq ≈ 32 / 10 MHz = 3.2 µs).
+    let mut done = false;
+    for _ in 0..1_000_000u32 {
+        if rspi(ch).spsr().read() & SPSR_TEND != 0 {
+            done = true;
+            break;
+        }
+    }
+    if !done {
+        log::warn!("rspi: ch{} send32_blocking: TEND timeout", ch);
+    }
+    log::debug!("rspi: ch{} TEND ok", ch);
 }
 
 /// Switch RSPI channel `ch` to 8-bit frame mode for OLED (SSD1309) transfers.
@@ -269,11 +230,9 @@ unsafe fn send32_blocking(ch: u8, data: u32) {
 /// # Safety
 /// Writes RSPI registers.  No concurrent SPI transfers must be in progress.
 unsafe fn configure_8bit(ch: u8) {
-    unsafe {
-        reg8(ch, OFF_SPDCR).write(SPDCR_8BIT);
-        reg16(ch, OFF_SPCMD0).write(SPCMD0_8BIT);
-        reg8(ch, OFF_SPBFCR).write(SPBFCR_8BIT);
-    }
+    rspi(ch).spdcr().write_value(SPDCR_8BIT);
+    rspi(ch).spcmd0().write_value(SPCMD0_8BIT);
+    rspi(ch).spbfcr().write_value(SPBFCR_8BIT);
 }
 
 /// Restore RSPI channel `ch` to 32-bit frame mode for CV DAC transfers.
@@ -281,11 +240,9 @@ unsafe fn configure_8bit(ch: u8) {
 /// # Safety
 /// Writes RSPI registers.  No concurrent SPI transfers must be in progress.
 unsafe fn configure_32bit(ch: u8) {
-    unsafe {
-        reg8(ch, OFF_SPDCR).write(SPDCR_32BIT);
-        reg16(ch, OFF_SPCMD0).write(SPCMD0_32BIT);
-        reg8(ch, OFF_SPBFCR).write(SPBFCR_INIT_32BIT);
-    }
+    rspi(ch).spdcr().write_value(SPDCR_32BIT);
+    rspi(ch).spcmd0().write_value(SPCMD0_32BIT);
+    rspi(ch).spbfcr().write_value(SPBFCR_INIT_32BIT);
 }
 
 /// Send a single byte via 8-bit SPI.
@@ -303,15 +260,13 @@ unsafe fn configure_32bit(ch: u8) {
 /// mode via [`configure_8bit`].
 #[inline]
 unsafe fn send8(ch: u8, data: u8) {
-    unsafe {
-        // Wait until TX buffer has 4 free bytes (SPTEF=1).
-        while reg8(ch, OFF_SPSR).read() & SPSR_SPTEF == 0 {}
-        // Reset RX buffer to prevent overflow accumulation.
-        let v = reg8(ch, OFF_SPBFCR).read();
-        reg8(ch, OFF_SPBFCR).write(v | SPBFCR_RX_RESET);
-        // Write byte to SPDR.BYTE.LL (little-endian: lowest byte of SPDR = base+0x04).
-        crate::mmio::Reg8(reg32(ch, OFF_SPDR).0).write(data);
-    }
+    // Wait until TX buffer has 4 free bytes (SPTEF=1).
+    while rspi(ch).spsr().read() & SPSR_SPTEF == 0 {}
+    // Reset RX buffer to prevent overflow accumulation.
+    let v = rspi(ch).spbfcr().read();
+    rspi(ch).spbfcr().write_value(v | SPBFCR_RX_RESET);
+    // Write byte to SPDR.BYTE.LL (little-endian: lowest byte of SPDR = base+0x04).
+    rspi(ch).spdr_byte().write_value(data);
 }
 
 /// Poll until the shift register is idle (TEND=1).
@@ -323,7 +278,7 @@ unsafe fn send8(ch: u8, data: u8) {
 /// Reads SPSR register.
 #[inline]
 unsafe fn wait_end(ch: u8) {
-    unsafe { while reg8(ch, OFF_SPSR).read() & SPSR_TEND == 0 {} }
+    while rspi(ch).spsr().read() & SPSR_TEND == 0 {}
 }
 
 // ── Owned driver ──────────────────────────────────────────────────────────────
@@ -336,9 +291,9 @@ mod sealed {
     pub trait Sealed {}
 }
 
-/// An RSPI channel singleton (`peripherals::RSPI0`–`RSPI4`).
+/// An RSPI channel singleton (`peripherals::RSPI0`–`RSPI2`; the RZ/A1L has three channels).
 pub trait Instance: crate::PeripheralType + sealed::Sealed + 'static {
-    /// The channel number, 0–4.
+    /// The channel number, 0–2 (the RZ/A1L has three).
     const INDEX: u8;
 }
 
@@ -351,7 +306,7 @@ macro_rules! instances {
     )*};
 }
 
-instances!(RSPI0 = 0, RSPI1 = 1, RSPI2 = 2, RSPI3 = 3, RSPI4 = 4);
+instances!(RSPI0 = 0, RSPI1 = 1, RSPI2 = 2);
 
 /// An RSPI channel as an SPI master, SPI mode 0, in 32-bit or 8-bit frames.
 pub struct Rspi<'d> {
@@ -420,15 +375,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rspi_channel_bases() {
-        assert_eq!(base(0), 0xE800_C800);
-        assert_eq!(base(1), 0xE800_D000);
-        assert_eq!(base(2), 0xE800_D800);
-        assert_eq!(base(3), 0xE800_E000);
-        assert_eq!(base(4), 0xE800_E800);
-    }
-
-    #[test]
     fn spbr_matches_the_old_hardcoded_p1() {
         let p1 = crate::clocks::TEST_CLOCKS.p1_hz();
         // ceil(66_128_125 / 20_000_000) - 1 = 3 → 8.27 MHz actual.
@@ -440,7 +386,7 @@ mod tests {
     #[test]
     fn rspi_channels_know_their_index() {
         assert_eq!(<crate::peripherals::RSPI0 as Instance>::INDEX, 0);
-        assert_eq!(<crate::peripherals::RSPI4 as Instance>::INDEX, 4);
+        assert_eq!(<crate::peripherals::RSPI2 as Instance>::INDEX, 2);
     }
 
     /// `Rspi::new` programs the master-mode SPI config through the seam: the key registers end
@@ -451,13 +397,21 @@ mod tests {
         use crate::mmio;
         mmio::test::reset();
         let _rspi = Rspi::new(unsafe { crate::peripherals::RSPI0::steal() }, 10_000_000);
-        let b = base(0);
+        let b = 0xE800_C800usize; // RSPI0
 
-        assert_eq!(mmio::test::peek8(b + OFF_SPBR), 3, "baud divider for ~10 MHz");
-        assert_eq!(mmio::test::peek8(b + OFF_SPDCR), SPDCR_32BIT, "32-bit longword frames");
-        assert_eq!(mmio::test::peek8(b + OFF_SPBFCR), SPBFCR_INIT_32BIT);
-        assert_eq!(mmio::test::peek16(b + OFF_SPCMD0), SPCMD0_32BIT, "32-bit mode-0 cmd");
-        let spcr = mmio::test::peek8(b + OFF_SPCR);
+        assert_eq!(mmio::test::peek8(b + 0x0A), 3, "baud divider for ~10 MHz");
+        assert_eq!(
+            mmio::test::peek8(b + 0x0B),
+            SPDCR_32BIT,
+            "32-bit longword frames"
+        );
+        assert_eq!(mmio::test::peek8(b + 0x20), SPBFCR_INIT_32BIT);
+        assert_eq!(
+            mmio::test::peek16(b + 0x10),
+            SPCMD0_32BIT,
+            "32-bit mode-0 cmd"
+        );
+        let spcr = mmio::test::peek8(b + 0x00);
         assert_eq!(spcr & SPCR_MSTR, SPCR_MSTR, "master mode");
         assert_eq!(spcr & SPCR_SPTIE, SPCR_SPTIE, "TX interrupt enabled");
         assert_eq!(spcr & SPCR_SPE, SPCR_SPE, "SPI enabled (R_RSPI_Start)");
@@ -476,14 +430,60 @@ mod tests {
         let mut rspi = Rspi::new(unsafe { crate::peripherals::RSPI1::steal() }, 4_000_000);
         crate::mmio::test::reset();
         rspi.configure_8bit();
-        let b = base(1);
+        let b = 0xE800_D000usize; // RSPI1
         assert_eq!(
             crate::mmio::test::writes(),
             [
-                (b + OFF_SPDCR, SPDCR_8BIT as u32),
-                (b + OFF_SPCMD0, SPCMD0_8BIT as u32),
-                (b + OFF_SPBFCR, SPBFCR_8BIT as u32),
+                (b + 0x0B, SPDCR_8BIT as u32),
+                (b + 0x10, SPCMD0_8BIT as u32),
+                (b + 0x20, SPBFCR_8BIT as u32),
             ]
         );
+    }
+
+    #[test]
+    fn the_pac_names_the_same_rspi_registers() {
+        for ch in 0..3u8 {
+            let r = rspi(ch);
+            let base = 0xE800_C800 + ch as usize * 0x800;
+            let got = [
+                (r.spcr().addr(), r.spcr().width()),
+                (r.sslp().addr(), r.sslp().width()),
+                (r.sppcr().addr(), r.sppcr().width()),
+                (r.spsr().addr(), r.spsr().width()),
+                (r.spdr().addr(), r.spdr().width()),
+                (r.spdr_byte().addr(), r.spdr_byte().width()),
+                (r.spscr().addr(), r.spscr().width()),
+                (r.spssr().addr(), r.spssr().width()),
+                (r.spbr().addr(), r.spbr().width()),
+                (r.spdcr().addr(), r.spdcr().width()),
+                (r.spckd().addr(), r.spckd().width()),
+                (r.sslnd().addr(), r.sslnd().width()),
+                (r.spnd().addr(), r.spnd().width()),
+                (r.spcmd0().addr(), r.spcmd0().width()),
+                (r.spbfcr().addr(), r.spbfcr().width()),
+            ];
+            assert_eq!(
+                got,
+                [
+                    (base, 1),
+                    (base + 0x01, 1),
+                    (base + 0x02, 1),
+                    (base + 0x03, 1),
+                    (base + 0x04, 4),
+                    (base + 0x04, 1),
+                    (base + 0x08, 1),
+                    (base + 0x09, 1),
+                    (base + 0x0A, 1),
+                    (base + 0x0B, 1),
+                    (base + 0x0C, 1),
+                    (base + 0x0D, 1),
+                    (base + 0x0E, 1),
+                    (base + 0x10, 2),
+                    (base + 0x20, 1),
+                ],
+                "RSPI{ch}"
+            );
+        }
     }
 }

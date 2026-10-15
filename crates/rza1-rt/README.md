@@ -1,6 +1,6 @@
 # rza1-rt
 
-Runtime for the Renesas RZ/A1L (ARM Cortex-A9, R7S721001): the reset vector with the boot
+Runtime for the Renesas RZ/A1L (ARM Cortex-A9, R7S721020): the reset vector with the boot
 loader's metadata words, the reset handler (cache/TLB invalidate, VFP/NEON enable, per-mode
 stacks, BSS zero, then `main`), the fault handlers and the GIC IRQ entry stub, plus the linker
 script.

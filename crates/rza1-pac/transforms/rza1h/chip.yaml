@@ -1,0 +1,10 @@
+# The RZ/A1H PAC: the vendor SVD as published, with the shapes both chips share.
+includes:
+  - gpio.yaml
+  - ../common/intc.yaml
+  - ../common/names.yaml
+  - ../common/rspi.yaml
+  - ../common/adc.yaml
+  - ../common/sanitize.yaml
+  - ../common/access.yaml
+transforms: []

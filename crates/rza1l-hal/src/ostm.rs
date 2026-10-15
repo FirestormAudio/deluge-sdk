@@ -13,17 +13,9 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-// ------- Peripheral base addresses -------------------------------------------
-const OSTM0_BASE: usize = 0xFCFE_C000;
-const OSTM1_BASE: usize = 0xFCFE_C400;
-
-// ------- Register offsets (from OSTMn base) ----------------------------------
-const CMP: usize = 0x00; // OSTMnCMP — compare register (32-bit)
-const CNT: usize = 0x04; // OSTMnCNT — counter, read-only (32-bit)
-const TE: usize = 0x10; // OSTMnTE  — timer enable status (8-bit, read-only)
-const TS: usize = 0x14; // OSTMnTS  — timer start: write 1 to start (8-bit)
-const TT: usize = 0x18; // OSTMnTT  — timer stop:  write 1 to stop  (8-bit)
-const CTL: usize = 0x20; // OSTMnCTL — control: bit1=mode, bit0=int_enable (8-bit)
+use crate::pac::cpg::regs::Stbcr5;
+use crate::pac::ostm::regs::{Cmp, Ctl, Ts, Tt};
+use crate::pac::{CPG, ostm};
 
 // CTL mode values
 const CTL_INTERVAL: u8 = 0x00; // count-down interval timer, optional interrupt
@@ -47,7 +39,6 @@ const CTL_FREE_RUN_INT: u8 = 0x03; // free-running with compare interrupt
 //
 // stb.c initializes STBCR5 = 0b11111100 — bits 0 and 1 clear → OSTM0+OSTM1 clocked.
 // A dummy read after write is required by the hardware spec.
-const STBCR5: usize = 0xFCFE_0428;
 /// STBCR5 bit 0: MSTP50 — stop OSTM0 clock (1 = stopped, 0 = running).
 const STBCR5_MSTP50: u8 = 1 << 0;
 /// STBCR5 bit 1: MSTP51 — stop OSTM1 clock (1 = stopped, 0 = running).
@@ -79,17 +70,21 @@ fn running() -> bool {
 /// # Safety
 /// Writes to memory-mapped CPG registers.
 pub(crate) unsafe fn enable_clock() {
-    unsafe {
-        let val = crate::mmio::read8(STBCR5);
-        // Clear MSTP50 (OSTM0) and MSTP51 (OSTM1).
-        crate::mmio::write8(STBCR5, val & !(STBCR5_MSTP50 | STBCR5_MSTP51));
-        let _ = crate::mmio::read8(STBCR5); // mandatory dummy read per HW spec
-    }
+    let stbcr5 = CPG.stbcr5();
+    let val = stbcr5.read().0;
+    // Clear MSTP50 (OSTM0) and MSTP51 (OSTM1).
+    stbcr5.write_value(Stbcr5(val & !(STBCR5_MSTP50 | STBCR5_MSTP51)));
+    let _ = stbcr5.read(); // mandatory dummy read per HW spec
 }
 
+/// OSTM channel `n`'s registers.
 #[inline(always)]
-fn base(n: u8) -> usize {
-    if n == 0 { OSTM0_BASE } else { OSTM1_BASE }
+fn timer(n: u8) -> ostm::Ostm {
+    if n == 0 {
+        crate::pac::OSTM0
+    } else {
+        crate::pac::OSTM1
+    }
 }
 
 /// Configure OSTM channel `n` (0 or 1) for free-running mode and start it.
@@ -100,17 +95,15 @@ fn base(n: u8) -> usize {
 /// # Safety
 /// Writes to memory-mapped OSTM registers. Must only be called after [`enable_clock`].
 pub(crate) unsafe fn start_free_running(n: u8) {
-    unsafe {
-        let b = base(n);
-        // Stop the timer in case it is already running (CTL can only be written
-        // when the timer is stopped — TE must read 0 first).
-        crate::mmio::write8(b + TT, 1);
-        // Wait for the hardware to confirm the timer has stopped.
-        while crate::mmio::read8(b + TE) != 0 {}
-        // Free-running mode, compare interrupt disabled.
-        crate::mmio::write8(b + CTL, CTL_FREE_RUN);
-        crate::mmio::write8(b + TS, 1);
-    }
+    let t = timer(n);
+    // Stop the timer in case it is already running (CTL can only be written
+    // when the timer is stopped — TE must read 0 first).
+    t.tt().write_value(Tt(1));
+    // Wait for the hardware to confirm the timer has stopped.
+    while t.te().read().0 != 0 {}
+    // Free-running mode, compare interrupt disabled.
+    t.ctl().write_value(Ctl(CTL_FREE_RUN));
+    t.ts().write_value(Ts(1));
 }
 
 /// Read the current counter value of OSTM channel `n` (0 or 1). Wraps at `u32::MAX`.
@@ -119,7 +112,7 @@ pub(crate) unsafe fn start_free_running(n: u8) {
 /// Reads from memory-mapped OSTM registers.
 #[inline]
 pub(crate) unsafe fn count(n: u8) -> u32 {
-    unsafe { crate::mmio::read32(base(n) + CNT) }
+    timer(n).cnt().read().0
 }
 
 /// Stop OSTM channel `n`.
@@ -128,7 +121,7 @@ pub(crate) unsafe fn count(n: u8) -> u32 {
 /// Writes to memory-mapped OSTM registers.
 #[inline]
 pub(crate) unsafe fn stop(n: u8) {
-    unsafe { crate::mmio::write8(base(n) + TT, 1) }
+    timer(n).tt().write_value(Tt(1))
 }
 
 /// Start OSTM channel `n` in free-running mode with a compare-match interrupt.
@@ -141,13 +134,11 @@ pub(crate) unsafe fn stop(n: u8) {
 /// # Safety
 /// Writes to memory-mapped OSTM registers. Must only be called after [`enable_clock`].
 pub(crate) unsafe fn start_free_running_cmp(n: u8, cmp: u32) {
-    unsafe {
-        let b = base(n);
-        crate::mmio::write8(b + TT, 1); // stop first so CTL is writeable
-        crate::mmio::write32(b + CMP, cmp);
-        crate::mmio::write8(b + CTL, CTL_FREE_RUN_INT); // free-running with CMP interrupt
-        crate::mmio::write8(b + TS, 1);
-    }
+    let t = timer(n);
+    t.tt().write_value(Tt(1)); // stop first so CTL is writeable
+    t.cmp().write_value(Cmp(cmp));
+    t.ctl().write_value(Ctl(CTL_FREE_RUN_INT)); // free-running with CMP interrupt
+    t.ts().write_value(Ts(1));
 }
 
 /// Start OSTM channel `n` in interval mode with a single-shot countdown.
@@ -159,14 +150,12 @@ pub(crate) unsafe fn start_free_running_cmp(n: u8, cmp: u32) {
 /// # Safety
 /// Writes to memory-mapped OSTM registers. Must only be called after [`enable_clock`].
 pub(crate) unsafe fn start_alarm(n: u8, delta_ticks: u32) {
-    unsafe {
-        let b = base(n);
-        crate::mmio::write8(b + TT, 1); // stop in case already running
-        crate::mmio::write32(b + CMP, delta_ticks);
-        // Interval mode: the interrupt fires at the end of the count (CNT=0), not at the start.
-        crate::mmio::write8(b + CTL, CTL_INTERVAL);
-        crate::mmio::write8(b + TS, 1);
-    }
+    let t = timer(n);
+    t.tt().write_value(Tt(1)); // stop in case already running
+    t.cmp().write_value(Cmp(delta_ticks));
+    // Interval mode: the interrupt fires at the end of the count (CNT=0), not at the start.
+    t.ctl().write_value(Ctl(CTL_INTERVAL));
+    t.ts().write_value(Ts(1));
 }
 
 // ---------------------------------------------------------------------------
@@ -261,16 +250,10 @@ mod tests {
     use crate::clocks::TEST_CLOCKS;
 
     #[test]
-    fn ostm_base_addresses() {
+    fn timer_selects_the_channel() {
         // RZ/A1L HW Manual: OSTM0 @ 0xFCFEC000, OSTM1 @ 0xFCFEC400
-        assert_eq!(OSTM0_BASE, 0xFCFE_C000);
-        assert_eq!(OSTM1_BASE, 0xFCFE_C400);
-    }
-
-    #[test]
-    fn base_selects_correct_channel() {
-        assert_eq!(base(0), OSTM0_BASE);
-        assert_eq!(base(1), OSTM1_BASE);
+        assert_eq!(timer(0).cmp().addr(), 0xFCFE_C000);
+        assert_eq!(timer(1).cmp().addr(), 0xFCFE_C400);
     }
 
     /// 1 ms at the Deluge's P0φ = 33_064 ticks, as with the old `OSTM_HZ / 1000`.
@@ -307,10 +290,10 @@ mod tests {
         assert_eq!(
             crate::mmio::test::writes(),
             [
-                (OSTM0_BASE + TT, 1),
-                (OSTM0_BASE + CMP, 0),
-                (OSTM0_BASE + CTL, CTL_FREE_RUN_INT as u32),
-                (OSTM0_BASE + TS, 1),
+                (0xFCFE_C018, 1),
+                (0xFCFE_C000, 0),
+                (0xFCFE_C020, CTL_FREE_RUN_INT as u32),
+                (0xFCFE_C014, 1),
             ]
         );
     }
@@ -322,10 +305,10 @@ mod tests {
         assert_eq!(
             crate::mmio::test::writes(),
             [
-                (OSTM1_BASE + TT, 1),
-                (OSTM1_BASE + CMP, 33_064),
-                (OSTM1_BASE + CTL, CTL_INTERVAL as u32),
-                (OSTM1_BASE + TS, 1),
+                (0xFCFE_C418, 1),
+                (0xFCFE_C400, 33_064),
+                (0xFCFE_C420, CTL_INTERVAL as u32),
+                (0xFCFE_C414, 1),
             ]
         );
     }
@@ -340,5 +323,22 @@ mod tests {
     #[should_panic(expected = "OSTM0 isn't running")]
     fn delay_ms_before_ostm0_runs_panics() {
         delay_ms(1);
+    }
+
+    #[test]
+    fn the_pac_names_the_same_timer_registers() {
+        use crate::pac::{CPG, OSTM0, OSTM1};
+        for (t, base) in [(OSTM0, 0xFCFE_C000), (OSTM1, 0xFCFE_C400)] {
+            assert_eq!((t.cmp().addr(), t.cmp().width()), (base, 4));
+            assert_eq!((t.cnt().addr(), t.cnt().width()), (base + 0x04, 4));
+            assert_eq!((t.te().addr(), t.te().width()), (base + 0x10, 1));
+            assert_eq!((t.ts().addr(), t.ts().width()), (base + 0x14, 1));
+            assert_eq!((t.tt().addr(), t.tt().width()), (base + 0x18, 1));
+            assert_eq!((t.ctl().addr(), t.ctl().width()), (base + 0x20, 1));
+        }
+        assert_eq!(
+            (CPG.stbcr5().addr(), CPG.stbcr5().width()),
+            (0xFCFE_0428, 1)
+        );
     }
 }

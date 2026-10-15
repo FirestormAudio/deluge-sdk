@@ -28,6 +28,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 tools/check-layering.sh
+tools/check-register-tables.sh
+tools/check-pac.sh
 
 QEMU=armv7-unknown-linux-gnueabihf
 HOST=x86_64-unknown-linux-gnu
@@ -42,6 +44,8 @@ cargo test --target "$QEMU" -p armv7-dsp-intrinsics --features nightly --lib
 # here because the FFT crate (flare-fft) is in its own repo and must not
 # dev-depend on the SDK.
 cargo test --target "$QEMU" -p deluge-fixedpoint
+cargo test --target "$QEMU" -p rza1-pac --features rza1l --lib
+cargo test --target "$QEMU" -p rza1-pac --features rza1h --lib
 cargo test --target "$QEMU" -p rza1l-hal --lib
 cargo test --target "$QEMU" -p deluge-bsp --features usb-host --lib
 cargo test --target "$QEMU" -p usb-classes --features device-midi,host-midi,host-uac --lib

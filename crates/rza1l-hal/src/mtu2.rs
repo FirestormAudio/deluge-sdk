@@ -28,62 +28,64 @@
 //! ```
 
 // ---------------------------------------------------------------------------
-// Register addresses (absolute)
-// Derived from struct st_mtu2 at base 0xFCFF_0000 (mtu2_iodefine.h).
+// Registers, from rza1-pac. The SVD names MTU2's per-channel registers by channel
+// (`tcr_2`, `tgra_3`, …); these tables index them by channel number.
 // ---------------------------------------------------------------------------
+
+use crate::pac::MTU2;
+use crate::pac::common::{RW, Reg};
+use crate::pac::mtu2::regs::Trwer;
 
 // Per-channel TCR (Timer Control Register) — 8-bit
 //   bits [2:0] = TPSC (prescaler select)
 //   bits [7:5] = CCLR (counter-clear source; 0b001 = clear on TGRA match)
-const TCR: [usize; 5] = [
-    0xFCFF_0300, // ch0
-    0xFCFF_0380, // ch1
-    0xFCFF_0000, // ch2
-    0xFCFF_0200, // ch3
-    0xFCFF_0201, // ch4
+const TCR: [Reg<u8, RW>; 5] = [
+    MTU2.tcr_0(),
+    MTU2.tcr_1(),
+    MTU2.tcr_2(),
+    MTU2.tcr_3(),
+    MTU2.tcr_4(),
 ];
 
 // Per-channel TIER (Timer Interrupt Enable Register) — 8-bit
 //   bit 0 = TGIEA: enable compare-match-A interrupt
-const TIER: [usize; 5] = [
-    0xFCFF_0304, // ch0
-    0xFCFF_0384, // ch1
-    0xFCFF_0004, // ch2
-    0xFCFF_0208, // ch3
-    0xFCFF_0209, // ch4
+const TIER: [Reg<u8, RW>; 5] = [
+    MTU2.tier_0(),
+    MTU2.tier_1(),
+    MTU2.tier_2(),
+    MTU2.tier_3(),
+    MTU2.tier_4(),
 ];
 
 // Per-channel TSR (Timer Status Register) — 8-bit
 //   bit 0 = TGFA: compare-match-A flag (write 0 to clear)
-const TSR: [usize; 5] = [
-    0xFCFF_0305, // ch0
-    0xFCFF_0385, // ch1
-    0xFCFF_0005, // ch2
-    0xFCFF_022C, // ch3
-    0xFCFF_022D, // ch4
+const TSR: [Reg<u8, RW>; 5] = [
+    MTU2.tsr_0(),
+    MTU2.tsr_1(),
+    MTU2.tsr_2(),
+    MTU2.tsr_3(),
+    MTU2.tsr_4(),
 ];
 
 // Per-channel TCNT (Timer Counter) — 16-bit, read/write
-const TCNT: [usize; 5] = [
-    0xFCFF_0306, // ch0
-    0xFCFF_0386, // ch1
-    0xFCFF_0006, // ch2
-    0xFCFF_0210, // ch3
-    0xFCFF_0212, // ch4
+const TCNT: [Reg<u16, RW>; 5] = [
+    MTU2.tcnt_0(),
+    MTU2.tcnt_1(),
+    MTU2.tcnt_2(),
+    MTU2.tcnt_3(),
+    MTU2.tcnt_4(),
 ];
 
 // Per-channel TGRA (Timer General Register A) — 16-bit compare value
-const TGRA: [usize; 5] = [
-    0xFCFF_0308, // ch0
-    0xFCFF_0388, // ch1
-    0xFCFF_0008, // ch2
-    0xFCFF_0218, // ch3
-    0xFCFF_021C, // ch4
+const TGRA: [Reg<u16, RW>; 5] = [
+    MTU2.tgra_0(),
+    MTU2.tgra_1(),
+    MTU2.tgra_2(),
+    MTU2.tgra_3(),
+    MTU2.tgra_4(),
 ];
 
-// Shared registers
-const TSTR: usize = 0xFCFF_0280; // Timer Start Register (8-bit)
-const TRWER: usize = 0xFCFF_0284; // Timer Read/Write Enable Register (8-bit)
+// Shared registers: MTU2.tstr() (Timer Start) and MTU2.trwer() (Timer Read/Write Enable).
 
 // TSTR bit for each channel (CST0..CST4).
 // Channels 0–2 use bits 0–2; channels 3–4 use bits 6–7.
@@ -129,25 +131,6 @@ fn tpsc(ch: u8, prescaler: u16) -> Option<u8> {
     }
 }
 
-// Register access goes through the MMIO seam so init/arm sequences are testable
-// (real volatile on firmware, a shadow + log under test).
-#[inline(always)]
-unsafe fn rd8(addr: usize) -> u8 {
-    unsafe { crate::mmio::read8(addr) }
-}
-#[inline(always)]
-unsafe fn wr8(addr: usize, val: u8) {
-    unsafe { crate::mmio::write8(addr, val) }
-}
-#[inline(always)]
-unsafe fn rd16(addr: usize) -> u16 {
-    unsafe { crate::mmio::read16(addr) }
-}
-#[inline(always)]
-unsafe fn wr16(addr: usize, val: u16) {
-    unsafe { crate::mmio::write16(addr, val) }
-}
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -164,9 +147,7 @@ unsafe fn wr16(addr: usize, val: u16) {
 /// # Safety
 /// Writes to the memory-mapped TRWER register.
 unsafe fn enable_write() {
-    unsafe {
-        wr8(TRWER, 1);
-    }
+    MTU2.trwer().write_value(Trwer(1));
 }
 
 /// Stop channel `ch` and configure it for one-shot compare-match use: TCR = `tpsc` with
@@ -177,9 +158,9 @@ unsafe fn enable_write() {
 /// Writes MTU2 and GIC registers; `ch` is owned.
 unsafe fn setup_one_shot(ch: u8, tpsc: u8, priority: u8) {
     unsafe {
-        wr8(TSTR, rd8(TSTR) & !CST[ch as usize]);
-        wr8(TCR[ch as usize], tpsc | (1 << 5));
-        wr8(TIER[ch as usize], 0);
+        MTU2.tstr().modify(|r| r.0 &= !CST[ch as usize]);
+        TCR[ch as usize].write_value(tpsc | (1 << 5));
+        TIER[ch as usize].write_value(0);
         crate::gic::set_priority(TGIA_IRQ[ch as usize], priority);
     }
 }
@@ -199,11 +180,11 @@ unsafe fn setup_one_shot(ch: u8, tpsc: u8, priority: u8) {
 unsafe fn arm(ch: u8, tgra: u16) {
     unsafe {
         // Stop while reconfiguring.
-        wr8(TSTR, rd8(TSTR) & !CST[ch as usize]);
+        MTU2.tstr().modify(|r| r.0 &= !CST[ch as usize]);
 
         // Write compare value then reset counter.
-        wr16(TGRA[ch as usize], tgra);
-        wr16(TCNT[ch as usize], 0);
+        TGRA[ch as usize].write_value(tgra);
+        TCNT[ch as usize].write_value(0);
 
         // Clear any pending compare-match flag (write 0 to TGFA bit).
         clear_flag(ch);
@@ -212,10 +193,10 @@ unsafe fn arm(ch: u8, tgra: u16) {
         crate::gic::enable(TGIA_IRQ[ch as usize]);
 
         // Enable the channel's own interrupt output.
-        wr8(TIER[ch as usize], 1); // TGIEA = 1
+        TIER[ch as usize].write_value(1); // TGIEA = 1
 
         // Start.
-        wr8(TSTR, rd8(TSTR) | CST[ch as usize]);
+        MTU2.tstr().modify(|r| r.0 |= CST[ch as usize]);
     }
 }
 
@@ -228,17 +209,15 @@ unsafe fn arm(ch: u8, tgra: u16) {
 /// # Safety
 /// Reads and writes to memory-mapped MTU2 registers.
 unsafe fn clear_flag(ch: u8) {
-    unsafe {
-        let addr = TSR[ch as usize];
-        // Loop until the flag is clear (normally 1–2 reads; bounded to 64 iterations
-        // so a continuously re-firing timer cannot trap the CPU here indefinitely).
-        for _ in 0..64u8 {
-            let val = rd8(addr);
-            if val & 0x01 == 0 {
-                break;
-            }
-            wr8(addr, val & !0x01);
+    let tsr = TSR[ch as usize];
+    // Loop until the flag is clear (normally 1–2 reads; bounded to 64 iterations
+    // so a continuously re-firing timer cannot trap the CPU here indefinitely).
+    for _ in 0..64u8 {
+        let val = tsr.read();
+        if val & 0x01 == 0 {
+            break;
         }
+        tsr.write_value(val & !0x01);
     }
 }
 
@@ -252,10 +231,10 @@ unsafe fn clear_flag(ch: u8) {
 unsafe fn disarm(ch: u8) {
     unsafe {
         // Disable the channel's interrupt output first.
-        wr8(TIER[ch as usize], 0);
+        TIER[ch as usize].write_value(0);
 
         // Stop the counter.
-        wr8(TSTR, rd8(TSTR) & !CST[ch as usize]);
+        MTU2.tstr().modify(|r| r.0 &= !CST[ch as usize]);
 
         // Mask the GIC source.
         crate::gic::disable(TGIA_IRQ[ch as usize]);
@@ -439,10 +418,10 @@ mod tests {
         assert_eq!(
             mmio::test::writes(),
             [
-                (TRWER, 1),
-                (TSTR, 0),                      // channel 2 stopped
-                (TCR[2], 0b011 | (0b001 << 5)), // P0φ/64, counter cleared on a TGRA match
-                (TIER[2], 0),
+                (0xFCFF_0284, 1),
+                (0xFCFF_0280, 0),                    // channel 2 stopped
+                (0xFCFF_0000, 0b011 | (0b001 << 5)), // P0φ/64, counter cleared on a TGRA match
+                (0xFCFF_0004, 0),
                 (0xE820_1494, (5 << 3) << 16), // GICD_IPRIORITYR37, byte lane 150 % 4 = 2
             ]
         );
@@ -462,12 +441,12 @@ mod tests {
         assert_eq!(
             mmio::test::writes(),
             [
-                (TSTR, 0),
-                (TGRA[2], 520),
-                (TCNT[2], 0),
+                (0xFCFF_0280, 0),
+                (0xFCFF_0008, 520),
+                (0xFCFF_0006, 0),
                 (0xE820_1110, 1 << 22), // GICD_ISENABLER4, bit 150 - 128
-                (TIER[2], 1),
-                (TSTR, CST[2] as u32),
+                (0xFCFF_0004, 1),
+                (0xFCFF_0280, CST[2] as u32),
             ]
         );
     }
@@ -476,15 +455,120 @@ mod tests {
     fn disarming_stops_the_shot_and_masks_it() {
         let timer = OneShot::new(unsafe { MTU2_2::steal() }, 64, 5, Irqs);
         mmio::test::reset();
-        mmio::test::poke8(TSTR, CST[2] | CST[3]);
+        mmio::test::poke8(0xFCFF_0280, CST[2] | CST[3]);
         timer.disarm();
         assert_eq!(
             mmio::test::writes(),
             [
-                (TIER[2], 0),
-                (TSTR, CST[3] as u32),  // channel 3 keeps running
-                (0xE820_1190, 1 << 22), // GICD_ICENABLER4, bit 150 - 128
+                (0xFCFF_0004, 0),
+                (0xFCFF_0280, CST[3] as u32), // channel 3 keeps running
+                (0xE820_1190, 1 << 22),       // GICD_ICENABLER4, bit 150 - 128
             ]
         );
+    }
+
+    #[test]
+    fn the_pac_names_the_same_channel_registers() {
+        use crate::pac::MTU2;
+        let tcr = [
+            MTU2.tcr_0().addr(),
+            MTU2.tcr_1().addr(),
+            MTU2.tcr_2().addr(),
+            MTU2.tcr_3().addr(),
+            MTU2.tcr_4().addr(),
+        ];
+        assert_eq!(
+            tcr,
+            [
+                0xFCFF_0300,
+                0xFCFF_0380,
+                0xFCFF_0000,
+                0xFCFF_0200,
+                0xFCFF_0201
+            ]
+        );
+        let tier = [
+            MTU2.tier_0().addr(),
+            MTU2.tier_1().addr(),
+            MTU2.tier_2().addr(),
+            MTU2.tier_3().addr(),
+            MTU2.tier_4().addr(),
+        ];
+        assert_eq!(
+            tier,
+            [
+                0xFCFF_0304,
+                0xFCFF_0384,
+                0xFCFF_0004,
+                0xFCFF_0208,
+                0xFCFF_0209
+            ]
+        );
+        let tsr = [
+            MTU2.tsr_0().addr(),
+            MTU2.tsr_1().addr(),
+            MTU2.tsr_2().addr(),
+            MTU2.tsr_3().addr(),
+            MTU2.tsr_4().addr(),
+        ];
+        assert_eq!(
+            tsr,
+            [
+                0xFCFF_0305,
+                0xFCFF_0385,
+                0xFCFF_0005,
+                0xFCFF_022C,
+                0xFCFF_022D
+            ]
+        );
+        let tcnt = [
+            MTU2.tcnt_0().addr(),
+            MTU2.tcnt_1().addr(),
+            MTU2.tcnt_2().addr(),
+            MTU2.tcnt_3().addr(),
+            MTU2.tcnt_4().addr(),
+        ];
+        assert_eq!(
+            tcnt,
+            [
+                0xFCFF_0306,
+                0xFCFF_0386,
+                0xFCFF_0006,
+                0xFCFF_0210,
+                0xFCFF_0212
+            ]
+        );
+        let tgra = [
+            MTU2.tgra_0().addr(),
+            MTU2.tgra_1().addr(),
+            MTU2.tgra_2().addr(),
+            MTU2.tgra_3().addr(),
+            MTU2.tgra_4().addr(),
+        ];
+        assert_eq!(
+            tgra,
+            [
+                0xFCFF_0308,
+                0xFCFF_0388,
+                0xFCFF_0008,
+                0xFCFF_0218,
+                0xFCFF_021C
+            ]
+        );
+        assert_eq!((MTU2.tstr().addr(), MTU2.tstr().width()), (0xFCFF_0280, 1));
+        assert_eq!(
+            (MTU2.trwer().addr(), MTU2.trwer().width()),
+            (0xFCFF_0284, 1)
+        );
+        // Widths: TCR/TIER/TSR are bytes, TCNT/TGRA halfwords.
+        assert_eq!(
+            (
+                MTU2.tcr_3().width(),
+                MTU2.tier_3().width(),
+                MTU2.tsr_3().width()
+            ),
+            (1, 1, 1)
+        );
+        assert_eq!((MTU2.tcnt_3().width(), MTU2.tgra_3().width()), (2, 2));
     }
 }

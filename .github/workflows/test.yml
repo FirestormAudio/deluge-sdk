@@ -26,7 +26,14 @@ jobs:
       - name: Install QEMU + ARM cross toolchain + libudev (for serialport)
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-user gcc-arm-linux-gnueabihf libudev-dev pkg-config libasound2-dev
+          sudo apt-get install -y qemu-user gcc-arm-linux-gnueabihf libudev-dev pkg-config libasound2-dev python3-yaml
+
+      # tools/gen-pac.sh's pinned chiptool (tools/check-pac.sh installs it when missing).
+      - name: Cache chiptool
+        uses: actions/cache@v4
+        with:
+          path: target/chiptool-bcf538a2e7b8584ae874ee9ab72efb1576fc6152
+          key: chiptool-bcf538a2e7b8584ae874ee9ab72efb1576fc6152
 
       - name: Run test suite
         run: ./tools/test.sh
