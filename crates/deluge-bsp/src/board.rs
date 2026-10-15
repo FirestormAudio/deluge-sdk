@@ -50,9 +50,9 @@ pub type EncoderPollTimer = MTU2_3;
 
 /// Every DMA channel, by the role the Deluge gives it.
 ///
-/// Until Phase 4b each channel is already in use by the matching BSP driver (OLED, SD, audio,
-/// PIC/MIDI UARTs, SCUX paths), which still programs it by number through `dmac::raw`. Don't
-/// build a `dmac::Dma` from a role here alongside that driver: the channel would have two owners.
+/// The OLED, PIC and MIDI channels are taken by `bus::init` and `uart::init_*`. Until Phase 4c the
+/// SCUX, SSI and SD channels are still programmed by number, through `dmac::raw`, by their BSP
+/// drivers: don't build a `dmac::Dma` from one of those roles alongside its driver.
 pub struct BoardDma {
     pub scux_ffd0: Peri<'static, ScuxFfd0Dma>,
     pub scux_ffu0: Peri<'static, ScuxFfu0Dma>,

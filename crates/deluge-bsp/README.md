@@ -20,23 +20,23 @@ testing.
 | [`scux_src_path`] | SCUX async SRC path — asynchronous sample-rate conversion between two independent clock domains (e.g. 44.1 kHz ↔ 48 kHz); [`rza1l_hal::scux::src_path`] on the Deluge's DMA channels |
 | [`scux_usb_tx_path`] | SCUX USB-rate SRC path; [`rza1l_hal::scux::usb_tx_path`] on the Deluge's DMA channels |
 | [`cv_gate`] | MAX5136 quad 16-bit SPI CV DAC (2 channels, ~6552 counts/V; frames from the [`max5136`](../../drivers/max5136) crate) + 4 V-trig gate GPIOs |
-| [`midi_gate`] | MTU2 one-shot timer for sub-millisecond precise gate-off scheduling (~1.92 µs resolution) |
+| [`midi_gate`] | MTU2 one-shot timer for sub-millisecond precise gate-off scheduling (~1.92 µs resolution); `setup(board.gate_timer)` |
 | [`oled`] | SSD1309 128×48 OLED — `FrameBuffer`, pixel API, DMA frame send via RSPI0; CS/RST handshaked through the PIC co-processor |
 | [`pic`] | PIC32 co-processor — 144-pad matrix, 36 buttons, 6 encoders, 36 LEDs, 7-segment display, gold knob indicators; dual-baud UART handshake (31 250 → 200 000 bps) |
 | [`controls`] | Stable human-readable IDs for buttons, encoder shaft clicks, rotation indices, and gold-knob indicator bars |
 | [`encoder`] | 6× rotary encoder IRQ accumulators (`ENCODER_DELTAS`) and detent extraction; wakes the firmware encoder task via `ENCODER_WAKER` |
 | [`pads`] | Lock-free shared pad state — 144 pads packed into 5 × `AtomicU32`; `pad_get` / `pad_toggle` for ISR-safe access |
-| [`uart`] | SCIF0 MIDI DIN (31 250 bps) + SCIF1 PIC UART; DMA-backed RX/TX |
+| [`uart`] | SCIF0 MIDI DIN + SCIF1 PIC UART: `init_midi`/`init_pic` from the `Board`'s singletons; DMA receive rings, PIC transmit by DMA |
 | [`sd`] | SDHI SD v2 card — full JEDEC init, block read/write, SDHC/SDXC auto-detect, DMA bounce buffer |
 | [`fat`] | `embedded-sdmmc` wrapper — `DelugeVolumeManager`, `DelugeBlockDevice`, FAT filesystem access |
 | [`usb`] | The Deluge's USB identities (`ids`), (feature `usb-msc`) the SD card as a Mass Storage medium (`sd_block`), and (feature `usb-host`) the host-role supervisor; the classes themselves are in the [`usb-classes`](../../usb/usb-classes) crate |
-| [`bus`] | RSPI0 ownership guard shared by the OLED and the CV DAC (`lock_rspi0`, `enter_8bit` / `enter_32bit`) |
+| [`bus`] | RSPI0 shared by the OLED and the CV DAC: `init(shared_spi, oled_dma)`, then `lock_rspi0`, `enter_8bit` / `enter_32bit` |
 | [`audio_block`] | Block-oriented audio tap over the SSI0 DMA rings, used by the SDK's `dlg.audio()` |
 | [`jacks`] | Audio jack-detect inputs and the speaker-amp enable |
 | [`trigger_clock`] | Analog trigger-clock input |
 | [`rgb`] | RGB pad-LED surface for the 18 × 8 grid |
 | [`battery`] | Battery-voltage sense via the ADC |
-| [`board`] | `Board::new(rza1l_hal::init(system::BOARD_CONFIG))`: the rest of the bring-up, then the Deluge's peripherals by role (USB0/1, the 16 DMA channels) |
+| [`board`] | `Board::new(rza1l_hal::init(system::BOARD_CONFIG))`: the rest of the bring-up, then the Deluge's peripherals by role (USB0/1, RSPI0, SCIF0/1, MTU2 2/3, the 16 DMA channels) |
 | [`flash`] | SPI-NOR chip profile and board flash map (feature `flash`) |
 | [`host_panel`] | Host builds: the hook a simulated front panel plugs into (`deluge-sdk`'s simulator backend installs one) |
 
@@ -89,9 +89,10 @@ A typical boot sequence (`Board::new` also brings up the MMU, caches and the SDR
 
 ```rust
 let board = deluge_bsp::Board::new(rza1l_hal::init(deluge_bsp::system::BOARD_CONFIG));
+deluge_bsp::uart::init_pic(board.pic_uart, board.dma.pic_rx, board.dma.pic_tx, 31_250);
+deluge_bsp::bus::init(board.shared_spi, board.dma.oled);
 unsafe {
     deluge_bsp::audio::init();
-    deluge_bsp::uart::init_pic(31_250);
     deluge_bsp::cv_gate::init();
 }
 ```

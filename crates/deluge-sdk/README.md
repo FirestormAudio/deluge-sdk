@@ -54,6 +54,15 @@ Apps usually forward the backend features as their own, e.g.
 `usb-log` takes precedence over `rtt` when both are enabled — only one global
 logger may be registered.
 
+## Driving the board yourself
+
+On the device, `#[deluge::app]` brings the board up before your `setup` runs and keeps the
+peripherals its capabilities drive (RSPI0, the MIDI and PIC UARTs and their DMA channels, two MTU2
+timers) in `deluge::parts`. Each capability takes its own when first used. To drive one through
+`deluge-bsp` yourself, take it first, for example
+`deluge::parts::with(|p| p.gate_timer.take())`. The matching capability then panics, naming the
+peripheral, instead of fighting you for it.
+
 ## Toolchain
 
 On the device the SDK is `no_std` and targets `armv7a-none-eabihf`. It relies on

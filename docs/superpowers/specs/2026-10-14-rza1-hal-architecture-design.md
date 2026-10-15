@@ -164,6 +164,15 @@ and the 16 DMA channels by role. USB0 has one owner in the SDK runtime, so `usb-
 fails to compile. The facade dropped `pub use deluge_bsp`. Phase 4b migrates the drivers, removes
 `raw` and the `unsafe fn new()` constructors, and migrates DelugeFirmware#next.
 
+**4b done (2026-10-15 plan):** RSPI (`Rspi`), the SCIF UART (`Uart` → `UartRx`/`UartTx`), MTU2
+(`OneShot`) and the OSTM time driver are built from their singletons and typed bindings; their
+channel-number functions are private, and `rspi`/`uart`/`ostm`/`gpio` have no public
+`unsafe fn new()`. `Board` hands out RSPI0, SCIF0/1 and MTU2 2/3 by role, and the SDK keeps
+unclaimed parts in `deluge::parts`. The BSP's bus owns RSPI0 with the OLED's DMA channel, which
+also brings RSPI0 up for an OLED-only app (it had relied on the boot loader). Escape hatches:
+`Dma::steal`, `dmac::stop_all`, `Rspi::steal`, `time_driver::stop`. Phase 4c migrates SDHI,
+SSI+SCUX and USB, deletes `dmac::raw` and `gic::register`, and migrates DelugeFirmware#next.
+
 ### Phase 5: PAC
 
 - Generate `rza1-pac` with chiptool from `vendor/rza1.svd`, fixing the SVD with YAML transforms.

@@ -31,6 +31,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `rza1l-hal` drivers are built from their peripheral singletons. **Breaking:** `rspi::Rspi::new`,
+  `uart::Uart::new` (split into `UartRx`/`UartTx`), `mtu2::OneShot::new` and
+  `time_driver::init(OSTM0, OSTM1, Irqs)` replace the channel-number functions, which are now
+  private; `Rspi<CH, BITS>`, `ScifUart`, `Ostm<N>`, the MTU2 free-running functions and the RSPI
+  interrupt-driven send path are removed; `gpio::Pin::new` is `Pin::steal`. `ostm::delay_ms` is
+  safe and panics until the time driver has started OSTM0. `OneShot::new` panics on a prescaler
+  the channel lacks instead of running at /1. Escape hatches for fault and hand-off code:
+  `dmac::Dma::steal`, `dmac::stop_all`, `rspi::Rspi::steal`, `time_driver::stop`.
+- `deluge_bsp::Board` also hands out RSPI0, SCIF0/1 and MTU2 channels 2/3. **Breaking:**
+  `bus::init(shared_spi, oled_dma)` brings RSPI0 up (it was `cv_gate::init`'s job, so an
+  OLED-only app relied on the boot loader); `uart::init_midi`/`init_pic`, `midi_gate::setup` and
+  `encoder::irq_init` take their peripherals; the BSP's `uart::{read_byte, write_bytes}`
+  re-export is replaced by `read_pic_byte`, `write_pic`, `try_read_pic`, `try_write_pic` and
+  `set_pic_baud`; `midi_gate::{schedule_gate_off, cancel}` are safe.
+- The SDK runtime keeps the board's unclaimed peripherals in `deluge::parts` (device-only); a
+  capability takes its own when first used, and an app that drives one itself takes it first
+  with `deluge::parts::with`.
 - `rza1l-hal` has Embassy-style ownership. `rza1l_hal::init(Config) -> Peripherals` takes the
   peripheral singletons once and runs the chip bring-up (CPG, module clocks, GIC);
   `rza1l_hal::bind_interrupts!` binds typed interrupt handlers; `dmac::Dma::new(Peri<DMA_CHn>, Irqs)`

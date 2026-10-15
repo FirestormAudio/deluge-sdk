@@ -35,7 +35,7 @@ peripheral as `Peri<'d, T>`.
 | `cache`       | L1 D/I-cache + Cortex-A9 branch predictor enable; PL310 L2 cache init. Call `mmu::init_and_enable` first. |
 | `clocks`      | The clock tree, from the board's EXTAL crystal: `clocks::init(ClockConfig::new(extal_hz))` once at boot (`rza1l_hal::init` does it), then P0φ/P1φ (and the exact P0 ticks-per-µs ratio) are derived for every driver. |
 | `stb`         | CPG Standby Control Register (STBCR2–STBCR12) init — ungate module clocks for all required peripherals via a `StbConfig` struct (`rza1l_hal::init` applies `Config::stb`). |
-| `gic`         | ARM GIC-400 (GICD/GICC) driver. `rza1l_hal::init` runs `gic::init`; drivers install handlers through `interrupt::bind` (or, until Phase 4b, `gic::register(id, handler)`) and unmask with `gic::enable(id)`. The IRQ assembly shim calls `gic_dispatch`. |
+| `gic`         | ARM GIC-400 (GICD/GICC) driver. `rza1l_hal::init` runs `gic::init`; drivers install handlers through `interrupt::bind` (or, until Phase 4c, `gic::register(id, handler)`) and unmask with `gic::enable(id)`. The IRQ assembly shim calls `gic_dispatch`. |
 | `interrupt`   | Typed GIC interrupts (`interrupt::typelevel`), `Handler`/`Binding` and `bind_interrupts!`: a driver's constructor takes the binding and installs its handler. |
 | `bsc`         | Bus State Controller CS0/CS1 timing (NOR flash). |
 | `memmap`      | Pure memory-map and cache-line arithmetic shared by `mmu` and `cache` (host-testable). |
@@ -55,16 +55,16 @@ without explicit cache maintenance.
 
 | Module        | Description |
 |---------------|-------------|
-| `ostm`        | OS Timer — two 32-bit channels clocked from P0φ = EXTAL × 2.5 (see `clocks`; 33.064 MHz on the Deluge). Supports free-running and interval modes. Used as the Embassy time-driver tick source. |
-| `time_driver`  | Embassy `time-driver` implementation backed by OSTM0 (free-running) + OSTM1 (alarm). Behind the `time-driver-ostm` feature (on by default). |
+| `ostm`        | OS Timer — two 32-bit channels clocked from P0φ = EXTAL × 2.5 (see `clocks`; 33.064 MHz on the Deluge). Owned by the time driver; `delay_ms`/`Delay` busy-wait on OSTM0's counter. |
+| `time_driver`  | Embassy `time-driver` implementation backed by OSTM0 (free-running) + OSTM1 (alarm). Behind the `time-driver-ostm` feature (on by default). `time_driver::init(p.OSTM0, p.OSTM1, Irqs)` with `OverflowHandler`/`AlarmHandler` bound. |
 | `time_math`   | Pure tick/µs conversion and wrap arithmetic behind `time_driver` (host-testable). |
-| `mtu2`        | Multi-Function Timer Pulse Unit 2 — five 16-bit channels. Used for bare-metal timing where OSTM is unavailable. |
+| `mtu2`        | Multi-Function Timer Pulse Unit 2: five 16-bit channels. `OneShot::new(Peri<MTU2_n>, prescaler, priority, Irqs)` for compare-match one-shots and periodic ticks. |
 
 ### DMA
 
 | Module | Description |
 |--------|-------------|
-| `dmac` | 16-channel DMAC (channels 0–15). Register-mode (one-shot) and link-descriptor (circular) transfers. `init_register_mode` / `start_transfer` for memory→peripheral; `init_register_mode_rx` / `start_transfer_rx` for peripheral→memory; `init_with_link_descriptor` for circular audio streaming. Owned channels: `Dma::new(Peri<DMA_CHn>, Irqs)`; channel-number functions in `dmac::raw` until Phase 4b. |
+| `dmac` | 16-channel DMAC (channels 0–15). Register-mode (one-shot) and link-descriptor (circular) transfers. `init_register_mode` / `start_transfer` for memory→peripheral; `init_register_mode_rx` / `start_transfer_rx` for peripheral→memory; `init_with_link_descriptor` for circular audio streaming. Owned channels: `Dma::new(Peri<DMA_CHn>, Irqs)`; `Dma::steal`/`stop_all` for fault and hand-off code; channel-number functions in `dmac::raw` until Phase 4c. |
 
 DMAC resource selectors (DMARS values) are peripheral-specific constants
 documented in each peripheral module.
@@ -81,9 +81,9 @@ documented in each peripheral module.
 | Module  | Description |
 |---------|-------------|
 | `sdhi`  | SD Host Interface — two ports (SDHI0/SDHI1). Async `send_cmd`, `read_blocks_sw` / `write_blocks_sw` (PIO with `AtomicWaker`), `read_blocks_dma` / `write_blocks_dma` (DMAC-backed), and polling variants for use outside the executor. |
-| `uart`  | SCIF async serial — five channels (SCIF0–4). TX via TXI interrupts; RX via DMA ring buffer (`init_dma_rx`) or interrupt (`register_txi_for`). |
-| `rspi`  | SPI master (RSPI0–4). 32-bit frame mode; interrupt-driven transfer-complete. Used for CV DAC and OLED. |
-| `gpio`  | GPIO port registers (P1–P11, PMC0–PMC11). `set_pin_mux`, `set_as_output` / `set_as_input`, `write`, `read_pin`, plus a const-generic `Pin` type implementing the `embedded-hal` `InputPin` / `OutputPin` traits. |
+| `uart`  | SCIF async serial, five channels (SCIF0–4). `Uart::new(Peri<SCIFn>, rx_dma, tx_dma, Irqs, baud)` receives into a DMA ring (SCIF0/1) and transmits by DMA or through the FIFO; `split()` gives `UartRx`/`UartTx`. |
+| `rspi`  | SPI master (RSPI0–4): `Rspi::new(Peri<RSPIn>, bit_rate)`, 32-bit or 8-bit frames, blocking sends. Used for CV DAC and OLED. |
+| `gpio`  | GPIO port registers (P1–P11, PMC0–PMC11). `set_pin_mux`, `set_as_output` / `set_as_input`, `write`, `read_pin`, plus a const-generic `Pin` type (`Pin::steal()`) implementing the `embedded-hal` `InputPin` / `OutputPin` traits. |
 | `adc`   | 12-bit A/D converter, single-scan polled. |
 | `spibsc` | SPI Multi-I/O Bus Controller — manual-command NOR-flash erase/program/read, with erase and program refused outside the board's writable windows. |
 | `usb` | RUSB1 USB 2.0 dual-role driver: chip plumbing (bases, IRQs, STBCR7 clock gates) plus full `embassy-usb-driver` **device** (`usb::driver`) and **host** (`usb::host`) implementations over shared `regs`/`fifo`/`pipe` layers. `usb::init_device_mode(port)` / `usb::init_host_mode(port)` are the entry points. USB *class* code (UAC2/MIDI/MSC/BOT) lives in `deluge_bsp::usb`. |
@@ -104,27 +104,29 @@ embassy-time    = "0.5"
 Minimal bare-metal init sequence:
 
 ```rust,ignore
-#[no_mangle]
-unsafe extern "C" fn board_init() {
-    // 0. Register the board's crystal; every peripheral clock derives from it
-    rza1l_hal::clocks::init(rza1l_hal::clocks::ClockConfig::new(MY_EXTAL_HZ));
-    // 1. Ungate peripheral clocks
-    rza1l_hal::stb::init(&MY_STB_CONFIG);
-    // 2. MMU + caches
-    rza1l_hal::mmu::init_and_enable();
-    rza1l_hal::cache::l1_enable();
-    rza1l_hal::cache::l2_init();
-    // 3. GIC
-    rza1l_hal::gic::init();
-    // 4. Embassy time driver (OSTM0 free-run + OSTM1 alarm)
-    rza1l_hal::ostm::enable_clock();
-    rza1l_hal::time_driver::init();
+rza1l_hal::bind_interrupts!(struct TimeIrqs {
+    OSTMI0 => rza1l_hal::time_driver::OverflowHandler;
+    OSTMI1 => rza1l_hal::time_driver::AlarmHandler;
+});
+
+fn main() -> ! {
+    // The crystal's clock tree, the CPG, module clocks and the GIC; the singletons, once.
+    let p = rza1l_hal::init(MY_CONFIG);
+    unsafe {
+        rza1l_hal::mmu::init_and_enable();
+        rza1l_hal::cache::l1_enable();
+        rza1l_hal::cache::l2_init();
+    }
+    // Embassy time driver: OSTM0 free-runs, OSTM1 is the alarm.
+    rza1l_hal::time_driver::init(p.OSTM0, p.OSTM1, TimeIrqs);
+    // Hand the rest of `p` to your drivers, e.g. `rspi::Rspi::new(p.RSPI0, 4_000_000)`.
+    // …
 }
 ```
 
-All peripheral init functions (`sdhi::init`, `ssi::init`, `uart::init`, …)
-are `unsafe` and must be called before interrupts are enabled on that
-peripheral.
+Drivers take their peripheral singleton (`Peri<'d, T>`) and the interrupt binding they need, so
+`Rspi::new`, `Uart::new`, `OneShot::new` and `time_driver::init` are safe. SDHI, SSI, SCUX and
+USB still have `unsafe` init functions until Phase 4c.
 
 ---
 

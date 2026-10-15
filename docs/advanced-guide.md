@@ -390,6 +390,9 @@ There's also `try_lock_rspi0()` (non-blocking, startup use) and
 `unsafe steal_rspi0()` — the latter is reserved for the panic handler, which needs
 the bus while the world is stopped.
 
+The bus exists once `bus::init(board.shared_spi, board.dma.oled)` has run; the SDK runs it the
+first time an app uses the OLED or CV. Before that, locking it panics.
+
 ### The PIC co-processor
 
 Pads, buttons, encoders, and the OLED chip-select handshake all ride a UART link to
@@ -397,6 +400,18 @@ the on-board PIC. [`crates/deluge-bsp/src/pic.rs`](../crates/deluge-bsp/src/pic.
 exposes the `Parser`, the `Event` enum, `pad_coords(id)`, and the async handshakes
 (`wait_ready`, `wait_oled_selected`). The SDK's `pic_service` pump (see [§4](#lazy-service-task-ensure_started))
 is the consumer; reuse that rather than re-driving the UART.
+
+### Taking a peripheral from the SDK
+
+The runtime keeps the board's unclaimed peripherals in `deluge::parts` (device-only). An app that
+drives one through the BSP itself takes it in `setup`:
+
+```rust
+let poll_timer = deluge::parts::with(|p| p.encoder_poll_timer.take()).expect("MTU2 channel 3 is free");
+unsafe { deluge_bsp::encoder::irq_init(poll_timer) };
+```
+
+A capability that needs a peripheral the app took panics, naming it.
 
 ### Writing a peripheral driver
 
@@ -614,7 +629,7 @@ table and bootloader metadata in [`rza1-rt`](../crates/rza1-rt/README.md).
 |--------|------|
 | `system` | `BOARD_CONFIG` (the chip config for `rza1l_hal::init`); board `StbConfig`/`SsiConfig` |
 | `board` | `Board::new(rza1l_hal::init(BOARD_CONFIG))`: the rest of bring-up, then the peripherals by role |
-| `bus` | RSPI0 ownership guard (`lock_rspi0`, `enter_8bit/32bit`, `steal_rspi0`) |
+| `bus` | RSPI0 ownership guard (`init`, `lock_rspi0`, `enter_8bit/32bit`, `steal_rspi0`) |
 | `pic` | PIC co-processor: parser, `Event`, handshakes |
 | `audio_block` | ring-following audio tap (`Frame`, `BLOCK_FRAMES`, `SAMPLE_RATE_HZ`) |
 | `oled` | SSD1309 driver + `FrameBuffer` + blocking panic path |

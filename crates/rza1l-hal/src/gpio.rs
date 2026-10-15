@@ -211,13 +211,14 @@ pub struct Input;
 pub struct Pin<const PORT: u8, const BIT: u8, MODE>(PhantomData<MODE>);
 
 impl<const PORT: u8, const BIT: u8, MODE> Pin<PORT, BIT, MODE> {
-    /// Create a new typed pin handle.
+    /// A typed handle to a pin without configuring it, for a pin another part of the program set
+    /// up.
     ///
     /// # Safety
     /// The caller must ensure the pin is not concurrently owned by another
     /// driver and that GPIO clocks are enabled.
     #[inline]
-    pub unsafe fn new() -> Self {
+    pub unsafe fn steal() -> Self {
         Pin(PhantomData)
     }
 }
