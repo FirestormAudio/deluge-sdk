@@ -941,10 +941,20 @@ mod tests {
         assert_eq!(fb.pages[5][127], 0b1000_0000);
     }
 
+    /// Serialises the tests that write the process-global captured frame: a parallel
+    /// capture of a different frame would otherwise land between another test's
+    /// capture and its read-back.
+    static CAPTURE_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_capture() -> std::sync::MutexGuard<'static, ()> {
+        CAPTURE_TESTS.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// `send_frame` on host captures rather than drives real hardware; reading
     /// it back must equal what was sent.
     #[test]
     fn send_frame_captures_readable_frame() {
+        let _capture = lock_capture();
         embassy_futures::block_on(init());
 
         let mut fb = FrameBuffer::new();
@@ -960,6 +970,7 @@ mod tests {
     /// `draw_blocking` (the panic-path host stand-in) also captures.
     #[test]
     fn draw_blocking_captures_readable_frame() {
+        let _capture = lock_capture();
         let mut fb = FrameBuffer::new();
         fb.fill(0xAA);
 
@@ -973,6 +984,7 @@ mod tests {
     /// boot-capture flag once it has stored a frame.
     #[test]
     fn host_boot_frame_captured_flips_on_capture() {
+        let _capture = lock_capture();
         // Process-global flag: it may already be true if another oled test captured
         // a frame first — that's fine, this asserts capture SETS it, never clears it.
         let mut fb = FrameBuffer::new();
@@ -991,13 +1003,14 @@ mod tests {
 
     #[test]
     fn capture_without_a_panel_needs_none() {
-        // No assertion on `captured_frame()`: it is global, and other oled tests capture into it
-        // in parallel. The existing capture tests cover the capture surface itself.
+        let _capture = lock_capture();
+        // No assertion on `captured_frame()`: the read-back tests above cover the capture itself.
         capture_frame_via(None, &FrameBuffer::new());
     }
 
     #[test]
     fn capture_forwards_the_frame_to_the_panel() {
+        let _capture = lock_capture();
         let panel = crate::host_panel::tests::leak_panel();
         let fb = FrameBuffer::new();
         capture_frame_via(Some(panel), &fb);
