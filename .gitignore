@@ -34,3 +34,6 @@ vendor/
 /linux/deluge-hal-linux/Cargo.lock
 /linux/deluge-linux-ui/Cargo.lock
 examples/linux/*/Cargo.lock
+
+# Python bytecode from tools/ helpers (tools/gen-pac.sh imports tools/pac_manual.py)
+__pycache__/
