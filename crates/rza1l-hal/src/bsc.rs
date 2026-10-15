@@ -31,11 +31,7 @@
 //! at `0x3FFF_Cxxx` is in the strongly-ordered I/O region) and before any
 //! accesses to the CS0/CS1 address spaces.
 
-// BSC register addresses.
-const CS0BCR: usize = 0x3FFF_C004;
-const CS1BCR: usize = 0x3FFF_C008;
-const CS0WCR: usize = 0x3FFF_C028;
-const CS1WCR: usize = 0x3FFF_C02C;
+use crate::pac::{BSC, bsc};
 
 // Timing values from Renesas bsc_userdef.c.
 // CSxBCR: bus size = 16-bit (IW[31:28]=0x1), 1 idle cycle (TYPE[11:9]=0x6, ICY[3:0]=0x0).
@@ -56,10 +52,8 @@ const WCR_6WAIT: u32 = 0x0000_0B40;
 /// # Safety
 /// Writes to memory-mapped BSC registers.
 pub unsafe fn init_cs0() {
-    unsafe {
-        crate::mmio::write32(CS0BCR, BCR_16BIT_1IDLE);
-        crate::mmio::write32(CS0WCR, WCR_6WAIT);
-    }
+    BSC.cs0bcr().write_value(bsc::regs::Cs0bcr(BCR_16BIT_1IDLE));
+    BSC.cs0wcr().write_value(bsc::regs::Cs0wcr(WCR_6WAIT));
 }
 
 /// Configure CS1 for 16-bit external bus access.
@@ -70,10 +64,8 @@ pub unsafe fn init_cs0() {
 /// # Safety
 /// Writes to memory-mapped BSC registers.
 pub unsafe fn init_cs1() {
-    unsafe {
-        crate::mmio::write32(CS1BCR, BCR_16BIT_1IDLE);
-        crate::mmio::write32(CS1WCR, WCR_6WAIT);
-    }
+    BSC.cs1bcr().write_value(bsc::regs::Cs1bcr(BCR_16BIT_1IDLE));
+    BSC.cs1wcr().write_value(bsc::regs::Cs1wcr(WCR_6WAIT));
 }
 
 #[cfg(all(test, not(target_os = "none")))]
@@ -82,21 +74,12 @@ mod tests {
     use crate::mmio;
 
     #[test]
-    fn register_addresses() {
-        // BSC CSn timing registers (HW manual ch.8): BCR pairs then WCR pairs.
-        assert_eq!(CS0BCR, 0x3FFF_C004);
-        assert_eq!(CS1BCR, 0x3FFF_C008);
-        assert_eq!(CS0WCR, 0x3FFF_C028);
-        assert_eq!(CS1WCR, 0x3FFF_C02C);
-    }
-
-    #[test]
     fn init_cs0_writes_bcr_then_wcr() {
         mmio::test::reset();
         unsafe { init_cs0() };
         assert_eq!(
             mmio::test::writes(),
-            [(CS0BCR, BCR_16BIT_1IDLE), (CS0WCR, WCR_6WAIT)],
+            [(0x3FFF_C004, BCR_16BIT_1IDLE), (0x3FFF_C028, WCR_6WAIT)],
         );
         // 16-bit bus width (IW=0x1) + 6 wait states encoded in the timing words.
         assert_eq!(BCR_16BIT_1IDLE, 0x1000_0C00);
@@ -109,7 +92,28 @@ mod tests {
         unsafe { init_cs1() };
         assert_eq!(
             mmio::test::writes(),
-            [(CS1BCR, BCR_16BIT_1IDLE), (CS1WCR, WCR_6WAIT)],
+            [(0x3FFF_C008, BCR_16BIT_1IDLE), (0x3FFF_C02C, WCR_6WAIT)],
+        );
+    }
+
+    #[test]
+    fn the_pac_names_the_same_bus_registers() {
+        use crate::pac::BSC;
+        assert_eq!(
+            (BSC.cs0bcr().addr(), BSC.cs0bcr().width()),
+            (0x3FFF_C004, 4)
+        );
+        assert_eq!(
+            (BSC.cs1bcr().addr(), BSC.cs1bcr().width()),
+            (0x3FFF_C008, 4)
+        );
+        assert_eq!(
+            (BSC.cs0wcr().addr(), BSC.cs0wcr().width()),
+            (0x3FFF_C028, 4)
+        );
+        assert_eq!(
+            (BSC.cs1wcr().addr(), BSC.cs1wcr().width()),
+            (0x3FFF_C02C, 4)
         );
     }
 }

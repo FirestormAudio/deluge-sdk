@@ -10,7 +10,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # Modules under crates/rza1l-hal/src that take every register from rza1_pac.
-MIGRATED=()
+MIGRATED=(cpg.rs stb.rs bsc.rs)
 
 status=0
 for m in "${MIGRATED[@]}"; do
