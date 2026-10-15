@@ -122,6 +122,27 @@ pub const fn midi_handle(id: DeviceId) -> MidiHandle {
     MidiHandle { id }
 }
 
+/// Whether the configuration descriptor `config` (the whole chain, as read from the device)
+/// declares a hub interface (class 0x09).
+pub fn has_hub_interface(config: &[u8]) -> bool {
+    const INTERFACE: u8 = 4;
+    const HUB_CLASS: u8 = 9;
+    let mut rest = config;
+    // Each descriptor starts with bLength and bDescriptorType; stop at a zero or overrunning
+    // length rather than looping on it or reading past the end.
+    while let [len, kind, ..] = *rest {
+        let len = len as usize;
+        if len < 2 || len > rest.len() {
+            return false;
+        }
+        if kind == INTERFACE && len >= 6 && rest[5] == HUB_CLASS {
+            return true;
+        }
+        rest = &rest[len..];
+    }
+    false
+}
+
 #[cfg(target_os = "none")]
 mod runtime {
     use core::sync::atomic::{AtomicU16, Ordering};
@@ -295,6 +316,11 @@ mod runtime {
         // `host` drops here → pipes drop → address reclaimed.
     }
 
+    /// Bytes read of a device's whole configuration descriptor. Audio interfaces carry long
+    /// ones (alternate settings, clock and terminal units): a USB-C UAC2 interface on hardware
+    /// had 554 bytes, past the 512 this used to be, and failed enumeration.
+    const CONFIG_DESC_BUF: usize = 2048;
+
     /// Owns a hub: services port changes and enumerates devices behind it.
     ///
     /// Enumeration lives here rather than in the supervisor because
@@ -308,7 +334,7 @@ mod runtime {
         handle: HostAlloc,
         spawner: Spawner,
     ) {
-        let mut config_buf = [0u8; 512];
+        let mut config_buf = [0u8; CONFIG_DESC_BUF];
 
         loop {
             let event = match hub.wait_for_event().await {
@@ -417,7 +443,7 @@ mod runtime {
     pub async fn usb_host_supervisor(driver: Rusb1HostDriver<'static>, spawner: Spawner) {
         static BUS_STATE: BusState = BusState::new();
         let (mut controller, handle) = bus(driver, &BUS_STATE);
-        let mut config_buf = [0u8; 512];
+        let mut config_buf = [0u8; CONFIG_DESC_BUF];
 
         loop {
             let speed = controller.wait_for_connection().await;
@@ -435,9 +461,12 @@ mod runtime {
             };
             let addr = dev_info.device_address;
 
-            // Try the hub first: a hub is not a MIDI device, so the MIDI
-            // matcher would reject it and free its address.
-            let bound =
+            // Only a device declaring a hub interface goes to the hub driver:
+            // HubHandler re-reads the configuration into its own fixed buffer
+            // before it checks the class, so a device with a long configuration
+            // (an audio interface's, 554 bytes on hardware) fails there with
+            // InsufficientMemory instead of reaching the class matchers.
+            let bound = if super::has_hub_interface(&config_buf) {
                 match HubHandler::<Rusb1Allocator, MAX_HUB_PORTS>::try_register(&handle, &dev_info)
                     .await
                 {
@@ -456,31 +485,28 @@ mod runtime {
                             }
                         }
                     }
-                    Err(RegisterError::NoSupportedInterface) => {
-                        // Not a hub — fall through to the MIDI matcher, then
-                        // UAC. MIDI binding takes precedence: a composite
-                        // audio+MIDI device that binds as MIDI does not have
-                        // its audio captured. Pure UAC audio devices fail
-                        // `bind_midi` and fall through to `bind_uac`.
-                        match ConfigurationDescriptor::try_from_slice(&config_buf) {
-                            Ok(cfg) => {
-                                if !bind_midi(&handle, spawner, &dev_info, &cfg) {
-                                    bind_uac(&handle, spawner, &dev_info, &cfg)
-                                } else {
-                                    true
-                                }
-                            }
-                            Err(e) => {
-                                error!("usb_host: bad config descriptor: {:?}", e);
-                                false
-                            }
-                        }
-                    }
                     Err(e) => {
                         error!("usb_host: hub register failed: {:?}", e);
                         false
                     }
-                };
+                }
+            } else {
+                // A composite device (an audio interface with MIDI, the Digitakt
+                // in AUDIO/MIDI mode) gets both drivers: MIDI claims its bulk
+                // pipes, UAC its isochronous ones, and the address stays claimed
+                // until detach.
+                match ConfigurationDescriptor::try_from_slice(&config_buf) {
+                    Ok(cfg) => {
+                        let midi = bind_midi(&handle, spawner, &dev_info, &cfg);
+                        let uac = bind_uac(&handle, spawner, &dev_info, &cfg);
+                        midi || uac
+                    }
+                    Err(e) => {
+                        error!("usb_host: bad config descriptor: {:?}", e);
+                        false
+                    }
+                }
+            };
 
             if !bound {
                 handle.free_address(addr);
@@ -506,6 +532,40 @@ pub use runtime::usb_host_supervisor;
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
     use super::*;
+
+    /// A configuration descriptor (9 bytes) followed by one interface descriptor per class.
+    fn config_with_interfaces(classes: &[u8]) -> std::vec::Vec<u8> {
+        let mut v = std::vec![9, 2, 0, 0, classes.len() as u8, 1, 0, 0x80, 50];
+        for (i, &class) in classes.iter().enumerate() {
+            v.extend_from_slice(&[9, 4, i as u8, 0, 1, class, 0, 0, 0]);
+            v.extend_from_slice(&[7, 5, 0x81, 3, 8, 0, 12]); // an endpoint between interfaces
+        }
+        let total = v.len() as u16;
+        v[2..4].copy_from_slice(&total.to_le_bytes());
+        v
+    }
+
+    #[test]
+    fn an_audio_interface_configuration_has_no_hub_interface() {
+        // Audio control, audio streaming, MIDI: the classes an audio interface carries.
+        assert!(!has_hub_interface(&config_with_interfaces(&[1, 1, 1])));
+    }
+
+    #[test]
+    fn a_hub_configuration_has_a_hub_interface() {
+        assert!(has_hub_interface(&config_with_interfaces(&[9])));
+    }
+
+    #[test]
+    fn a_malformed_configuration_has_no_hub_interface() {
+        let mut zero_len = config_with_interfaces(&[1]);
+        zero_len[9] = 0; // a zero bLength would otherwise never advance
+        assert!(!has_hub_interface(&zero_len));
+        let mut overrun = config_with_interfaces(&[9]);
+        overrun[9] = 200; // the interface descriptor claims to run past the end
+        assert!(!has_hub_interface(&overrun));
+        assert!(!has_hub_interface(&[]));
+    }
 
     #[test]
     fn device_ids_in_the_same_slot_differ_across_generations() {
