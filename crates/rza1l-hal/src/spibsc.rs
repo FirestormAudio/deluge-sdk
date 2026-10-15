@@ -696,19 +696,21 @@ mod tests {
         // CMNSR.TEND set: every transfer completes at once.
         crate::mmio::test::poke32(0x3FEF_A048, 1);
         let _ = read_status_reg();
-        let w = crate::mmio::test::writes();
-        // Manual mode on (CMNCR.MD), then the command and a start of transfer with read enabled.
-        assert!(
-            w.iter()
-                .any(|&(a, v)| a == 0x3FEF_A000 && v & (1 << 31) != 0)
-        );
-        assert!(
-            w.iter()
-                .any(|&(a, v)| a == 0x3FEF_A024 && (v >> 16) & 0xFF == 0x05)
-        );
-        assert!(
-            w.iter()
-                .any(|&(a, v)| a == 0x3FEF_A020 && v & 0b101 == 0b101)
+        let b = 0x3FEF_A000;
+        assert_eq!(
+            crate::mmio::test::writes(),
+            [
+                (b + 0x00C, DRCR_SSLN),                 // stop: negate SSL
+                (b + 0x000, CMNCR_MD),                  // manual mode on
+                (b + 0x024, CMD_RDSR << 16),            // SMCMR: RDSR
+                (b + 0x028, 0),                         // SMADR
+                (b + 0x030, SMENR_CDE | SMENR_SPIDE_8), // SMENR: command + 8-bit data
+                (b + 0x040, 0),                         // SMWDR0
+                (b + 0x020, SMCR_SPIE | SMCR_SPIRE),    // SMCR: start, read
+                (b + 0x00C, DRCR_SSLN),                 // stop again
+                (b + 0x000, 0),                         // manual mode off
+                (b + 0x00C, DRCR_SSLN | DRCR_RCF),      // flush the read cache
+            ]
         );
     }
 
