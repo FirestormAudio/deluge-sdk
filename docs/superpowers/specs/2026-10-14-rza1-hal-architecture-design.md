@@ -129,6 +129,16 @@ embedded-hal `SpiDevice` driver would still need Deluge-specific glue around eve
 
 **Exit:** 22 identical `memory.x` copies are gone; the HAL contains no `global_asm!` startup.
 
+**Done (2026-10-15 plan):** `rza1-rt` owns all of the former `startup.rs` (vectors, reset, fault
+and IRQ entry) and `link.x`; `deluge-bsp`'s `build.rs` provides `memory.x`, and all 46 per-binary
+`memory.x`/`memory_rtt.x` files are gone. Overrides are `--defsym`s of the `PROVIDE`d stack sizes
+(wren's program stack), not per-binary `memory.x` files, and must precede `-Tlink.x` (lld applies
+`--defsym` in command-line order); app-loader's layout was the default. `tools/link-layout.sh`
+checks every firmware's layout symbols against a committed baseline.
+`unlock-bootloader` stayed in the HAL: it gates `spibsc`'s flash unlock, not startup. The boot and
+fault LED became board data (`RZA1_STATUS_LED_PORT`/`_PIN` in `memory.x`). `deluge-alloc` was not
+on crates.io, so it was renamed to `rza1-alloc` without a re-export crate.
+
 ### Phase 4: Embassy ownership model
 
 - Depend on `embassy-hal-internal`; define `Peripherals` with `peripherals!` (OSTM0/1, RSPI0–4,

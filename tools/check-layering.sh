@@ -4,7 +4,8 @@
 #   - The Wren subsystem and the bare-metal examples consume the SDK only through
 #     the `deluge` facade, never the BSP/HAL crates beneath it, so SDK-internal
 #     changes can't silently break them (and Wren can later move to its own repo).
-#   - The chip HAL (rza1l-hal) never names the Deluge: board facts live in deluge-bsp.
+#   - The chip crates (rza1l-hal, rza1-rt, rza1-alloc) never name the Deluge, and the HAL has no
+#     global_asm! (startup is rza1-rt's).
 #   - usb/ and drivers/ are board-agnostic: they never name the chip HAL or any deluge-* crate.
 #   - deluge-bsp never depends on the simulator; deluge-sdk's sim backend plugs into
 #     deluge_bsp::host_panel.
@@ -35,15 +36,22 @@ if [ -n "$code_hits$dep_hits" ]; then
   echo "error: facade-only code (wren/, examples/baremetal/) reaches past \`deluge\` into deluge-bsp/rza1l-hal" >&2
   exit 1
 fi
-# The chip HAL is board-agnostic: no Deluge names in its code (comments may cite the Deluge as an
-# example). Its dependencies are checked against Cargo's graph at the end.
-HAL_DIR=crates/rza1l-hal
-# The whole crate directory, so code and linker scripts are covered wherever they live.
-hal_code_hits="$(grep -rniE --include='*.rs' --include='*.x' 'deluge' "$HAL_DIR" \
+# The chip crates are board-agnostic: no Deluge names in their code or linker scripts (comments
+# may cite the Deluge as an example). Their dependencies are checked against Cargo's graph at the
+# end.
+CHIP_DIRS=(crates/rza1l-hal crates/rza1-rt crates/rza1-alloc)
+chip_code_hits="$(grep -rniE --include='*.rs' --include='*.x' 'deluge' "${CHIP_DIRS[@]}" \
   | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)' || true)"
-if [ -n "$hal_code_hits" ]; then
-  printf '%s\n' "$hal_code_hits"
-  echo "error: rza1l-hal names the Deluge; board facts belong in deluge-bsp" >&2
+if [ -n "$chip_code_hits" ]; then
+  printf '%s\n' "$chip_code_hits"
+  echo "error: a chip crate (rza1l-hal, rza1-rt, rza1-alloc) names the Deluge; board facts belong in deluge-bsp" >&2
+  exit 1
+fi
+# Startup and exception entry are rza1-rt's: the HAL has no global_asm! (spec, Phase 3 exit).
+hal_asm_hits="$(grep -rn --include='*.rs' 'global_asm' crates/rza1l-hal | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)"
+if [ -n "$hal_asm_hits" ]; then
+  printf '%s\n' "$hal_asm_hits"
+  echo "error: rza1l-hal contains global_asm!; startup and exception entry belong in rza1-rt" >&2
   exit 1
 fi
 # Board-agnostic crates (spec rule 3): usb/ and drivers/ never name the chip HAL, the board, or
@@ -95,6 +103,10 @@ def closure(start):
 RULES = [
     ("crates/rza1l-hal/", lambda n: n.startswith("deluge-"),
      "rza1l-hal depends on a deluge-* crate; board facts belong in deluge-bsp"),
+    ("crates/rza1-rt/", lambda n: n.startswith("deluge-"),
+     "rza1-rt depends on a deluge-* crate; board facts belong in deluge-bsp"),
+    ("crates/rza1-alloc/", lambda n: n.startswith("deluge-"),
+     "rza1-alloc depends on a deluge-* crate; board facts belong in deluge-bsp"),
     ("usb/", lambda n: n == "rza1l-hal" or n.startswith("deluge-"),
      "usb/ depends on the chip or the board; it must stay board-agnostic"),
     ("drivers/", lambda n: n == "rza1l-hal" or n.startswith("deluge-"),

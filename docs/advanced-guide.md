@@ -124,7 +124,7 @@ the bulk of it.
 
 The startup assembly (cache/TLB invalidate, MMU off, NEON enable, per-mode stacks,
 BSS zero, then `main`) and the fixed bootloader metadata at offset `+0x20` live in
-[`crates/rza1l-hal/src/startup.rs`](../crates/rza1l-hal/src/startup.rs). Apps are
+[`crates/rza1-rt/src/startup.rs`](../crates/rza1-rt/src/startup.rs). Apps are
 loaded as ELF and run from RAM, so this startup runs every launch — there is no flash
 programming in the app path.
 
@@ -324,16 +324,18 @@ the first call then runs with IRQs already enabled.
 
 ### Layout (`memory.x`)
 
-The scaffold's `memory.x` (and the firmware variants) place:
+`deluge-bsp`'s `memory.x` places:
 
 - **SRAM** at `0x2002_0000`–`0x2030_0000` (the app load region; the bootloader owns
   the low SRAM below `0x2002_0000`), with per-mode stacks carved out at the top.
 - **SDRAM** at `0x0C00_0000`, 64 MB.
 
-The RTT build (`memory_rtt.x` + the `rtt` feature) additionally reserves a
-`.rtt_buffer` region; `build.rs` selects the matching layout and linker script
-(`rza1l.x` vs `rza1l_rtt.x` from the HAL). The runtime reads `__sram_heap_start` /
-`__sram_heap_end` from the script.
+With the `rtt` feature, `deluge-bsp` uses `memory_rtt.x` instead, which also reserves the RTT
+buffer, and `rza1-rt` publishes the RTT form of `link.x`. An app's `build.rs` only selects the
+script (`-Tlink.x`); to change a stack size, override the `PROVIDE`d symbol with
+`cargo:rustc-link-arg-bins=--defsym=PROGRAM_STACK_SIZE=<bytes>` printed before `-Tlink.x`, as
+`wren-firmware` does. The
+runtime reads `__sram_heap_start` / `__sram_heap_end` from the script.
 
 The MMU maps a **non-cached mirror** of every region at `+0x4000_0000`
 (`rza1l_hal::UNCACHED_MIRROR_OFFSET`; the section attributes are in
