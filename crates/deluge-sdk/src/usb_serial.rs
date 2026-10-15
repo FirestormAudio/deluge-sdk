@@ -12,8 +12,7 @@ use core::ptr::addr_of_mut;
 use embassy_executor::Spawner;
 use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver, Sender, State};
 use embassy_usb::{Builder, Config, UsbDevice};
-use rza1l_hal::gic;
-use rza1l_hal::usb::{Rusb1Driver, USB0_IRQ, dcd_int_handler, init_device_mode};
+use rza1l_hal::usb::{Rusb1Driver, init_device_mode};
 
 /// The `embassy-usb` driver for the Deluge's USB0 device port.
 pub type Driver = Rusb1Driver;
@@ -48,20 +47,33 @@ static mut USB_MSOS_DESC: [u8; 0] = [];
 static mut USB_CONTROL_BUF: [u8; 64] = [0; 64];
 static mut CDC_ACM_STATE: State<'static> = State::new();
 
-/// Register the USB0 device-mode ISR.
-///
-/// # Safety
-/// Call once, with IRQs masked (before `cortex_ar::interrupt::enable()`).
-pub(crate) unsafe fn register_irq() {
-    unsafe { gic::register(USB0_IRQ, || dcd_int_handler(0)) };
+use core::cell::RefCell;
+use embassy_sync::blocking_mutex::Mutex;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use rza1l_hal::Peri;
+use rza1l_hal::peripherals::USB0;
+
+/// USB0, held from the runtime until [`Deluge::usb_serial`](crate::Deluge::usb_serial) takes it.
+static PORT: Mutex<CriticalSectionRawMutex, RefCell<Option<Peri<'static, USB0>>>> =
+    Mutex::new(RefCell::new(None));
+
+/// Hold USB0 for [`Deluge::usb_serial`](crate::Deluge::usb_serial) and bind its interrupt. The
+/// runtime calls this before interrupts are enabled.
+pub(crate) fn stash(usb0: Peri<'static, USB0>) {
+    rza1l_hal::interrupt::bind(crate::usb0::Irqs);
+    PORT.lock(|port| *port.borrow_mut() = Some(usb0));
+}
+
+/// Take the stashed USB0, once.
+pub(crate) fn take_port() -> Option<Peri<'static, USB0>> {
+    PORT.lock(|port| port.borrow_mut().take())
 }
 
 /// Build the CDC-ACM device and spawn its task. Called once, via
 /// [`Deluge::usb_serial`](crate::Deluge::usb_serial)'s take-once guard.
-pub(crate) fn start(spawner: Spawner, id: UsbIdentity) -> UsbSerial {
-    // SAFETY: the take-once guard in `Deluge::usb_serial` makes this the only
-    // caller, so USB0 is initialised once and the `static mut` buffers are
-    // borrowed exactly once.
+pub(crate) fn start(spawner: Spawner, id: UsbIdentity, _usb0: Peri<'static, USB0>) -> UsbSerial {
+    // SAFETY: owning USB0 (`_usb0`, taken once from the runtime's stash) makes this the only
+    // caller, so USB0 is initialised once and the `static mut` buffers are borrowed exactly once.
     let (device, cdc) = unsafe {
         let (_port, driver) = init_device_mode(0);
         let mut config = Config::new(id.vid, id.pid);

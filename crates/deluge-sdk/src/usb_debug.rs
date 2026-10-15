@@ -20,8 +20,7 @@ use embassy_usb::class::cdc_acm::{CdcAcmClass, Sender, State};
 use embassy_usb::{Builder, Config, UsbDevice};
 use log::{LevelFilter, Log, Metadata, Record};
 
-use rza1l_hal::gic;
-use rza1l_hal::usb::{Rusb1Driver, USB0_IRQ, dcd_int_handler, init_device_mode};
+use rza1l_hal::usb::{Rusb1Driver, init_device_mode};
 
 // ── USB descriptor / class `'static` backing storage ─────────────────────────
 //
@@ -113,10 +112,9 @@ impl Write for FmtBuf {
 /// which enables the USB interrupt source (the same ordering the controller
 /// firmware uses).
 ///
-/// # Safety
-/// Call exactly once, after platform/clock init and before interrupts are
-/// enabled. Takes ownership of USB0 (apps must not also bring up a USB stack).
-pub unsafe fn build() -> (
+/// Takes USB0: only one of `usb-log` and `usb-serial` can own it. Call before interrupts are
+/// enabled (the runtime does).
+pub fn build(_usb0: rza1l_hal::Peri<'static, rza1l_hal::peripherals::USB0>) -> (
     UsbDevice<'static, Rusb1Driver>,
     Sender<'static, Rusb1Driver>,
 ) {
@@ -139,7 +137,7 @@ pub unsafe fn build() -> (
 
     // Register the USB0 ISR before build() enables the interrupt source. Device
     // mode only, so always dispatch to the device handler.
-    unsafe { gic::register(USB0_IRQ, || dcd_int_handler(0)) };
+    rza1l_hal::interrupt::bind(crate::usb0::Irqs);
 
     // 512-byte bulk endpoints: the RUSB1 PHY negotiates high speed, and USB 2.0
     // requires HS bulk endpoints to advertise wMaxPacketSize 512.

@@ -49,21 +49,20 @@ dependency:
 
 ```rust
 use deluge::prelude::*;
-use deluge::deluge_bsp;                // re-exported
 use deluge::fixed;                     // = the `fixedpoint` crate (Q31/Q16 DSP math)
 use deluge::deluge_alloc;              // SRAM / SDRAM heaps (the rza1-alloc crate)
 ```
 
-`deluge_bsp` is re-exported on every target; `deluge_alloc` only on the device
-(`target_os = "none"`), so an app that uses it directly won't build for the desktop
-simulator.
+`deluge_alloc` is re-exported only on the device (`target_os = "none"`), so an app
+that uses it directly won't build for the desktop simulator.
 
-The chip HAL is **not** re-exported: the board crate is the lowest layer the facade
-exposes. To use `rza1l_hal` directly (GIC, raw MMIO, …), add it as a dependency of
+Neither the board crate nor the chip HAL is re-exported. To use `deluge_bsp` or
+`rza1l_hal` directly (the bus lock, the GIC, raw MMIO, …), add it as a dependency of
 your app alongside `deluge`:
 
 ```toml
 [dependencies]
+deluge-bsp = "0.1"
 rza1l-hal = "0.1"
 ```
 
@@ -73,7 +72,7 @@ There is **no svd2rust PAC** — the HAL does raw, typed MMIO (see
 [§7](#writing-a-peripheral-driver)). That keeps it small and host-testable.
 
 The friendly `Deluge` accessors (`oled()`, `audio()`, …) are thin wrappers; when you
-need something they don't expose, drop straight to `deluge_bsp::*`, or to `rza1l_hal::*` with the direct dependency above.
+need something they don't expose, drop to `deluge_bsp::*` or `rza1l_hal::*` with the direct dependencies above.
 Mixing the two is fine, but remember the SDK's take-once handles assume they own
 their hardware — don't drive the same peripheral from both a capability handle and a
 raw HAL call.
@@ -90,9 +89,9 @@ this sequence:
 1. **Logging** — initialise the RTT or USB-CDC logger (feature-gated; one global logger).
 2. **`init_platform()`** (interrupts masked):
    - `rza1_alloc::SRAM.init(...)` from the linker symbols `__sram_heap_start` / `__sram_heap_end`.
-   - `deluge_bsp::system::init_clocks()` — CPG/PLL, MMU, L1+L2 caches, SDRAM controller, GIC, and the OSTM embassy-time driver.
+   - `deluge_bsp::Board::new(rza1l_hal::init(deluge_bsp::system::BOARD_CONFIG))` — CPG/PLL, module clocks and GIC (the HAL), then MMU, L1+L2 caches, SDRAM controller and the OSTM embassy-time driver (the board); it returns the peripherals by role.
    - `rza1_alloc::SDRAM.init(0x0C00_0000, 64 MiB)`.
-   - With `usb-serial` enabled: register the USB0 device ISR, still masked, before `setup()` runs (the device itself is built later, when the app calls `Deluge::usb_serial`).
+   - With `usb-serial` enabled: hold USB0 and bind its interrupt, still masked, before `setup()` runs (the device itself is built later, when the app calls `Deluge::usb_serial`). `usb-log` and `usb-serial` both take USB0, so enabling both is a compile error.
 3. **`setup()`** — your optional `#[deluge::app(setup = …)]` hook, still with **IRQs masked** (see [§5](#the-setup-window)).
 4. **USB-debug bring-up** (only with `usb-log`): register the USB0 ISR and start the controller while IRQs are still masked, the same ordering the controller firmware uses.
 5. **`cortex_ar::interrupt::enable()`** — unmask IRQs so the time driver and peripheral ISRs fire.
@@ -377,7 +376,7 @@ through the guard in [`crates/deluge-bsp/src/bus.rs`](../crates/deluge-bsp/src/b
 rather than touching the peripheral directly:
 
 ```rust
-use deluge::deluge_bsp::bus;
+use deluge_bsp::bus; // deluge-bsp as a direct dependency
 
 let mut rspi = bus::lock_rspi0().await;   // exclusive, async-acquired
 rspi.enter_32bit();                       // reconfigure frame size if needed

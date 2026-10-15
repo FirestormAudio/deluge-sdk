@@ -97,6 +97,8 @@ mod pic_service;
 mod plat;
 mod sd;
 mod sync_led;
+#[cfg(any(feature = "usb-log", all(target_os = "none", feature = "usb-serial")))]
+mod usb0;
 #[cfg(feature = "usb-log")]
 mod usb_debug;
 /// USB CDC-ACM serial capability; see [`Deluge::usb_serial`].
@@ -185,14 +187,12 @@ mod not_send_assertions {
     }
 }
 
-// Re-export the board layers so apps can reach functionality the capability API does not cover
-// through the single `deluge` dependency. The allocator is a device-only escape hatch (no host
-// equivalent); an app reaching for it won't run in the desktop simulator. The chip HAL is
-// deliberately not re-exported: the board crate is the lowest layer an app should see.
-// It stays `deluge::deluge_alloc` for apps; the crate is `rza1-alloc`.
+// The allocator is re-exported for apps that place data in SDRAM explicitly; it is a device-only
+// escape hatch (no host equivalent). The board and chip crates are not re-exported: an app that
+// needs them depends on `deluge-bsp` or `rza1l-hal` directly. The allocator stays
+// `deluge::deluge_alloc` for apps; the crate is `rza1-alloc`.
 #[cfg(target_os = "none")]
 pub use rza1_alloc as deluge_alloc;
-pub use deluge_bsp;
 
 /// The app capability handle, passed to `#[deluge::app] async fn main`.
 ///
@@ -375,19 +375,13 @@ impl Deluge {
     /// `/dev/ttyACM*` port on the host. Starts the USB device task; read and
     /// write through the returned [`UsbSerial`](usb_serial::UsbSerial) halves.
     ///
-    /// Device-only, behind the `usb-serial` feature. Takeable once: a second
-    /// call panics, as does calling it while `usb-log` (which owns USB0) is on.
+    /// Device-only, behind the `usb-serial` feature (which can't be enabled together with
+    /// `usb-log`: both drive USB0). Takeable once: a second call panics.
     #[cfg(all(target_os = "none", feature = "usb-serial"))]
     pub fn usb_serial(&self, id: usb_serial::UsbIdentity) -> usb_serial::UsbSerial {
-        use core::sync::atomic::{AtomicBool, Ordering};
-        static TAKEN: AtomicBool = AtomicBool::new(false);
-        if TAKEN.swap(true, Ordering::Relaxed) {
-            panic!("Deluge::usb_serial() called more than once");
-        }
-        if cfg!(feature = "usb-log") {
-            panic!("Deluge::usb_serial(): USB0 is already owned by the `usb-log` feature");
-        }
-        usb_serial::start(self.spawner, id)
+        let usb0 = usb_serial::take_port()
+            .expect("Deluge::usb_serial() called twice: USB0 is already in use");
+        usb_serial::start(self.spawner, id, usb0)
     }
 
     /// Take the analog trigger-clock **input** jack. Takeable once.
@@ -630,12 +624,17 @@ pub mod __rt {
             init_logging();
 
             let board = unsafe { init_platform() };
-            let _ = &board;
 
-            // `usb-serial`: register the USB0 device ISR while IRQs are still
-            // masked (the GIC contract); `Deluge::usb_serial` builds the device.
+            // USB0 has one owner: the `usb-log` device or the app's `usb-serial` port.
+            #[cfg(all(feature = "usb-log", feature = "usb-serial"))]
+            compile_error!(
+                "the `usb-log` and `usb-serial` features both drive USB0: enable one of them"
+            );
+            #[allow(unused_variables)]
+            let usb0 = board.usb0;
             #[cfg(feature = "usb-serial")]
-            unsafe { crate::usb_serial::register_irq() };
+            crate::usb_serial::stash(usb0);
+
 
             // App's synchronous, interrupts-masked initialisation.
             setup();
@@ -644,7 +643,7 @@ pub mod __rt {
             // controller) while interrupts are still masked, the same ordering the
             // controller firmware uses. Spawned below once the executor runs.
             #[cfg(feature = "usb-log")]
-            let usb = unsafe { crate::usb_debug::build() };
+            let usb = crate::usb_debug::build(usb0);
 
             // Unmask IRQs so the Embassy time driver and peripheral ISRs fire.
             unsafe { cortex_ar::interrupt::enable() };
