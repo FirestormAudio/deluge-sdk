@@ -36,37 +36,85 @@ if [ -n "$code_hits$dep_hits" ]; then
   exit 1
 fi
 # The chip HAL is board-agnostic: no Deluge names in its code (comments may cite the Deluge as an
-# example), and no dependency on any deluge-* crate.
+# example). Its dependencies are checked against Cargo's graph at the end.
 HAL_DIR=crates/rza1l-hal
 # The whole crate directory, so code and linker scripts are covered wherever they live.
 hal_code_hits="$(grep -rniE --include='*.rs' --include='*.x' 'deluge' "$HAL_DIR" \
   | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)' || true)"
-hal_dep_hits="$(grep -nE '^[[:space:]]*(\[[^]]*\.)?deluge-|package[[:space:]]*=[[:space:]]*"deluge-' "$HAL_DIR/Cargo.toml" || true)"
-if [ -n "$hal_code_hits$hal_dep_hits" ]; then
-  printf '%s\n' "$hal_code_hits" "$hal_dep_hits" | sed '/^$/d'
+if [ -n "$hal_code_hits" ]; then
+  printf '%s\n' "$hal_code_hits"
   echo "error: rza1l-hal names the Deluge; board facts belong in deluge-bsp" >&2
   exit 1
 fi
 # Board-agnostic crates (spec rule 3): usb/ and drivers/ never name the chip HAL, the board, or
-# any deluge-* crate, in code or manifests.
+# any deluge-* crate in code. Their dependencies are checked against Cargo's graph at the end.
 AGNOSTIC_DIRS=(usb drivers)
 agnostic_hits="$(grep -rnE --include='*.rs' --exclude-dir=target '\b(rza1l_hal|deluge_[a-z_]+)\b' "${AGNOSTIC_DIRS[@]}" \
   | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)"
-agnostic_dep_hits="$(grep -rnE --include='Cargo.toml' --exclude-dir=target '(rza1l-hal|deluge-[a-z-]+)' "${AGNOSTIC_DIRS[@]}" || true)"
-if [ -n "$agnostic_hits$agnostic_dep_hits" ]; then
-  printf '%s\n' "$agnostic_hits" "$agnostic_dep_hits" | sed '/^$/d'
+if [ -n "$agnostic_hits" ]; then
+  printf '%s\n' "$agnostic_hits"
   echo "error: usb/ or drivers/ depends on the chip or the board; they must stay board-agnostic" >&2
   exit 1
 fi
 
-# The BSP never depends on the simulator (spec rule 4); deluge-sdk's sim backend plugs into
-# deluge_bsp::host_panel instead.
+# The BSP never names the simulator in code (spec rule 4); deluge-sdk's sim backend plugs into
+# deluge_bsp::host_panel instead. Its dependencies are checked against Cargo's graph at the end.
 BSP_DIR=crates/deluge-bsp
-bsp_sim_hits="$(grep -rnE --include='*.rs' --include='Cargo.toml' --exclude-dir=target 'deluge[-_]sim(_link|-link|ulator)' "$BSP_DIR" \
-  | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|#)' || true)"
+bsp_sim_hits="$(grep -rnE --include='*.rs' --exclude-dir=target '\bdeluge_sim(_link|ulator)\b' "$BSP_DIR" \
+  | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)"
 if [ -n "$bsp_sim_hits" ]; then
   printf '%s\n' "$bsp_sim_hits"
   echo "error: deluge-bsp depends on the simulator; plug in through deluge_bsp::host_panel" >&2
   exit 1
 fi
+
+# Dependencies, from Cargo's resolved graph rather than the manifests' text: that sees renamed and
+# transitive dependencies, and comments or descriptions can't trip it. Every feature is enabled,
+# so an optional dependency counts; dev-dependencies don't ship and are not checked.
+cargo metadata --format-version 1 --all-features --locked | python3 -c '
+import json, sys
+
+meta = json.load(sys.stdin)
+root = meta["workspace_root"] + "/"
+pkgs = {p["id"]: p for p in meta["packages"]}
+graph = {
+    n["id"]: [d["pkg"] for d in n["deps"] if any(k["kind"] != "dev" for k in d["dep_kinds"])]
+    for n in meta["resolve"]["nodes"]
+}
+
+def closure(start):
+    seen, todo = set(), list(graph[start])
+    while todo:
+        pid = todo.pop()
+        if pid not in seen:
+            seen.add(pid)
+            todo.extend(graph[pid])
+    return {pkgs[pid]["name"] for pid in seen}
+
+# (crates under this directory, what they must not depend on, the error)
+RULES = [
+    ("crates/rza1l-hal/", lambda n: n.startswith("deluge-"),
+     "rza1l-hal depends on a deluge-* crate; board facts belong in deluge-bsp"),
+    ("usb/", lambda n: n == "rza1l-hal" or n.startswith("deluge-"),
+     "usb/ depends on the chip or the board; it must stay board-agnostic"),
+    ("drivers/", lambda n: n == "rza1l-hal" or n.startswith("deluge-"),
+     "drivers/ depends on the chip or the board; it must stay board-agnostic"),
+    ("crates/deluge-bsp/", lambda n: n in ("deluge-sim-link", "deluge-simulator"),
+     "deluge-bsp depends on the simulator; plug in through deluge_bsp::host_panel"),
+]
+
+failed = False
+for pid in meta["workspace_members"]:
+    rel = pkgs[pid]["manifest_path"][len(root):]
+    for prefix, banned, message in RULES:
+        if rel.startswith(prefix):
+            bad = sorted(n for n in closure(pid) if banned(n))
+            if bad:
+                names = ", ".join(bad)
+                print(f"{rel}: depends on {names}")
+                print(f"error: {message}", file=sys.stderr)
+                failed = True
+sys.exit(1 if failed else 0)
+'
+
 echo "==> Layering check passed."
