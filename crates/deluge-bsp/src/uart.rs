@@ -170,9 +170,23 @@ pub async fn read_pic_byte() -> u8 {
     read_byte(&PIC_RX, "PIC").await
 }
 
-/// The next raw byte from the PIC ring, without waiting; see [`try_read_midi`] for `None`.
+/// The next raw byte from the PIC ring, without waiting; see [`try_read_midi`] for `None`. A fault
+/// path, where the PIC task may hold the receiver, uses [`steal_pic_rx`].
 pub fn try_read_pic() -> Option<u8> {
     try_read(&PIC_RX)
+}
+
+/// The PIC UART's receiver without its lock, for a fault or freeze path: the PIC task may be
+/// suspended mid-read holding the lock, which makes [`try_read_pic`] return `None`. It reads from
+/// the PIC task's position, so a byte it consumes isn't delivered again. `None` before
+/// [`init_pic`].
+///
+/// # Safety
+/// Nothing else reads the PIC ring while the receiver is in use: interrupts masked, or the
+/// executor that runs the PIC task blocked in the caller.
+pub unsafe fn steal_pic_rx() -> Option<UartRx<'static>> {
+    // SAFETY: the PIC ring runs on PicRxDma; the caller's contract covers the rest.
+    unsafe { UartRx::steal::<PicScif, PicRxDma>() }
 }
 
 /// Put as much of `data` in the PIC transmit FIFO as fits now; returns how much. For fault and

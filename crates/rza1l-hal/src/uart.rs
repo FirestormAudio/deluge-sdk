@@ -33,7 +33,7 @@ use embassy_sync::mutex::Mutex;
 use embassy_sync::waitqueue::AtomicWaker;
 
 use core::marker::PhantomData;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::Peri;
 use crate::dmac::Dma;
@@ -417,6 +417,11 @@ async fn wait_tdfe(ch: usize) {
 static RX_DMA_ACTIVE: [AtomicBool; NUM_CHANNELS] = [const { AtomicBool::new(false) }; NUM_CHANNELS];
 static TX_DMA_ACTIVE: [AtomicBool; NUM_CHANNELS] = [const { AtomicBool::new(false) }; NUM_CHANNELS];
 
+/// Where the CPU reads each receive ring next: a cached address, as CRDA reports it. A ring's
+/// owner and a stolen reader ([`UartRx::steal`]) share it, so bytes one consumes the other doesn't
+/// deliver again.
+static RX_READ: [AtomicU32; 2] = [const { AtomicU32::new(0) }; 2];
+
 mod sealed {
     pub trait Sealed {}
 }
@@ -547,10 +552,11 @@ impl<'d> Uart<'d> {
 /// A UART's receiver: a 256-byte ring the DMAC fills from the receive FIFO, with no interrupt.
 pub struct UartRx<'d> {
     ch: usize,
+    /// Its ring, which indexes `DMA_RX_BUF` and [`RX_READ`].
+    ring: usize,
     dma: Dma<'d>,
-    /// The ring's start, and the CPU's next read (cached addresses, as CRDA reports them).
+    /// The ring's start (cached address, as CRDA reports it).
     base: u32,
-    read: u32,
 }
 
 impl<'d> UartRx<'d> {
@@ -591,23 +597,48 @@ impl<'d> UartRx<'d> {
                 dma_ch,
                 buf_base
             );
-            Self { ch, dma, base: buf_base, read: buf_base }
+            RX_READ[T::RING].store(buf_base, Ordering::Release);
+            Self { ch, ring: T::RING, dma, base: buf_base }
         }
     }
 
     /// The next received byte, or `None` if the ring is empty.
     pub fn try_read(&mut self) -> Option<u8> {
+        let read = RX_READ[self.ring].load(Ordering::Acquire);
         // CRDA: where the DMAC writes next.
-        let write = self.dma.current_dst();
-        if write == self.read {
+        if self.dma.current_dst() == read {
             return None;
         }
         // SAFETY: `read` is inside this UART's ring. Read through the uncached alias: the DMAC
         // wrote physical RAM, and a cached line may be stale.
-        let byte = unsafe { crate::uncached(self.read as usize as *mut u8).read_volatile() };
-        let offset = (self.read - self.base + 1) & (DMA_RX_BUF_SIZE as u32 - 1);
-        self.read = self.base + offset;
+        let byte = unsafe { crate::uncached(read as usize as *mut u8).read_volatile() };
+        let offset = (read - self.base + 1) & (DMA_RX_BUF_SIZE as u32 - 1);
+        RX_READ[self.ring].store(self.base + offset, Ordering::Release);
         Some(byte)
+    }
+
+    /// SCIF `T`'s receiver, read through its ring's DMA channel `C`, without the owner: for a
+    /// fault or freeze path whose owner is suspended mid-read. It reads from the owner's position,
+    /// so a byte it consumes isn't delivered to the owner again. `None` until T's ring has
+    /// started ([`Uart::new`]).
+    ///
+    /// # Safety
+    /// `C` is the channel T's ring runs on, and nothing else reads T's ring while the stolen
+    /// receiver is in use: interrupts masked, or the owner's executor blocked in the caller.
+    pub unsafe fn steal<T: RxDmaInstance, C: crate::dmac::Channel>() -> Option<UartRx<'static>> {
+        if !RX_DMA_ACTIVE[T::INDEX].load(Ordering::Relaxed) {
+            return None;
+        }
+        // SAFETY: the ring's address only; the caller's contract covers its use.
+        let base = unsafe { core::ptr::addr_of!(DMA_RX_BUF[T::RING].0[0]) as u32 };
+        Some(UartRx {
+            ch: T::INDEX,
+            ring: T::RING,
+            // SAFETY: the caller's contract: only this reader uses the channel meanwhile, and it
+            // only reads CRDA.
+            dma: unsafe { Dma::steal::<C>() },
+            base,
+        })
     }
 
     /// Wait for the next received byte. The ring raises no interrupt, so this polls it every
@@ -876,7 +907,7 @@ mod typed_tests {
             assert_eq!(*desc.add(2), rx.base);
             assert_eq!(*desc.add(7), desc as u32);
         }
-        assert_eq!(rx.read, rx.base, "the ring starts empty");
+        assert_eq!(RX_READ[0].load(Ordering::Relaxed), rx.base, "the ring starts empty");
         // The ring raises no completion interrupt, so its DMAINT stays masked at the GIC as it was
         // before typed DMA; the transmit channel's is how a write learns it finished.
         // GICD_ICENABLER1 (0xE820_1184): DMAINT13 = 54 is bit 22, DMAINT10 = 51 is bit 19.
@@ -908,7 +939,7 @@ mod typed_tests {
     }
 
     #[test]
-    fn received_bytes_come_out_in_order_across_the_ring_wrap() {
+    fn a_stolen_receiver_shares_the_owners_read_position_across_the_ring_wrap() {
         crate::clocks::init(crate::clocks::TEST_CLOCKS);
         test::reset();
         let rx_dma = Dma::new(unsafe { DMA_CH12::steal() }, Irqs);
@@ -936,5 +967,17 @@ mod typed_tests {
         assert_eq!(rx.try_read(), Some(0xFF));
         assert_eq!(rx.try_read(), Some(0xAA));
         assert_eq!(rx.try_read(), None);
+
+        // A stolen receiver (a fault path's, while the owner is suspended) reads from the same
+        // position: what it consumes, the owner doesn't deliver again.
+        unsafe {
+            ring.add(1).write(0x11);
+            ring.add(2).write(0x22);
+        }
+        test::poke32(crda, rx.base + 3);
+        let mut stolen = unsafe { UartRx::steal::<SCIF1, DMA_CH12>() }.expect("SCIF1's ring runs");
+        assert_eq!(stolen.try_read(), Some(0x11));
+        assert_eq!(rx.try_read(), Some(0x22));
+        assert_eq!(stolen.try_read(), None);
     }
 }
