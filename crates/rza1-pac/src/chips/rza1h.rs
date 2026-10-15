@@ -41503,14 +41503,14 @@ pub mod intc {
         pub const fn icddcr(self) -> crate::common::Reg<regs::Icddcr, crate::common::RW> {
             unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0usize) as _) }
         }
-        #[doc = "ICDICTR."]
+        #[doc = "Interrupt Controller Type (read-only)."]
         #[inline(always)]
-        pub const fn icdictr(self) -> crate::common::Reg<regs::Icdictr, crate::common::RW> {
+        pub const fn icdictr(self) -> crate::common::Reg<regs::Icdictr, crate::common::R> {
             unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04usize) as _) }
         }
-        #[doc = "ICDIIDR."]
+        #[doc = "Distributor Implementer Identification (read-only)."]
         #[inline(always)]
-        pub const fn icdiidr(self) -> crate::common::Reg<regs::Icdiidr, crate::common::RW> {
+        pub const fn icdiidr(self) -> crate::common::Reg<regs::Icdiidr, crate::common::R> {
             unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x08usize) as _) }
         }
         #[doc = "ICDISR0."]
@@ -41695,24 +41695,24 @@ pub mod intc {
         pub const fn iccbpr(self) -> crate::common::Reg<regs::Iccbpr, crate::common::RW> {
             unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1008usize) as _) }
         }
-        #[doc = "ICCIAR."]
+        #[doc = "Interrupt Acknowledge (read-only; reading acknowledges the highest-priority pending interrupt)."]
         #[inline(always)]
-        pub const fn icciar(self) -> crate::common::Reg<regs::Icciar, crate::common::RW> {
+        pub const fn icciar(self) -> crate::common::Reg<regs::Icciar, crate::common::R> {
             unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x100cusize) as _) }
         }
-        #[doc = "ICCEOIR."]
+        #[doc = "End of Interrupt (write-only)."]
         #[inline(always)]
-        pub const fn icceoir(self) -> crate::common::Reg<regs::Icceoir, crate::common::RW> {
+        pub const fn icceoir(self) -> crate::common::Reg<regs::Icceoir, crate::common::W> {
             unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1010usize) as _) }
         }
-        #[doc = "ICCRPR."]
+        #[doc = "Running Priority (read-only)."]
         #[inline(always)]
-        pub const fn iccrpr(self) -> crate::common::Reg<regs::Iccrpr, crate::common::RW> {
+        pub const fn iccrpr(self) -> crate::common::Reg<regs::Iccrpr, crate::common::R> {
             unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1014usize) as _) }
         }
-        #[doc = "ICCHPIR."]
+        #[doc = "Highest Pending Interrupt (read-only)."]
         #[inline(always)]
-        pub const fn icchpir(self) -> crate::common::Reg<regs::Icchpir, crate::common::RW> {
+        pub const fn icchpir(self) -> crate::common::Reg<regs::Icchpir, crate::common::R> {
             unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x1018usize) as _) }
         }
         #[doc = "ICCABPR."]
@@ -47011,24 +47011,24 @@ pub mod ostm {
         pub const fn cmp(self) -> crate::common::Reg<regs::Cmp, crate::common::RW> {
             unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0usize) as _) }
         }
-        #[doc = "OSTMnCNT."]
+        #[doc = "Counter (read-only)."]
         #[inline(always)]
-        pub const fn cnt(self) -> crate::common::Reg<regs::Cnt, crate::common::RW> {
+        pub const fn cnt(self) -> crate::common::Reg<regs::Cnt, crate::common::R> {
             unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x04usize) as _) }
         }
-        #[doc = "OSTMnTE."]
+        #[doc = "Count Enable Status (read-only)."]
         #[inline(always)]
-        pub const fn te(self) -> crate::common::Reg<regs::Te, crate::common::RW> {
+        pub const fn te(self) -> crate::common::Reg<regs::Te, crate::common::R> {
             unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x10usize) as _) }
         }
-        #[doc = "OSTMnTS."]
+        #[doc = "Count Start Trigger (write-only)."]
         #[inline(always)]
-        pub const fn ts(self) -> crate::common::Reg<regs::Ts, crate::common::RW> {
+        pub const fn ts(self) -> crate::common::Reg<regs::Ts, crate::common::W> {
             unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x14usize) as _) }
         }
-        #[doc = "OSTMnTT."]
+        #[doc = "Count Stop Trigger (write-only)."]
         #[inline(always)]
-        pub const fn tt(self) -> crate::common::Reg<regs::Tt, crate::common::RW> {
+        pub const fn tt(self) -> crate::common::Reg<regs::Tt, crate::common::W> {
             unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x18usize) as _) }
         }
         #[doc = "OSTMnCTL."]
@@ -53874,9 +53874,9 @@ pub mod scif {
         pub const fn scr(self) -> crate::common::Reg<regs::Scr, crate::common::RW> {
             unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x08usize) as _) }
         }
-        #[doc = "SCFTDR."]
+        #[doc = "Transmit FIFO Data (write-only)."]
         #[inline(always)]
-        pub const fn ftdr(self) -> crate::common::Reg<regs::Ftdr, crate::common::RW> {
+        pub const fn ftdr(self) -> crate::common::Reg<regs::Ftdr, crate::common::W> {
             unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x0cusize) as _) }
         }
         #[doc = "SCFSR."]
@@ -53884,9 +53884,9 @@ pub mod scif {
         pub const fn fsr(self) -> crate::common::Reg<regs::Fsr, crate::common::RW> {
             unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x10usize) as _) }
         }
-        #[doc = "SCFRDR."]
+        #[doc = "Receive FIFO Data (read-only; reading pops the FIFO)."]
         #[inline(always)]
-        pub const fn frdr(self) -> crate::common::Reg<regs::Frdr, crate::common::RW> {
+        pub const fn frdr(self) -> crate::common::Reg<regs::Frdr, crate::common::R> {
             unsafe { crate::common::Reg::from_ptr(self.ptr.wrapping_add(0x14usize) as _) }
         }
         #[doc = "SCFCR."]

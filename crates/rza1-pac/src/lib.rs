@@ -57,4 +57,27 @@ mod tests {
         let _ = GPIO.p(ports - 1);
         assert!(std::panic::catch_unwind(|| GPIO.p(ports)).is_err());
     }
+
+    fn read_only<T: Copy>(_: common::Reg<T, common::R>) {}
+    fn write_only<T: Copy>(_: common::Reg<T, common::W>) {}
+
+    /// Registers whose access has a side effect or no meaning in one direction carry that in
+    /// their type: a write to a read-only register, or a read (or `modify`) of a write-only one,
+    /// doesn't compile. (The SVD declares everything read-write; `transforms/common/access.yaml`
+    /// corrects these.)
+    #[test]
+    fn side_effecting_registers_carry_their_access() {
+        read_only(INTC.icdictr());
+        read_only(INTC.icdiidr());
+        read_only(INTC.icciar());
+        read_only(INTC.iccrpr());
+        read_only(INTC.icchpir());
+        write_only(INTC.icceoir());
+        read_only(SCIF0.frdr());
+        write_only(SCIF0.ftdr());
+        read_only(OSTM0.cnt());
+        read_only(OSTM0.te());
+        write_only(OSTM0.ts());
+        write_only(OSTM0.tt());
+    }
 }
