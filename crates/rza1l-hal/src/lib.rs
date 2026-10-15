@@ -35,7 +35,7 @@ pub use rza1_pac::mmio;
 
 embassy_hal_internal::peripherals! {
     OSTM0, OSTM1,
-    RSPI0, RSPI1, RSPI2, RSPI3, RSPI4,
+    RSPI0, RSPI1, RSPI2,
     SCIF0, SCIF1, SCIF2, SCIF3, SCIF4,
     SSIF0, SSIF1, SSIF2, SSIF3,
     SDHI0, SDHI1,
