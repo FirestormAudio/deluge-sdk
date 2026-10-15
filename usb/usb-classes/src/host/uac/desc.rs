@@ -267,20 +267,20 @@ pub fn parse_audio_function(cfg: &ConfigurationDescriptor<'_>) -> Result<AudioFu
     })
 }
 
+/// Configuration descriptors of real devices, for the driver's tests.
 #[cfg(all(test, not(target_os = "none")))]
-mod tests {
-    use super::*;
-
+pub(crate) mod fixtures {
     /// A USB-C UAC2 audio interface (VID 2b5a, PID 0028), as read on hardware: clock source 41
     /// (programmable) behind selector 40; playback IF1 alt 1 24-in-32 / alt 2 16-bit, 4 ch,
     /// with explicit feedback; capture IF2 alt 1 24-in-32, 4 ch; a UAC1 AC + MIDIStreaming pair.
-    const INTERFACE_2B5A: &[u8] = include_bytes!("../../../testdata/uac2-interface-2b5a-0028.bin");
+    pub const INTERFACE_2B5A: &[u8] =
+        include_bytes!("../../../testdata/uac2-interface-2b5a-0028.bin");
 
     /// An Elektron Digitakt in AUDIO/MIDI mode, from its `lsusb -v`: one fixed 48 kHz clock
     /// (frequency read-only); playback IF1 alt 1 and capture IF2 alt 1, both 2 ch 32-bit in
     /// 4-byte subslots; playback with an explicit-feedback IN endpoint 0x82, capture with
     /// implicit feedback; a UAC1 AC + MIDIStreaming pair.
-    fn digitakt() -> std::vec::Vec<u8> {
+    pub fn digitakt() -> std::vec::Vec<u8> {
         let mut b = std::vec::Vec::new();
         let mut push = |s: &[u8]| b.extend_from_slice(s);
         push(&[8, 0x0B, 0, 3, 1, 0, 0x20, 0]);
@@ -320,6 +320,12 @@ mod tests {
         cfg.extend_from_slice(&b);
         cfg
     }
+}
+
+#[cfg(all(test, not(target_os = "none")))]
+mod tests {
+    use super::fixtures::{INTERFACE_2B5A, digitakt};
+    use super::*;
 
     fn parse(raw: &[u8]) -> AudioFunction {
         parse_audio_function(&ConfigurationDescriptor::try_from_slice(raw).unwrap()).unwrap()

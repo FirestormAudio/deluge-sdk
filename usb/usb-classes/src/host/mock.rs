@@ -42,6 +42,8 @@ pub struct AllocRecord {
     pub addr: u8,
     pub ep_addr: u8,
     pub max_packet_size: u16,
+    /// Control requests issued before this pipe was allocated (orders the two).
+    pub setups_before: usize,
 }
 
 /// Shared mock state. Obtain a `&'static` one via [`MockState::leak`].
@@ -132,6 +134,7 @@ impl<'d> UsbHostAllocator<'d> for MockAlloc {
             addr,
             ep_addr: u8::from(endpoint.addr),
             max_packet_size: endpoint.max_packet_size,
+            setups_before: self.inner.setups.borrow().len(),
         });
         Ok(MockPipe {
             inner: self.inner,
