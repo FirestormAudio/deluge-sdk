@@ -69,6 +69,8 @@
 
 use core::sync::atomic::{AtomicU32, Ordering, compiler_fence};
 
+use crate::pac::SPIBSC0;
+
 // ---------------------------------------------------------------------------
 // Flash geometry
 // ---------------------------------------------------------------------------
@@ -179,16 +181,7 @@ fn write_allowed(offset: u32, len: u32, windows: &[core::ops::Range<u32>]) -> bo
 // Registers
 // ---------------------------------------------------------------------------
 
-const SPIBSC0: usize = 0x3FEF_A000;
-const CMNCR: usize = SPIBSC0;
-const DRCR: usize = SPIBSC0 + 0x00C;
-const SMCR: usize = SPIBSC0 + 0x020;
-const SMCMR: usize = SPIBSC0 + 0x024;
-const SMADR: usize = SPIBSC0 + 0x028;
-const SMENR: usize = SPIBSC0 + 0x030;
-const SMRDR0: usize = SPIBSC0 + 0x038;
-const SMWDR0: usize = SPIBSC0 + 0x040;
-const CMNSR: usize = SPIBSC0 + 0x048;
+// Addresses: `crate::pac::SPIBSC0` (offsets in the module docs' table).
 
 // CMNCR
 const CMNCR_MD: u32 = 1 << 31; // 1 = manual SPI mode, 0 = memory-mapped read mode
@@ -225,16 +218,6 @@ const SR_WIP: u32 = 1 << 0; // status register: write-in-progress
 const SR_E_ERR: u32 = 1 << 5; // erase error (S25FL-S): set on a rejected erase
 const SR_P_ERR: u32 = 1 << 6; // program error (S25FL-S): set on a rejected program
 
-#[inline(always)]
-unsafe fn wr32(addr: usize, val: u32) {
-    unsafe { core::ptr::write_volatile(addr as *mut u32, val) }
-}
-
-#[inline(always)]
-unsafe fn rd32(addr: usize) -> u32 {
-    unsafe { core::ptr::read_volatile(addr as *const u32) }
-}
-
 /// Iteration cap for [`wait_tend`].  A manual transfer completes in microseconds;
 /// this is only a ceiling so a misbehaving controller can never hard-freeze the
 /// machine (the panic handler and any stuck poll are indistinguishable to a user
@@ -251,17 +234,15 @@ const WIP_TIMEOUT: u32 = 8_000_000;
 #[inline]
 #[must_use]
 unsafe fn wait_tend() -> bool {
-    unsafe {
-        let mut n = TEND_TIMEOUT;
-        while rd32(CMNSR) & CMNSR_TEND == 0 {
-            if n == 0 {
-                return false;
-            }
-            n -= 1;
-            compiler_fence(Ordering::SeqCst);
+    let mut n = TEND_TIMEOUT;
+    while SPIBSC0.cmnsr().read() & CMNSR_TEND == 0 {
+        if n == 0 {
+            return false;
         }
-        true
+        n -= 1;
+        compiler_fence(Ordering::SeqCst);
     }
+    true
 }
 
 /// Quiesce the bus before changing `CMNCR.MD`: negate SSL (`DRCR.SSLN`) and wait
@@ -275,16 +256,14 @@ unsafe fn wait_tend() -> bool {
 /// Bounded so a stuck `SSLF` can't hang.
 #[inline]
 unsafe fn stop() {
-    unsafe {
-        wr32(DRCR, rd32(DRCR) | DRCR_SSLN);
-        let mut n = TEND_TIMEOUT;
-        while rd32(CMNSR) & CMNSR_SSLF != 0 {
-            if n == 0 {
-                break;
-            }
-            n -= 1;
-            compiler_fence(Ordering::SeqCst);
+    SPIBSC0.drcr().modify(|v| *v |= DRCR_SSLN);
+    let mut n = TEND_TIMEOUT;
+    while SPIBSC0.cmnsr().read() & CMNSR_SSLF != 0 {
+        if n == 0 {
+            break;
         }
+        n -= 1;
+        compiler_fence(Ordering::SeqCst);
     }
 }
 
@@ -294,9 +273,9 @@ unsafe fn stop() {
 #[inline]
 unsafe fn to_manual() {
     unsafe {
-        if rd32(CMNCR) & CMNCR_MD == 0 {
+        if SPIBSC0.cmncr().read() & CMNCR_MD == 0 {
             stop();
-            wr32(CMNCR, rd32(CMNCR) | CMNCR_MD);
+            SPIBSC0.cmncr().modify(|v| *v |= CMNCR_MD);
         }
     }
 }
@@ -307,14 +286,14 @@ unsafe fn to_manual() {
 #[inline]
 unsafe fn to_read_mode() {
     unsafe {
-        if rd32(CMNCR) & CMNCR_MD != 0 {
+        if SPIBSC0.cmncr().read() & CMNCR_MD != 0 {
             stop();
-            wr32(CMNCR, rd32(CMNCR) & !CMNCR_MD);
+            SPIBSC0.cmncr().modify(|v| *v &= !CMNCR_MD);
         }
         // Drop any cached flash reads captured before the program/erase.
-        wr32(DRCR, rd32(DRCR) | DRCR_RCF);
+        SPIBSC0.drcr().modify(|v| *v |= DRCR_RCF);
         // Read back to order the flush before the caller dereferences flash.
-        let _ = rd32(DRCR);
+        let _ = SPIBSC0.drcr().read();
     }
 }
 
@@ -322,10 +301,10 @@ unsafe fn to_read_mode() {
 #[inline]
 unsafe fn write_enable() {
     unsafe {
-        wr32(SMCMR, CMD_WREN << 16);
-        wr32(SMADR, 0);
-        wr32(SMENR, SMENR_CDE);
-        wr32(SMCR, SMCR_SPIE);
+        SPIBSC0.smcmr().write_value(CMD_WREN << 16);
+        SPIBSC0.smadr().write_value(0);
+        SPIBSC0.smenr().write_value(SMENR_CDE);
+        SPIBSC0.smcr().write_value(SMCR_SPIE);
         let _ = wait_tend();
     }
 }
@@ -335,13 +314,13 @@ unsafe fn write_enable() {
 #[inline]
 unsafe fn read_status() -> u32 {
     unsafe {
-        wr32(SMCMR, CMD_RDSR << 16);
-        wr32(SMADR, 0);
-        wr32(SMENR, SMENR_CDE | SMENR_SPIDE_8);
-        wr32(SMWDR0, 0);
-        wr32(SMCR, SMCR_SPIE | SMCR_SPIRE);
+        SPIBSC0.smcmr().write_value(CMD_RDSR << 16);
+        SPIBSC0.smadr().write_value(0);
+        SPIBSC0.smenr().write_value(SMENR_CDE | SMENR_SPIDE_8);
+        SPIBSC0.smwdr0().write_value(0);
+        SPIBSC0.smcr().write_value(SMCR_SPIE | SMCR_SPIRE);
         let _ = wait_tend();
-        (rd32(SMRDR0) >> 24) & 0xFF
+        (SPIBSC0.smrdr0().read() >> 24) & 0xFF
     }
 }
 
@@ -378,10 +357,10 @@ unsafe fn wait_wip() -> bool {
 #[inline]
 unsafe fn clear_status() {
     unsafe {
-        wr32(SMCMR, CMD_CLEAR_STATUS << 16);
-        wr32(SMADR, 0);
-        wr32(SMENR, SMENR_CDE);
-        wr32(SMCR, SMCR_SPIE);
+        SPIBSC0.smcmr().write_value(CMD_CLEAR_STATUS << 16);
+        SPIBSC0.smadr().write_value(0);
+        SPIBSC0.smenr().write_value(SMENR_CDE);
+        SPIBSC0.smcr().write_value(SMCR_SPIE);
         let _ = wait_tend();
     }
 }
@@ -411,10 +390,10 @@ unsafe fn erase_sector_at(
     }
     unsafe {
         write_enable();
-        wr32(SMCMR, CMD_SECTOR_ERASE << 16);
-        wr32(SMADR, offset);
-        wr32(SMENR, SMENR_CDE | SMENR_ADE_3B);
-        wr32(SMCR, SMCR_SPIE);
+        SPIBSC0.smcmr().write_value(CMD_SECTOR_ERASE << 16);
+        SPIBSC0.smadr().write_value(offset);
+        SPIBSC0.smenr().write_value(SMENR_CDE | SMENR_ADE_3B);
+        SPIBSC0.smcr().write_value(SMCR_SPIE);
         let _ = wait_tend();
         // On timeout the erase was rejected (e.g. a protected sector latches
         // E_ERR and never clears WIP); recover the part so it accepts the next
@@ -459,10 +438,10 @@ unsafe fn program_page_manual(
         write_enable();
 
         // Transfer 1: PP command + 3-byte address, SSL kept, no data.
-        wr32(SMCMR, CMD_PP << 16);
-        wr32(SMADR, offset);
-        wr32(SMENR, SMENR_CDE | SMENR_ADE_3B);
-        wr32(SMCR, SMCR_SPIE | SMCR_SSLKP);
+        SPIBSC0.smcmr().write_value(CMD_PP << 16);
+        SPIBSC0.smadr().write_value(offset);
+        SPIBSC0.smenr().write_value(SMENR_CDE | SMENR_ADE_3B);
+        SPIBSC0.smcr().write_value(SMCR_SPIE | SMCR_SSLKP);
         let _ = wait_tend();
 
         // Data transfers: command/address disabled, write enabled.
@@ -486,14 +465,14 @@ unsafe fn program_page_manual(
                 (1usize, SMENR_SPIDE_8, (data[i] as u32) << 24)
             };
             let last = i + unit >= n;
-            wr32(SMCMR, 0);
-            wr32(SMWDR0, val);
-            wr32(SMENR, spide);
+            SPIBSC0.smcmr().write_value(0);
+            SPIBSC0.smwdr0().write_value(val);
+            SPIBSC0.smenr().write_value(spide);
             let mut smcr = SMCR_SPIE | SMCR_SPIWE;
             if !last {
                 smcr |= SMCR_SSLKP;
             }
-            wr32(SMCR, smcr);
+            SPIBSC0.smcr().write_value(smcr);
             let _ = wait_tend();
             i += unit;
         }
@@ -524,13 +503,13 @@ pub fn read_id() -> [u8; 3] {
         // packing the program path uses for a 32-bit write unit. (This differs
         // from an 8-bit SPIDE read, where the lone byte is MSB-aligned at
         // `[31:24]`; see `read_status`.)
-        wr32(SMCMR, CMD_RDID << 16);
-        wr32(SMADR, 0);
-        wr32(SMENR, SMENR_CDE | SMENR_SPIDE_32);
-        wr32(SMWDR0, 0);
-        wr32(SMCR, SMCR_SPIE | SMCR_SPIRE);
+        SPIBSC0.smcmr().write_value(CMD_RDID << 16);
+        SPIBSC0.smadr().write_value(0);
+        SPIBSC0.smenr().write_value(SMENR_CDE | SMENR_SPIDE_32);
+        SPIBSC0.smwdr0().write_value(0);
+        SPIBSC0.smcr().write_value(SMCR_SPIE | SMCR_SPIRE);
         let _ = wait_tend();
-        let v = rd32(SMRDR0);
+        let v = SPIBSC0.smrdr0().read();
         to_read_mode();
         // [manufacturer, memory type, density] in wire order = the three lowest
         // bytes of the little-endian word.
@@ -697,6 +676,41 @@ pub unsafe fn force_program(offset: u32, data: &[u8], page: usize) {
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_pac_names_the_same_spibsc_registers() {
+        use crate::pac::SPIBSC0;
+        let b = 0x3FEF_A000;
+        assert_eq!((SPIBSC0.cmncr().addr(), SPIBSC0.cmncr().width()), (b, 4));
+        assert_eq!(SPIBSC0.drcr().addr(), b + 0x00C);
+        assert_eq!(SPIBSC0.smcr().addr(), b + 0x020);
+        assert_eq!(SPIBSC0.smcmr().addr(), b + 0x024);
+        assert_eq!(SPIBSC0.smadr().addr(), b + 0x028);
+        assert_eq!(SPIBSC0.smenr().addr(), b + 0x030);
+        assert_eq!(SPIBSC0.cmnsr().addr(), b + 0x048);
+    }
+
+    #[test]
+    fn reading_the_status_register_is_one_manual_transfer() {
+        crate::mmio::test::reset();
+        // CMNSR.TEND set: every transfer completes at once.
+        crate::mmio::test::poke32(0x3FEF_A048, 1);
+        let _ = read_status_reg();
+        let w = crate::mmio::test::writes();
+        // Manual mode on (CMNCR.MD), then the command and a start of transfer with read enabled.
+        assert!(
+            w.iter()
+                .any(|&(a, v)| a == 0x3FEF_A000 && v & (1 << 31) != 0)
+        );
+        assert!(
+            w.iter()
+                .any(|&(a, v)| a == 0x3FEF_A024 && (v >> 16) & 0xFF == 0x05)
+        );
+        assert!(
+            w.iter()
+                .any(|&(a, v)| a == 0x3FEF_A020 && v & 0b101 == 0b101)
+        );
+    }
 
     // Generic-controller invariants only.  The Deluge flash *map* (slot/settings
     // layout, the writable windows it feeds `FlashMap`) is board policy and is
