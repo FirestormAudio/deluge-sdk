@@ -1,10 +1,9 @@
 //! Deluge board system initialisation.
 //!
 //! Centralises all board-specific peripheral configuration values and
-//! provides [`init_clocks`] as the single boot-time entry point, wrapping the
-//! `rza1l_hal::stb`, `rza1l_hal::mmu`, `rza1l_hal::cache`, `rza1l_hal::gic`,
-//! `rza1l_hal::ostm`, and `rza1l_hal::time_driver` calls so chip-level details
-//! stay out of the top-level firmware crate.
+//! provides [`BOARD_CONFIG`], the Deluge's chip configuration: boot is
+//! `Board::new(rza1l_hal::init(BOARD_CONFIG))` ([`crate::Board`]), which keeps
+//! chip-level details out of the top-level firmware crate.
 //!
 //! ## CPG clock-gate values (`StbConfig`)
 //!
@@ -28,40 +27,6 @@
 use rza1l_hal::clocks::ClockConfig;
 use rza1l_hal::ssi::SsiConfig;
 use rza1l_hal::stb::StbConfig;
-
-#[inline(always)]
-unsafe fn cpg_basic_init() {
-    let power_ctrl = 0x3FFF_FF80 as *mut u32;
-    let frqcr = 0xFCFE_0010 as *mut u16;
-    let syscr3 = 0xFCFE_0408 as *mut u8;
-
-    // Matches the known-working Deluge firmware / bootloader CPG_Init path.
-    unsafe {
-        power_ctrl.write_volatile(0x0000_0001);
-        let _ = power_ctrl.read_volatile();
-    }
-
-    // PLL(x30), I:G:B:P1:P0 = 30:20:10:5:5/2.
-    unsafe {
-        frqcr.write_volatile(0x1035);
-        let _ = frqcr.read_volatile();
-    }
-
-    // The C firmware's CPG_Init also writes FRQCR2 (0xFCFE0014) here, but that
-    // register exists only on the RZ/A1H (the RZ/A1L manual deletes it in
-    // Rev 2.00).  CKIO standby behaviour on the A1L is controlled by
-    // FRQCR.CKOEN[1:0] (set above).
-
-    // Enable writes to the on-chip data-retention RAM banks (0x20000000-
-    // 0x2001FFFF).  The rest of the large-capacity on-chip RAM is gated by
-    // SYSCR1/SYSCR2, but those reset to 0xFF (all pages enabled) on a power-on
-    // reset and nothing in the Deluge boot chain disables them, so they need no
-    // attention here.
-    unsafe {
-        syscr3.write_volatile(0x0F);
-        let _ = syscr3.read_volatile();
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Board-specific configuration constants
@@ -112,6 +77,15 @@ pub const STB_CONFIG: StbConfig = StbConfig {
     // clocks of the port it uses (`rza1l_hal::sdhi`).
     // `[1][1][1][1][SDHI00][SDHI01][SDHI10][SDHI11]`
     stbcr12: 0b11111011,
+};
+
+/// The Deluge's chip configuration for `rza1l_hal::init`: its 13.2256 MHz crystal, FRQCR
+/// `0x1035` (PLL ×30, I:G:B:P1:P0 = 30:20:10:5:5/2, as the known-working Deluge firmware and
+/// bootloader set it), and the module clocks in [`STB_CONFIG`].
+pub const BOARD_CONFIG: rza1l_hal::Config = rza1l_hal::Config {
+    clocks: CLOCKS,
+    frqcr: 0x1035,
+    stb: STB_CONFIG,
 };
 
 /// SSI0 configuration for the Deluge board.
@@ -190,56 +164,6 @@ pub const SD_DMA_MAX_SECTORS: usize = 128;
 // ---------------------------------------------------------------------------
 // Boot-time system initialisation
 // ---------------------------------------------------------------------------
-
-/// Initialise all chip-level and board-level peripherals required before
-/// the async executor starts.
-///
-/// Performs, in order:
-/// 0. Clock-tree registration ([`rza1l_hal::clocks::init`] with [`CLOCKS`]), so every
-///    clock-dependent driver below sees the Deluge's crystal.
-/// 1. Basic CPG init (matches DelugeFirmware `CPG_Init`).
-/// 2. CPG module clock enable ([`rza1l_hal::stb::init`] with [`STB_CONFIG`]).
-/// 3. GIC init ([`rza1l_hal::gic::init`]), in the C firmware's `resetprg()` order.
-///    Then narrow its handler-address check to the Deluge's SDRAM ([`crate::sdram::WINDOW`]).
-/// 4. MMU enable ([`rza1l_hal::mmu::init_and_enable`]).
-/// 5. L1 cache enable ([`rza1l_hal::cache::l1_enable`]).
-/// 6. L2 cache init ([`rza1l_hal::cache::l2_init`]).
-/// 7. SDRAM init ([`crate::sdram::init`]).
-/// 8. OSTM clock enable ([`rza1l_hal::ostm::enable_clock`]).
-/// 9. Embassy time-driver init ([`rza1l_hal::time_driver::init`]).
-///
-/// After this call:
-/// - All module clocks for peripherals used by the Deluge firmware are on.
-/// - The MMU is active with the default page table.
-/// - The L1/L2 caches are active.
-/// - The 64 MB SDRAM at 0x0C00_0000–0x0FFF_FFFF is accessible.
-/// - The GIC is initialised and ready to accept `gic::register` calls.
-/// - OSTM0/1 clocks are running; the time-driver tick source is live.
-///
-/// The SRAM and SDRAM heap allocators must still be individually
-/// initialised by the caller (they depend on linker-script symbol addresses
-/// that cannot be embedded here).
-///
-/// # Safety
-/// Writes to memory-mapped hardware registers.  Must be called exactly once,
-/// from a single-threaded boot context, before interrupts are enabled and
-/// before any async task starts.
-#[cfg(target_os = "none")]
-pub unsafe fn init_clocks() {
-    unsafe {
-        rza1l_hal::clocks::init(CLOCKS);
-        cpg_basic_init();
-        rza1l_hal::stb::init(&STB_CONFIG);
-        rza1l_hal::gic::init();
-        rza1l_hal::gic::set_sdram_code_window(crate::sdram::WINDOW);
-        rza1l_hal::mmu::init_and_enable();
-        rza1l_hal::cache::l1_enable();
-        rza1l_hal::cache::l2_init();
-        crate::sdram::init();
-        rza1l_hal::ostm::enable_clock();
-        rza1l_hal::time_driver::init();
-    }
-}
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {

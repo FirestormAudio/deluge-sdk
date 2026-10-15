@@ -136,7 +136,7 @@ mod init_tests {
         let writes = test::writes();
 
         // PL310 power control, then FRQCR, then SYSCR3 (retention-RAM write enable), exactly
-        // as the BSP's cpg_basic_init wrote them; then the module clocks, unchanged.
+        // as the BSP's CPG init wrote them before it moved here; then the module clocks, unchanged.
         assert_eq!(
             writes[..3],
             [(0x3FFF_FF80, 1), (0xFCFE_0010, 0x1035), (0xFCFE_0408, 0x0F)]

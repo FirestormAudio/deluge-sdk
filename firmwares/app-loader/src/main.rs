@@ -102,7 +102,7 @@ pub extern "C" fn main() -> ! {
         allocator::SRAM.init(start, size);
     }
 
-    unsafe { deluge_bsp::system::init_clocks() };
+    let _board = deluge_bsp::Board::new(rza1l_hal::init(deluge_bsp::system::BOARD_CONFIG));
     info!("platform: clocks, MMU, cache, SDRAM, GIC ready");
 
     // SDRAM heap initialised but not used by the bootloader itself;

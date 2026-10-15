@@ -14,6 +14,9 @@ pub mod audio;
 #[cfg(target_os = "none")]
 pub mod audio_block;
 pub mod battery;
+/// The Deluge's peripherals by role ([`Board`]).
+pub mod board;
+pub use board::Board;
 #[cfg(target_os = "none")]
 pub mod bus;
 pub mod controls;

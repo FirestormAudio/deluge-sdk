@@ -54,7 +54,7 @@ pub extern "C" fn main() -> ! {
         let size = core::ptr::addr_of!(__sram_heap_end) as usize - start as usize;
         allocator::SRAM.init(start, size);
     }
-    unsafe { deluge_bsp::system::init_clocks() };
+    let _board = deluge_bsp::Board::new(rza1l_hal::init(deluge_bsp::system::BOARD_CONFIG));
     unsafe { allocator::SDRAM.init(0x0C00_0000 as *mut u8, 64 * 1024 * 1024) };
 
     unsafe { rza1l_hal::gpio::set_as_output(6, 7) };

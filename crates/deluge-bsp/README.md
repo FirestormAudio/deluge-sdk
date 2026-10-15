@@ -13,7 +13,7 @@ testing.
 
 | Module | Description |
 |---|---|
-| [`system`] | Clock gating (CPG / `StbConfig`), DMA channel map, single `init_clocks()` boot entry point |
+| [`system`] | Clock gating (`StbConfig`), the DMA channel map, and `BOARD_CONFIG`, the chip configuration `rza1l_hal::init` takes |
 | [`sdram`] | 64 MB SDRAM (Micron MT48LC16M16A2P-75) — pin-mux, BSC registers, JEDEC init |
 | [`audio`] | SSI0 stereo codec interface; codec power sequencing and master-clock enable |
 | [`scux_dvu_path`] | SCUX DVU path — CPU SRAM → DMA → SCUX → SSIF0 TX (2048-frame buffer, software volume / fade); [`rza1l_hal::scux::dvu_path`] bound to the Deluge's SSI0 config and DMA channel |
@@ -84,11 +84,11 @@ unit testing.
 deluge-bsp = { path = "../deluge-bsp" }
 ```
 
-A typical boot sequence (`init_clocks` also brings up the SDRAM controller):
+A typical boot sequence (`Board::new` also brings up the MMU, caches and the SDRAM controller):
 
 ```rust
+let board = deluge_bsp::Board::new(rza1l_hal::init(deluge_bsp::system::BOARD_CONFIG));
 unsafe {
-    deluge_bsp::system::init_clocks();
     deluge_bsp::audio::init();
     deluge_bsp::uart::init_pic(31_250);
     deluge_bsp::cv_gate::init();

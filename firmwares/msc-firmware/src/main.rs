@@ -100,7 +100,7 @@ pub extern "C" fn main() -> ! {
         s / 1024
     });
 
-    unsafe { deluge_bsp::system::init_clocks() };
+    let _board = deluge_bsp::Board::new(rza1l_hal::init(deluge_bsp::system::BOARD_CONFIG));
     info!("system: module clocks, MMU, cache, SDRAM, GIC, OSTM, time driver ready");
 
     // Initialise the SDRAM heap now that the SDRAM window is accessible.

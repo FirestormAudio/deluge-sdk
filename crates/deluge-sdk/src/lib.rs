@@ -586,20 +586,25 @@ pub mod __rt {
         /// drivers whose init must run with IRQs masked (e.g. GIC source setup) keep
         /// working — see [`run`].
         ///
+        /// Returns the [`deluge_bsp::Board`].
+        ///
         /// # Safety
         /// Must run exactly once, at startup, before any allocation.
-        unsafe fn init_platform() {
+        unsafe fn init_platform() -> deluge_bsp::Board {
             unsafe {
                 // SRAM heap (internal RAM) — initialise before any allocation.
                 let start = core::ptr::addr_of!(__sram_heap_start) as *mut u8;
                 let size = core::ptr::addr_of!(__sram_heap_end) as usize - start as usize;
                 rza1_alloc::SRAM.init(start, size);
 
-                // Module clocks, MMU, caches, SDRAM controller, GIC, OSTM time driver.
-                deluge_bsp::system::init_clocks();
+                // The chip (CPG, module clocks, GIC), then the board (MMU, caches, SDRAM, OSTM
+                // time driver).
+                let board =
+                    deluge_bsp::Board::new(rza1l_hal::init(deluge_bsp::system::BOARD_CONFIG));
 
                 // SDRAM heap — now that the SDRAM window is accessible.
                 rza1_alloc::SDRAM.init(SDRAM_BASE as *mut u8, SDRAM_SIZE);
+                board
             }
         }
 
@@ -624,7 +629,8 @@ pub mod __rt {
             #[cfg(feature = "rtt")]
             init_logging();
 
-            unsafe { init_platform() };
+            let board = unsafe { init_platform() };
+            let _ = &board;
 
             // `usb-serial`: register the USB0 device ISR while IRQs are still
             // masked (the GIC contract); `Deluge::usb_serial` builds the device.

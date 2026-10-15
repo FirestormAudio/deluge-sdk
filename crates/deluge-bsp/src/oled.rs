@@ -57,7 +57,7 @@ use crate::pic;
 // ── OLED SPI DMA constants ────────────────────────────────────────────────────
 
 /// DMAC channel 4 = OLED SPI TX (matches original C firmware `OLED_SPI_DMA_CHANNEL`).
-const OLED_DMA_CH: u8 = 4;
+pub(crate) const OLED_DMA_CH: u8 = 4;
 
 /// RSPI0 SPDR byte LL address (little-endian lowest byte of the 32-bit SPDR
 /// at offset 0x04 from RSPI0 base 0xE800_C800).  The DMAC writes each pixel

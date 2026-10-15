@@ -70,7 +70,7 @@ pub extern "C" fn main() -> ! {
         allocator::SRAM.init(start, size);
     }
 
-    unsafe { deluge_bsp::system::init_clocks() };
+    let _board = deluge_bsp::Board::new(rza1l_hal::init(deluge_bsp::system::BOARD_CONFIG));
     info!("system: clocks, MMU, cache, SDRAM, GIC, OSTM, time driver ready");
 
     // SDRAM heap (some BSP paths allocate from it; bring it up to be safe).
