@@ -1,17 +1,18 @@
-//! Puts the linker scripts on the linker search path; a binary selects one with `-T`, and the
-//! script INCLUDEs the board's `memory.x`.
+//! Puts `link.x` on the linker search path: the RTT form when the `rtt` feature is on. A binary
+//! links with `-Tlink.x`, and the script INCLUDEs the board's `memory.x`.
 
 use std::env;
 use std::fs;
 use std::path::PathBuf;
 
 fn main() {
+    println!("cargo:rerun-if-changed=link.x");
+    println!("cargo:rerun-if-changed=link_rtt.x");
+
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let script = if env::var_os("CARGO_FEATURE_RTT").is_some() { "link_rtt.x" } else { "link.x" };
 
-    for script in ["rza1l.x", "rza1l_rtt.x"] {
-        fs::copy(manifest_dir.join(script), out_dir.join(script)).unwrap();
-        println!("cargo:rerun-if-changed={script}");
-    }
+    fs::copy(manifest_dir.join(script), out_dir.join("link.x")).unwrap();
     println!("cargo:rustc-link-search={}", out_dir.display());
 }

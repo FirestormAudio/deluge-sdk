@@ -1,8 +1,7 @@
 //! Build script for the wren firmware.
 //!
 //! Two jobs:
-//!  1. Select the memory layout + linker script that match the `rtt` feature
-//!     (same pattern as `demo-firmware`).
+//!  1. Select rza1-rt's `link.x` and raise the program stack for the VM.
 //!  2. Add the wren C VM to the link: the newlib (libc/libm) archives for the
 //!     Cortex-A9 hard-float multilib, so the VM's libc references (string, math,
 //!     snprintf for number formatting) resolve. These are passed as positional
@@ -10,8 +9,6 @@
 //!     other cyclically.
 
 use std::env;
-use std::fs;
-use std::path::PathBuf;
 use std::process::Command;
 
 /// Compiler flags that select the Cortex-A9 hard-float multilib.
@@ -26,21 +23,16 @@ fn main() {
         return;
     }
 
-    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-
-    // ── Memory layout / linker script (mirrors demo-firmware) ───────────────
-    let rtt = env::var("CARGO_FEATURE_RTT").is_ok();
-    let (memory_src, linker_script) = if rtt {
-        ("memory_rtt.x", "rza1l_rtt.x")
-    } else {
-        ("memory.x", "rza1l.x")
-    };
-    fs::copy(manifest_dir.join(memory_src), out_dir.join("memory.x")).unwrap();
-    println!("cargo:rustc-link-search={}", out_dir.display());
-    println!("cargo:rustc-link-arg=-T{linker_script}");
-    println!("cargo:rerun-if-changed=memory.x");
-    println!("cargo:rerun-if-changed=memory_rtt.x");
+    // ── Linker script and program stack ─────────────────────────────────────
+    // The Deluge's memory.x (from deluge-bsp) PROVIDEs a 32 KB program stack. The wren VM's
+    // compiler and interpreter recurse deeply on the executor's (program) stack, especially in
+    // debug builds, so take 256 KB; with RTT, 192 KB, which still ends above the RTT reserve
+    // (0x202B0000–0x202C0000). The --defsym must come before -Tlink.x: lld applies it in
+    // command-line order, so after the script it would rename the symbol without moving the
+    // stacks.
+    let program_stack = if env::var_os("CARGO_FEATURE_RTT").is_some() { "0x30000" } else { "0x40000" };
+    println!("cargo:rustc-link-arg-bins=--defsym=PROGRAM_STACK_SIZE={program_stack}");
+    println!("cargo:rustc-link-arg-bins=-Tlink.x");
 
     // ── newlib (libc/libm) for the wren C VM ────────────────────────────────
     // rust-lld is the linker (no override for armv7a-none-eabihf), so the

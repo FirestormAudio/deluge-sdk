@@ -8,8 +8,6 @@ use crate::util::write;
 // Canonical project files, baked in from the repo so generated apps can't drift
 // from the SDK's own build setup.
 const TPL_BUILD_RS: &str = include_str!("../../../examples/baremetal/blinky/build.rs");
-const TPL_MEMORY_X: &str = include_str!("../../../examples/baremetal/blinky/memory.x");
-const TPL_MEMORY_RTT_X: &str = include_str!("../../../examples/baremetal/blinky/memory_rtt.x");
 const TPL_TOOLCHAIN: &str = include_str!("../../../rust-toolchain.toml");
 // J-Link bring-up script reused from the SDK root (referenced by launch.json).
 const TPL_JLINK: &str = include_str!("../../../rza1_debug.JLinkScript");
@@ -79,8 +77,6 @@ fn scaffold(dir: &Path, name: &str, deluge_dep: &str) -> Result<(), String> {
     write(&dir.join("rust-toolchain.toml"), TPL_TOOLCHAIN)?;
     write(&dir.join(".cargo/config.toml"), TPL_CARGO_CONFIG)?;
     write(&dir.join("build.rs"), TPL_BUILD_RS)?;
-    write(&dir.join("memory.x"), TPL_MEMORY_X)?;
-    write(&dir.join("memory_rtt.x"), TPL_MEMORY_RTT_X)?;
     write(&dir.join("src/main.rs"), TPL_MAIN)?;
     write(&dir.join(".gitignore"), TPL_GITIGNORE)?;
 
@@ -217,8 +213,6 @@ mod tests {
     #[test]
     fn baked_in_templates_nonempty() {
         assert!(!TPL_BUILD_RS.is_empty());
-        assert!(!TPL_MEMORY_X.is_empty());
-        assert!(!TPL_MEMORY_RTT_X.is_empty());
         assert!(!TPL_TOOLCHAIN.is_empty());
         assert!(TPL_TOOLCHAIN.contains("armv7a-none-eabihf"));
         assert!(TPL_CARGO_CONFIG.contains("build-std"));
@@ -277,8 +271,6 @@ mod tests {
             "rust-toolchain.toml",
             ".cargo/config.toml",
             "build.rs",
-            "memory.x",
-            "memory_rtt.x",
             "src/main.rs",
             ".gitignore",
             ".vscode/extensions.json",
@@ -289,6 +281,9 @@ mod tests {
         ] {
             assert!(app.join(f).is_file(), "missing scaffolded file: {f}");
         }
+        // The board crate provides the memory layout; a scaffolded app carries none.
+        assert!(!app.join("memory.x").exists());
+        assert!(!app.join("memory_rtt.x").exists());
 
         let cargo = fs::read_to_string(app.join("Cargo.toml")).unwrap();
         assert_eq!(parse_package_name(&cargo).as_deref(), Some("my-app"));

@@ -8,7 +8,7 @@ script.
 A board crate depends on it, links it with `use rza1_rt as _;`, and puts a `memory.x` on the
 linker search path defining the `RAM` (and optionally `SDRAM`) regions, the per-mode stack sizes
 and `INTERNAL_RAM_END`; see the script's header for the full list. The application's `build.rs`
-passes `-T` with the script name.
+passes `-Tlink.x` (`cargo:rustc-link-arg-bins=-Tlink.x`).
 
 | Feature | Effect |
 |---|---|

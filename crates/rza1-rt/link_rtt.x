@@ -23,7 +23,7 @@ ENTRY(_start)
  *
  *   INTERNAL_RAM_END   = ...;   -- top byte address of on-chip SRAM
  *
- * For RTT-free builds use rza1l.x instead (no RTT_RAM/NCACHE_RTT_RAM needed).
+ * Published as link.x when rza1-rt's `rtt` feature is on; otherwise link.x is the RTT-free form.
  */
 INCLUDE memory.x
 

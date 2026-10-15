@@ -15,11 +15,9 @@
 //!    The C++ is built libm-free and without exceptions/RTTI so it links against
 //!    the firmware's newlib-libc-only runtime (see `csrc/additive.cpp`).
 //!
-//! 2. **Device linker setup** — copy the rtt/non-rtt `memory.x` and select the
-//!    matching `rza1l.x` linker script (the same as the other examples).
+//! 2. **Device linker setup** — select rza1-rt's `link.x` (the same as the other examples).
 
 use std::env;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 fn main() {
@@ -39,7 +37,7 @@ fn main() {
     build_dsp_core(&manifest_dir, embedded, arm);
 
     if embedded {
-        link_firmware(&manifest_dir);
+        link_firmware();
     }
 }
 
@@ -113,24 +111,7 @@ fn build_dsp_core(manifest_dir: &Path, embedded: bool, arm: bool) {
     println!("cargo:rerun-if-env-changed=SIMDE_SRC");
 }
 
-/// Device-only: place the memory layout and pick the linker script that matches
-/// the `rtt` feature (the same as the other examples).
-fn link_firmware(manifest_dir: &Path) {
-    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-
-    // rza1l-hal's build.rs places rza1l.x / rza1l_rtt.x on the search path; we
-    // just need to put the matching memory.x alongside them.
-    let rtt = env::var("CARGO_FEATURE_RTT").is_ok();
-    let (memory_src, linker_script) = if rtt {
-        ("memory_rtt.x", "rza1l_rtt.x")
-    } else {
-        ("memory.x", "rza1l.x")
-    };
-
-    fs::copy(manifest_dir.join(memory_src), out_dir.join("memory.x")).unwrap();
-
-    println!("cargo:rustc-link-search={}", out_dir.display());
-    println!("cargo:rustc-link-arg=-T{linker_script}");
-    println!("cargo:rerun-if-changed=memory.x");
-    println!("cargo:rerun-if-changed=memory_rtt.x");
+/// Device-only: select rza1-rt's `link.x` (deluge-bsp puts the Deluge's `memory.x` next to it).
+fn link_firmware() {
+    println!("cargo:rustc-link-arg-bins=-Tlink.x");
 }

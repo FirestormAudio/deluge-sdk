@@ -21,8 +21,8 @@ ENTRY(_start)
  *
  *   INTERNAL_RAM_END   = ...;   -- top byte address of on-chip SRAM
  *
- * For RTT-enabled builds use rza1l_rtt.x instead (requires RTT_RAM and
- * NCACHE_RTT_RAM regions in memory.x).
+ * With rza1-rt's `rtt` feature, build.rs publishes link_rtt.x as link.x instead (it requires
+ * RTT_RAM and NCACHE_RTT_RAM regions in memory.x).
  */
 INCLUDE memory.x
 
