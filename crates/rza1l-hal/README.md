@@ -1,6 +1,6 @@
 # rza1l-hal
 
-Register-level HAL for the **Renesas RZ/A1L** (Cortex-A9, R7S721001),
+Register-level HAL for the **Renesas RZ/A1L** (Cortex-A9, R7S721020),
 written in `no_std` Rust with async support via [Embassy].
 
 Developed for the [Synthstrom Deluge] open-source firmware port, but kept
@@ -14,7 +14,7 @@ at runtime rather than compiled in.
 | Property       | Value                              |
 |----------------|------------------------------------|
 | CPU            | ARM Cortex-A9, ARMv7-A             |
-| Chip           | Renesas RZ/A1L (R7S721001)         |
+| Chip           | Renesas RZ/A1L (R7S721020)         |
 | Rust target    | `armv7a-none-eabihf`               |
 | Async runtime  | [Embassy]                          |
 | `no_std`       | yes (host-target unit tests only)  |
@@ -82,8 +82,8 @@ documented in each peripheral module.
 |---------|-------------|
 | `sdhi`  | SD Host Interface — two ports (SDHI0/SDHI1). `Sdhi::new(Peri<SDHIn>, tx: Dma, rx: Dma, Irqs, sd_option)` binds the status and operation interrupts; its methods give async `send_cmd`, `read_blocks_sw` / `write_blocks_sw` (PIO with `AtomicWaker`) and `read_blocks_dma` / `write_blocks_dma` (DMAC-backed); `reset` returns it to the identification clock before a card is re-identified. |
 | `uart`  | SCIF async serial, five channels (SCIF0–4). `Uart::new(Peri<SCIFn>, rx_dma, tx_dma, Irqs, baud)` receives into a DMA ring (SCIF0/1) and transmits by DMA or through the FIFO; `split()` gives `UartRx`/`UartTx`. |
-| `rspi`  | SPI master (RSPI0–4): `Rspi::new(Peri<RSPIn>, bit_rate)`, 32-bit or 8-bit frames, blocking sends. Used for CV DAC and OLED. |
-| `gpio`  | GPIO port registers (P1–P11, PMC0–PMC11). `set_pin_mux`, `set_as_output` / `set_as_input`, `write`, `read_pin`, plus a const-generic `Pin` type (`Pin::steal()`) implementing the `embedded-hal` `InputPin` / `OutputPin` traits. |
+| `rspi`  | SPI master (RSPI0–2, the RZ/A1L's three): `Rspi::new(Peri<RSPIn>, bit_rate)`, 32-bit or 8-bit frames, blocking sends. Used for CV DAC and OLED. |
+| `gpio`  | GPIO port registers (the RZ/A1L's ports: P1–P9, PMC0–PMC9). `set_pin_mux`, `set_as_output` / `set_as_input`, `write`, `read_pin`, plus a const-generic `Pin` type (`Pin::steal()`) implementing the `embedded-hal` `InputPin` / `OutputPin` traits. |
 | `adc`   | 12-bit A/D converter, single-scan polled. |
 | `spibsc` | SPI Multi-I/O Bus Controller — manual-command NOR-flash erase/program/read, with erase and program refused outside the board's writable windows. |
 | `usb` | RUSB1 USB 2.0 dual-role driver: chip plumbing (bases, IRQs, STBCR7 clock gates) plus full `embassy-usb-driver` **device** (`usb::driver`) and **host** (`usb::host`) implementations over shared `regs`/`fifo`/`pipe` layers. `usb::init_device_mode(Peri<USBn>, Irqs)` / `usb::init_host_mode(Peri<USBn>, Irqs)` are the entry points, bound to a `DeviceInterruptHandler`, `HostInterruptHandler` or `DualRoleInterruptHandler`; the drivers borrow the port (`Rusb1Driver<'d>`). USB *class* code (UAC2/MIDI/MSC/BOT) lives in `deluge_bsp::usb`. |
@@ -128,6 +128,17 @@ Drivers take their peripheral singleton (`Peri<'d, T>`) and the interrupt bindin
 `Rspi::new`, `Uart::new`, `OneShot::new` and `time_driver::init` are safe. Every driver takes its
 singleton and binding; the SCUX path inits stay `unsafe` because the paths share the block (each
 must claim distinct SRC units).
+
+### Registers
+
+Register addresses come from [`rza1-pac`](../rza1-pac/README.md), re-exported as
+`rza1l_hal::pac` and built with its `rza1l` feature: chiptool output from the vendor SVD (an RZ/A1H
+SVD) minus what the RZ/A1L lacks, generated and checked against the RZ/A1L manual's register list
+by `tools/gen-pac.sh`. Every access goes through the MMIO seam (`rza1l_hal::mmio`, which now lives
+in the PAC), so register sequences are testable on the host. CPG/STB, BSC, OSTM, ADC, the L2
+cache, MTU2, SCIF, RSPI, GPIO and the GIC take every register from it
+(`tools/check-register-tables.sh` holds them to that); DMAC, SSI, SCUX, SDHI, SPIBSC and USB still
+hand-write their addresses until Phase 5b.
 
 ---
 
