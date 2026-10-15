@@ -1490,6 +1490,12 @@ pub unsafe fn dcd_int_handler(port: u8) {
                     let ctr = pipectr(u, 0).read();
                     pipectr(u, 0)
                         .write_value((ctr & !PIPECTR_PID_MASK) | PIPECTR_PID_BUF | PIPECTR_CCPL);
+                    // The host only enters the status stage once it has all the IN data, so
+                    // the data stage is complete. Its BEMP may be pending in this same
+                    // interrupt, and the BEMPENB write above masks it from the BEMP handler
+                    // below: complete `data_in` here or it waits forever.
+                    PIPE_DONE.fetch_or(1, Ordering::Release);
+                    PIPE_WAKERS[0].wake();
                 }
                 // ctsq=4 (WRSS) / ctsq=5 (WRND): accept() / accept_set_address()
                 // are called by the embassy-usb task and set CCPL from there.
@@ -1729,5 +1735,39 @@ unsafe fn configure_all_pipes(port: u8) {
                 }
             }
         });
+    }
+}
+
+#[cfg(all(test, not(target_os = "none")))]
+mod tests {
+    use super::*;
+    use crate::mmio::test;
+
+    /// A one-packet control read: the host's status-stage OUT follows the IN data so closely that
+    /// the CTRT (control read status stage, ctsq=2) and the pipe-0 BEMP land in one interrupt.
+    /// `data_in` waits on pipe 0's PIPE_DONE bit, so the data stage must still complete; if it
+    /// doesn't, the control pipe stalls and the device never enumerates.
+    #[test]
+    fn a_status_stage_with_bemp_pending_still_completes_the_control_read() {
+        let u = usb(0);
+        test::reset();
+        for r in [u.intsts(0).addr(), u.bempsts().addr()] {
+            test::rcw0(r);
+        }
+        test::poke16(u.intsts(0).addr(), INTSTS0_CTRT | INTSTS0_BEMP | 2);
+        test::poke16(u.bempsts().addr(), 0x0001);
+        test::poke16(u.bempenb().addr(), 0x0001);
+        PIPE_DONE.fetch_and(!1u16, Ordering::Relaxed);
+        unsafe { dcd_int_handler(0) };
+        assert_ne!(
+            PIPE_DONE.load(Ordering::Acquire) & 1,
+            0,
+            "the data stage did not complete"
+        );
+        let ctr = pipectr(u, 0).read();
+        assert_eq!(
+            ctr & (PIPECTR_PID_MASK | PIPECTR_CCPL),
+            PIPECTR_PID_BUF | PIPECTR_CCPL
+        );
     }
 }
