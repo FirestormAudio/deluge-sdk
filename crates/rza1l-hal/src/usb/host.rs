@@ -1762,6 +1762,39 @@ impl<T: pipe::Type, D: pipe::Direction> UsbPipe<T, D> for Rusb1Pipe<T, D> {
 mod tests {
     use super::*;
 
+    /// Host bring-up on port 1 with the PLL off: both channels' SUSPM drop before UPLLE (in
+    /// USB0's SYSCFG0) rises, and port 1's DCFM rises while DRPD, DPRPU and HSE are 0 (TRM §28.3.1),
+    /// before DRPD and then USBE.
+    #[test]
+    fn host_bring_up_orders_the_pll_and_mode_writes() {
+        use crate::mmio::test;
+        const SYSCFG0_0: usize = 0xE801_0000;
+        const SYSCFG0_1: usize = 0xE820_7000;
+        const SUSPMODE_0: usize = 0xE801_0102;
+        const SUSPMODE_1: usize = 0xE820_7102;
+        test::reset();
+        test::poke16(SYSCFG0_1, SYSCFG_DRPD | SYSCFG_DPRPU | SYSCFG_HSE);
+        test::poke16(SUSPMODE_0, SUSPMODE_SUSPM);
+        test::poke16(SUSPMODE_1, SUSPMODE_SUSPM);
+        let _ = unsafe { Rusb1HostDriver::new(1) };
+        let w: Vec<_> = test::writes()
+            .into_iter()
+            .filter(|(a, _)| [SYSCFG0_0, SYSCFG0_1, SUSPMODE_0, SUSPMODE_1].contains(a))
+            .collect();
+        assert_eq!(
+            w,
+            [
+                (SUSPMODE_1, 0),
+                (SUSPMODE_0, 0),
+                (SYSCFG0_0, SYSCFG_UPLLE as u32),
+                (SUSPMODE_1, SUSPMODE_SUSPM as u32),
+                (SYSCFG0_1, SYSCFG_DCFM as u32),
+                (SYSCFG0_1, (SYSCFG_DCFM | SYSCFG_DRPD) as u32),
+                (SYSCFG0_1, (SYSCFG_DCFM | SYSCFG_DRPD | SYSCFG_USBE) as u32),
+            ]
+        );
+    }
+
     #[test]
     fn dev_addr_zero_is_not_supported() {
         // Address 0 is the enumeration default address, never a target.
