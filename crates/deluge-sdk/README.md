@@ -40,9 +40,9 @@ async fn main(_dlg: Deluge) {
 | Feature | Description |
 |---|---|
 | `alloc` | Register the on-chip SRAM heap (`rza1-alloc`) as the global allocator so `alloc` collections work. Off by default — the SDK is otherwise allocator-free. Required by apps that draw with the (GPL) `deluge-ui-toolkit`. Build with `-Zbuild-std=core,alloc`. |
-| `usb-log` | Route the `log` crate to a USB CDC-ACM serial port, so firmware logs appear over the USB cable with no debug probe. |
+| `usb-log` | Route the `log` crate to a USB CDC-ACM serial port, so firmware logs appear over the USB cable with no debug probe. Not with `usb-serial`: both drive USB0, so enabling both fails to compile. |
 | `audio-irq` | Drive `dlg.audio()` from the per-block RX DMA interrupt (drift-free, lower latency) instead of the default poll loop. |
-| `usb-serial` | Let the app take USB0 as a CDC-ACM serial device with its own VID/PID via `Deluge::usb_serial`. Device-only; mutually exclusive with `usb-log` at runtime. |
+| `usb-serial` | Let the app take USB0 as a CDC-ACM serial device with its own VID/PID via `Deluge::usb_serial`. Device-only; not with `usb-log` (both drive USB0, so enabling both fails to compile). |
 | `rtt` | Enable RTT (SEGGER Real-Time Transfer) debug logging in the `#[deluge::app]` runtime. |
 | `sim` | Host backend: run the app against the desktop simulator panel (`cargo deluge sim`). Host builds only. |
 | `linux` | Linux backend: run the app on the Deluge's Linux userland through `libdeluge` (`cargo deluge linux --features linux`). |

@@ -23,6 +23,10 @@ at runtime rather than compiled in.
 
 ## Modules
 
+`rza1l_hal::init(Config)` takes the peripheral singletons (`Peripherals`, Embassy's
+`peripherals!`) and brings up the CPG, the module clocks and the GIC; drivers take their
+peripheral as `Peri<'d, T>`.
+
 ### System
 
 | Module        | Description |
@@ -32,6 +36,7 @@ at runtime rather than compiled in.
 | `clocks`      | The clock tree, from the board's EXTAL crystal: `clocks::init(ClockConfig::new(extal_hz))` once at boot, then P0φ/P1φ (and the exact P0 ticks-per-µs ratio) are derived for every driver. Call it first. |
 | `stb`         | CPG Standby Control Register (STBCR2–STBCR12) init — ungate module clocks for all required peripherals via a `StbConfig` struct. |
 | `gic`         | ARM GIC-400 (GICD/GICC) driver. `gic::init` → `gic::register(id, handler)` → `gic::enable(id)`. The IRQ assembly shim calls `gic::dispatch`. |
+| `interrupt`   | Typed GIC interrupts (`interrupt::typelevel`), `Handler`/`Binding` and `bind_interrupts!`: a driver's constructor takes the binding and installs its handler. |
 | `bsc`         | Bus State Controller CS0/CS1 timing (NOR flash). |
 | `memmap`      | Pure memory-map and cache-line arithmetic shared by `mmu` and `cache` (host-testable). |
 | `mmio`        | Memory-mapped I/O seam: `Reg8` / `Reg16` / `Reg32` handles and `read32` / `write32`; volatile on the device, a shadow memory with an access log in host tests. |
@@ -59,7 +64,7 @@ without explicit cache maintenance.
 
 | Module | Description |
 |--------|-------------|
-| `dmac` | 16-channel DMAC (channels 0–15). Register-mode (one-shot) and link-descriptor (circular) transfers. `init_register_mode` / `start_transfer` for memory→peripheral; `init_register_mode_rx` / `start_transfer_rx` for peripheral→memory; `init_with_link_descriptor` for circular audio streaming. |
+| `dmac` | 16-channel DMAC (channels 0–15). Register-mode (one-shot) and link-descriptor (circular) transfers. `init_register_mode` / `start_transfer` for memory→peripheral; `init_register_mode_rx` / `start_transfer_rx` for peripheral→memory; `init_with_link_descriptor` for circular audio streaming. Owned channels: `Dma::new(Peri<DMA_CHn>, Irqs)`; channel-number functions in `dmac::raw` until Phase 4b. |
 
 DMAC resource selectors (DMARS values) are peripheral-specific constants
 documented in each peripheral module.

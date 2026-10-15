@@ -36,6 +36,7 @@ testing.
 | [`trigger_clock`] | Analog trigger-clock input |
 | [`rgb`] | RGB pad-LED surface for the 18 × 8 grid |
 | [`battery`] | Battery-voltage sense via the ADC |
+| [`board`] | `Board::new(rza1l_hal::init(system::BOARD_CONFIG))`: the rest of the bring-up, then the Deluge's peripherals by role (USB0/1, the 16 DMA channels) |
 | [`flash`] | SPI-NOR chip profile and board flash map (feature `flash`) |
 | [`host_panel`] | Host builds: the hook a simulated front panel plugs into (`deluge-sdk`'s simulator backend installs one) |
 

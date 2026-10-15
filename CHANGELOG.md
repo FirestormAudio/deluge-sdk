@@ -31,6 +31,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `rza1l-hal` has Embassy-style ownership. `rza1l_hal::init(Config) -> Peripherals` takes the
+  peripheral singletons once and runs the chip bring-up (CPG, module clocks, GIC);
+  `rza1l_hal::bind_interrupts!` binds typed interrupt handlers; `dmac::Dma::new(Peri<DMA_CHn>, Irqs)`
+  owns a DMA channel. **Breaking:** the channel-number DMA functions moved to the transitional
+  `rza1l_hal::dmac::raw`, and `deluge_bsp::system::init_clocks()` is replaced by
+  `deluge_bsp::Board::new(rza1l_hal::init(deluge_bsp::system::BOARD_CONFIG))`, which returns
+  the peripherals by role.
+- **Breaking:** enabling both `usb-log` and `usb-serial` is a compile error (both drive USB0)
+  instead of a panic at `Deluge::usb_serial()`.
+- **Breaking:** the `deluge` facade no longer re-exports `deluge_bsp`; depend on `deluge-bsp`
+  directly to use it.
 - The runtime moved out of `rza1l-hal` into the new `rza1-rt` crate: the reset vector and
   bootloader metadata, the reset, fault and IRQ entry handlers, and the linker script, now
   `link.x`. **Breaking:** binaries link with `-Tlink.x` (`cargo:rustc-link-arg-bins=-Tlink.x`
@@ -91,8 +102,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sets its 64 MB on CS3 (`deluge_bsp::sdram::WINDOW`).
 - **Breaking:** the `app-fault-reporter` hook is now `rza1_cpu_fault_report` (was
   `deluge_cpu_fault_report`).
-- **Breaking:** `deluge` no longer re-exports `rza1l_hal`. Use `deluge::deluge_bsp`, or depend on
-  `rza1l-hal` directly.
+- **Breaking:** `deluge` no longer re-exports `rza1l_hal`; depend on `rza1l-hal` directly.
 - The Embassy time driver's µs conversion no longer overflows on long uptimes for crystals other
   than the Deluge's.
 - Repository layout: the Wren subsystem now lives under `wren/`, the Linux
