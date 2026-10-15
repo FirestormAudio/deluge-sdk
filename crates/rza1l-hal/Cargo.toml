@@ -28,6 +28,7 @@ cortex-ar = { workspace = true, features = ["critical-section-single-core"] }
 [dependencies]
 critical-section = { workspace = true }
 embassy-sync = { workspace = true }
+embassy-hal-internal = { workspace = true }
 embassy-time = { workspace = true }
 embassy-time-driver = { workspace = true }
 embassy-time-queue-utils = { workspace = true }
@@ -47,3 +48,6 @@ unlock-bootloader = []
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
 critical-section = { workspace = true, features = ["std"] }
 
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("defmt"))'] }

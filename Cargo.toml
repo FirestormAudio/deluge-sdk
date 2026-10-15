@@ -81,6 +81,7 @@ flare-mipgen = { path = "../flare/crates/flare-mipgen" }
 # Embassy async runtime and USB stacks. Versions are set here only.
 embassy-executor = "0.10.0"
 embassy-futures = "0.1.2"
+embassy-hal-internal = "0.5.0"
 embassy-sync = "0.8.0"
 embassy-time = "0.5.1"
 embassy-time-driver = "0.2.2"
