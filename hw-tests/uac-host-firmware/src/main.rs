@@ -58,7 +58,7 @@ pub extern "C" fn main() -> ! {
     unsafe { allocator::SDRAM.init(0x0C00_0000 as *mut u8, 64 * 1024 * 1024) };
 
     unsafe { rza1l_hal::gpio::set_as_output(6, 7) };
-    unsafe { bsp_uart::init_pic(31_250) };
+    bsp_uart::init_pic(board.pic_uart, board.dma.pic_rx, board.dma.pic_tx, 31_250);
     deluge_bsp::bus::init(board.shared_spi, board.dma.oled);
     unsafe { cv_gate::init() };
 

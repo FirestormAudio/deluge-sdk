@@ -47,7 +47,6 @@
 //! | 247  | ENABLE_OLED                | —                               |
 
 #[cfg(target_os = "none")]
-use rza1l_hal::uart;
 
 #[cfg(target_os = "none")]
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -263,7 +262,7 @@ impl Parser {
 /// 3. Switches the host SCIF1 to 200 000 bps.
 /// 4. Requests firmware version and button states; waits another 50 ms.
 ///
-/// **Must be called after** `deluge_bsp::uart::init_pic(31_250)` has set up
+/// **Must be called after** `deluge_bsp::uart::init_pic` has set up
 /// SCIF1 and the Embassy executor is running (uses `Timer`).
 #[cfg(target_os = "none")]
 pub async fn init() {
@@ -289,9 +288,9 @@ pub async fn init() {
     Timer::after_millis(50).await;
 
     // ---- Switch host SCIF1 to 200 000 bps ----------------------------------
-    // Safety: write_bytes has completed, so the FIFO has drained.  SCIF1 was
-    // initialised by `deluge_bsp::uart::init_pic`; we just update SCBRR here.
-    unsafe { uart::set_baud(UART_CH, BAUD_FAST) };
+    // The last write has completed, so the FIFO has drained. SCIF1 was brought up by
+    // `deluge_bsp::uart::init_pic`; this updates SCBRR.
+    crate::uart::set_pic_baud(BAUD_FAST);
 
     // ---- Request firmware version and initial button state -----------------
     tx(&[CMD_REQUEST_FIRMWARE_VERSION]).await;
@@ -337,11 +336,11 @@ static PIC_TX: Mutex<CriticalSectionRawMutex, ()> = Mutex::new(());
 /// Send one complete PIC command, atomically with respect to other senders.
 ///
 /// All outbound helpers below funnel through here; do not call
-/// `uart::write_bytes(UART_CH, …)` directly.
+/// `crate::uart::write_pic` directly.
 #[cfg(target_os = "none")]
 async fn tx(bytes: &[u8]) {
     let _guard = PIC_TX.lock().await;
-    uart::write_bytes(UART_CH, bytes).await;
+    crate::uart::write_pic(bytes).await;
 }
 
 /// Host/QEMU stand-in for [`tx`]: no PIC UART off-target. With a host panel installed
@@ -363,10 +362,10 @@ async fn tx_via(panel: Option<&dyn crate::host_panel::HostPanel>, bytes: &[u8]) 
 
 /// Await one decoded byte from the PIC co-processor's SCIF1 UART (DMA RX ring).
 /// This is the RX transport counterpart to the serialized TX path: the control pump loops on it,
-/// feeding [`Parser`]. Device only — pops the DMA ring via `uart::read_byte`.
+/// feeding [`Parser`]. Device only — pops the DMA ring via `crate::uart::read_pic_byte`.
 #[cfg(target_os = "none")]
 pub async fn read_byte() -> u8 {
-    uart::read_byte(UART_CH).await
+    crate::uart::read_pic_byte().await
 }
 
 /// Host: no PIC co-processor. With a host panel installed ([`crate::host_panel`]), its input
@@ -589,8 +588,7 @@ fn send_blocking(bytes: &[u8]) {
     let mut sent = 0;
     let mut idle = 0u32;
     while sent < bytes.len() {
-        // SAFETY: panic context — single owner of the PIC UART.
-        let n = unsafe { uart::try_write_fifo(UART_CH, &bytes[sent..]) };
+        let n = crate::uart::try_write_pic(&bytes[sent..]);
         if n == 0 {
             idle += 1;
             if idle > 1_000_000 {

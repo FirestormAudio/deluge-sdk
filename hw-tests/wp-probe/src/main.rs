@@ -80,7 +80,7 @@ pub extern "C" fn main() -> ! {
     unsafe { rza1l_hal::gpio::set_as_output(6, 7) };
 
     info!("UART: initialising PIC...");
-    unsafe { bsp_uart::init_pic(31_250) };
+    bsp_uart::init_pic(board.pic_uart, board.dma.pic_rx, board.dma.pic_tx, 31_250);
 
     // RSPI0 is shared between OLED (8-bit) and CV DAC (32-bit). The bus brings it up;
     // cv_gate::init() runs the DAC's linearity sequence; oled::init() then switches

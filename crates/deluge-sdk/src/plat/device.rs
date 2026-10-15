@@ -120,10 +120,12 @@ pub(crate) fn pic_ensure_started(spawner: Spawner) {
     if PIC_STARTED.swap(true, Ordering::Relaxed) {
         return;
     }
-    // SAFETY: runs once (guarded above). `init_pic` registers the TXI handler
-    // before the source is enabled and sets up DMA RX, so it is safe to call with
-    // interrupts already enabled.
-    unsafe { bsp_uart::init_pic(PIC_BAUD) };
+    // Runs once (guarded above). `init_pic` binds its handlers before it enables their sources,
+    // so it is safe with interrupts already enabled.
+    let uart = crate::parts::take("SCIF1 (the PIC link)", |p| p.pic_uart.take());
+    let rx = crate::parts::take("the PIC receive DMA channel", |p| p.pic_rx_dma.take());
+    let tx = crate::parts::take("the PIC transmit DMA channel", |p| p.pic_tx_dma.take());
+    bsp_uart::init_pic(uart, rx, tx, PIC_BAUD);
     // `#[embassy_executor::task]` returns a Result in this Embassy version; the
     // only failure is pool exhaustion, impossible for this single spawn.
     spawner.spawn(pic_pump().unwrap());
@@ -142,7 +144,7 @@ async fn pic_pump() {
 
     let mut parser = pic::Parser::new();
     loop {
-        let byte = bsp_uart::read_byte(pic::UART_CH).await;
+        let byte = pic::read_byte().await;
         let Some(event) = parser.push(byte) else {
             continue;
         };
@@ -197,9 +199,10 @@ pub(crate) fn gate_set(ch: u8, on: bool) {
 const MIDI_BAUD: u32 = 31_250;
 
 pub(crate) fn midi_init() {
-    // SAFETY: runs once. Sets up SCIF0 with DMA RX and registers its TX handler
-    // before the source is enabled, so it is safe at runtime.
-    unsafe { deluge_bsp::uart::init_midi(MIDI_BAUD) };
+    // Runs once. Binds SCIF0's handlers before it enables their sources, so it is safe at runtime.
+    let uart = crate::parts::take("SCIF0 (DIN MIDI)", |p| p.midi_uart.take());
+    let rx = crate::parts::take("the MIDI receive DMA channel", |p| p.midi_rx_dma.take());
+    deluge_bsp::uart::init_midi(uart, rx, MIDI_BAUD);
 }
 pub(crate) async fn midi_send(data: &[u8]) {
     deluge_bsp::uart::write_midi(data).await;

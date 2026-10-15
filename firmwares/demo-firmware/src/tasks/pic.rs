@@ -28,7 +28,7 @@ pub(crate) async fn pic_task() {
     debug!("pic_task: entering main loop");
 
     loop {
-        let byte = rza1l_hal::uart::read_byte(pic::UART_CH).await;
+        let byte = pic::read_byte().await;
         let Some(event) = parser.push(byte) else {
             continue;
         };

@@ -110,10 +110,10 @@ pub extern "C" fn main() -> ! {
     unsafe { allocator::SDRAM.init(0x0C00_0000 as *mut u8, 64 * 1024 * 1024) };
 
     // SCIF1 (PIC32 link): configures pins, baud, TX, and — crucially — the
-    // DMA-RX ring that `uart::read_byte` reads from.  Must run before the
+    // DMA-RX ring that `pic::read_byte` reads from.  Must run before the
     // executor starts (global IRQs still masked).  Without it the OLED
     // chip-select echo handshake can never be received and `oled::init` hangs.
-    unsafe { deluge_bsp::uart::init_pic(31_250) };
+    deluge_bsp::uart::init_pic(board.pic_uart, board.dma.pic_rx, board.dma.pic_tx, 31_250);
 
     // The bus brings RSPI0 up; cv_gate::init runs the DAC's linearity sequence on it.
     deluge_bsp::bus::init(board.shared_spi, board.dma.oled);
@@ -154,7 +154,7 @@ async fn pic_rx_task() {
 
     let mut parser = pic::Parser::new();
     loop {
-        let byte = rza1l_hal::uart::read_byte(deluge_bsp::uart::PIC_CH).await;
+        let byte = pic::read_byte().await;
         match parser.push(byte) {
             Some(Event::OledSelected) => pic::notify_oled_selected(),
             Some(Event::OledDeselected) => pic::notify_oled_deselected(),

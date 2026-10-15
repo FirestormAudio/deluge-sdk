@@ -7,6 +7,18 @@
 //! |---------|---------|----------|-----|---------|-----|
 //! | SCIF0   | MIDI DIN| P6_15    |  5  | P6_14   |  5  |
 //! | SCIF1   | PIC32   | P3_15    |  5  | P1_9    |  3  |
+//!
+//! [`init_midi`] and [`init_pic`] take the SCIF and its DMA channels from the [`crate::Board`]
+//! and keep the UART's halves; the other functions reach the UART they brought up.
+
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex::Mutex;
+use embassy_sync::once_lock::OnceLock;
+use rza1l_hal::Peri;
+use rza1l_hal::dmac::{self, Dma};
+use rza1l_hal::uart::{self, Uart, UartRx, UartTx};
+
+use crate::board::{MidiRxDma, MidiScif, PicRxDma, PicScif, PicTxDma};
 
 /// SCIF channel used for MIDI DIN (31250 bps).
 pub const MIDI_CH: usize = 0;
@@ -14,107 +26,168 @@ pub const MIDI_CH: usize = 0;
 /// SCIF channel used for the PIC32 co-processor.
 pub const PIC_CH: usize = 1;
 
-pub use rza1l_hal::uart::{read_byte, write_bytes};
+rza1l_hal::bind_interrupts!(struct MidiIrqs {
+    ERI0 => uart::ErrorInterruptHandler<MidiScif>;
+    TXI0 => uart::TxInterruptHandler<MidiScif>;
+    DMAINT13 => dmac::InterruptHandler<MidiRxDma>;
+});
 
-/// Write bytes to the MIDI DIN UART (SCIF0 @ 31 250 bps).
-#[inline]
-pub async fn write_midi(data: &[u8]) {
-    rza1l_hal::uart::write_bytes(MIDI_CH, data).await;
-}
+rza1l_hal::bind_interrupts!(struct PicIrqs {
+    ERI1 => uart::ErrorInterruptHandler<PicScif>;
+    TXI1 => uart::TxInterruptHandler<PicScif>;
+    DMAINT10 => dmac::InterruptHandler<PicTxDma>;
+    DMAINT12 => dmac::InterruptHandler<PicRxDma>;
+});
 
-/// Read one byte from the MIDI DIN UART (SCIF0 DMA RX ring).
-#[inline]
-pub async fn read_midi_byte() -> u8 {
-    rza1l_hal::uart::read_byte(MIDI_CH).await
-}
+/// A UART's receiver, async-locked because a read holds it across `.await`.
+type RxSlot = Mutex<CriticalSectionRawMutex, Option<UartRx<'static>>>;
 
-/// Non-blocking: read the next raw byte from the MIDI DIN RX ring buffer.
-///
-/// Returns `None` if the DMA ring buffer is currently empty.
-/// Call from a single task; not interrupt-safe.
-#[inline]
-pub fn try_read_midi() -> Option<u8> {
-    // SAFETY: init_midi must have been called; called from a single task only.
-    unsafe { rza1l_hal::uart::try_read_dma(MIDI_CH) }
-}
+static MIDI_RX: RxSlot = Mutex::new(None);
+static MIDI_TX: OnceLock<UartTx<'static>> = OnceLock::new();
+static PIC_RX: RxSlot = Mutex::new(None);
+static PIC_TX: OnceLock<UartTx<'static>> = OnceLock::new();
 
-/// Non-blocking: write bytes directly to the MIDI DIN TX FIFO.
-///
-/// Returns the number of bytes actually written (may be less than `data.len()`
-/// if the 16-byte FIFO is full).  Sufficient for short MIDI messages such as
-/// clock pulses (`0xF8`, 1 byte).
-#[inline]
-pub fn try_write_midi(data: &[u8]) -> usize {
-    // SAFETY: init_midi must have been called.
-    unsafe { rza1l_hal::uart::try_write_fifo(MIDI_CH, data) }
-}
-
-/// Free space in the MIDI DIN TX FIFO, in bytes: how many [`try_write_midi`] would take now.
-#[inline]
-pub fn midi_write_space() -> usize {
-    // SAFETY: init_midi must have been called.
-    unsafe { rza1l_hal::uart::tx_fifo_free(MIDI_CH) }
-}
-
-/// Initialise the MIDI DIN UART (SCIF0) with DMA-backed RX.
-///
-/// MIDI TX uses TXI GIC interrupts; SCIF0 RX uses DMAC channel
-/// [`crate::system::MIDI_DMA_RX_CH`] so that incoming bytes are captured
-/// without interrupt gaps.
-///
-/// DMARS = 0x62 (SCIF0 RX resource selector).
-///
-/// # Safety
-/// Must be called with global IRQs disabled, before the Embassy executor starts.
-pub unsafe fn init_midi(baud_rate: u32) {
+/// Bring up the MIDI DIN UART (SCIF0): receive by DMA, transmit through the FIFO and TXI
+/// (MIDI messages are short).
+pub fn init_midi(scif: Peri<'static, MidiScif>, rx_dma: Peri<'static, MidiRxDma>, baud: u32) {
+    log::debug!("bsp uart: MIDI SCIF{} @ {} bps", MIDI_CH, baud);
+    // SAFETY: TxD0 and RxD0, which only SCIF0 drives. Muxed first, so the receive ring never
+    // samples an unconnected pin.
     unsafe {
-        log::debug!(
-            "bsp uart: MIDI SCIF{} @ {} bps (DMA RX ch{})",
-            MIDI_CH,
-            baud_rate,
-            crate::system::MIDI_DMA_RX_CH,
-        );
-        rza1l_hal::uart::init(MIDI_CH, baud_rate);
         rza1l_hal::gpio::set_pin_mux(6, 15, 5); // TxD0
         rza1l_hal::gpio::set_pin_mux(6, 14, 5); // RxD0
-        // TX via TXI interrupt; RX via DMAC channel (crate::system::MIDI_DMA_RX_CH).
-        rza1l_hal::uart::register_txi_for(MIDI_CH);
-        rza1l_hal::uart::init_dma_rx(MIDI_CH, crate::system::MIDI_DMA_RX_CH, 0x62);
     }
+    let rx_dma = Dma::new(rx_dma, MidiIrqs);
+    let (rx, tx) = Uart::new(scif, rx_dma, None, MidiIrqs, baud).split();
+    install(&MIDI_RX, &MIDI_TX, rx, tx);
 }
 
-/// Initialise the PIC32 UART (SCIF1) with DMA-backed RX and TX.
-///
-/// SCIF1 RX uses DMAC channel [`crate::system::PIC_DMA_RX_CH`] and TX uses
-/// DMAC channel [`crate::system::PIC_DMA_TX_CH`].
+/// Bring up the PIC32 UART (SCIF1): receive and transmit by DMA.
 ///
 /// **Why DMA and not RXI:** on the RZ/A1 the SCIF "receive-FIFO-data-full"
 /// request is wired to the DMAC, not the GIC — with RIE=1 and RDF=1 no GIC line
 /// in the SCIF range 220–245 goes pending. The stock Renesas/Deluge firmware
 /// notes the same: `SCSCR = 0x00F0; // Enable "interrupt" (which actually
 /// triggers DMA)`. So RX must go through the DMAC.
-///
-/// DMARS values: RX = 0x66, TX = 0x65 (SCIF1 resource selectors).
-///
-/// # Safety
-/// Must be called with global IRQs disabled, before the Embassy executor starts.
-pub unsafe fn init_pic(baud_rate: u32) {
+pub fn init_pic(
+    scif: Peri<'static, PicScif>,
+    rx_dma: Peri<'static, PicRxDma>,
+    tx_dma: Peri<'static, PicTxDma>,
+    baud: u32,
+) {
+    log::debug!("bsp uart: PIC SCIF{} @ {} bps", PIC_CH, baud);
+    // SAFETY: TxD1 and RxD1, which only SCIF1 drives; muxed first, as in `init_midi`.
     unsafe {
-        log::debug!(
-            "bsp uart: PIC SCIF{} @ {} bps (DMA RX ch{}, DMA TX ch{})",
-            PIC_CH,
-            baud_rate,
-            crate::system::PIC_DMA_RX_CH,
-            crate::system::PIC_DMA_TX_CH,
-        );
-        rza1l_hal::uart::init(PIC_CH, baud_rate);
         rza1l_hal::gpio::set_pin_mux(3, 15, 5); // TxD1
         rza1l_hal::gpio::set_pin_mux(1, 9, 3); // RxD1
-        // RX via DMAC channel (PIC_DMA_RX_CH); TX via DMAC (PIC_DMA_TX_CH).
-        rza1l_hal::uart::register_txi_for(PIC_CH);
-        rza1l_hal::uart::init_dma_rx(PIC_CH, crate::system::PIC_DMA_RX_CH, 0x66);
-        rza1l_hal::uart::init_dma_tx(PIC_CH, crate::system::PIC_DMA_TX_CH, 0x65);
     }
+    let rx_dma = Dma::new(rx_dma, PicIrqs);
+    let tx_dma = Dma::new(tx_dma, PicIrqs);
+    let (rx, tx) = Uart::new(scif, rx_dma, Some(tx_dma), PicIrqs, baud).split();
+    install(&PIC_RX, &PIC_TX, rx, tx);
+}
+
+fn install(
+    rx_slot: &'static RxSlot,
+    tx_slot: &'static OnceLock<UartTx<'static>>,
+    rx: UartRx<'static>,
+    tx: UartTx<'static>,
+) {
+    // Each SCIF is owned once, so both slots are empty.
+    match rx_slot.try_lock() {
+        Ok(mut slot) => *slot = Some(rx),
+        Err(_) => unreachable!("a UART's receiver is locked before the UART exists"),
+    }
+    if tx_slot.init(tx).is_err() {
+        unreachable!("a UART's transmitter is installed twice");
+    }
+}
+
+async fn read_byte(slot: &'static RxSlot, name: &str) -> u8 {
+    let mut rx = slot.lock().await;
+    match rx.as_mut() {
+        Some(rx) => rx.read_byte().await,
+        None => panic!("the {name} UART isn't initialised"),
+    }
+}
+
+fn try_read(slot: &'static RxSlot) -> Option<u8> {
+    slot.try_lock().ok()?.as_mut()?.try_read()
+}
+
+fn tx(slot: &'static OnceLock<UartTx<'static>>, name: &str) -> &'static UartTx<'static> {
+    slot.try_get()
+        .unwrap_or_else(|| panic!("the {name} UART isn't initialised"))
+}
+
+/// Write bytes to the MIDI DIN UART.
+///
+/// # Panics
+/// Before [`init_midi`].
+pub async fn write_midi(data: &[u8]) {
+    tx(&MIDI_TX, "MIDI").write(data).await;
+}
+
+/// Read one byte from the MIDI DIN UART (its DMA ring).
+///
+/// # Panics
+/// Before [`init_midi`].
+pub async fn read_midi_byte() -> u8 {
+    read_byte(&MIDI_RX, "MIDI").await
+}
+
+/// The next raw byte from the MIDI DIN ring, without waiting. `None` if the ring is empty, if
+/// [`init_midi`] hasn't run, or while a [`read_midi_byte`] is waiting (it drains the ring).
+pub fn try_read_midi() -> Option<u8> {
+    try_read(&MIDI_RX)
+}
+
+/// Put as much of `data` in the MIDI DIN transmit FIFO as fits now; returns how much. Enough for
+/// short messages such as clock pulses (`0xF8`). 0 before [`init_midi`].
+pub fn try_write_midi(data: &[u8]) -> usize {
+    MIDI_TX.try_get().map_or(0, |tx| tx.try_write(data))
+}
+
+/// Free space in the MIDI DIN TX FIFO, in bytes: how many [`try_write_midi`] would take now.
+/// 0 before [`init_midi`].
+pub fn midi_write_space() -> usize {
+    MIDI_TX.try_get().map_or(0, |tx| tx.tx_free())
+}
+
+/// Write bytes to the PIC UART. [`crate::pic`] serialises whole commands around this.
+///
+/// # Panics
+/// Before [`init_pic`].
+pub async fn write_pic(data: &[u8]) {
+    tx(&PIC_TX, "PIC").write(data).await;
+}
+
+/// Read one byte from the PIC UART (its DMA ring).
+///
+/// # Panics
+/// Before [`init_pic`].
+pub async fn read_pic_byte() -> u8 {
+    read_byte(&PIC_RX, "PIC").await
+}
+
+/// The next raw byte from the PIC ring, without waiting; see [`try_read_midi`] for `None`.
+pub fn try_read_pic() -> Option<u8> {
+    try_read(&PIC_RX)
+}
+
+/// Put as much of `data` in the PIC transmit FIFO as fits now; returns how much. For fault and
+/// panic paths that can't wait for the DMA writer. 0 before [`init_pic`].
+pub fn try_write_pic(data: &[u8]) -> usize {
+    PIC_TX.try_get().map_or(0, |tx| tx.try_write(data))
+}
+
+/// Change the PIC UART's baud rate (the PIC handshake switches 31 250 → 200 000 bps). Wait for
+/// the last write to drain first.
+///
+/// # Panics
+/// Before [`init_pic`].
+pub fn set_pic_baud(baud: u32) {
+    tx(&PIC_TX, "PIC").set_baud(baud);
 }
 
 #[cfg(all(test, not(target_os = "none")))]

@@ -14,6 +14,17 @@
 /// cache maintenance operations.
 pub const UNCACHED_MIRROR_OFFSET: usize = 0x4000_0000;
 
+/// `p`'s uncached alias: write DMA-shared memory through it so the DMAC sees the bytes without a
+/// cache clean, and hand it to the DMAC as the bus address. On the host, where tests run, memory
+/// has no alias, so it is `p`.
+#[inline]
+pub(crate) fn uncached<T>(p: *mut T) -> *mut T {
+    #[cfg(target_os = "none")]
+    return (p as usize + UNCACHED_MIRROR_OFFSET) as *mut T;
+    #[cfg(not(target_os = "none"))]
+    return p;
+}
+
 pub use embassy_hal_internal::{Peri, PeripheralType};
 
 embassy_hal_internal::peripherals! {

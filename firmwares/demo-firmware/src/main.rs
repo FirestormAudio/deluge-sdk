@@ -83,9 +83,17 @@ fn setup() {
     unsafe { rza1l_hal::gpio::set_as_output(6, 7) };
 
     info!("UART: initialising MIDI...");
-    unsafe { bsp_uart::init_midi(31_250) };
+    let (midi, midi_rx) = deluge::parts::with(|p| (p.midi_uart.take(), p.midi_rx_dma.take()));
+    bsp_uart::init_midi(midi.expect("SCIF0 is free"), midi_rx.expect("the MIDI RX DMA channel is free"), 31_250);
     info!("UART: initialising PIC...");
-    unsafe { bsp_uart::init_pic(31_250) };
+    let (pic, pic_rx, pic_tx) =
+        deluge::parts::with(|p| (p.pic_uart.take(), p.pic_rx_dma.take(), p.pic_tx_dma.take()));
+    bsp_uart::init_pic(
+        pic.expect("SCIF1 is free"),
+        pic_rx.expect("the PIC RX DMA channel is free"),
+        pic_tx.expect("the PIC TX DMA channel is free"),
+        31_250,
+    );
     info!("UART: SCIF0/1 @ 31 250 baud");
 
     info!("audio: initialising SSI0...");

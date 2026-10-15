@@ -70,7 +70,7 @@ pub extern "C" fn main() -> ! {
         allocator::SRAM.init(start, size);
     }
 
-    let _board = deluge_bsp::Board::new(rza1l_hal::init(deluge_bsp::system::BOARD_CONFIG));
+    let board = deluge_bsp::Board::new(rza1l_hal::init(deluge_bsp::system::BOARD_CONFIG));
     info!("system: clocks, MMU, cache, SDRAM, GIC, OSTM, time driver ready");
 
     // SDRAM heap (some BSP paths allocate from it; bring it up to be safe).
@@ -80,7 +80,7 @@ pub extern "C" fn main() -> ! {
     unsafe { rza1l_hal::gpio::set_as_output(6, 7) };
 
     info!("UART: initialising PIC...");
-    unsafe { bsp_uart::init_pic(31_250) };
+    bsp_uart::init_pic(board.pic_uart, board.dma.pic_rx, board.dma.pic_tx, 31_250);
 
     unsafe { cortex_ar::interrupt::enable() };
     info!("IRQ: enabled — starting Embassy tasks");

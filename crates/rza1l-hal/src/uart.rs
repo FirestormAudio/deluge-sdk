@@ -8,24 +8,21 @@
 //!   SCIF_n: BRI = 221+n*4, ERI = 222+n*4, RXI = 223+n*4, TXI = 224+n*4
 //!
 //! **This module is board-agnostic.** It does not know which ports are wired
-//! to which SCIF channel. Configure GPIO pin-mux via [`crate::gpio::set_pin_mux`]
-//! before (or after) calling [`init`].
+//! to which SCIF channel. Mux its pins with [`crate::gpio::set_pin_mux`] before [`Uart::new`].
 //!
 //! ## Usage
 //! ```ignore
-//! unsafe {
-//!     // 1. Init the SCIF peripheral
-//!     uart::init(0, 31250);
-//!     // 2. Configure GPIO pins (board-specific)
-//!     gpio::set_pin_mux(6, 15, 5); // TxD0 on Deluge
-//!     gpio::set_pin_mux(6, 14, 5); // RxD0 on Deluge
-//!     // 3. Register GIC IRQs and start DMA RX for this channel
-//!     uart::register_txi_for(0);
-//!     uart::init_dma_rx(0, 13, 0x62);
-//! }
-//! // In an Embassy task:
-//! uart::write_bytes(0, b"hello").await;
-//! let b = uart::read_byte(0).await;
+//! rza1l_hal::bind_interrupts!(struct Irqs {
+//!     ERI0 => uart::ErrorInterruptHandler<SCIF0>;
+//!     TXI0 => uart::TxInterruptHandler<SCIF0>;
+//!     DMAINT13 => dmac::InterruptHandler<DMA_CH13>;
+//! });
+//! // Mux the board's pins first, so the receive ring never samples an unconnected pin.
+//! unsafe { gpio::set_pin_mux(6, 15, 5); gpio::set_pin_mux(6, 14, 5); }
+//! let rx_dma = dmac::Dma::new(p.DMA_CH13, Irqs);
+//! let (mut rx, tx) = uart::Uart::new(p.SCIF0, rx_dma, None, Irqs, 31_250).split();
+//! tx.write(b"hello").await;
+//! let b = rx.read_byte().await;
 //! ```
 
 use core::future::poll_fn;
@@ -35,7 +32,13 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_sync::waitqueue::AtomicWaker;
 
+use core::marker::PhantomData;
+use core::sync::atomic::{AtomicBool, Ordering};
+
+use crate::Peri;
+use crate::dmac::Dma;
 use crate::gic;
+use crate::interrupt::{self, Binding, Handler, Interrupt};
 
 // ---------------------------------------------------------------------------
 // SCIF register offsets (see RZ/A1L HW Manual §24, struct st_scif layout)
@@ -96,8 +99,6 @@ const UART_IRQ_PRIORITY: u8 = 10;
 // DMA RX constants and static storage
 // ---------------------------------------------------------------------------
 
-// UNCACHED_MIRROR_OFFSET is defined at crate root (crate::UNCACHED_MIRROR_OFFSET).
-use crate::UNCACHED_MIRROR_OFFSET;
 
 /// DMA trigger-mode bits for SCIF: DMA_AM_FOR_SCIF = 0b010 << 8.
 const DMA_AM_FOR_SCIF: u32 = 0x0200;
@@ -116,28 +117,21 @@ struct DmaRxBuf([u8; DMA_RX_BUF_SIZE]);
 #[repr(C, align(32))]
 struct DmaRxDesc([u32; 8]);
 
-// Two slots: index 0 = SCIF ch0 (MIDI), index 1 = SCIF ch1 (PIC).
-// Only those two SCIF channels require DMA RX on the Deluge.
-// SAFETY: accessed only in `init_dma_rx` (single-threaded init) and
-//         `try_read_dma` (called from a single Embassy task per channel).
+// One receive ring per RxDmaInstance (SCIF0, SCIF1). SAFETY: ring n is touched only by the
+// UartRx of the SCIF whose RING is n, and each SCIF is owned once.
 static mut DMA_RX_BUF: [DmaRxBuf; 2] = [
     DmaRxBuf([0; DMA_RX_BUF_SIZE]),
     DmaRxBuf([0; DMA_RX_BUF_SIZE]),
 ];
 static mut DMA_RX_DESC: [DmaRxDesc; 2] = [DmaRxDesc([0; 8]), DmaRxDesc([0; 8])];
 
-// Per-SCIF-channel DMA RX state.
-static mut DMA_RX_DMACH: [u8; NUM_CHANNELS] = [0; NUM_CHANNELS];
-static mut DMA_RX_READ: [u32; NUM_CHANNELS] = [0; NUM_CHANNELS]; // CPU read ptr (cached addr)
-static mut DMA_RX_BASE: [u32; NUM_CHANNELS] = [0; NUM_CHANNELS]; // buf base (cached addr)
-static mut DMA_RX_ACTIVE: [bool; NUM_CHANNELS] = [false; NUM_CHANNELS];
 
 // ---------------------------------------------------------------------------
 // DMA TX static storage
 // ---------------------------------------------------------------------------
 
 /// Staging buffer size for one DMA TX transfer.  Sized to fit the largest
-/// single `write_bytes` call (PIC `set_column_pair_rgb` = 49 bytes), rounded
+/// single write (PIC `set_column_pair_rgb` = 49 bytes), rounded
 /// up to the next 32-byte cache-line boundary.
 const DMA_TX_BUF_SIZE: usize = 64;
 
@@ -145,29 +139,13 @@ const DMA_TX_BUF_SIZE: usize = 64;
 #[repr(C, align(32))]
 struct DmaTxBuf([u8; DMA_TX_BUF_SIZE]);
 
-// One slot per SCIF channel.  SAFETY: each slot is written only from the
-// single Embassy task that owns that channel.
+// SAFETY: SCIF n's staging buffer, touched only by its UartTx under that UartTx's lock.
 static mut DMA_TX_BUF: [DmaTxBuf; NUM_CHANNELS] = [
     DmaTxBuf([0; DMA_TX_BUF_SIZE]),
     DmaTxBuf([0; DMA_TX_BUF_SIZE]),
     DmaTxBuf([0; DMA_TX_BUF_SIZE]),
     DmaTxBuf([0; DMA_TX_BUF_SIZE]),
     DmaTxBuf([0; DMA_TX_BUF_SIZE]),
-];
-static mut DMA_TX_DMACH: [u8; NUM_CHANNELS] = [0; NUM_CHANNELS];
-static mut DMA_TX_ACTIVE: [bool; NUM_CHANNELS] = [false; NUM_CHANNELS];
-
-/// Per-channel async mutex that serialises DMA TX transfers.
-///
-/// `write_bytes` holds this for the entire duration of the DMAC transfer so
-/// that a second caller on the same channel cannot clobber `DMA_TX_BUF` or
-/// re-arm the DMAC channel while a transfer is in progress.
-static DMA_TX_LOCK: [Mutex<CriticalSectionRawMutex, ()>; NUM_CHANNELS] = [
-    Mutex::new(()),
-    Mutex::new(()),
-    Mutex::new(()),
-    Mutex::new(()),
-    Mutex::new(()),
 ];
 
 // ---------------------------------------------------------------------------
@@ -211,26 +189,22 @@ static UART_STATE: [UartState; NUM_CHANNELS] = [
 
 #[inline(always)]
 unsafe fn rr16(addr: usize) -> u16 {
-    unsafe { core::ptr::read_volatile(addr as *const u16) }
+    unsafe { crate::mmio::read16(addr) }
 }
 
 #[inline(always)]
 unsafe fn wr16(addr: usize, val: u16) {
-    unsafe {
-        core::ptr::write_volatile(addr as *mut u16, val);
-    }
+    unsafe { crate::mmio::write16(addr, val) }
 }
 
 #[inline(always)]
 unsafe fn rr8(addr: usize) -> u8 {
-    unsafe { core::ptr::read_volatile(addr as *const u8) }
+    unsafe { crate::mmio::read8(addr) }
 }
 
 #[inline(always)]
 unsafe fn wr8(addr: usize, val: u8) {
-    unsafe {
-        core::ptr::write_volatile(addr as *mut u8, val);
-    }
+    unsafe { crate::mmio::write8(addr, val) }
 }
 
 /// Base address of SCIF channel `ch`.
@@ -261,14 +235,12 @@ fn scbrr(p1_hz: u32, baud: u32) -> u8 {
 /// for the TX/RX pins must be configured separately via
 /// [`crate::gpio::set_pin_mux`] using board-specific port/pin/mux values.
 ///
-/// Must be called before [`register_txi_for`] and with global IRQ disabled.
-///
 /// # Panics
 /// If [`crate::clocks::init`] has not been called.
 ///
 /// # Safety
 /// Writes to memory-mapped SCIF registers. Caller must ensure `ch` < [`NUM_CHANNELS`].
-pub unsafe fn init(ch: usize, baud_rate: u32) {
+unsafe fn configure(ch: usize, baud_rate: u32) {
     unsafe {
         debug_assert!(ch < NUM_CHANNELS);
         let brr = scbrr(crate::clocks::get().p1_hz(), baud_rate);
@@ -314,7 +286,7 @@ pub unsafe fn init(ch: usize, baud_rate: u32) {
 }
 
 // ---------------------------------------------------------------------------
-// GIC interrupt registration
+// Baud-rate change
 // ---------------------------------------------------------------------------
 
 /// Change the baud rate of an already-initialised SCIF channel without
@@ -329,7 +301,7 @@ pub unsafe fn init(ch: usize, baud_rate: u32) {
 ///
 /// # Safety
 /// Writes to memory-mapped SCIF registers. Caller must ensure `ch` < [`NUM_CHANNELS`].
-pub unsafe fn set_baud(ch: usize, baud_rate: u32) {
+unsafe fn set_baud_regs(ch: usize, baud_rate: u32) {
     unsafe {
         debug_assert!(ch < NUM_CHANNELS);
         let b = base(ch);
@@ -347,43 +319,13 @@ pub unsafe fn set_baud(ch: usize, baud_rate: u32) {
         // Re-enable TE/RE, plus the DMA trigger-enable bits that route the SCIF
         // request to the DMAC: RIE for DMA RX, TIE for DMA TX.
         let mut scscr = TE | RE;
-        if DMA_RX_ACTIVE[ch] {
+        if RX_DMA_ACTIVE[ch].load(Ordering::Relaxed) {
             scscr |= RIE;
         }
-        if DMA_TX_ACTIVE[ch] {
+        if TX_DMA_ACTIVE[ch].load(Ordering::Relaxed) {
             scscr |= TIE;
         }
         wr16(b + SCSCR, scscr);
-    }
-}
-
-/// Register and enable **TXI** and **ERI** GIC interrupts for SCIF channel `ch`.
-///
-/// Used when the channel uses DMA for RX (so we must not enable RXI in the
-/// GIC — RIE=1 in SCSCR sends the request to the DMAC, not the GIC).
-/// ERI is still registered because error interrupts (framing errors, overrun)
-/// fire via the GIC independently of the DMA path and must be cleared to
-/// prevent the SCIF from silently discarding all subsequent received bytes.
-///
-/// # Safety
-/// Writes to memory-mapped GIC registers. Caller must ensure `ch` < [`NUM_CHANNELS`].
-pub unsafe fn register_txi_for(ch: usize) {
-    unsafe {
-        debug_assert!(ch < NUM_CHANNELS);
-        let eri = ERI_BASE + (ch as u16) * 4;
-        let txi = TXI_BASE + (ch as u16) * 4;
-        log::trace!(
-            "uart: ch{} registering ERI={} TXI={} (DMA RX, no RXI GIC)",
-            ch,
-            eri,
-            txi
-        );
-        gic::register(eri, ERI_HANDLERS[ch]);
-        gic::register(txi, TXI_HANDLERS[ch]);
-        gic::set_priority(eri, UART_IRQ_PRIORITY);
-        gic::set_priority(txi, UART_IRQ_PRIORITY);
-        gic::enable(eri);
-        gic::enable(txi);
     }
 }
 
@@ -393,137 +335,7 @@ pub unsafe fn register_txi_for(ch: usize) {
 // (220–245) ever goes pending, so an RXI handler never fires. Verified on
 // hardware; the stock Renesas/Deluge driver documents the same with
 // `SCSCR = 0x00F0; // Enable "interrupt" (which actually triggers DMA)`. All RX
-// therefore goes through [`init_dma_rx`].
-
-/// Set up circular DMA RX for SCIF channel `ch`.
-///
-/// - `dma_ch`: DMAC channel number (12 for PIC/SCIF1, 13 for MIDI/SCIF0 on the Deluge).
-/// - `dmars`:  DMARS resource-selector value (0x66 for SCIF1 RX, 0x62 for SCIF0 RX).
-///
-/// Builds a self-referential link descriptor so the DMAC loops through the
-/// 256-byte ring buffer indefinitely.  Sets `SCSCR = TIE|RIE|TE|RE` to enable
-/// DMA triggers; the GIC RXI interrupt is intentionally left disabled.
-///
-/// Call [`register_txi_for`] separately so TX still uses TXI interrupts.
-///
-/// Only supported for `ch` ∈ {0, 1} (MIDI and PIC on Deluge).
-///
-/// # Safety
-/// Writes to SCIF and DMAC registers.  Must be called after [`init`] and
-/// before global IRQ is enabled.
-pub unsafe fn init_dma_rx(ch: usize, dma_ch: u8, dmars: u32) {
-    unsafe {
-        debug_assert!(ch < 2, "DMA RX only supported for SCIF ch0 and ch1");
-        let b = base(ch);
-        let slot = ch;
-
-        // Cached base address of the ring buffer.
-        let buf_base = core::ptr::addr_of!(DMA_RX_BUF[slot].0[0]) as u32;
-
-        // CHCFG matches original C firmware link descriptor word[4]:
-        //   0b10000001_00010000_00000000_01100000 | DMA_AM_FOR_SCIF | (dma_ch & 7)
-        //                                          ^^ 0x0200        ^^ channel-group index
-        let chcfg: u32 = 0x8110_0060 | DMA_AM_FOR_SCIF | ((dma_ch & 7) as u32);
-
-        // The link descriptor must be readable by the DMAC without cache interference.
-        // The DMAC accesses physical RAM directly (bypasses the Cortex-A9 L1/L2 cache).
-        // We write through the uncached alias so the values land in physical SRAM
-        // immediately — no cache flush needed.  The NXLA we hand to the DMAC is
-        // also the uncached alias address, since that IS the physical bus address
-        // the DMAC will fetch from.
-        let desc_cached = core::ptr::addr_of_mut!(DMA_RX_DESC[slot]) as usize;
-        let desc_uncached = (desc_cached + UNCACHED_MIRROR_OFFSET) as *mut u32;
-        let desc_addr_uncached = desc_uncached as u32; // address the DMAC will use
-
-        // Write each descriptor word via the uncached window.
-        desc_uncached.add(0).write_volatile(0b1101); // Header
-        desc_uncached.add(1).write_volatile((b + SCFRDR) as u32); // Source: SCIF SCFRDR
-        desc_uncached.add(2).write_volatile(buf_base); // Destination: ring buffer
-        desc_uncached.add(3).write_volatile(DMA_RX_BUF_SIZE as u32); // Transfer count
-        desc_uncached.add(4).write_volatile(chcfg); // CHCFG
-        desc_uncached.add(5).write_volatile(0); // Interval
-        desc_uncached.add(6).write_volatile(0); // Extension
-        desc_uncached.add(7).write_volatile(desc_addr_uncached); // NXLA: self (circular)
-
-        // Save per-channel state.
-        DMA_RX_DMACH[ch] = dma_ch;
-        DMA_RX_READ[ch] = buf_base;
-        DMA_RX_BASE[ch] = buf_base;
-        DMA_RX_ACTIVE[ch] = true;
-
-        // Start DMAC — pass the uncached descriptor address so the hardware can
-        // always fetch it coherently.
-        crate::dmac::raw::init_with_link_descriptor(dma_ch, desc_addr_uncached as *const u32, dmars);
-        crate::dmac::raw::channel_start(dma_ch);
-
-        // TIE|RIE|TE|RE = 0x00F0: enables DMA triggers on each TX/RX event.
-        // Because GIC RXI is not enabled, the SCIF request goes only to the DMAC.
-        wr16(b + SCSCR, TIE | RIE | RE | TE);
-
-        log::debug!(
-            "uart: ch{} DMA RX active (dma_ch={}, dmars={:#06x}, buf={:#010x})",
-            ch,
-            dma_ch,
-            dmars,
-            buf_base
-        );
-    }
-}
-
-/// Initialise DMA TX for SCIF channel `ch` using DMAC channel `dma_ch`.
-///
-/// After this call, [`write_bytes`] for this channel will use a one-shot
-/// register-mode DMA transfer instead of CPU-driven FIFO fills with TXI
-/// interrupts.  The DMAC paces itself to the UART baud rate via the SCIF
-/// TDFE request signal (AM=2, cycle-steal level-sensitive), so the CPU
-/// suspends exactly once per transfer and wakes via DMAINT.
-///
-/// # Parameters
-/// - `ch`: SCIF channel index (0 for MIDI/SCIF0, 1 for PIC/SCIF1).
-/// - `dma_ch`: DMAC channel number to use for TX.
-///   - PIC/SCIF1 TX: channel 10 (`PIC_TX_DMA_CHANNEL` in C firmware).
-///   - MIDI/SCIF0 TX: channel 11 (`MIDI_TX_DMA_CHANNEL` in C firmware).
-/// - `dmars`: DMA resource selector for the SCIF TX request signal:
-///   - SCIF0 TX: `0x61`  (`DMARS_FOR_SCIF0_TX`)
-///   - SCIF1 TX: `0x65`  (`DMARS_FOR_SCIF0_TX + (1 << 2)`)
-///
-/// # Safety
-/// Must be called once during hardware initialisation, after [`init`] and
-/// before the Embassy executor starts.
-pub unsafe fn init_dma_tx(ch: usize, dma_ch: u8, dmars: u32) {
-    unsafe {
-        let ftdr = base(ch) + FTDR;
-        // CHCFG: mirrors C firmware's `DMA_SCIF_TX_CONFIG | DMA_AM_FOR_SCIF | (ch & 7)`.
-        //   0x0020_0068  — 8-bit transfers, SAM=increment (src moves), DAM=fixed (dst=FTDR),
-        //                  REQD=1 (destination-side request), LVL=1, AM=0 before OR
-        //   | DMA_AM_FOR_SCIF (0x0000_0200)  — AM=2: cycle-steal level, SCIF pacing
-        //   | (dma_ch & 7)                   — channel-group index in CHCFG[2:0]
-        let chcfg = 0x0020_0068_u32 | DMA_AM_FOR_SCIF | (dma_ch as u32 & 7);
-        crate::dmac::raw::init_register_mode(dma_ch, chcfg, ftdr as u32, dmars);
-        crate::dmac::raw::register_completion_irq(dma_ch);
-        DMA_TX_DMACH[ch] = dma_ch;
-        DMA_TX_ACTIVE[ch] = true;
-        // Enable the SCIF TX path and the SCIF→DMAC TX request, independently of
-        // how RX is set up. TIE drives both the TXI GIC interrupt AND the DREQ to
-        // the DMAC; TE enables transmission. OR (rather than overwrite) so the
-        // RX side's RE/RIE bits are preserved regardless of init order.
-        let b = base(ch);
-        let scscr = rr16(b + SCSCR);
-        wr16(b + SCSCR, scscr | TIE | TE);
-        // The on_txi ISR clears TIE to stop repeated TXI fire — but that would
-        // also kill the DREQ, stalling an active DMA TX. Disable TXI at the GIC
-        // distributor so on_txi never runs and TIE stays set for the DMAC.
-        let txi_id = TXI_BASE + (ch as u16) * 4;
-        gic::disable(txi_id);
-        log::info!(
-            "uart: ch{} DMA TX active (dma_ch={}, dmars={:#06x}, ftdr={:#010x})",
-            ch,
-            dma_ch,
-            dmars,
-            ftdr,
-        );
-    }
-}
+// therefore goes through the DMA ring ([`UartRx`]).
 
 // ---------------------------------------------------------------------------
 // Interrupt handlers
@@ -565,240 +377,6 @@ fn on_txi(ch: usize) {
     UART_STATE[ch].tx_waker.wake();
 }
 
-fn eri0_handler() {
-    on_eri(0);
-}
-fn eri1_handler() {
-    on_eri(1);
-}
-fn eri2_handler() {
-    on_eri(2);
-}
-fn eri3_handler() {
-    on_eri(3);
-}
-fn eri4_handler() {
-    on_eri(4);
-}
-fn txi0_handler() {
-    on_txi(0);
-}
-fn txi1_handler() {
-    on_txi(1);
-}
-fn txi2_handler() {
-    on_txi(2);
-}
-fn txi3_handler() {
-    on_txi(3);
-}
-fn txi4_handler() {
-    on_txi(4);
-}
-
-type HandlerFn = fn();
-static ERI_HANDLERS: [HandlerFn; NUM_CHANNELS] = [
-    eri0_handler,
-    eri1_handler,
-    eri2_handler,
-    eri3_handler,
-    eri4_handler,
-];
-static TXI_HANDLERS: [HandlerFn; NUM_CHANNELS] = [
-    txi0_handler,
-    txi1_handler,
-    txi2_handler,
-    txi3_handler,
-    txi4_handler,
-];
-
-// ---------------------------------------------------------------------------
-// Async API
-// ---------------------------------------------------------------------------
-
-/// Read a single byte from SCIF channel `ch`, waiting asynchronously.
-///
-/// RX is always DMA-backed on RZ/A1 (see [`init_dma_rx`]); the channel must
-/// have been set up with it. There is no interrupt-driven (RXI) RX path because
-/// the SCIF receive request never reaches the GIC on this part.
-pub async fn read_byte(ch: usize) -> u8 {
-    debug_assert!(
-        unsafe { DMA_RX_ACTIVE[ch] },
-        "read_byte requires DMA RX (init_dma_rx); SCIF RXI does not work on RZ/A1"
-    );
-    read_byte_dma(ch).await
-}
-
-// ---------------------------------------------------------------------------
-// DMA-polled RX path
-// ---------------------------------------------------------------------------
-
-/// DMA-polled read: polls `CRDA_n` vs the CPU read pointer; yields for 100 µs
-/// when the ring buffer is empty.
-async fn read_byte_dma(ch: usize) -> u8 {
-    // Log the initial DMA state once per channel to aid diagnosis.
-    static FIRST_CALL: [core::sync::atomic::AtomicBool; NUM_CHANNELS] = [
-        core::sync::atomic::AtomicBool::new(true),
-        core::sync::atomic::AtomicBool::new(true),
-        core::sync::atomic::AtomicBool::new(true),
-        core::sync::atomic::AtomicBool::new(true),
-        core::sync::atomic::AtomicBool::new(true),
-    ];
-    if FIRST_CALL[ch].swap(false, core::sync::atomic::Ordering::Relaxed) {
-        let dma_ch = unsafe { DMA_RX_DMACH[ch] };
-        let crda = unsafe { crate::dmac::raw::current_dst(dma_ch) };
-        let read_ptr = unsafe { DMA_RX_READ[ch] };
-        let buf_base = unsafe { DMA_RX_BASE[ch] };
-        let b = base(ch);
-        let scscr = unsafe { rr16(b + SCSCR) };
-        log::info!(
-            "uart: ch{} dma_rx first call: dma_ch={} crda={:#010x} read_ptr={:#010x} buf_base={:#010x} SCSCR={:#06x}",
-            ch,
-            dma_ch,
-            crda,
-            read_ptr,
-            buf_base,
-            scscr
-        );
-    }
-    let mut spin: u32 = 0;
-    loop {
-        if let Some(b) = unsafe { try_read_dma(ch) } {
-            return b;
-        }
-        spin = spin.wrapping_add(1);
-        embassy_time::Timer::after_micros(100).await;
-    }
-}
-
-/// Non-blocking attempt to read one byte from the DMA RX ring buffer.
-///
-/// Returns `None` if the buffer is currently empty (CRDA == read pointer).
-/// Reads data via the **uncached mirror alias** so the CPU sees DMA-written
-/// bytes without needing a cache invalidate.
-///
-/// # Safety
-/// `DMA_RX_*` statics must have been initialised by `init_dma_rx` for this
-/// channel, and this function must only be called from a single task per
-/// channel.
-pub unsafe fn try_read_dma(ch: usize) -> Option<u8> {
-    unsafe {
-        let dma_ch = DMA_RX_DMACH[ch];
-        let buf_base = DMA_RX_BASE[ch];
-        let read_ptr = DMA_RX_READ[ch];
-
-        // CRDA_n: current DMA write position (cached address space).
-        let write_ptr = crate::dmac::raw::current_dst(dma_ch);
-
-        if write_ptr == read_ptr {
-            return None;
-        }
-
-        // Read via uncached alias so we see what the DMAC wrote to physical RAM
-        // rather than a potentially stale cache line.
-        let byte =
-            core::ptr::read_volatile((read_ptr as usize + UNCACHED_MIRROR_OFFSET) as *const u8);
-
-        // Advance read pointer with power-of-two wrap.
-        let offset = (read_ptr - buf_base + 1) & (DMA_RX_BUF_SIZE as u32 - 1);
-        DMA_RX_READ[ch] = buf_base + offset;
-
-        Some(byte)
-    }
-}
-
-/// Write `buf` to the transmit FIFO of SCIF channel `ch`.
-///
-/// If DMA TX was configured for this channel via [`init_dma_tx`], a one-shot
-/// register-mode DMA transfer is used: the CPU copies `buf` into an uncached
-/// staging buffer, kicks the DMAC, and suspends exactly once until the
-/// DMAINT completion interrupt fires.  No TXI interrupts are generated.
-///
-/// Otherwise falls back to the CPU-driven FIFO path: suspends whenever the
-/// TX FIFO fills, resuming on each TXI interrupt.
-pub async fn write_bytes(ch: usize, buf: &[u8]) {
-    // DMA TX fast path: one-shot DMAC transfer per chunk, zero TXI interrupts.
-    // The DMAC paces itself to the UART baud rate via the SCIF TDFE request
-    // (AM=2, level-sensitive), so the hardware never overflows the TX FIFO.
-    if unsafe { DMA_TX_ACTIVE[ch] } {
-        let dma_ch = unsafe { DMA_TX_DMACH[ch] };
-        // Hold the per-channel lock for the entire multi-chunk transfer.
-        // This prevents a second caller (e.g. oled_task vs rgb_task both using
-        // PIC UART ch1) from clobbering DMA_TX_BUF or re-arming the DMAC
-        // channel while we are yielded inside wait_transfer_complete.
-        let _guard = DMA_TX_LOCK[ch].lock().await;
-        let mut pos = 0;
-        while pos < buf.len() {
-            let chunk_len = (buf.len() - pos).min(DMA_TX_BUF_SIZE);
-            unsafe {
-                // Write through the uncached alias so the DMAC sees fresh bytes
-                // without requiring an explicit cache flush.
-                let cached_ptr = core::ptr::addr_of!(DMA_TX_BUF[ch].0[0]);
-                let uncached_ptr = (cached_ptr as usize + UNCACHED_MIRROR_OFFSET) as *mut u8;
-                core::ptr::copy_nonoverlapping(buf.as_ptr().add(pos), uncached_ptr, chunk_len);
-                crate::dmac::raw::start_transfer(dma_ch, uncached_ptr as u32, chunk_len as u32);
-            }
-            crate::dmac::raw::wait_transfer_complete(dma_ch).await;
-            pos += chunk_len;
-        }
-        return;
-    }
-
-    // Fallback: CPU-driven FIFO fill with TXI interrupts.
-    let b = base(ch);
-    let mut pos = 0;
-
-    while pos < buf.len() {
-        // How many bytes can we add right now?
-        let in_fifo = unsafe { (rr16(b + SCFDR) >> 8) & 0x1F } as usize;
-        let space = TX_FIFO_SIZE.saturating_sub(in_fifo);
-        let to_write = (buf.len() - pos).min(space);
-
-        for i in 0..to_write {
-            unsafe { wr8(b + FTDR, buf[pos + i]) };
-        }
-        pos += to_write;
-
-        if pos < buf.len() {
-            // FIFO is full; wait for TDFE (count ≤ trigger) via TXI interrupt.
-            wait_tdfe(ch).await;
-        }
-    }
-}
-
-/// Non-blocking write to the SCIF TX FIFO.
-///
-/// Writes as many bytes from `buf` as fit in the TX FIFO immediately, without
-/// waiting for DMA or interrupts.  Returns the number of bytes actually written.
-///
-/// Suitable for short, latency-sensitive messages (e.g. MIDI clock pulses).
-/// The TX FIFO holds 16 bytes; overflow bytes are silently dropped.
-///
-/// # Safety
-/// `init` must have been called for `ch`.
-pub unsafe fn try_write_fifo(ch: usize, buf: &[u8]) -> usize {
-    let b = base(ch);
-    let in_fifo = unsafe { (rr16(b + SCFDR) >> 8) & 0x1F } as usize;
-    let space = TX_FIFO_SIZE.saturating_sub(in_fifo);
-    let to_write = buf.len().min(space);
-    for &byte in &buf[..to_write] {
-        unsafe { wr8(b + FTDR, byte) };
-    }
-    to_write
-}
-
-/// Free space in channel `ch`'s TX FIFO, in bytes: how many [`try_write_fifo`] would take now.
-///
-/// Lets a caller hold back a multi-byte message that would not fit whole, rather than have its
-/// tail dropped.
-///
-/// # Safety
-/// `init` must have been called for `ch`.
-pub unsafe fn tx_fifo_free(ch: usize) -> usize {
-    let in_fifo = unsafe { (rr16(base(ch) + SCFDR) >> 8) & 0x1F } as usize;
-    TX_FIFO_SIZE.saturating_sub(in_fifo)
-}
-
 /// Suspend until the TX FIFO has drained below the trigger level (TDFE=1).
 async fn wait_tdfe(ch: usize) {
     let b = base(ch);
@@ -830,67 +408,349 @@ async fn wait_tdfe(ch: usize) {
     .await
 }
 
+// ---------------------------------------------------------------------------
+// Owned UART
+// ---------------------------------------------------------------------------
+
+/// Whether SCIF n receives / transmits by DMA: [`set_baud_regs`] restores the request enables.
+static RX_DMA_ACTIVE: [AtomicBool; NUM_CHANNELS] = [const { AtomicBool::new(false) }; NUM_CHANNELS];
+static TX_DMA_ACTIVE: [AtomicBool; NUM_CHANNELS] = [const { AtomicBool::new(false) }; NUM_CHANNELS];
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// A SCIF channel singleton (`peripherals::SCIF0`–`SCIF4`).
+pub trait Instance: crate::PeripheralType + sealed::Sealed + 'static {
+    /// The channel number, 0–4.
+    const INDEX: usize;
+    /// Its receive-error interrupt, ERI<INDEX>.
+    type ErrorInterrupt: Interrupt;
+    /// Its transmit-FIFO-empty interrupt, TXI<INDEX>.
+    type TxInterrupt: Interrupt;
+}
+
+/// A SCIF channel the HAL keeps a receive-DMA ring for: SCIF0 and SCIF1.
+pub trait RxDmaInstance: Instance {
+    /// Its ring.
+    const RING: usize;
+}
+
+macro_rules! instances {
+    ($($scif:ident = $n:literal, $eri:ident, $txi:ident;)*) => {$(
+        impl sealed::Sealed for crate::peripherals::$scif {}
+        impl Instance for crate::peripherals::$scif {
+            const INDEX: usize = $n;
+            type ErrorInterrupt = crate::interrupt::typelevel::$eri;
+            type TxInterrupt = crate::interrupt::typelevel::$txi;
+        }
+    )*};
+}
+
+instances! {
+    SCIF0 = 0, ERI0, TXI0;
+    SCIF1 = 1, ERI1, TXI1;
+    SCIF2 = 2, ERI2, TXI2;
+    SCIF3 = 3, ERI3, TXI3;
+    SCIF4 = 4, ERI4, TXI4;
+}
+
+impl RxDmaInstance for crate::peripherals::SCIF0 {
+    const RING: usize = 0;
+}
+impl RxDmaInstance for crate::peripherals::SCIF1 {
+    const RING: usize = 1;
+}
+
+/// DMARS resource selector for SCIF `ch`'s receive request (SCIF0 = 0x62, then + 4 per channel).
+fn rx_dmars(ch: usize) -> u32 {
+    0x62 + 4 * ch as u32
+}
+
+/// DMARS resource selector for SCIF `ch`'s transmit request (SCIF0 = 0x61, then + 4 per channel).
+fn tx_dmars(ch: usize) -> u32 {
+    0x61 + 4 * ch as u32
+}
+
+/// SCIF `T`'s receive-error interrupt: clears the error flags, without which one framing error
+/// stops reception for good, and wakes the reader.
+pub struct ErrorInterruptHandler<T: Instance> {
+    _scif: PhantomData<T>,
+}
+
+impl<T: Instance> Handler<T::ErrorInterrupt> for ErrorInterruptHandler<T> {
+    unsafe fn on_interrupt() {
+        on_eri(T::INDEX);
+    }
+}
+
+/// SCIF `T`'s transmit interrupt: wakes a writer waiting for FIFO space.
+pub struct TxInterruptHandler<T: Instance> {
+    _scif: PhantomData<T>,
+}
+
+impl<T: Instance> Handler<T::TxInterrupt> for TxInterruptHandler<T> {
+    unsafe fn on_interrupt() {
+        on_txi(T::INDEX);
+    }
+}
+
+/// A SCIF UART, 8N1: it receives into a DMA ring and transmits by DMA or through the FIFO.
+/// [`split`](Self::split) it into its halves.
+pub struct Uart<'d> {
+    rx: UartRx<'d>,
+    tx: UartTx<'d>,
+}
+
+impl<'d> Uart<'d> {
+    /// Bring SCIF `T` up at `baud`: receive into a ring on `rx_dma`; transmit by DMA on `tx_dma`,
+    /// or through the FIFO and TXI without one.
+    ///
+    /// Mux its pins before calling this, so the ring never samples an unconnected pin.
+    ///
+    /// # Panics
+    /// If [`crate::clocks::init`] has not been called.
+    pub fn new<T: RxDmaInstance>(
+        _scif: Peri<'d, T>,
+        rx_dma: Dma<'d>,
+        tx_dma: Option<Dma<'d>>,
+        irq: impl Binding<T::ErrorInterrupt, ErrorInterruptHandler<T>>
+        + Binding<T::TxInterrupt, TxInterruptHandler<T>>
+        + Copy
+        + 'd,
+        baud: u32,
+    ) -> Self {
+        // SAFETY: SCIF T is owned.
+        unsafe { configure(T::INDEX, baud) };
+        interrupt::bind::<T::ErrorInterrupt, ErrorInterruptHandler<T>>(irq);
+        interrupt::bind::<T::TxInterrupt, TxInterruptHandler<T>>(irq);
+        // SAFETY: SCIF T's own interrupts. ERI is enabled although reception is by DMA: receive
+        // errors still reach the GIC, and one left uncleared stops reception for good.
+        unsafe {
+            gic::set_priority(T::ErrorInterrupt::ID, UART_IRQ_PRIORITY);
+            gic::set_priority(T::TxInterrupt::ID, UART_IRQ_PRIORITY);
+            gic::enable(T::ErrorInterrupt::ID);
+            gic::enable(T::TxInterrupt::ID);
+        }
+        let rx = UartRx::start::<T>(rx_dma);
+        let tx = UartTx::new(T::INDEX, tx_dma);
+        Self { rx, tx }
+    }
+
+    /// The receive and transmit halves.
+    pub fn split(self) -> (UartRx<'d>, UartTx<'d>) {
+        (self.rx, self.tx)
+    }
+}
+
+/// A UART's receiver: a 256-byte ring the DMAC fills from the receive FIFO, with no interrupt.
+pub struct UartRx<'d> {
+    ch: usize,
+    dma: Dma<'d>,
+    /// The ring's start, and the CPU's next read (cached addresses, as CRDA reports them).
+    base: u32,
+    read: u32,
+}
+
+impl<'d> UartRx<'d> {
+    /// Start the circular receive DMA for SCIF `T` on `dma`.
+    fn start<T: RxDmaInstance>(mut dma: Dma<'d>) -> Self {
+        let ch = T::INDEX;
+        let b = base(ch);
+        let dma_ch = dma.number();
+        // SAFETY: ring T::RING is SCIF T's alone, and SCIF T is owned. The descriptor is written
+        // through the uncached alias, the address the DMAC fetches it from, so no cache
+        // maintenance is needed.
+        unsafe {
+            let buf_base = core::ptr::addr_of!(DMA_RX_BUF[T::RING].0[0]) as u32;
+            // As the C firmware's link descriptor word [4]: 0x8110_0060 | DMA_AM_FOR_SCIF |
+            // the channel's index within its group.
+            let chcfg: u32 = 0x8110_0060 | DMA_AM_FOR_SCIF | (dma_ch & 7) as u32;
+            let desc = crate::uncached(core::ptr::addr_of_mut!(DMA_RX_DESC[T::RING]) as *mut u32);
+            let desc_addr = desc as u32;
+            desc.add(0).write_volatile(0b1101); // header
+            desc.add(1).write_volatile((b + SCFRDR) as u32); // source: SCFRDR
+            desc.add(2).write_volatile(buf_base); // destination: the ring
+            desc.add(3).write_volatile(DMA_RX_BUF_SIZE as u32); // byte count
+            desc.add(4).write_volatile(chcfg);
+            desc.add(5).write_volatile(0); // interval
+            desc.add(6).write_volatile(0); // extension
+            desc.add(7).write_volatile(desc_addr); // next: itself, so the ring loops
+            dma.init_with_link_descriptor(desc_addr as *const u32, rx_dmars(ch));
+            dma.channel_start();
+            RX_DMA_ACTIVE[ch].store(true, Ordering::Relaxed);
+            // TIE|RIE|TE|RE: route both requests; the GIC's RXI stays off, so receive requests go
+            // only to the DMAC.
+            wr16(b + SCSCR, TIE | RIE | RE | TE);
+            log::debug!(
+                "uart: ch{} DMA RX active (dma_ch={}, buf={:#010x})",
+                ch,
+                dma_ch,
+                buf_base
+            );
+            Self { ch, dma, base: buf_base, read: buf_base }
+        }
+    }
+
+    /// The next received byte, or `None` if the ring is empty.
+    pub fn try_read(&mut self) -> Option<u8> {
+        // CRDA: where the DMAC writes next.
+        let write = self.dma.current_dst();
+        if write == self.read {
+            return None;
+        }
+        // SAFETY: `read` is inside this UART's ring. Read through the uncached alias: the DMAC
+        // wrote physical RAM, and a cached line may be stale.
+        let byte = unsafe { crate::uncached(self.read as usize as *mut u8).read_volatile() };
+        let offset = (self.read - self.base + 1) & (DMA_RX_BUF_SIZE as u32 - 1);
+        self.read = self.base + offset;
+        Some(byte)
+    }
+
+    /// Wait for the next received byte. The ring raises no interrupt, so this polls it every
+    /// 100 µs.
+    pub async fn read_byte(&mut self) -> u8 {
+        loop {
+            if let Some(byte) = self.try_read() {
+                return byte;
+            }
+            embassy_time::Timer::after_micros(100).await;
+        }
+    }
+}
+
+/// A UART's transmitter. Its methods take `&self`; whole writes don't interleave.
+pub struct UartTx<'d> {
+    ch: usize,
+    /// The transmit DMA channel, if any. The lock also keeps two writers' bytes apart.
+    dma: Mutex<CriticalSectionRawMutex, Option<Dma<'d>>>,
+}
+
+impl<'d> UartTx<'d> {
+    fn new(ch: usize, mut dma: Option<Dma<'d>>) -> Self {
+        if let Some(dma) = dma.as_mut() {
+            let b = base(ch);
+            let ftdr = b + FTDR;
+            // As the C firmware's DMA_SCIF_TX_CONFIG: 8-bit, source increments, destination
+            // fixed (FTDR), destination-side request; AM=2 so SCIF TDFE paces it.
+            let chcfg = 0x0020_0068_u32 | DMA_AM_FOR_SCIF | (dma.number() as u32 & 7);
+            // SAFETY: every transfer writes SCIF ch's transmit FIFO, which this UART owns.
+            unsafe {
+                dma.init_register_mode(chcfg, ftdr as u32, tx_dmars(ch));
+                TX_DMA_ACTIVE[ch].store(true, Ordering::Relaxed);
+                // TIE is both the TXI enable and the DMAC request; OR it in, keeping RE/RIE.
+                let scscr = rr16(b + SCSCR);
+                wr16(b + SCSCR, scscr | TIE | TE);
+                // TXI's handler clears TIE, which would stall the DMAC: mask TXI at the GIC.
+                gic::disable(TXI_BASE + (ch as u16) * 4);
+            }
+            log::info!("uart: ch{} DMA TX active (dma_ch={})", ch, dma.number());
+        }
+        Self { ch, dma: Mutex::new(dma) }
+    }
+
+    /// Send `buf`: by DMA, one transfer per 64 bytes, waking once per transfer; or without a DMA
+    /// channel, by filling the FIFO and waking on TXI as it drains.
+    pub async fn write(&self, buf: &[u8]) {
+        let mut dma = self.dma.lock().await;
+        let Some(dma) = dma.as_mut() else {
+            let mut pos = 0;
+            while pos < buf.len() {
+                pos += self.try_write(&buf[pos..]);
+                if pos < buf.len() {
+                    // FIFO full: wait for TDFE (count ≤ trigger) through TXI.
+                    wait_tdfe(self.ch).await;
+                }
+            }
+            return;
+        };
+        let mut pos = 0;
+        while pos < buf.len() {
+            let chunk = (buf.len() - pos).min(DMA_TX_BUF_SIZE);
+            // SAFETY: SCIF ch's staging buffer, used only under this lock, written through the
+            // uncached alias so the DMAC reads fresh bytes; its address is the bus address.
+            unsafe {
+                let staging = crate::uncached(core::ptr::addr_of_mut!(DMA_TX_BUF[self.ch].0[0]));
+                core::ptr::copy_nonoverlapping(buf.as_ptr().add(pos), staging, chunk);
+                dma.start_transfer(staging as u32, chunk as u32);
+            }
+            dma.wait_transfer_complete().await;
+            pos += chunk;
+        }
+    }
+
+    /// Put as much of `buf` in the transmit FIFO as fits now, and return how much that was.
+    /// Doesn't wait: for short, latency-sensitive messages such as a MIDI clock byte.
+    pub fn try_write(&self, buf: &[u8]) -> usize {
+        let free = self.tx_free();
+        let n = buf.len().min(free);
+        for &byte in &buf[..n] {
+            // SAFETY: the owned SCIF's FIFO.
+            unsafe { wr8(base(self.ch) + FTDR, byte) };
+        }
+        n
+    }
+
+    /// Free space in the transmit FIFO, in bytes: how many [`try_write`](Self::try_write) would
+    /// take now.
+    pub fn tx_free(&self) -> usize {
+        // SAFETY: a read of the owned SCIF's FIFO count.
+        let in_fifo = unsafe { (rr16(base(self.ch) + SCFDR) >> 8) & 0x1F } as usize;
+        TX_FIFO_SIZE.saturating_sub(in_fifo)
+    }
+
+    /// Change the baud rate. TX and RX stop briefly: wait for the FIFO to drain first, or its
+    /// bytes go out at the wrong rate. The DMA request enables are kept.
+    pub fn set_baud(&self, baud: u32) {
+        // SAFETY: the owned SCIF.
+        unsafe { set_baud_regs(self.ch, baud) }
+    }
+}
+
 // ── embedded-io-async impls ───────────────────────────────────────────────────
 
 use core::convert::Infallible;
 
-/// A type-safe handle to a SCIF UART channel exposing `embedded-io-async`
-/// `Read` and `Write` traits.
-///
-/// `CH` is the channel number (0–4).  The underlying free functions
-/// (`read_byte`, `write_bytes`) must be available (i.e., [`init`],
-/// [`register_txi_for`] and [`init_dma_rx`] already called for the channel).
-pub struct ScifUart<const CH: usize>;
-
-impl<const CH: usize> ScifUart<CH> {
-    /// Create a handle.
-    ///
-    /// # Safety
-    /// [`init`], [`register_txi_for`] and [`init_dma_rx`] must have been called
-    /// for channel `CH`.
-    #[inline]
-    pub unsafe fn new() -> Self {
-        ScifUart
-    }
-}
-
-impl<const CH: usize> embedded_io_async::ErrorType for ScifUart<CH> {
+impl embedded_io_async::ErrorType for UartRx<'_> {
     type Error = Infallible;
 }
 
-impl<const CH: usize> embedded_io_async::Read for ScifUart<CH> {
+impl embedded_io_async::Read for UartRx<'_> {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Infallible> {
         if buf.is_empty() {
             return Ok(0);
         }
-        // Read at least one byte, then drain whatever is already in the FIFO
-        // without blocking, up to `buf.len()`.
-        buf[0] = read_byte(CH).await;
-        let mut n = 1usize;
+        // At least one byte, then whatever else the ring already holds.
+        buf[0] = self.read_byte().await;
+        let mut n = 1;
         while n < buf.len() {
-            let b = base(CH);
-            let scfsr = unsafe { rr16(b + SCFSR) };
-            if scfsr & (RDF | DR) == 0 {
-                break; // No more data immediately available.
+            match self.try_read() {
+                Some(byte) => {
+                    buf[n] = byte;
+                    n += 1;
+                }
+                None => break,
             }
-            buf[n] = unsafe { rr8(b + SCFRDR) };
-            // Clear RDF/DR after reading.
-            let scfsr2 = unsafe { rr16(b + SCFSR) };
-            unsafe { wr16(b + SCFSR, scfsr2 & !(RDF | DR)) };
-            n += 1;
         }
         Ok(n)
     }
 }
 
-impl<const CH: usize> embedded_io_async::Write for ScifUart<CH> {
+impl embedded_io_async::ErrorType for UartTx<'_> {
+    type Error = Infallible;
+}
+
+impl embedded_io_async::Write for UartTx<'_> {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, Infallible> {
-        write_bytes(CH, buf).await;
+        UartTx::write(self, buf).await;
         Ok(buf.len())
     }
 
     async fn flush(&mut self) -> Result<(), Infallible> {
-        wait_tdfe(CH).await;
+        // A DMA write returns once its transfer is complete; a FIFO write may leave bytes queued.
+        if self.dma.lock().await.is_none() {
+            wait_tdfe(self.ch).await;
+        }
         Ok(())
     }
 }
@@ -954,5 +814,100 @@ mod tests {
             assert_eq!(RXI_BASE + ch * 4, 223 + ch * 4);
             assert_eq!(TXI_BASE + ch * 4, 224 + ch * 4);
         }
+    }
+}
+
+#[cfg(all(test, not(target_os = "none")))]
+mod typed_tests {
+    use super::*;
+    use crate::dmac::{self, Dma};
+    use crate::mmio::test;
+    use crate::peripherals::{DMA_CH10, DMA_CH12, DMA_CH13, SCIF0, SCIF1};
+
+    crate::bind_interrupts!(struct Irqs {
+        ERI0 => ErrorInterruptHandler<SCIF0>;
+        TXI0 => TxInterruptHandler<SCIF0>;
+        ERI1 => ErrorInterruptHandler<SCIF1>;
+        TXI1 => TxInterruptHandler<SCIF1>;
+        DMAINT10 => dmac::InterruptHandler<DMA_CH10>;
+        DMAINT12 => dmac::InterruptHandler<DMA_CH12>;
+        DMAINT13 => dmac::InterruptHandler<DMA_CH13>;
+    });
+
+    /// DMAC channel `ch`'s register at `off`.
+    fn chreg(ch: u8, off: usize) -> usize {
+        0xE820_0000 + ch as usize * 64 + (if ch >= 8 { 0x200 } else { 0 }) + off
+    }
+
+    #[test]
+    fn a_uart_is_configured_bound_and_moves_both_directions_by_dma() {
+        crate::clocks::init(crate::clocks::TEST_CLOCKS);
+        test::reset();
+        let rx_dma = Dma::new(unsafe { DMA_CH13::steal() }, Irqs);
+        let tx_dma = Dma::new(unsafe { DMA_CH10::steal() }, Irqs);
+        let (rx, tx) =
+            Uart::new(unsafe { SCIF0::steal() }, rx_dma, Some(tx_dma), Irqs, 31_250).split();
+
+        let b = base(0);
+        assert_eq!(test::peek8(b + SCBRR), 131, "31 250 bps");
+        assert_eq!(test::peek16(b + SCEMR), 0x0080, "double-speed baud generator");
+        assert_eq!(test::peek16(b + SCSCR), TIE | RIE | RE | TE, "both requests go to the DMAC");
+        assert!(crate::gic::handler(222).is_some(), "ERI0 bound");
+        assert!(crate::gic::handler(224).is_some(), "TXI0 bound");
+        // DMARS5 holds channel 10 (low half: SCIF0 transmit); DMARS6 channel 13 (high: receive).
+        assert_eq!(test::peek32(0xFCFE_1014) & 0xFFFF, 0x61);
+        assert_eq!(test::peek32(0xFCFE_1018) >> 16, 0x62);
+        // The receive descriptor (NXLA): SCFRDR into the ring, linked back to itself.
+        let desc = test::peek32(chreg(13, 0x38)) as *const u32;
+        unsafe {
+            assert_eq!(*desc.add(1), (b + SCFRDR) as u32);
+            assert_eq!(*desc.add(2), rx.base);
+            assert_eq!(*desc.add(7), desc as u32);
+        }
+        assert_eq!(rx.read, rx.base, "the ring starts empty");
+
+        // A write is one DMA transfer from the staging buffer; the DMAC's TC flag (CHSTAT bit 6),
+        // set here as the hardware would, completes it.
+        test::poke32(chreg(10, 0x24), 1 << 6);
+        embassy_futures::block_on(tx.write(b"hello"));
+        assert_eq!(test::peek32(chreg(10, 0x08)), 5, "N0TB: the byte count");
+        let staged = test::peek32(chreg(10, 0x00)) as *const u8;
+        assert_eq!(unsafe { core::slice::from_raw_parts(staged, 5) }, b"hello");
+
+        // A baud change keeps both DMA requests enabled.
+        tx.set_baud(200_000);
+        assert_eq!(test::peek8(b + SCBRR), scbrr(crate::clocks::TEST_CLOCKS.p1_hz(), 200_000));
+        assert_eq!(test::peek16(b + SCSCR), TIE | RIE | RE | TE);
+    }
+
+    #[test]
+    fn received_bytes_come_out_in_order_across_the_ring_wrap() {
+        crate::clocks::init(crate::clocks::TEST_CLOCKS);
+        test::reset();
+        let rx_dma = Dma::new(unsafe { DMA_CH12::steal() }, Irqs);
+        let (mut rx, _tx) = Uart::new(unsafe { SCIF1::steal() }, rx_dma, None, Irqs, 31_250).split();
+        let ring = rx.base as *mut u8;
+        let crda = chreg(12, 0x1C);
+
+        // Nothing received: the DMAC's write position is still the ring's start.
+        test::poke32(crda, rx.base);
+        assert_eq!(rx.try_read(), None);
+
+        // The DMAC fills the ring up to its last byte...
+        for i in 0..DMA_RX_BUF_SIZE {
+            unsafe { ring.add(i).write(i as u8) };
+        }
+        test::poke32(crda, rx.base + DMA_RX_BUF_SIZE as u32 - 1);
+        for i in 0..DMA_RX_BUF_SIZE - 1 {
+            assert_eq!(rx.try_read(), Some(i as u8));
+        }
+        assert_eq!(rx.try_read(), None);
+
+        // ...then writes the last byte and wraps round to overwrite the first.
+        unsafe { ring.write(0xAA) };
+        test::poke32(crda, rx.base + 1);
+        assert_eq!(rx.try_read(), Some(0xFF));
+        assert_eq!(rx.try_read(), Some(0xAA));
+        assert_eq!(rx.try_read(), None);
     }
 }

@@ -145,11 +145,11 @@ pub extern "C" fn main() -> ! {
     info!("GPIO: heartbeat LED P6_7 configured");
 
     info!("UART: initialising MIDI...");
-    unsafe { bsp_uart::init_midi(31_250) };
+    bsp_uart::init_midi(board.midi_uart, board.dma.midi_rx, 31_250);
     info!("UART: MIDI ready");
 
     info!("UART: initialising PIC...");
-    unsafe { bsp_uart::init_pic(31_250) };
+    bsp_uart::init_pic(board.pic_uart, board.dma.pic_rx, board.dma.pic_tx, 31_250);
     info!("UART: SCIF0/1 @ 31 250 baud");
 
     info!("audio: initialising SSI0...");
