@@ -74,10 +74,11 @@ use super::regs::{
     PIPEBUF_BUFSIZE_SHIFT, PIPECFG_DBLB, PIPECFG_EPNUM_MASK, PIPECFG_SHTNAK, PIPECFG_TYPE_BULK,
     PIPECFG_TYPE_INTR, PIPECFG_TYPE_ISO, PIPECTR_ACLRM, PIPECTR_BSTS, PIPECTR_PBUSY,
     PIPECTR_PID_BUF, PIPECTR_PID_MASK, PIPECTR_PID_NAK, PIPECTR_SQCLR, PIPECTR_SQSET,
-    PIPEMAXP_DEVSEL_SHIFT, PIPEMAXP_MXPS_MASK, PIPEPERI_IITV_MASK, PKT_BUF_BLOCK_SIZE, Rusb1Regs,
+    PIPEMAXP_DEVSEL_SHIFT, PIPEMAXP_MXPS_MASK, PIPEPERI_IITV_MASK, PKT_BUF_BLOCK_SIZE,
     SUSPMODE_SUSPM, SYSCFG_DCFM, SYSCFG_DPRPU, SYSCFG_DRPD, SYSCFG_HSE, SYSCFG_UPLLE, SYSCFG_USBE,
-    SYSSTS0_LNST, devadd_ptr, pipectr_ptr, rd, rmw, usb_of, wr,
+    SYSSTS0_LNST, pipectr, usb,
 };
+use crate::pac::usb::Usb;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -284,11 +285,11 @@ impl<'d> Rusb1HostDriver<'d> {
     pub(crate) unsafe fn new(port: u8) -> Self {
         unsafe {
             debug_assert!(port <= 1);
-            let regs = Rusb1Regs::ptr(port);
+            let u = usb(port);
 
             // ── PLL / clock init (TRM §28.4.1 (5)) ─────────────────────────
             // Stop clock supply to this port first.
-            rmw(core::ptr::addr_of_mut!((*regs).suspmode), SUSPMODE_SUSPM, 0);
+            u.suspmode().modify(|r| *r &= !SUSPMODE_SUSPM);
 
             // UPLLE lives in USB0's SYSCFG0 regardless of which port is being
             // initialised, and may only be modified while SUSPM=0 on BOTH
@@ -297,19 +298,11 @@ impl<'d> Rusb1HostDriver<'d> {
             // must not repeat the lock wait or disturb that port's SUSPM.  When
             // off, the PLL is down and neither channel can be running, so
             // clearing the other channel's SUSPM is safe.
-            let regs0 = Rusb1Regs::ptr(0);
-            if rd(core::ptr::addr_of!((*regs0).syscfg0)) & SYSCFG_UPLLE == 0 {
-                let other = Rusb1Regs::ptr(if port == 0 { 1 } else { 0 });
-                rmw(
-                    core::ptr::addr_of_mut!((*other).suspmode),
-                    SUSPMODE_SUSPM,
-                    0,
-                );
-                rmw(
-                    core::ptr::addr_of_mut!((*regs0).syscfg0),
-                    SYSCFG_UPLLE,
-                    SYSCFG_UPLLE,
-                );
+            let u0 = usb(0);
+            if u0.syscfg0().read() & SYSCFG_UPLLE == 0 {
+                let other = usb(if port == 0 { 1 } else { 0 });
+                other.suspmode().modify(|r| *r &= !SUSPMODE_SUSPM);
+                u0.syscfg0().modify(|r| *r |= SYSCFG_UPLLE);
 
                 // Wait >= 1 ms for PLL lock (~400 K iterations at 400 MHz).
                 for _ in 0u32..400_000 {
@@ -318,12 +311,8 @@ impl<'d> Rusb1HostDriver<'d> {
             }
 
             // CPU-bus wait cycles and clock re-enable.
-            wr(core::ptr::addr_of_mut!((*regs).buswait), BUSWAIT_VALUE);
-            rmw(
-                core::ptr::addr_of_mut!((*regs).suspmode),
-                SUSPMODE_SUSPM,
-                SUSPMODE_SUSPM,
-            );
+            u.buswait().write_value(BUSWAIT_VALUE);
+            u.suspmode().modify(|r| *r |= SUSPMODE_SUSPM);
 
             // ── Mode / PHY config ────────────────────────────────────────────
             // Host mode: DCFM=1, DRPD=1 (pull-downs enabled), DPRPU=0 (no pull-up).
@@ -335,16 +324,10 @@ impl<'d> Rusb1HostDriver<'d> {
             // (along with DPRPU/HSE) *while* setting DCFM — otherwise the cold-boot
             // DCFM 0→1 transition violates the precondition.  The second write
             // then raises DRPD (host pull-downs).
-            rmw(
-                core::ptr::addr_of_mut!((*regs).syscfg0),
-                SYSCFG_DCFM | SYSCFG_DRPD | SYSCFG_DPRPU | SYSCFG_HSE,
-                SYSCFG_DCFM,
-            );
-            rmw(
-                core::ptr::addr_of_mut!((*regs).syscfg0),
-                SYSCFG_DRPD,
-                SYSCFG_DRPD,
-            );
+            u.syscfg0().modify(|r| {
+                *r = (*r & !(SYSCFG_DCFM | SYSCFG_DRPD | SYSCFG_DPRPU | SYSCFG_HSE)) | SYSCFG_DCFM
+            });
+            u.syscfg0().modify(|r| *r |= SYSCFG_DRPD);
 
             // NOTE: VBUS power is NOT module-controlled on the RZ/A1L —
             // DVSTCTR0 bits 11:9 are reserved (there is no VBUSEN bit, TRM
@@ -359,32 +342,24 @@ impl<'d> Rusb1HostDriver<'d> {
             }
 
             // Enable the USB module.
-            rmw(
-                core::ptr::addr_of_mut!((*regs).syscfg0),
-                SYSCFG_USBE,
-                SYSCFG_USBE,
-            );
+            u.syscfg0().modify(|r| *r |= SYSCFG_USBE);
 
             // Control pipe: always use SHTNAK (NAK on short packet) in host mode.
-            wr(core::ptr::addr_of_mut!((*regs).dcpcfg), DCPCFG_SHTNAK);
-            wr(core::ptr::addr_of_mut!((*regs).dcpmaxp), 64);
+            u.dcpcfg().write_value(DCPCFG_SHTNAK);
+            u.dcpmaxp().write_value(64);
 
             // Global interrupt enables.
-            wr(
-                core::ptr::addr_of_mut!((*regs).intenb0),
-                INTENB0_BRDYE | INTENB0_NRDYE | INTENB0_BEMPE,
-            );
+            u.intenb(0)
+                .write_value(INTENB0_BRDYE | INTENB0_NRDYE | INTENB0_BEMPE);
             // Start watching for device attach (ATTCH); DTCH is enabled by the ISR
             // after a device is connected.
-            wr(
-                core::ptr::addr_of_mut!((*regs).intenb1),
-                INTENB1_SACKE | INTENB1_SIGNE | INTENB1_ATTCHE,
-            );
+            u.intenb(1)
+                .write_value(INTENB1_SACKE | INTENB1_SIGNE | INTENB1_ATTCHE);
 
             // Enable BEMP/NRDY/BRDY for pipe 0 (the DCP).
-            wr(core::ptr::addr_of_mut!((*regs).bempenb), 1);
-            wr(core::ptr::addr_of_mut!((*regs).nrdyenb), 1);
-            wr(core::ptr::addr_of_mut!((*regs).brdyenb), 1);
+            u.bempenb().write_value(1);
+            u.nrdyenb().write_value(1);
+            u.brdyenb().write_value(1);
 
             // Register the GIC interrupt for this port.
             crate::usb::int_enable(port);
@@ -406,33 +381,30 @@ impl<'d> Rusb1HostDriver<'d> {
     /// then clear DCFM to return to function (device) mode.
     pub async fn stop(&mut self) {
         unsafe {
-            let regs = Rusb1Regs::ptr(self.port);
-            let e = &mut *regs;
+            let u = usb(self.port);
 
             // Disable GIC interrupt so the ISR cannot fire mid-teardown.
             crate::usb::int_disable(self.port);
 
             // Disable all interrupt sources.
-            wr(core::ptr::addr_of_mut!(e.intenb0), 0);
-            wr(core::ptr::addr_of_mut!(e.intenb1), 0);
-            wr(core::ptr::addr_of_mut!(e.brdyenb), 0);
-            wr(core::ptr::addr_of_mut!(e.nrdyenb), 0);
-            wr(core::ptr::addr_of_mut!(e.bempenb), 0);
+            u.intenb(0).write_value(0);
+            u.intenb(1).write_value(0);
+            u.brdyenb().write_value(0);
+            u.nrdyenb().write_value(0);
+            u.bempenb().write_value(0);
 
             // Stop SOF generation.  (VBUS is switched externally on the
             // RZ/A1L — DVSTCTR0 has no VBUSEN bit.)
-            rmw(core::ptr::addr_of_mut!(e.dvstctr0), DVSTCTR0_UACT, 0);
+            u.dvstctr0().modify(|r| *r &= !DVSTCTR0_UACT);
         }
         // Let the bus settle before changing resistor config.
         Timer::after_micros(1).await;
-        unsafe {
-            let regs = Rusb1Regs::ptr(self.port);
-            // Clear DRPD to satisfy the TRM DCFM-change pre-condition
-            // (DPRPU = 0 already in host mode; now DRPD = 0 too).
-            rmw(core::ptr::addr_of_mut!((*regs).syscfg0), SYSCFG_DRPD, 0);
-            // Switch to function (device) mode.
-            rmw(core::ptr::addr_of_mut!((*regs).syscfg0), SYSCFG_DCFM, 0);
-        }
+        let u = usb(self.port);
+        // Clear DRPD to satisfy the TRM DCFM-change pre-condition
+        // (DPRPU = 0 already in host mode; now DRPD = 0 too).
+        u.syscfg0().modify(|r| *r &= !SYSCFG_DRPD);
+        // Switch to function (device) mode.
+        u.syscfg0().modify(|r| *r &= !SYSCFG_DCFM);
     }
 
     /// Wait for the next raw bus event: device attached or detached.
@@ -462,18 +434,18 @@ impl<'d> Rusb1HostDriver<'d> {
     /// enumeration.
     pub async fn bus_reset(&self) {
         unsafe {
-            let regs = Rusb1Regs::ptr(self.port);
+            let u = usb(self.port);
 
             // Cancel any in-flight DCP transaction.
-            wr(pipectr_ptr(regs, 0), PIPECTR_PID_NAK);
-            while rd(pipectr_ptr(regs, 0)) & PIPECTR_PBUSY != 0 {}
+            pipectr(u, 0).write_value(PIPECTR_PID_NAK);
+            while pipectr(u, 0).read() & PIPECTR_PBUSY != 0 {}
 
             // Stop SOF and cancel any pending SETUP.
             crate::usb::int_disable(self.port);
-            rmw(core::ptr::addr_of_mut!((*regs).dvstctr0), DVSTCTR0_UACT, 0);
-            let dcpctr = rd(pipectr_ptr(regs, 0));
+            u.dvstctr0().modify(|r| *r &= !DVSTCTR0_UACT);
+            let dcpctr = pipectr(u, 0).read();
             if dcpctr & DCPCTR_SUREQ != 0 {
-                wr(pipectr_ptr(regs, 0), dcpctr | DCPCTR_SUREQCLR);
+                pipectr(u, 0).write_value(dcpctr | DCPCTR_SUREQCLR);
             }
             crate::usb::int_enable(self.port);
 
@@ -486,15 +458,15 @@ impl<'d> Rusb1HostDriver<'d> {
             // In that case use the idle line state instead (TRM Table 28.5
             // with DRPD=1): an attached FS/HS device pulls D+ → LNST = 01
             // (full-speed J); an LS device pulls D- → LNST = 10.
-            let rhst_now = rd(core::ptr::addr_of!((*regs).dvstctr0)) & DVSTCTR0_RHST;
+            let rhst_now = u.dvstctr0().read() & DVSTCTR0_RHST;
             // Debounce LNST: the TRM requires reading the line state repeatedly
             // until the same value is seen several times running (SYSSTS0
             // chattering).  A single mid-chatter read could flip the HSE choice,
             // running an LS device through the HS handshake (or vice-versa).
-            let mut lnst = rd(core::ptr::addr_of!((*regs).syssts0)) & SYSSTS0_LNST;
+            let mut lnst = u.syssts0().read() & SYSSTS0_LNST;
             let mut stable = 0u8;
             for _ in 0..64 {
-                let s = rd(core::ptr::addr_of!((*regs).syssts0)) & SYSSTS0_LNST;
+                let s = u.syssts0().read() & SYSSTS0_LNST;
                 if s == lnst {
                     stable += 1;
                     if stable >= 3 {
@@ -507,35 +479,23 @@ impl<'d> Rusb1HostDriver<'d> {
             }
             let is_ls = rhst_now == DVSTCTR0_RHST_LS || (rhst_now == 0 && lnst == 0b10);
             if is_ls {
-                rmw(core::ptr::addr_of_mut!((*regs).syscfg0), SYSCFG_HSE, 0);
+                u.syscfg0().modify(|r| *r &= !SYSCFG_HSE);
             } else {
-                rmw(
-                    core::ptr::addr_of_mut!((*regs).syscfg0),
-                    SYSCFG_HSE,
-                    SYSCFG_HSE,
-                );
+                u.syscfg0().modify(|r| *r |= SYSCFG_HSE);
             }
-            rmw(
-                core::ptr::addr_of_mut!((*regs).dvstctr0),
-                DVSTCTR0_USBRST,
-                DVSTCTR0_USBRST,
-            );
+            u.dvstctr0().modify(|r| *r |= DVSTCTR0_USBRST);
         }
 
         Timer::after_millis(20).await;
 
         let p = self.port as usize;
-        unsafe {
-            let regs = Rusb1Regs::ptr(self.port);
-            // End the reset and re-enable SOF generation in a single write:
-            // TRM §28.3.4 USBRST: "Write 1 to the UACT bit simultaneously with
-            // the end of the USB bus reset process (writing 0 to USBRST)."
-            let cur = rd(core::ptr::addr_of!((*regs).dvstctr0));
-            wr(
-                core::ptr::addr_of_mut!((*regs).dvstctr0),
-                (cur & !DVSTCTR0_USBRST) | DVSTCTR0_UACT,
-            );
-        }
+        let u = usb(self.port);
+        // End the reset and re-enable SOF generation in a single write:
+        // TRM §28.3.4 USBRST: "Write 1 to the UACT bit simultaneously with
+        // the end of the USB bus reset process (writing 0 to USBRST)."
+        let cur = u.dvstctr0().read();
+        u.dvstctr0()
+            .write_value((cur & !DVSTCTR0_USBRST) | DVSTCTR0_UACT);
 
         // Wait for the reset handshake to complete before the caller reads the
         // speed.  RHST only latches a determined value (001 LS / 010 FS / 011
@@ -543,8 +503,7 @@ impl<'d> Rusb1HostDriver<'d> {
         // few ms, during which RHST reads 0b1xx, which port_speed() would
         // misreport as Full.  Poll for up to ~50 ms.
         for _ in 0..50 {
-            let rhst = unsafe { rd(core::ptr::addr_of!((*Rusb1Regs::ptr(self.port)).dvstctr0)) }
-                & DVSTCTR0_RHST;
+            let rhst = usb(self.port).dvstctr0().read() & DVSTCTR0_RHST;
             if matches!(rhst, DVSTCTR0_RHST_LS | DVSTCTR0_RHST_FS | DVSTCTR0_RHST_HS) {
                 break;
             }
@@ -565,14 +524,12 @@ impl<'d> Rusb1HostDriver<'d> {
         const RHST_LS: u16 = 0x0001;
         const RHST_FS: u16 = 0x0002;
         const RHST_HS: u16 = 0x0003;
-        unsafe {
-            let regs = Rusb1Regs::ptr(self.port);
-            match rd(core::ptr::addr_of!((*regs).dvstctr0)) & 0x0007 {
-                RHST_LS => Speed::Low,
-                RHST_FS => Speed::Full,
-                RHST_HS => Speed::High,
-                _ => Speed::Full, // safe fallback
-            }
+        let u = usb(self.port);
+        match u.dvstctr0().read() & 0x0007 {
+            RHST_LS => Speed::Low,
+            RHST_FS => Speed::Full,
+            RHST_HS => Speed::High,
+            _ => Speed::Full, // safe fallback
         }
     }
 
@@ -610,12 +567,12 @@ impl<'d> Rusb1HostDriver<'d> {
         // hub_port 0 means direct; 1-7 are valid hub port numbers.
         debug_assert!(hub_port <= 7);
         unsafe {
-            let regs = Rusb1Regs::ptr(self.port);
+            let u = usb(self.port);
             let p = self.port as usize;
 
             // Ensure the DCP is idle before modifying DEVADDn (TRM Note 2).
-            wr(pipectr_ptr(regs, 0), PIPECTR_PID_NAK);
-            while rd(pipectr_ptr(regs, 0)) & PIPECTR_PBUSY != 0 {}
+            pipectr(u, 0).write_value(PIPECTR_PID_NAK);
+            while pipectr(u, 0).read() & PIPECTR_PBUSY != 0 {}
 
             // Program DEVADDn FIRST: UPPHUB | HUBPORT | USBSPD.  TRM §28.3
             // DCPMAXP.DEVSEL: "these bits should be set after setting the DEVADDn
@@ -629,11 +586,10 @@ impl<'d> Rusb1HostDriver<'d> {
             let devadd_val = ((hub_addr as u16) << DEVADD_UPPHUB_SHIFT)
                 | ((hub_port as u16) << DEVADD_HUBPORT_SHIFT)
                 | usbspd;
-            wr(devadd_ptr(regs, dev_addr), devadd_val);
+            u.devadd(dev_addr as usize).write_value(devadd_val);
 
             // Then embed the device address (DEVSEL) in DCPMAXP bits [15:12].
-            wr(
-                core::ptr::addr_of_mut!((*regs).dcpmaxp),
+            u.dcpmaxp().write_value(
                 ((dev_addr as u16) << DCPMAXP_DEVSEL_SHIFT) | (mps & DCPMAXP_MXPS_MASK),
             );
 
@@ -651,7 +607,7 @@ impl<'d> Rusb1HostDriver<'d> {
         debug_assert!(dev_addr > 0 && (dev_addr as usize) < HCD_MAX_DEV);
         let p = self.port as usize;
         unsafe {
-            let regs = Rusb1Regs::ptr(self.port);
+            let u = usb(self.port);
             critical_section::with(|cs| {
                 let alloc = &mut *HCD_ALLOC[p].borrow(cs).get();
                 alloc.ctl_mps[dev_addr as usize] = 64;
@@ -664,14 +620,13 @@ impl<'d> Rusb1HostDriver<'d> {
                         }
 
                         // Disable the pipe.
-                        wr(pipectr_ptr(regs, pipe), 0);
-                        let e = &mut (*regs);
-                        rmw(core::ptr::addr_of_mut!(e.nrdyenb), 1 << pipe, 0);
-                        rmw(core::ptr::addr_of_mut!(e.brdyenb), 1 << pipe, 0);
-                        wr(core::ptr::addr_of_mut!(e.pipesel), pipe as u16);
-                        wr(core::ptr::addr_of_mut!(e.pipecfg), 0);
-                        wr(core::ptr::addr_of_mut!(e.pipemaxp), 0);
-                        wr(core::ptr::addr_of_mut!(e.pipesel), 0);
+                        pipectr(u, pipe).write_value(0);
+                        u.nrdyenb().modify(|r| *r &= !(1 << pipe));
+                        u.brdyenb().modify(|r| *r &= !(1 << pipe));
+                        u.pipesel().write_value(pipe as u16);
+                        u.pipecfg().write_value(0);
+                        u.pipemaxp().write_value(0);
+                        u.pipesel().write_value(0);
 
                         // Clear the HCD_XFER entry.
                         let xfer = &mut *HCD_XFER[pipe].borrow(cs).get();
@@ -697,7 +652,7 @@ impl<'d> Rusb1HostDriver<'d> {
     pub async fn setup_send(&self, dev_addr: u8, setup: &[u8; 8]) -> Result<(), PipeError> {
         debug_assert!((dev_addr as usize) < HCD_MAX_DEV);
         unsafe {
-            let regs = Rusb1Regs::ptr(self.port);
+            let u = usb(self.port);
             let p = self.port as usize;
 
             let ctl_mps = critical_section::with(|cs| {
@@ -705,12 +660,11 @@ impl<'d> Rusb1HostDriver<'d> {
             });
 
             // Ensure the DCP is idle.
-            wr(pipectr_ptr(regs, 0), PIPECTR_PID_NAK);
-            while rd(pipectr_ptr(regs, 0)) & PIPECTR_PBUSY != 0 {}
+            pipectr(u, 0).write_value(PIPECTR_PID_NAK);
+            while pipectr(u, 0).read() & PIPECTR_PBUSY != 0 {}
 
             // Update DCPMAXP with target device address.
-            wr(
-                core::ptr::addr_of_mut!((*regs).dcpmaxp),
+            u.dcpmaxp().write_value(
                 ((dev_addr as u16) << DCPMAXP_DEVSEL_SHIFT) | (ctl_mps & DCPMAXP_MXPS_MASK),
             );
 
@@ -721,25 +675,17 @@ impl<'d> Rusb1HostDriver<'d> {
             // the DCP receives (IN data stage).
             let dir_in = setup[0] & 0x80 != 0;
             let dcpcfg = if dir_in { DCPCFG_SHTNAK } else { DCPCFG_DIR };
-            wr(core::ptr::addr_of_mut!((*regs).dcpcfg), dcpcfg);
+            u.dcpcfg().write_value(dcpcfg);
 
             // Write the 8 setup bytes to hardware registers.
-            wr(
-                core::ptr::addr_of_mut!((*regs).usbreq),
-                u16::from_le_bytes([setup[0], setup[1]]),
-            );
-            wr(
-                core::ptr::addr_of_mut!((*regs).usbval),
-                u16::from_le_bytes([setup[2], setup[3]]),
-            );
-            wr(
-                core::ptr::addr_of_mut!((*regs).usbindx),
-                u16::from_le_bytes([setup[4], setup[5]]),
-            );
-            wr(
-                core::ptr::addr_of_mut!((*regs).usbleng),
-                u16::from_le_bytes([setup[6], setup[7]]),
-            );
+            u.usbreq()
+                .write_value(u16::from_le_bytes([setup[0], setup[1]]));
+            u.usbval()
+                .write_value(u16::from_le_bytes([setup[2], setup[3]]));
+            u.usbindx()
+                .write_value(u16::from_le_bytes([setup[4], setup[5]]));
+            u.usbleng()
+                .write_value(u16::from_le_bytes([setup[6], setup[7]]));
 
             // Clear pipe-0 completion flags.
             HCD_PIPE_DONE.fetch_and(!1, Ordering::Release);
@@ -749,8 +695,8 @@ impl<'d> Rusb1HostDriver<'d> {
             HCD_EVENTS.fetch_and(!(EVT_SACK | EVT_SIGN), Ordering::Release);
 
             // Issue the SETUP token.
-            let ctr = rd(pipectr_ptr(regs, 0));
-            wr(pipectr_ptr(regs, 0), ctr | DCPCTR_SUREQ);
+            let ctr = pipectr(u, 0).read();
+            pipectr(u, 0).write_value(ctr | DCPCTR_SUREQ);
         }
 
         // Await SACK or SIGN from the ISR.
@@ -774,13 +720,13 @@ impl<'d> Rusb1HostDriver<'d> {
     /// `buf.len()` if the device sends a short packet).
     pub async fn control_data_in(&self, dev_addr: u8, buf: &mut [u8]) -> Result<usize, PipeError> {
         unsafe {
-            let regs = Rusb1Regs::ptr(self.port);
+            let u = usb(self.port);
 
             // Select CFIFO for reading (ISEL=0: host reads from device).
             // Wait for ISEL to deassert before accessing CFIFO.
-            wr(core::ptr::addr_of_mut!((*regs).cfifosel), 0x0000); // pipe0, ISEL=0
+            u.cfifosel().write_value(0x0000); // pipe0, ISEL=0
             for _ in 0..1000u32 {
-                if rd(core::ptr::addr_of!((*regs).cfifosel)) & FIFOSEL_ISEL == 0 {
+                if u.cfifosel().read() & FIFOSEL_ISEL == 0 {
                     break;
                 }
             }
@@ -800,7 +746,7 @@ impl<'d> Rusb1HostDriver<'d> {
             HCD_PIPE_STALL.fetch_and(!1, Ordering::Release);
 
             // Arm DCP: hardware will issue IN tokens and fire BRDY on receipt.
-            wr(pipectr_ptr(regs, 0), PIPECTR_PID_BUF);
+            pipectr(u, 0).write_value(PIPECTR_PID_BUF);
         }
 
         poll_pipe(0).await
@@ -811,7 +757,7 @@ impl<'d> Rusb1HostDriver<'d> {
     /// Pass `&[]` to issue a zero-length packet (status stage ZLP).
     pub async fn control_data_out(&self, dev_addr: u8, buf: &[u8]) -> Result<(), PipeError> {
         unsafe {
-            let regs = Rusb1Regs::ptr(self.port);
+            let u = usb(self.port);
             let p = self.port as usize;
 
             let ctl_mps = critical_section::with(|cs| {
@@ -819,12 +765,10 @@ impl<'d> Rusb1HostDriver<'d> {
             }) as usize;
 
             // Select CFIFO for writing (ISEL=1: host writes to device).
-            wr(
-                core::ptr::addr_of_mut!((*regs).cfifosel),
-                FIFOSEL_ISEL | (MBW_32 << FIFOSEL_MBW_SHIFT),
-            );
+            u.cfifosel()
+                .write_value(FIFOSEL_ISEL | (MBW_32 << FIFOSEL_MBW_SHIFT));
             for _ in 0..1000u32 {
-                if rd(core::ptr::addr_of!((*regs).cfifosel)) & FIFOSEL_ISEL != 0 {
+                if u.cfifosel().read() & FIFOSEL_ISEL != 0 {
                     break;
                 }
             }
@@ -846,8 +790,8 @@ impl<'d> Rusb1HostDriver<'d> {
             if buf.is_empty() {
                 // ZLP (TRM §28.4.5): clear the buffer with BCLR, then write
                 // BVAL to end the (zero-byte) write and commit the packet.
-                wr(core::ptr::addr_of_mut!((*regs).cfifoctr), FIFOCTR_BCLR);
-                wr(core::ptr::addr_of_mut!((*regs).cfifoctr), FIFOCTR_BVAL);
+                u.cfifoctr().write_value(FIFOCTR_BCLR);
+                u.cfifoctr().write_value(FIFOCTR_BVAL);
             } else {
                 // Wait (bounded) for BSTS=1 (FIFO writable) before the first
                 // packet.  If the FIFO never became ready we must not arm the
@@ -856,7 +800,7 @@ impl<'d> Rusb1HostDriver<'d> {
                 // transfer would hang.
                 let mut ready = false;
                 for _ in 0..1000u32 {
-                    if rd(pipectr_ptr(regs, 0)) & PIPECTR_BSTS != 0 {
+                    if pipectr(u, 0).read() & PIPECTR_BSTS != 0 {
                         ready = true;
                         break;
                     }
@@ -865,10 +809,10 @@ impl<'d> Rusb1HostDriver<'d> {
                     return Err(PipeError::Canceled);
                 }
                 let len = buf.len().min(ctl_mps);
-                let fifo = FifoPort::cfifo(usb_of(regs));
+                let fifo = FifoPort::cfifo(u);
                 sw_to_hw_fifo(&fifo, buf.as_ptr(), len);
                 if len < ctl_mps {
-                    wr(core::ptr::addr_of_mut!((*regs).cfifoctr), FIFOCTR_BVAL);
+                    u.cfifoctr().write_value(FIFOCTR_BVAL);
                 }
                 critical_section::with(|cs| {
                     let xfer = &mut *HCD_XFER[0].borrow(cs).get();
@@ -878,7 +822,7 @@ impl<'d> Rusb1HostDriver<'d> {
             }
 
             // Arm DCP.
-            wr(pipectr_ptr(regs, 0), PIPECTR_PID_BUF);
+            pipectr(u, 0).write_value(PIPECTR_PID_BUF);
         }
 
         // Completion is signalled by pipe0_out_bemp() in the ISR.
@@ -934,20 +878,18 @@ impl<'d> Rusb1HostDriver<'d> {
             alloc.ep_to_pipe[dev_addr as usize - 1][dir_in as usize][epn - 1] = pipe as u8;
 
             unsafe {
-                let regs = Rusb1Regs::ptr(self.port);
-                let e = &mut *regs;
-                let ctr = pipectr_ptr(regs, pipe);
+                let u = usb(self.port);
+                let ctr = pipectr(u, pipe);
 
                 // Clear FIFO and toggle sequencer.
-                wr(ctr, PIPECTR_ACLRM | PIPECTR_SQCLR);
-                wr(ctr, 0);
+                ctr.write_value(PIPECTR_ACLRM | PIPECTR_SQCLR);
+                ctr.write_value(0);
 
                 // Select pipe for configuration.
-                wr(core::ptr::addr_of_mut!(e.pipesel), pipe as u16);
+                u.pipesel().write_value(pipe as u16);
 
                 // PIPEMAXP: MPS | (dev_addr << 12).
-                wr(
-                    core::ptr::addr_of_mut!(e.pipemaxp),
+                u.pipemaxp().write_value(
                     ((dev_addr as u16) << PIPEMAXP_DEVSEL_SHIFT) | (mps & PIPEMAXP_MXPS_MASK),
                 );
 
@@ -959,10 +901,8 @@ impl<'d> Rusb1HostDriver<'d> {
                     EndpointType::Isochronous => PIPECFG_TYPE_ISO | PIPECFG_DBLB,
                     EndpointType::Control => unreachable!("control EP handled by DCP"),
                 };
-                wr(
-                    core::ptr::addr_of_mut!(e.pipecfg),
-                    type_field | dir_field | (epn as u16 & PIPECFG_EPNUM_MASK),
-                );
+                u.pipecfg()
+                    .write_value(type_field | dir_field | (epn as u16 & PIPECFG_EPNUM_MASK));
 
                 // PIPEBUF: assign a disjoint packet-buffer region.  BUFNMB =
                 // start block, BUFSIZE = blocks-per-bank − 1 (the DBLB bit
@@ -971,10 +911,8 @@ impl<'d> Rusb1HostDriver<'d> {
                     let bufsize = (((blocks_per_bank as u16).saturating_sub(1))
                         << PIPEBUF_BUFSIZE_SHIFT)
                         & PIPEBUF_BUFSIZE_MASK;
-                    wr(
-                        core::ptr::addr_of_mut!(e.pipebuf),
-                        (buf_start as u16 & PIPEBUF_BUFNMB_MASK) | bufsize,
-                    );
+                    u.pipebuf()
+                        .write_value((buf_start as u16 & PIPEBUF_BUFNMB_MASK) | bufsize);
                 }
 
                 // PIPEPERI: set IITV for interrupt pipes (valid for pipes 6-9).
@@ -986,23 +924,20 @@ impl<'d> Rusb1HostDriver<'d> {
                 } else {
                     0
                 };
-                wr(
-                    core::ptr::addr_of_mut!(e.pipeperi),
-                    iitv & PIPEPERI_IITV_MASK,
-                );
+                u.pipeperi().write_value(iitv & PIPEPERI_IITV_MASK);
 
-                wr(core::ptr::addr_of_mut!(e.pipesel), 0);
+                u.pipesel().write_value(0);
 
                 // Clear stale interrupt flags then enable per-pipe interrupts.
-                wr(core::ptr::addr_of_mut!(e.brdysts), !(1u16 << pipe));
-                wr(core::ptr::addr_of_mut!(e.nrdysts), !(1u16 << pipe));
-                rmw(core::ptr::addr_of_mut!(e.brdyenb), 1 << pipe, 1 << pipe);
-                rmw(core::ptr::addr_of_mut!(e.nrdyenb), 1 << pipe, 1 << pipe);
+                u.brdysts().write_value(!(1u16 << pipe));
+                u.nrdysts().write_value(!(1u16 << pipe));
+                u.brdyenb().modify(|r| *r |= 1 << pipe);
+                u.nrdyenb().modify(|r| *r |= 1 << pipe);
 
                 // OUT pipes are armed immediately (host will send on demand);
                 // IN pipes wait until xfer_in() is called.
                 if !dir_in {
-                    wr(ctr, PIPECTR_PID_BUF);
+                    ctr.write_value(PIPECTR_PID_BUF);
                 }
 
                 // Initialise the saved ep/dev info for the ISR.
@@ -1041,12 +976,10 @@ impl<'d> Rusb1HostDriver<'d> {
         HCD_PIPE_NRDY.fetch_and(!mask, Ordering::Release);
         HCD_PIPE_STALL.fetch_and(!mask, Ordering::Release);
 
-        unsafe {
-            let regs = Rusb1Regs::ptr(self.port);
-            // Arm pipe to issue IN tokens.
-            let ctr = pipectr_ptr(regs, pipe);
-            wr(ctr, (rd(ctr) & !PIPECTR_PID_MASK) | PIPECTR_PID_BUF);
-        }
+        let u = usb(self.port);
+        // Arm pipe to issue IN tokens.
+        let ctr = pipectr(u, pipe);
+        ctr.write_value((ctr.read() & !PIPECTR_PID_MASK) | PIPECTR_PID_BUF);
 
         poll_pipe(pipe).await
     }
@@ -1072,39 +1005,34 @@ impl<'d> Rusb1HostDriver<'d> {
         HCD_PIPE_STALL.fetch_and(!mask, Ordering::Release);
 
         unsafe {
-            let regs = Rusb1Regs::ptr(self.port);
-            let e = &mut *regs;
+            let u = usb(self.port);
 
             if buf.is_empty() {
                 // ZLP: select D0FIFO, wait FRDY, then BCLR + BVAL (TRM
                 // §28.4.5: "to send a zero-length packet, the BCLR bit must be
                 // used to clear the buffer and then the BVAL bit is set").
-                wr(
-                    core::ptr::addr_of_mut!(e.d0fifosel),
-                    pipe as u16 | (MBW_32 << FIFOSEL_MBW_SHIFT),
-                );
-                while rd(core::ptr::addr_of!(e.d0fifosel)) & FIFOSEL_CURPIPE_MASK != pipe as u16 {}
-                while rd(core::ptr::addr_of!(e.d0fifoctr)) & FIFOCTR_FRDY == 0 {}
-                wr(core::ptr::addr_of_mut!(e.d0fifoctr), FIFOCTR_BCLR);
-                wr(core::ptr::addr_of_mut!(e.d0fifoctr), FIFOCTR_BVAL);
-                wr(core::ptr::addr_of_mut!(e.d0fifosel), 0);
-                while rd(core::ptr::addr_of!(e.d0fifosel)) & FIFOSEL_CURPIPE_MASK != 0 {}
+                u.d0fifosel()
+                    .write_value(pipe as u16 | (MBW_32 << FIFOSEL_MBW_SHIFT));
+                while u.d0fifosel().read() & FIFOSEL_CURPIPE_MASK != pipe as u16 {}
+                while u.d0fifoctr().read() & FIFOCTR_FRDY == 0 {}
+                u.d0fifoctr().write_value(FIFOCTR_BCLR);
+                u.d0fifoctr().write_value(FIFOCTR_BVAL);
+                u.d0fifosel().write_value(0);
+                while u.d0fifosel().read() & FIFOSEL_CURPIPE_MASK != 0 {}
             } else {
                 // Write the first packet to D0FIFO (32-bit access).
-                wr(
-                    core::ptr::addr_of_mut!(e.d0fifosel),
-                    pipe as u16 | (MBW_32 << FIFOSEL_MBW_SHIFT),
-                );
-                while rd(core::ptr::addr_of!(e.d0fifosel)) & FIFOSEL_CURPIPE_MASK != pipe as u16 {}
-                while rd(core::ptr::addr_of!(e.d0fifoctr)) & FIFOCTR_FRDY == 0 {}
+                u.d0fifosel()
+                    .write_value(pipe as u16 | (MBW_32 << FIFOSEL_MBW_SHIFT));
+                while u.d0fifosel().read() & FIFOSEL_CURPIPE_MASK != pipe as u16 {}
+                while u.d0fifoctr().read() & FIFOCTR_FRDY == 0 {}
 
                 // Read MPS from PIPEMAXP.
-                wr(core::ptr::addr_of_mut!(e.pipesel), pipe as u16);
-                let mps = (rd(core::ptr::addr_of!(e.pipemaxp)) & PIPEMAXP_MXPS_MASK) as usize;
-                wr(core::ptr::addr_of_mut!(e.pipesel), 0);
+                u.pipesel().write_value(pipe as u16);
+                let mps = (u.pipemaxp().read() & PIPEMAXP_MXPS_MASK) as usize;
+                u.pipesel().write_value(0);
 
                 let len = buf.len().min(mps);
-                let fifo = FifoPort::d0fifo(usb_of(regs));
+                let fifo = FifoPort::d0fifo(u);
                 sw_to_hw_fifo(&fifo, buf.as_ptr(), len);
                 if len < mps {
                     fifo_bval(&fifo); // short packet — commit now
@@ -1116,13 +1044,13 @@ impl<'d> Rusb1HostDriver<'d> {
                     xfer.remaining = xfer.remaining.saturating_sub(len as u16);
                 });
 
-                wr(core::ptr::addr_of_mut!(e.d0fifosel), 0);
-                while rd(core::ptr::addr_of!(e.d0fifosel)) & FIFOSEL_CURPIPE_MASK != 0 {}
+                u.d0fifosel().write_value(0);
+                while u.d0fifosel().read() & FIFOSEL_CURPIPE_MASK != 0 {}
             }
 
             // Arm the pipe.
-            let ctr = pipectr_ptr(regs, pipe);
-            wr(ctr, (rd(ctr) & !PIPECTR_PID_MASK) | PIPECTR_PID_BUF);
+            let ctr = pipectr(u, pipe);
+            ctr.write_value((ctr.read() & !PIPECTR_PID_MASK) | PIPECTR_PID_BUF);
         }
 
         poll_pipe(pipe).await.map(|_| ())
@@ -1131,21 +1059,19 @@ impl<'d> Rusb1HostDriver<'d> {
     /// Clear the STALL condition on an endpoint and re-enable it.
     pub fn clear_stall(&self, dev_addr: u8, ep_addr: u8) {
         if let Some(pipe) = self.ep_to_pipe(dev_addr, ep_addr) {
-            unsafe {
-                let regs = Rusb1Regs::ptr(self.port);
-                let ctr = pipectr_ptr(regs, pipe);
-                let pid = rd(ctr) & PIPECTR_PID_MASK;
-                // Transition sequence: STALL → STALL10 → NAK per manual.
-                if pid & 0b10 != 0 {
-                    wr(ctr, pid & 0b10); // clear low bit → STALL10
-                    wr(ctr, 0); // → NAK
-                }
-                // Reset data toggle.
-                wr(ctr, PIPECTR_SQCLR);
-                // Re-arm OUT endpoints immediately.
-                if ep_addr & 0x80 == 0 {
-                    wr(ctr, (rd(ctr) & !PIPECTR_PID_MASK) | PIPECTR_PID_BUF);
-                }
+            let u = usb(self.port);
+            let ctr = pipectr(u, pipe);
+            let pid = ctr.read() & PIPECTR_PID_MASK;
+            // Transition sequence: STALL → STALL10 → NAK per manual.
+            if pid & 0b10 != 0 {
+                ctr.write_value(pid & 0b10); // clear low bit → STALL10
+                ctr.write_value(0); // → NAK
+            }
+            // Reset data toggle.
+            ctr.write_value(PIPECTR_SQCLR);
+            // Re-arm OUT endpoints immediately.
+            if ep_addr & 0x80 == 0 {
+                ctr.write_value((ctr.read() & !PIPECTR_PID_MASK) | PIPECTR_PID_BUF);
             }
         }
     }
@@ -1163,22 +1089,17 @@ impl<'d> Rusb1HostDriver<'d> {
     /// `dir_out` = true → host transmits the ZLP (status of a control read);
     /// false → host receives the ZLP (status of a control write / no-data).
     fn dcp_prepare_status(&self, dir_out: bool) {
-        unsafe {
-            let regs = Rusb1Regs::ptr(self.port);
-            // Halt the DCP and wait for the NAK transition to finish.
-            let ctr = rd(pipectr_ptr(regs, 0));
-            wr(
-                pipectr_ptr(regs, 0),
-                (ctr & !PIPECTR_PID_MASK) | PIPECTR_PID_NAK,
-            );
-            while rd(pipectr_ptr(regs, 0)) & PIPECTR_PBUSY != 0 {}
-            // Status direction; SHTNAK only in the receiving direction
-            // (must be 0 when transmitting, TRM §28.3.28).
-            let dcpcfg = if dir_out { DCPCFG_DIR } else { DCPCFG_SHTNAK };
-            wr(core::ptr::addr_of_mut!((*regs).dcpcfg), dcpcfg);
-            // Status-stage ZLP is always DATA1.
-            wr(pipectr_ptr(regs, 0), PIPECTR_SQSET);
-        }
+        let u = usb(self.port);
+        // Halt the DCP and wait for the NAK transition to finish.
+        let ctr = pipectr(u, 0).read();
+        pipectr(u, 0).write_value((ctr & !PIPECTR_PID_MASK) | PIPECTR_PID_NAK);
+        while pipectr(u, 0).read() & PIPECTR_PBUSY != 0 {}
+        // Status direction; SHTNAK only in the receiving direction
+        // (must be 0 when transmitting, TRM §28.3.28).
+        let dcpcfg = if dir_out { DCPCFG_DIR } else { DCPCFG_SHTNAK };
+        u.dcpcfg().write_value(dcpcfg);
+        // Status-stage ZLP is always DATA1.
+        pipectr(u, 0).write_value(PIPECTR_SQSET);
     }
 
     fn ep_to_pipe(&self, dev_addr: u8, ep_addr: u8) -> Option<usize> {
@@ -1244,27 +1165,26 @@ async fn poll_pipe(n: usize) -> Result<usize, PipeError> {
 /// Must be called from the hardware IRQ handler for the corresponding port.
 pub unsafe fn hcd_int_handler(port: u8) {
     unsafe {
-        let regs = Rusb1Regs::ptr(port);
-        let e = &mut *regs;
+        let u = usb(port);
 
-        let is0 = rd(core::ptr::addr_of!(e.intsts0));
-        let is1 = rd(core::ptr::addr_of!(e.intsts1));
+        let is0 = u.intsts(0).read();
+        let is1 = u.intsts(1).read();
 
         // Clear sticky bits by writing 0 to each bit that was set (RC-W0 protocol).
         const STICKY1: u16 = INTSTS1_SACK | INTSTS1_SIGN | INTSTS1_ATTCH | INTSTS1_DTCH;
-        wr(core::ptr::addr_of_mut!(e.intsts1), !(STICKY1 & is1));
+        u.intsts(1).write_value(!(STICKY1 & is1));
         const STICKY0: u16 = INTSTS0_BRDY | INTSTS0_NRDY | INTSTS0_BEMP;
-        wr(core::ptr::addr_of_mut!(e.intsts0), !(STICKY0 & is0));
+        u.intsts(0).write_value(!(STICKY0 & is0));
 
         // Mask with enable registers so we only handle enabled sources.
-        let is1 = is1 & rd(core::ptr::addr_of!(e.intenb1));
-        let is0 = is0 & rd(core::ptr::addr_of!(e.intenb0));
+        let is1 = is1 & u.intenb(1).read();
+        let is0 = is0 & u.intenb(0).read();
 
         // ── SACK: setup packet was ACKed ──────────────────────────────────────
         if is1 & INTSTS1_SACK != 0 {
             // Advance DATA-stage toggle to DATA1.
-            let ctr = rd(pipectr_ptr(regs, 0));
-            wr(pipectr_ptr(regs, 0), ctr | PIPECTR_SQSET);
+            let ctr = pipectr(u, 0).read();
+            pipectr(u, 0).write_value(ctr | PIPECTR_SQSET);
             HCD_EVENTS.fetch_or(EVT_SACK, Ordering::Release);
             HCD_EVENT_WAKER.wake();
         }
@@ -1285,29 +1205,25 @@ pub unsafe fn hcd_int_handler(port: u8) {
                 (&mut *HCD_ALLOC[port as usize].borrow(cs).get()).need_reset = true;
             });
             // Switch to detecting detach.
-            let enb = rd(core::ptr::addr_of!(e.intenb1));
-            wr(
-                core::ptr::addr_of_mut!(e.intenb1),
-                (enb & !INTENB1_ATTCHE) | INTENB1_DTCHE,
-            );
+            let enb = u.intenb(1).read();
+            u.intenb(1)
+                .write_value((enb & !INTENB1_ATTCHE) | INTENB1_DTCHE);
             HCD_EVENTS.fetch_or(EVT_ATTACH, Ordering::Release);
             HCD_EVENT_WAKER.wake();
         }
 
         // ── DTCH: the device was removed ─────────────────────────────────────
         if is1 & INTSTS1_DTCH != 0 {
-            rmw(core::ptr::addr_of_mut!(e.dvstctr0), DVSTCTR0_UACT, 0);
+            u.dvstctr0().modify(|r| *r &= !DVSTCTR0_UACT);
             // Cancel any pending SETUP.
-            let dcpctr = rd(pipectr_ptr(regs, 0));
+            let dcpctr = pipectr(u, 0).read();
             if dcpctr & DCPCTR_SUREQ != 0 {
-                wr(pipectr_ptr(regs, 0), dcpctr | DCPCTR_SUREQCLR);
+                pipectr(u, 0).write_value(dcpctr | DCPCTR_SUREQCLR);
             }
             // Switch back to detecting attach.
-            let enb = rd(core::ptr::addr_of!(e.intenb1));
-            wr(
-                core::ptr::addr_of_mut!(e.intenb1),
-                (enb & !INTENB1_DTCHE) | INTENB1_ATTCHE,
-            );
+            let enb = u.intenb(1).read();
+            u.intenb(1)
+                .write_value((enb & !INTENB1_DTCHE) | INTENB1_ATTCHE);
             // Fail every in-flight transfer.  The controller has idled the port
             // (UACT=0) and will emit no further BRDY/NRDY, so any future
             // awaiting a pipe or a SETUP completion would otherwise hang
@@ -1324,35 +1240,35 @@ pub unsafe fn hcd_int_handler(port: u8) {
 
         // ── BEMP: FIFO transmitted — continue control OUT ────────────────────
         if is0 & INTSTS0_BEMP != 0 {
-            let bempsts = rd(core::ptr::addr_of!(e.bempsts));
-            let bempenb = rd(core::ptr::addr_of!(e.bempenb));
+            let bempsts = u.bempsts().read();
+            let bempenb = u.bempenb().read();
             let active = bempsts & bempenb;
-            wr(core::ptr::addr_of_mut!(e.bempsts), !active);
+            u.bempsts().write_value(!active);
             if active & 1 != 0 {
-                pipe0_out_bemp(regs);
+                pipe0_out_bemp(u);
             }
         }
 
         // ── NRDY: NAK or STALL received ──────────────────────────────────────
         if is0 & INTSTS0_NRDY != 0 {
-            let nrdyenb = rd(core::ptr::addr_of!(e.nrdyenb));
-            let mut active = rd(core::ptr::addr_of!(e.nrdysts)) & nrdyenb;
-            wr(core::ptr::addr_of_mut!(e.nrdysts), !active);
+            let nrdyenb = u.nrdyenb().read();
+            let mut active = u.nrdysts().read() & nrdyenb;
+            u.nrdysts().write_value(!active);
             while active != 0 {
                 let n = active.trailing_zeros() as usize;
-                pipe_nrdy(regs, n);
+                pipe_nrdy(u, n);
                 active &= !(1u16 << n);
             }
         }
 
         // ── BRDY: data received (IN) or slot ready (OUT) ─────────────────────
         if is0 & INTSTS0_BRDY != 0 {
-            let brdyenb = rd(core::ptr::addr_of!(e.brdyenb));
-            let mut active = rd(core::ptr::addr_of!(e.brdysts)) & brdyenb;
-            wr(core::ptr::addr_of_mut!(e.brdysts), !active);
+            let brdyenb = u.brdyenb().read();
+            let mut active = u.brdysts().read() & brdyenb;
+            u.brdysts().write_value(!active);
             while active != 0 {
                 let n = active.trailing_zeros() as usize;
-                pipe_brdy(regs, n);
+                pipe_brdy(u, n);
                 active &= !(1u16 << n);
             }
         }
@@ -1364,14 +1280,14 @@ pub unsafe fn hcd_int_handler(port: u8) {
 // ---------------------------------------------------------------------------
 
 /// BRDY on pipe 0 IN (control data stage): read data from CFIFO.
-unsafe fn pipe0_in_brdy(regs: *mut Rusb1Regs) {
+unsafe fn pipe0_in_brdy(u: Usb) {
     unsafe {
         // SAFETY: called from IRQ only; no concurrent async access to CFIFO.
         let cs = critical_section::CriticalSection::new();
         let xfer = &mut *HCD_XFER[0].borrow(cs).get();
 
-        let mps = (rd(core::ptr::addr_of!((*regs).dcpmaxp)) & DCPMAXP_MXPS_MASK) as usize;
-        let vld = (rd(core::ptr::addr_of!((*regs).cfifoctr)) & FIFOCTR_DTLN_MASK) as usize;
+        let mps = (u.dcpmaxp().read() & DCPMAXP_MXPS_MASK) as usize;
+        let vld = (u.cfifoctr().read() & FIFOCTR_DTLN_MASK) as usize;
         let rem = xfer.remaining as usize;
         let len = rem.min(mps).min(vld);
 
@@ -1381,11 +1297,9 @@ unsafe fn pipe0_in_brdy(regs: *mut Rusb1Regs) {
         // one byte and advances the FIFO.  Base+0 is the prohibited lane
         // (TinyUSB's `pipe_read_packet` reads it).
         if len > 0 && !xfer.buf.is_null() {
-            let cfifo_byte = (regs as usize
-                + core::mem::offset_of!(super::regs::Rusb1Regs, cfifo)
-                + 3) as *const u8;
+            let cfifo_byte = u.cfifo_b(3);
             for i in 0..len {
-                *xfer.buf.add(i) = cfifo_byte.read_volatile();
+                *xfer.buf.add(i) = cfifo_byte.read();
             }
             xfer.buf = xfer.buf.add(len);
             xfer.remaining = xfer.remaining.saturating_sub(len as u16);
@@ -1393,25 +1307,25 @@ unsafe fn pipe0_in_brdy(regs: *mut Rusb1Regs) {
 
         // BCLR after a short packet to release the FIFO buffer.
         if len < mps {
-            wr(core::ptr::addr_of_mut!((*regs).cfifoctr), FIFOCTR_BCLR);
+            u.cfifoctr().write_value(FIFOCTR_BCLR);
         }
 
         let done = (len < mps) || (xfer.remaining == 0);
         if done {
             xfer.buf = core::ptr::null_mut();
             // NAK to stop receiving further IN tokens.
-            wr(pipectr_ptr(regs, 0), PIPECTR_PID_NAK);
+            pipectr(u, 0).write_value(PIPECTR_PID_NAK);
             HCD_PIPE_DONE.fetch_or(1, Ordering::Release);
             HCD_PIPE_WAKERS[0].wake();
         } else {
             // Re-arm for the next IN packet.
-            wr(pipectr_ptr(regs, 0), PIPECTR_PID_BUF);
+            pipectr(u, 0).write_value(PIPECTR_PID_BUF);
         }
     }
 }
 
 /// BEMP on pipe 0 OUT (control data stage): write next chunk to CFIFO.
-unsafe fn pipe0_out_bemp(regs: *mut Rusb1Regs) {
+unsafe fn pipe0_out_bemp(u: Usb) {
     unsafe {
         let cs = critical_section::CriticalSection::new();
         let xfer = &mut *HCD_XFER[0].borrow(cs).get();
@@ -1424,12 +1338,12 @@ unsafe fn pipe0_out_bemp(regs: *mut Rusb1Regs) {
             return;
         }
 
-        let mps = (rd(core::ptr::addr_of!((*regs).dcpmaxp)) & DCPMAXP_MXPS_MASK) as usize;
+        let mps = (u.dcpmaxp().read() & DCPMAXP_MXPS_MASK) as usize;
         let len = rem.min(mps);
-        let fifo = FifoPort::cfifo(usb_of(regs));
+        let fifo = FifoPort::cfifo(u);
         sw_to_hw_fifo(&fifo, xfer.buf, len);
         if len < mps {
-            wr(core::ptr::addr_of_mut!((*regs).cfifoctr), FIFOCTR_BVAL);
+            u.cfifoctr().write_value(FIFOCTR_BVAL);
         }
         xfer.buf = xfer.buf.add(len);
         xfer.remaining = xfer.remaining.saturating_sub(len as u16);
@@ -1438,30 +1352,30 @@ unsafe fn pipe0_out_bemp(regs: *mut Rusb1Regs) {
 }
 
 /// BRDY on a non-control IN pipe: read data from D0FIFO.
-unsafe fn pipe_brdy_in(regs: *mut Rusb1Regs, n: usize) {
+unsafe fn pipe_brdy_in(u: Usb, n: usize) {
     unsafe {
         let cs = critical_section::CriticalSection::new();
         let xfer = &mut *HCD_XFER[n].borrow(cs).get();
 
         if xfer.buf.is_null() {
             // No buffer — discard and BCLR.
-            wr(core::ptr::addr_of_mut!((*regs).d0fifosel), n as u16);
-            while rd(core::ptr::addr_of!((*regs).d0fifosel)) & FIFOSEL_CURPIPE_MASK != n as u16 {}
-            wr(core::ptr::addr_of_mut!((*regs).d0fifoctr), FIFOCTR_BCLR);
-            wr(core::ptr::addr_of_mut!((*regs).d0fifosel), 0);
+            u.d0fifosel().write_value(n as u16);
+            while u.d0fifosel().read() & FIFOSEL_CURPIPE_MASK != n as u16 {}
+            u.d0fifoctr().write_value(FIFOCTR_BCLR);
+            u.d0fifosel().write_value(0);
             return;
         }
 
         // Select D0FIFO on this pipe for reading.
-        wr(core::ptr::addr_of_mut!((*regs).d0fifosel), n as u16);
-        while rd(core::ptr::addr_of!((*regs).d0fifosel)) & FIFOSEL_CURPIPE_MASK != n as u16 {}
-        while rd(core::ptr::addr_of!((*regs).d0fifoctr)) & FIFOCTR_FRDY == 0 {}
+        u.d0fifosel().write_value(n as u16);
+        while u.d0fifosel().read() & FIFOSEL_CURPIPE_MASK != n as u16 {}
+        while u.d0fifoctr().read() & FIFOCTR_FRDY == 0 {}
 
         // PIPEMAXP is gated by PIPESEL, not by D0FIFOSEL.CURPIPE — select pipe explicitly.
-        wr(core::ptr::addr_of_mut!((*regs).pipesel), n as u16);
-        let mps = (rd(core::ptr::addr_of!((*regs).pipemaxp)) & PIPEMAXP_MXPS_MASK) as usize;
-        wr(core::ptr::addr_of_mut!((*regs).pipesel), 0);
-        let vld = (rd(core::ptr::addr_of!((*regs).d0fifoctr)) & FIFOCTR_DTLN_MASK) as usize;
+        u.pipesel().write_value(n as u16);
+        let mps = (u.pipemaxp().read() & PIPEMAXP_MXPS_MASK) as usize;
+        u.pipesel().write_value(0);
+        let vld = (u.d0fifoctr().read() & FIFOCTR_DTLN_MASK) as usize;
         let rem = xfer.remaining as usize;
         let len = rem.min(mps).min(vld);
 
@@ -1470,23 +1384,21 @@ unsafe fn pipe_brdy_in(regs: *mut Rusb1Regs, n: usize) {
         // and each access pops one byte and advances the FIFO.  Base+0 is the
         // prohibited lane.
         if len > 0 {
-            let d0fifo_byte = (regs as usize
-                + core::mem::offset_of!(super::regs::Rusb1Regs, d0fifo)
-                + 3) as *const u8;
+            let d0fifo_byte = u.d0fifo_b(3);
             for i in 0..len {
-                *xfer.buf.add(i) = d0fifo_byte.read_volatile();
+                *xfer.buf.add(i) = d0fifo_byte.read();
             }
             xfer.buf = xfer.buf.add(len);
             xfer.remaining = xfer.remaining.saturating_sub(len as u16);
         }
 
         if len < mps {
-            wr(core::ptr::addr_of_mut!((*regs).d0fifoctr), FIFOCTR_BCLR);
+            u.d0fifoctr().write_value(FIFOCTR_BCLR);
         }
 
         // Deselect D0FIFO.
-        wr(core::ptr::addr_of_mut!((*regs).d0fifosel), 0);
-        while rd(core::ptr::addr_of!((*regs).d0fifosel)) & FIFOSEL_CURPIPE_MASK != 0 {}
+        u.d0fifosel().write_value(0);
+        while u.d0fifosel().read() & FIFOSEL_CURPIPE_MASK != 0 {}
 
         let done = (len < mps) || (xfer.remaining == 0);
         if done {
@@ -1499,7 +1411,7 @@ unsafe fn pipe_brdy_in(regs: *mut Rusb1Regs, n: usize) {
 }
 
 /// BRDY on a non-control OUT pipe: write next chunk to D0FIFO.
-unsafe fn pipe_brdy_out(regs: *mut Rusb1Regs, n: usize) {
+unsafe fn pipe_brdy_out(u: Usb, n: usize) {
     unsafe {
         let cs = critical_section::CriticalSection::new();
         let xfer = &mut *HCD_XFER[n].borrow(cs).get();
@@ -1514,19 +1426,17 @@ unsafe fn pipe_brdy_out(regs: *mut Rusb1Regs, n: usize) {
 
         // Select at MBW=32 to match sw_to_hw_fifo's access width, so its internal
         // MBW assertion is a same-value write (no 8→32 port-switch re-trigger).
-        wr(
-            core::ptr::addr_of_mut!((*regs).d0fifosel),
-            n as u16 | (MBW_32 << FIFOSEL_MBW_SHIFT),
-        );
-        while rd(core::ptr::addr_of!((*regs).d0fifosel)) & FIFOSEL_CURPIPE_MASK != n as u16 {}
-        while rd(core::ptr::addr_of!((*regs).d0fifoctr)) & FIFOCTR_FRDY == 0 {}
+        u.d0fifosel()
+            .write_value(n as u16 | (MBW_32 << FIFOSEL_MBW_SHIFT));
+        while u.d0fifosel().read() & FIFOSEL_CURPIPE_MASK != n as u16 {}
+        while u.d0fifoctr().read() & FIFOCTR_FRDY == 0 {}
 
         // PIPEMAXP is gated by PIPESEL, not by D0FIFOSEL.CURPIPE — select pipe explicitly.
-        wr(core::ptr::addr_of_mut!((*regs).pipesel), n as u16);
-        let mps = (rd(core::ptr::addr_of!((*regs).pipemaxp)) & PIPEMAXP_MXPS_MASK) as usize;
-        wr(core::ptr::addr_of_mut!((*regs).pipesel), 0);
+        u.pipesel().write_value(n as u16);
+        let mps = (u.pipemaxp().read() & PIPEMAXP_MXPS_MASK) as usize;
+        u.pipesel().write_value(0);
         let len = rem.min(mps);
-        let fifo = FifoPort::d0fifo(usb_of(regs));
+        let fifo = FifoPort::d0fifo(u);
         sw_to_hw_fifo(&fifo, xfer.buf, len);
         if len < mps {
             fifo_bval(&fifo);
@@ -1534,14 +1444,14 @@ unsafe fn pipe_brdy_out(regs: *mut Rusb1Regs, n: usize) {
         xfer.buf = xfer.buf.add(len);
         xfer.remaining = xfer.remaining.saturating_sub(len as u16);
 
-        wr(core::ptr::addr_of_mut!((*regs).d0fifosel), 0);
-        while rd(core::ptr::addr_of!((*regs).d0fifosel)) & FIFOSEL_CURPIPE_MASK != 0 {}
+        u.d0fifosel().write_value(0);
+        while u.d0fifosel().read() & FIFOSEL_CURPIPE_MASK != 0 {}
         // BRDY fires again when the SIE has consumed this chunk.
     }
 }
 
 /// Dispatch a BRDY event for pipe `n`.
-unsafe fn pipe_brdy(regs: *mut Rusb1Regs, n: usize) {
+unsafe fn pipe_brdy(u: Usb, n: usize) {
     unsafe {
         let ep_addr = {
             let cs = critical_section::CriticalSection::new();
@@ -1551,29 +1461,27 @@ unsafe fn pipe_brdy(regs: *mut Rusb1Regs, n: usize) {
 
         if n == 0 {
             if dir_in {
-                pipe0_in_brdy(regs);
+                pipe0_in_brdy(u);
             }
             // Pipe-0 OUT is handled via BEMP, not BRDY.
         } else if dir_in {
-            pipe_brdy_in(regs, n);
+            pipe_brdy_in(u, n);
         } else {
-            pipe_brdy_out(regs, n);
+            pipe_brdy_out(u, n);
         }
     }
 }
 
 /// Handle NRDY (NAK or STALL) for pipe `n`.
-unsafe fn pipe_nrdy(regs: *mut Rusb1Regs, n: usize) {
-    unsafe {
-        let pid = rd(pipectr_ptr(regs, n)) & PIPECTR_PID_MASK;
-        // PID 0b10 or 0b11 = STALL; otherwise = NAK / general failure.
-        if pid & 0b10 != 0 {
-            HCD_PIPE_STALL.fetch_or(1u16 << n, Ordering::Release);
-        } else {
-            HCD_PIPE_NRDY.fetch_or(1u16 << n, Ordering::Release);
-        }
-        HCD_PIPE_WAKERS[n].wake();
+unsafe fn pipe_nrdy(u: Usb, n: usize) {
+    let pid = pipectr(u, n).read() & PIPECTR_PID_MASK;
+    // PID 0b10 or 0b11 = STALL; otherwise = NAK / general failure.
+    if pid & 0b10 != 0 {
+        HCD_PIPE_STALL.fetch_or(1u16 << n, Ordering::Release);
+    } else {
+        HCD_PIPE_NRDY.fetch_or(1u16 << n, Ordering::Release);
     }
+    HCD_PIPE_WAKERS[n].wake();
 }
 
 // ---------------------------------------------------------------------------
@@ -1608,17 +1516,14 @@ impl<T: pipe::Type, D: pipe::Direction> Drop for Rusb1Pipe<T, D> {
         let epn = (ep_addr & 0x0F) as usize;
         let dir_in = ep_addr & 0x80 != 0;
 
-        unsafe {
-            let regs = Rusb1Regs::ptr(self.port);
-            let e = &mut *regs;
-            wr(pipectr_ptr(regs, pipe), 0);
-            rmw(core::ptr::addr_of_mut!(e.nrdyenb), 1 << pipe, 0);
-            rmw(core::ptr::addr_of_mut!(e.brdyenb), 1 << pipe, 0);
-            wr(core::ptr::addr_of_mut!(e.pipesel), pipe as u16);
-            wr(core::ptr::addr_of_mut!(e.pipecfg), 0);
-            wr(core::ptr::addr_of_mut!(e.pipemaxp), 0);
-            wr(core::ptr::addr_of_mut!(e.pipesel), 0);
-        }
+        let u = usb(self.port);
+        pipectr(u, pipe).write_value(0);
+        u.nrdyenb().modify(|r| *r &= !(1 << pipe));
+        u.brdyenb().modify(|r| *r &= !(1 << pipe));
+        u.pipesel().write_value(pipe as u16);
+        u.pipecfg().write_value(0);
+        u.pipemaxp().write_value(0);
+        u.pipesel().write_value(0);
         critical_section::with(|cs| {
             let alloc = unsafe { &mut *HCD_ALLOC[p].borrow(cs).get() };
             alloc.free_pipe(pipe);
@@ -1839,18 +1744,16 @@ impl<T: pipe::Type, D: pipe::Direction> UsbPipe<T, D> for Rusb1Pipe<T, D> {
             return;
         }
         let dir_in = u8::from(self.ep_info.addr) & 0x80 != 0;
-        unsafe {
-            let regs = Rusb1Regs::ptr(self.port);
-            let ctr = pipectr_ptr(regs, self.pipe as usize);
-            // SQCLR (reset toggle to DATA0) may only be written while the pipe
-            // is halted: NAK it and wait for the SIE to go idle first.
-            wr(ctr, (rd(ctr) & !PIPECTR_PID_MASK) | PIPECTR_PID_NAK);
-            while rd(ctr) & PIPECTR_PBUSY != 0 {}
-            wr(ctr, PIPECTR_SQCLR);
-            // OUT pipes are re-armed immediately; IN pipes wait for request_in().
-            if !dir_in {
-                wr(ctr, (rd(ctr) & !PIPECTR_PID_MASK) | PIPECTR_PID_BUF);
-            }
+        let u = usb(self.port);
+        let ctr = pipectr(u, self.pipe as usize);
+        // SQCLR (reset toggle to DATA0) may only be written while the pipe
+        // is halted: NAK it and wait for the SIE to go idle first.
+        ctr.write_value((ctr.read() & !PIPECTR_PID_MASK) | PIPECTR_PID_NAK);
+        while ctr.read() & PIPECTR_PBUSY != 0 {}
+        ctr.write_value(PIPECTR_SQCLR);
+        // OUT pipes are re-armed immediately; IN pipes wait for request_in().
+        if !dir_in {
+            ctr.write_value((ctr.read() & !PIPECTR_PID_MASK) | PIPECTR_PID_BUF);
         }
     }
 }
