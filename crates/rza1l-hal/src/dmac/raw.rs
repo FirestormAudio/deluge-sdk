@@ -27,18 +27,18 @@ pub unsafe fn init_with_link_descriptor(ch: u8, descriptor: *const u32, dmars_va
         log::trace!(
             "dmac: ch{} writing DCTRL={:#010x}",
             ch,
-            dctrl_reg(ch) as usize
+            dctrl_reg(ch).0
         );
-        crate::mmio::write32(dctrl_reg(ch) as usize, 0);
+        crate::mmio::write32(dctrl_reg(ch).0, 0);
         log::trace!("dmac: ch{} DCTRL ok", ch);
 
         // 2. CHCFG comes from link-descriptor word [4]
         let chcfg_val = descriptor.add(4).read();
-        crate::mmio::write32(ch_reg(ch, OFF_CHCFG) as usize, chcfg_val);
+        crate::mmio::write32(ch_reg(ch, OFF_CHCFG).0, chcfg_val);
         log::trace!("dmac: ch{} CHCFG ok", ch);
 
         // 3. DMARS: even channel → bits [15:0], odd channel → bits [31:16]
-        let dmars = dmars_reg(ch) as usize;
+        let dmars = dmars_reg(ch).0;
         let (shifted, mask) = if ch & 1 == 0 {
             (dmars_val & 0xFFFF, 0xFFFF_0000u32)
         } else {
@@ -48,7 +48,7 @@ pub unsafe fn init_with_link_descriptor(ch: u8, descriptor: *const u32, dmars_va
         log::trace!("dmac: ch{} DMARS ok", ch);
 
         // 4. NXLA = address of the link descriptor
-        crate::mmio::write32(ch_reg(ch, OFF_NXLA) as usize, descriptor as u32);
+        crate::mmio::write32(ch_reg(ch, OFF_NXLA).0, descriptor as u32);
         log::trace!("dmac: ch{} NXLA ok", ch);
     }
 }
@@ -68,12 +68,12 @@ pub unsafe fn channel_start(ch: u8) {
         log::trace!("dmac: ch{} start (SWRST + SETEN)", ch);
         let chctrl = ch_reg(ch, OFF_CHCTRL);
         // CHCTRL bits are write-1-to-trigger; write as clean values, not RMW.
-        chctrl.write_volatile(CHCTRL_SWRST);
+        chctrl.write(CHCTRL_SWRST);
         // DSB required: drain write buffer so SWRST reaches the DMAC before SETEN.
         // (Host builds — the simulator — have no DMAC and no barrier instruction.)
         #[cfg(target_os = "none")]
         core::arch::asm!("dsb", options(nostack));
-        chctrl.write_volatile(CHCTRL_SETEN);
+        chctrl.write(CHCTRL_SETEN);
     }
 }
 
@@ -91,7 +91,7 @@ pub unsafe fn channel_start(ch: u8) {
 /// Writes the channel's `CHCTRL` and DMARS registers.
 pub unsafe fn stop(ch: u8) {
     unsafe {
-        let chctrl = ch_reg(ch, OFF_CHCTRL) as usize;
+        let chctrl = ch_reg(ch, OFF_CHCTRL).0;
         crate::mmio::write32(chctrl, CHCTRL_CLREN);
         #[cfg(target_os = "none")]
         core::arch::asm!("dsb", options(nostack));
@@ -100,7 +100,7 @@ pub unsafe fn stop(ch: u8) {
         // DMARS, so a latched route (e.g. SCIF1-RX = 0x66) would keep claiming
         // its request line and starve the next program's channel. Only this
         // channel's half: the other half routes its pair.
-        let dmars = dmars_reg(ch) as usize;
+        let dmars = dmars_reg(ch).0;
         let keep = if ch % 2 == 0 { 0xFFFF_0000 } else { 0x0000_FFFF };
         crate::mmio::write32(dmars, crate::mmio::read32(dmars) & keep);
     }
@@ -114,7 +114,7 @@ pub unsafe fn stop(ch: u8) {
 /// Reads a memory-mapped DMA register.
 #[inline]
 pub unsafe fn transfer_in_flight(ch: u8) -> bool {
-    let chstat = unsafe { ch_reg(ch, OFF_CHSTAT).read_volatile() };
+    let chstat = unsafe { ch_reg(ch, OFF_CHSTAT).read() };
     chstat & CHSTAT_EN != 0 && chstat & CHSTAT_TC == 0
 }
 
@@ -126,7 +126,7 @@ pub unsafe fn transfer_in_flight(ch: u8) -> bool {
 /// Reads a memory-mapped DMA register.
 #[inline]
 pub unsafe fn current_src(ch: u8) -> u32 {
-    unsafe { ch_reg(ch, OFF_CRSA).read_volatile() }
+    unsafe { ch_reg(ch, OFF_CRSA).read() }
 }
 
 /// Read the current DMA **destination** address for channel `ch` (`CRDA_n`).
@@ -137,7 +137,7 @@ pub unsafe fn current_src(ch: u8) -> u32 {
 /// Reads a memory-mapped DMA register.
 #[inline]
 pub unsafe fn current_dst(ch: u8) -> u32 {
-    unsafe { ch_reg(ch, OFF_CRDA).read_volatile() }
+    unsafe { ch_reg(ch, OFF_CRDA).read() }
 }
 
 /// Initialise a DMAC channel in **register mode** for a memory→peripheral
@@ -167,23 +167,23 @@ pub unsafe fn init_register_mode(ch: u8, chcfg: u32, dst: u32, dmars: u32) {
         );
 
         // 1. Clear group DCTRL.
-        dctrl_reg(ch).write_volatile(0);
+        dctrl_reg(ch).write(0);
 
         // 2. CHCFG / CHITVL / CHEXT.
-        ch_reg(ch, OFF_CHCFG).write_volatile(chcfg);
-        ch_reg(ch, OFF_CHITVL).write_volatile(0);
-        ch_reg(ch, OFF_CHEXT).write_volatile(0);
+        ch_reg(ch, OFF_CHCFG).write(chcfg);
+        ch_reg(ch, OFF_CHITVL).write(0);
+        ch_reg(ch, OFF_CHEXT).write(0);
 
         // 3. Fixed destination (peripheral register).
-        ch_reg(ch, OFF_N0DA).write_volatile(dst);
+        ch_reg(ch, OFF_N0DA).write(dst);
 
         // 4. Software reset + clear TC.
         // CHCTRL action bits are write-1-to-trigger; write as a clean value
         // (not RMW) to avoid re-triggering actions from stale status read-back.
         let chctrl = ch_reg(ch, OFF_CHCTRL);
-        chctrl.write_volatile(CHCTRL_SWRST | CHCTRL_CLRTC);
+        chctrl.write(CHCTRL_SWRST | CHCTRL_CLRTC);
         // Re-write N0DA after reset (matches C firmware's double-write pattern).
-        ch_reg(ch, OFF_N0DA).write_volatile(dst);
+        ch_reg(ch, OFF_N0DA).write(dst);
 
         // 5. DMARS.
         let dmars_ptr = dmars_reg(ch);
@@ -192,7 +192,7 @@ pub unsafe fn init_register_mode(ch: u8, chcfg: u32, dst: u32, dmars: u32) {
         } else {
             ((dmars & 0xFFFF) << 16, 0x0000_FFFFu32)
         };
-        dmars_ptr.write_volatile((dmars_ptr.read_volatile() & mask) | shifted);
+        dmars_ptr.write((dmars_ptr.read() & mask) | shifted);
     }
 }
 
@@ -242,21 +242,21 @@ pub unsafe fn init_register_mode_rx(ch: u8, chcfg: u32, src: u32, dmars: u32) {
         );
 
         // 1. Clear group DCTRL.
-        dctrl_reg(ch).write_volatile(0);
+        dctrl_reg(ch).write(0);
 
         // 2. CHCFG / CHITVL / CHEXT.
-        ch_reg(ch, OFF_CHCFG).write_volatile(chcfg);
-        ch_reg(ch, OFF_CHITVL).write_volatile(0);
-        ch_reg(ch, OFF_CHEXT).write_volatile(0);
+        ch_reg(ch, OFF_CHCFG).write(chcfg);
+        ch_reg(ch, OFF_CHITVL).write(0);
+        ch_reg(ch, OFF_CHEXT).write(0);
 
         // 3. Fixed source (peripheral register).
-        ch_reg(ch, OFF_N0SA).write_volatile(src);
+        ch_reg(ch, OFF_N0SA).write(src);
 
         // 4. Software reset + clear TC.
         let chctrl = ch_reg(ch, OFF_CHCTRL);
-        chctrl.write_volatile(CHCTRL_SWRST | CHCTRL_CLRTC);
+        chctrl.write(CHCTRL_SWRST | CHCTRL_CLRTC);
         // Re-write N0SA after reset (matches C firmware's double-write pattern).
-        ch_reg(ch, OFF_N0SA).write_volatile(src);
+        ch_reg(ch, OFF_N0SA).write(src);
 
         // 5. DMARS.
         let dmars_ptr = dmars_reg(ch);
@@ -265,7 +265,7 @@ pub unsafe fn init_register_mode_rx(ch: u8, chcfg: u32, src: u32, dmars: u32) {
         } else {
             ((dmars & 0xFFFF) << 16, 0x0000_FFFFu32)
         };
-        dmars_ptr.write_volatile((dmars_ptr.read_volatile() & mask) | shifted);
+        dmars_ptr.write((dmars_ptr.read() & mask) | shifted);
     }
 }
 
@@ -285,10 +285,10 @@ pub unsafe fn start_transfer_rx(ch: u8, dst: u32, count: u32) {
             dst,
             count
         );
-        ch_reg(ch, OFF_N0DA).write_volatile(dst);
-        ch_reg(ch, OFF_N0TB).write_volatile(count);
+        ch_reg(ch, OFF_N0DA).write(dst);
+        ch_reg(ch, OFF_N0TB).write(count);
         let chctrl = ch_reg(ch, OFF_CHCTRL);
-        chctrl.write_volatile(CHCTRL_CLRTC | CHCTRL_SETEN);
+        chctrl.write(CHCTRL_CLRTC | CHCTRL_SETEN);
     }
 }
 
@@ -309,11 +309,11 @@ pub unsafe fn start_transfer(ch: u8, src: u32, count: u32) {
             src,
             count
         );
-        ch_reg(ch, OFF_N0SA).write_volatile(src);
-        ch_reg(ch, OFF_N0TB).write_volatile(count);
+        ch_reg(ch, OFF_N0SA).write(src);
+        ch_reg(ch, OFF_N0TB).write(count);
         // CHCTRL action bits are write-1-to-trigger; write as a clean value.
         let chctrl = ch_reg(ch, OFF_CHCTRL);
-        chctrl.write_volatile(CHCTRL_CLRTC | CHCTRL_SETEN);
+        chctrl.write(CHCTRL_CLRTC | CHCTRL_SETEN);
     }
 }
 
@@ -327,7 +327,7 @@ pub async fn wait_transfer_complete(ch: u8) {
         DMAC_WAKERS[ch as usize].register(cx.waker());
         // Check TC flag (CHSTAT.TC = bit 6) directly to avoid missing a
         // completion that arrived before we registered the waker.
-        let chstat = unsafe { ch_reg(ch, OFF_CHSTAT).read_volatile() };
+        let chstat = unsafe { ch_reg(ch, OFF_CHSTAT).read() };
         if chstat & CHSTAT_TC != 0 {
             // TC bit set — transfer complete
             Poll::Ready(())

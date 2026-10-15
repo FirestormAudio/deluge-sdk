@@ -91,18 +91,18 @@ fn ch_base(ch: u8) -> usize {
 }
 
 #[inline]
-fn ch_reg(ch: u8, off: usize) -> *mut u32 {
-    (ch_base(ch) + off) as *mut u32
+fn ch_reg(ch: u8, off: usize) -> crate::mmio::Reg32 {
+    crate::mmio::Reg32(ch_base(ch) + off)
 }
 
 #[inline]
-fn dctrl_reg(ch: u8) -> *mut u32 {
-    (if ch < 8 { DCTRL_0_7 } else { DCTRL_8_15 }) as *mut u32
+fn dctrl_reg(ch: u8) -> crate::mmio::Reg32 {
+    crate::mmio::Reg32(if ch < 8 { DCTRL_0_7 } else { DCTRL_8_15 })
 }
 
 #[inline]
-fn dmars_reg(ch: u8) -> *mut u32 {
-    (DMARS_BASE + (ch as usize / 2) * 4) as *mut u32
+fn dmars_reg(ch: u8) -> crate::mmio::Reg32 {
+    crate::mmio::Reg32(DMARS_BASE + (ch as usize / 2) * 4)
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -195,6 +195,17 @@ impl<'d> Dma<'d> {
         Self { ch: C::NUMBER, _channel: PhantomData }
     }
 
+    /// Channel `C` without its singleton, for code that can't reach the channel's owner: a fault
+    /// handler draining a transfer, or a loader stopping DMA before it hands over the chip.
+    /// Touches no register and binds no interrupt.
+    ///
+    /// # Safety
+    /// The channel's owner must not run while the stolen handle is in use (interrupts masked, or
+    /// the owner gone for good).
+    pub unsafe fn steal<C: Channel>() -> Dma<'static> {
+        Dma { ch: C::NUMBER, _channel: PhantomData }
+    }
+
     /// The channel number.
     pub fn number(&self) -> u8 {
         self.ch
@@ -214,6 +225,24 @@ impl<'d> Dma<'d> {
     /// `src` is the bus address every transfer reads from.
     pub unsafe fn init_register_mode_rx(&mut self, chcfg: u32, src: u32, dmars: u32) {
         unsafe { raw::init_register_mode_rx(self.ch, chcfg, src, dmars) }
+    }
+
+    /// See [`raw::init_with_link_descriptor`].
+    ///
+    /// # Safety
+    /// `descriptor` is the bus address of a 32-byte-aligned, 8-word link descriptor that stays
+    /// valid, with every descriptor it links to, for as long as the channel runs.
+    pub unsafe fn init_with_link_descriptor(&mut self, descriptor: *const u32, dmars: u32) {
+        unsafe { raw::init_with_link_descriptor(self.ch, descriptor, dmars) }
+    }
+
+    /// See [`raw::channel_start`].
+    ///
+    /// # Safety
+    /// [`init_with_link_descriptor`](Self::init_with_link_descriptor) has run, and its
+    /// descriptors' buffers are valid and unaliased while the channel runs.
+    pub unsafe fn channel_start(&mut self) {
+        unsafe { raw::channel_start(self.ch) }
     }
 
     /// See [`raw::start_transfer`].
@@ -259,6 +288,19 @@ impl<'d> Dma<'d> {
     pub fn current_dst(&self) -> u32 {
         // SAFETY: a read of this owned channel's register.
         unsafe { raw::current_dst(self.ch) }
+    }
+}
+
+/// Stop every channel and release its request route: [`Dma::stop`] for channels 0–15.
+///
+/// For a loader handing the chip to another program, where a circular channel (a UART receive
+/// ring) would keep writing into memory the next program owns.
+///
+/// # Safety
+/// Every channel's transfer ends; no `Dma` may be used afterwards.
+pub unsafe fn stop_all() {
+    for ch in 0..16 {
+        unsafe { raw::stop(ch) };
     }
 }
 
@@ -358,7 +400,7 @@ static DMAC_BLOCK_READY: [AtomicBool; 16] = [const { AtomicBool::new(false) }; 1
 /// block, and wake the awaiter.
 fn on_block_int(ch: u8) {
     // CHCTRL bits are write-1-to-trigger; write a clean value (not RMW).
-    unsafe { ch_reg(ch, OFF_CHCTRL).write_volatile(CHCTRL_CLRTC) };
+    unsafe { ch_reg(ch, OFF_CHCTRL).write(CHCTRL_CLRTC) };
     DMAC_BLOCK_READY[ch as usize].store(true, Ordering::Release);
     DMAC_WAKERS[ch as usize].wake();
 }
@@ -417,31 +459,31 @@ mod tests {
 
     #[test]
     fn ch_reg_adds_offset() {
-        assert_eq!(ch_reg(0, OFF_CHCFG) as usize, 0xE820_0000 + 0x2C);
-        assert_eq!(ch_reg(8, OFF_NXLA) as usize, 0xE820_0400 + 0x38);
-        assert_eq!(ch_reg(5, OFF_CHSTAT) as usize, ch_base(5) + OFF_CHSTAT);
+        assert_eq!(ch_reg(0, OFF_CHCFG).0, 0xE820_0000 + 0x2C);
+        assert_eq!(ch_reg(8, OFF_NXLA).0, 0xE820_0400 + 0x38);
+        assert_eq!(ch_reg(5, OFF_CHSTAT).0, ch_base(5) + OFF_CHSTAT);
     }
 
     #[test]
     fn dctrl_selects_group_register() {
         // Channels 0–7 share one DCTRL; 8–15 share another.
         for ch in 0..8u8 {
-            assert_eq!(dctrl_reg(ch) as usize, 0xE820_0300);
+            assert_eq!(dctrl_reg(ch).0, 0xE820_0300);
         }
         for ch in 8..16u8 {
-            assert_eq!(dctrl_reg(ch) as usize, 0xE820_0700);
+            assert_eq!(dctrl_reg(ch).0, 0xE820_0700);
         }
     }
 
     #[test]
     fn dmars_register_is_shared_per_channel_pair() {
         // DMARS holds two channels' resource selectors per 32-bit word.
-        assert_eq!(dmars_reg(0) as usize, 0xFCFE_1000);
-        assert_eq!(dmars_reg(1) as usize, 0xFCFE_1000);
-        assert_eq!(dmars_reg(2) as usize, 0xFCFE_1004);
-        assert_eq!(dmars_reg(3) as usize, 0xFCFE_1004);
-        assert_eq!(dmars_reg(14) as usize, 0xFCFE_101C);
-        assert_eq!(dmars_reg(15) as usize, 0xFCFE_101C);
+        assert_eq!(dmars_reg(0).0, 0xFCFE_1000);
+        assert_eq!(dmars_reg(1).0, 0xFCFE_1000);
+        assert_eq!(dmars_reg(2).0, 0xFCFE_1004);
+        assert_eq!(dmars_reg(3).0, 0xFCFE_1004);
+        assert_eq!(dmars_reg(14).0, 0xFCFE_101C);
+        assert_eq!(dmars_reg(15).0, 0xFCFE_101C);
     }
 
     #[test]
@@ -462,22 +504,22 @@ mod tests {
         unsafe { init_with_link_descriptor(ch, desc.as_ptr(), 0x00E1) };
 
         assert_eq!(
-            crate::mmio::test::peek32(dctrl_reg(ch) as usize),
+            crate::mmio::test::peek32(dctrl_reg(ch).0),
             0,
             "DCTRL cleared"
         );
         assert_eq!(
-            crate::mmio::test::peek32(ch_reg(ch, OFF_CHCFG) as usize),
+            crate::mmio::test::peek32(ch_reg(ch, OFF_CHCFG).0),
             0xABCD_1234,
             "CHCFG from desc[4]"
         );
         // Even channel → DMARS resource selector in the low 16 bits.
         assert_eq!(
-            crate::mmio::test::peek32(dmars_reg(ch) as usize),
+            crate::mmio::test::peek32(dmars_reg(ch).0),
             0x0000_00E1
         );
         assert_eq!(
-            crate::mmio::test::peek32(ch_reg(ch, OFF_NXLA) as usize),
+            crate::mmio::test::peek32(ch_reg(ch, OFF_NXLA).0),
             desc.as_ptr() as u32,
             "NXLA = descriptor address"
         );
@@ -489,7 +531,7 @@ mod tests {
     fn init_link_descriptor_odd_channel_uses_high_dmars_half() {
         crate::mmio::test::reset();
         // Channel 6 (even) and 7 (odd) share dmars_reg.
-        let dmars = dmars_reg(7) as usize;
+        let dmars = dmars_reg(7).0;
         crate::mmio::test::poke32(dmars, 0x0000_00E1); // ch6 already set the low half
         let desc = [0u32; 8];
         unsafe { init_with_link_descriptor(7, desc.as_ptr(), 0x00E2) };
@@ -509,15 +551,15 @@ mod tests {
         let ch = 5u8;
         // Seed a live channel-control value and a latched SCIF1-RX route in
         // this odd channel's (high) half of DMARS.
-        crate::mmio::test::poke32(ch_reg(ch, OFF_CHCTRL) as usize, CHCTRL_SETEN);
-        crate::mmio::test::poke32(dmars_reg(ch) as usize, 0x0066_0000);
+        crate::mmio::test::poke32(ch_reg(ch, OFF_CHCTRL).0, CHCTRL_SETEN);
+        crate::mmio::test::poke32(dmars_reg(ch).0, 0x0066_0000);
         unsafe { stop(ch) };
         // Last CHCTRL write is the software reset; DMARS is released.
         assert_eq!(
-            crate::mmio::test::peek32(ch_reg(ch, OFF_CHCTRL) as usize),
+            crate::mmio::test::peek32(ch_reg(ch, OFF_CHCTRL).0),
             CHCTRL_SWRST
         );
-        assert_eq!(crate::mmio::test::peek32(dmars_reg(ch) as usize), 0);
+        assert_eq!(crate::mmio::test::peek32(dmars_reg(ch).0), 0);
     }
 
     /// Channels share DMARS in pairs; stopping one must leave its partner's
@@ -525,7 +567,7 @@ mod tests {
     #[test]
     fn stop_keeps_the_paired_channels_route() {
         crate::mmio::test::reset();
-        let dmars = dmars_reg(4) as usize;
+        let dmars = dmars_reg(4).0;
         crate::mmio::test::poke32(dmars, 0x0062_0066); // ch5 = 0x62, ch4 = 0x66
         unsafe { stop(4) };
         assert_eq!(crate::mmio::test::peek32(dmars), 0x0062_0000, "ch5 kept");
@@ -540,7 +582,7 @@ mod typed_tests {
     use super::*;
     use crate::interrupt::{Handler, Interrupt};
     use crate::mmio::test;
-    use crate::peripherals::{DMA_CH0, DMA_CH4, DMA_CH7, DMA_CH9, DMA_CH15};
+    use crate::peripherals::{DMA_CH0, DMA_CH4, DMA_CH7, DMA_CH9, DMA_CH10, DMA_CH13, DMA_CH15};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::task::{Wake, Waker};
@@ -596,5 +638,64 @@ mod typed_tests {
         DMAC_WAKERS[4].register(&Waker::from(wakes.clone()));
         unsafe { <InterruptHandler<DMA_CH4> as Handler<_>>::on_interrupt() };
         assert_eq!(wakes.0.load(Ordering::Relaxed), 1);
+    }
+    #[test]
+    fn a_stolen_channel_touches_no_register() {
+        test::reset();
+        let dma = unsafe { Dma::steal::<DMA_CH10>() };
+        assert_eq!(dma.number(), 10);
+        assert!(test::log().is_empty());
+    }
+
+    #[test]
+    fn stop_all_stops_every_channel_as_raw_stop_does() {
+        test::reset();
+        for ch in 0..16 {
+            unsafe { raw::stop(ch) };
+        }
+        let one_by_one = test::writes();
+        test::reset();
+        unsafe { stop_all() };
+        assert_eq!(test::writes(), one_by_one);
+    }
+
+    #[test]
+    fn an_owned_channel_starts_a_link_descriptor_as_raw_does() {
+        let desc: [u32; 8] = [0, 0, 0, 0, 0x8110_0265, 0, 0, 0];
+        test::reset();
+        unsafe {
+            raw::init_with_link_descriptor(13, desc.as_ptr(), 0x62);
+            raw::channel_start(13);
+        }
+        let raw_writes = test::writes();
+
+        let mut dma = unsafe { Dma::steal::<DMA_CH13>() };
+        test::reset();
+        unsafe {
+            dma.init_with_link_descriptor(desc.as_ptr(), 0x62);
+            dma.channel_start();
+        }
+        assert_eq!(test::writes(), raw_writes);
+    }
+
+    #[test]
+    fn register_mode_setup_goes_through_the_seam() {
+        test::reset();
+        unsafe { raw::init_register_mode(4, 0x0020_026C, 0xE800_C804, 0x121) };
+        // Channel 4's block is at 0xE820_0100: DCTRL_0_7; CHCFG, CHITVL, CHEXT; N0DA; CHCTRL
+        // (SWRST | CLRTC); N0DA again; DMARS2's low half.
+        assert_eq!(
+            test::writes(),
+            [
+                (0xE820_0300, 0),
+                (0xE820_012C, 0x0020_026C),
+                (0xE820_0130, 0),
+                (0xE820_0134, 0),
+                (0xE820_0104, 0xE800_C804),
+                (0xE820_0128, (1 << 3) | (1 << 6)),
+                (0xE820_0104, 0xE800_C804),
+                (0xFCFE_1008, 0x121),
+            ]
+        );
     }
 }

@@ -189,9 +189,7 @@ pub(crate) unsafe fn quiesce_for_handoff() {
         // Stop + software-reset every DMA channel and clear its DMARS request
         // route (covers PIC RX/TX, SD, and OLED channels). Clearing DMARS lets
         // Linux's rz-dmac claim SCIF1-RX cleanly.
-        for ch in 0..16u8 {
-            rza1l_hal::dmac::raw::stop(ch);
-        }
+        rza1l_hal::dmac::stop_all();
         // Stop the Embassy time-driver timers (OSTM0 free-run + OSTM1 alarm).
         rza1l_hal::ostm::stop(0);
         rza1l_hal::ostm::stop(1);

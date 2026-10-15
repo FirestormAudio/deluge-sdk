@@ -404,8 +404,7 @@ pub unsafe fn disable(id: u16) {
         if (id as usize) >= INT_ID_TOTAL {
             return;
         }
-        let addr = (GICD_ICENABLER0 as *mut u32).add((id >> 5) as usize);
-        addr.write_volatile(1u32 << (id & 31));
+        crate::mmio::write32(GICD_ICENABLER0 + 4 * (id >> 5) as usize, 1u32 << (id & 31));
     }
 }
 
