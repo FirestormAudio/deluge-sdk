@@ -587,7 +587,10 @@ impl<'d> UartRx<'d> {
             dma.mask_interrupt();
             dma.init_with_link_descriptor(desc_addr as *const u32, rx_dmars(ch));
             dma.channel_start();
-            RX_DMA_ACTIVE[ch].store(true, Ordering::Relaxed);
+            // The read position before the ring counts as active: a stolen reader
+            // ([`UartRx::steal`]) that sees it active must also see where to read.
+            RX_READ[T::RING].store(buf_base, Ordering::Release);
+            RX_DMA_ACTIVE[ch].store(true, Ordering::Release);
             // TIE|RIE|TE|RE: route both requests; the GIC's RXI stays off, so receive requests go
             // only to the DMAC.
             wr16(b + SCSCR, TIE | RIE | RE | TE);
@@ -597,24 +600,28 @@ impl<'d> UartRx<'d> {
                 dma_ch,
                 buf_base
             );
-            RX_READ[T::RING].store(buf_base, Ordering::Release);
             Self { ch, ring: T::RING, dma, base: buf_base }
         }
     }
 
     /// The next received byte, or `None` if the ring is empty.
     pub fn try_read(&mut self) -> Option<u8> {
-        let read = RX_READ[self.ring].load(Ordering::Acquire);
-        // CRDA: where the DMAC writes next.
-        if self.dma.current_dst() == read {
-            return None;
-        }
-        // SAFETY: `read` is inside this UART's ring. Read through the uncached alias: the DMAC
-        // wrote physical RAM, and a cached line may be stale.
-        let byte = unsafe { crate::uncached(read as usize as *mut u8).read_volatile() };
-        let offset = (read - self.base + 1) & (DMA_RX_BUF_SIZE as u32 - 1);
-        RX_READ[self.ring].store(self.base + offset, Ordering::Release);
-        Some(byte)
+        // One step, interrupts masked: a stolen reader running in an interrupt (a freeze raised
+        // from an interrupt-priority executor) must not land between this load and store, or
+        // the store would rewind past the bytes it consumed and they'd be delivered again.
+        critical_section::with(|_| {
+            let read = RX_READ[self.ring].load(Ordering::Acquire);
+            // CRDA: where the DMAC writes next.
+            if self.dma.current_dst() == read {
+                return None;
+            }
+            // SAFETY: `read` is inside this UART's ring. Read through the uncached alias: the
+            // DMAC wrote physical RAM, and a cached line may be stale.
+            let byte = unsafe { crate::uncached(read as usize as *mut u8).read_volatile() };
+            let offset = (read - self.base + 1) & (DMA_RX_BUF_SIZE as u32 - 1);
+            RX_READ[self.ring].store(self.base + offset, Ordering::Release);
+            Some(byte)
+        })
     }
 
     /// SCIF `T`'s receiver, read through its ring's DMA channel `C`, without the owner: for a
@@ -623,10 +630,13 @@ impl<'d> UartRx<'d> {
     /// started ([`Uart::new`]).
     ///
     /// # Safety
-    /// `C` is the channel T's ring runs on, and nothing else reads T's ring while the stolen
-    /// receiver is in use: interrupts masked, or the owner's executor blocked in the caller.
+    /// `C` is the channel T's ring runs on, and the owner doesn't read T's ring while the stolen
+    /// receiver is in use: interrupts are masked, the owner's executor is blocked in the caller,
+    /// or the caller is an interrupt (an interrupt-priority executor) that preempted the owner.
+    /// [`try_read`](Self::try_read) masks interrupts across its update, so an owner preempted in
+    /// it never rewinds what the stolen receiver consumed.
     pub unsafe fn steal<T: RxDmaInstance, C: crate::dmac::Channel>() -> Option<UartRx<'static>> {
-        if !RX_DMA_ACTIVE[T::INDEX].load(Ordering::Relaxed) {
+        if !RX_DMA_ACTIVE[T::INDEX].load(Ordering::Acquire) {
             return None;
         }
         // SAFETY: the ring's address only; the caller's contract covers its use.

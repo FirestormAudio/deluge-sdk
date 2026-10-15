@@ -182,8 +182,9 @@ pub fn try_read_pic() -> Option<u8> {
 /// [`init_pic`].
 ///
 /// # Safety
-/// Nothing else reads the PIC ring while the receiver is in use: interrupts masked, or the
-/// executor that runs the PIC task blocked in the caller.
+/// The PIC task doesn't read the ring while the receiver is in use: interrupts are masked, the
+/// executor that runs the PIC task is blocked in the caller, or the caller is an interrupt (an
+/// interrupt-priority executor) that preempted it.
 pub unsafe fn steal_pic_rx() -> Option<UartRx<'static>> {
     // SAFETY: the PIC ring runs on PicRxDma; the caller's contract covers the rest.
     unsafe { UartRx::steal::<PicScif, PicRxDma>() }
