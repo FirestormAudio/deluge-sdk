@@ -1568,6 +1568,12 @@ pub unsafe fn dcd_int_handler(port: u8) {
                     // before the hardware finishes toggling SQMON on the host
                     // ACK, and with the BEMP status bit already cleared there
                     // would be no later interrupt to recover the completion.
+                    //
+                    // Disable this pipe's BEMP here, as Linux does when a packet
+                    // completes (usbhsf_tx_irq_ctrl(pipe, 0)): the empty pipe stays
+                    // at BUF and BEMP re-asserts while the host polls it, a storm
+                    // that would starve the task `write()` must wake.
+                    pipe_bemp_disable(u, n);
                     PIPE_DONE.fetch_or(1u16 << n, Ordering::Release);
                     PIPE_WAKERS[n].wake();
                 }
@@ -1768,6 +1774,37 @@ mod tests {
         assert_eq!(
             ctr & (PIPECTR_PID_MASK | PIPECTR_CCPL),
             PIPECTR_PID_BUF | PIPECTR_CCPL
+        );
+    }
+
+    /// The BEMP that ends an IN transfer turns that pipe's BEMP interrupt off. The pipe stays at
+    /// PID=BUF with its buffer empty, and while the host polls it with IN tokens the BEMP keeps
+    /// re-asserting: left enabled until `write()` gets to run, it is an interrupt storm that keeps
+    /// the task from ever running (seen on hardware as a CDC port that hangs once opened).
+    #[test]
+    fn the_bemp_that_ends_an_in_transfer_disables_the_pipes_bemp() {
+        const PIPE: usize = 4;
+        let u = usb(0);
+        test::reset();
+        for r in [u.intsts(0).addr(), u.bempsts().addr()] {
+            test::rcw0(r);
+        }
+        test::poke16(u.intsts(0).addr(), INTSTS0_BEMP);
+        test::poke16(u.bempsts().addr(), 1 << PIPE);
+        test::poke16(u.bempenb().addr(), 1 << PIPE);
+        PIPE_IS_IN.fetch_or(1 << PIPE, Ordering::Relaxed);
+        critical_section::with(|cs| unsafe { (*PIPE_XFER[PIPE].borrow(cs).get()).remaining = 0 });
+        PIPE_DONE.fetch_and(!(1 << PIPE), Ordering::Relaxed);
+        unsafe { dcd_int_handler(0) };
+        assert_ne!(
+            PIPE_DONE.load(Ordering::Acquire) & (1 << PIPE),
+            0,
+            "the transfer completes"
+        );
+        assert_eq!(
+            test::peek16(u.bempenb().addr()) & (1 << PIPE),
+            0,
+            "BEMP left enabled"
         );
     }
 }
