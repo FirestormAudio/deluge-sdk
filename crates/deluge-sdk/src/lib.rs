@@ -660,6 +660,10 @@ pub mod __rt {
                 sd_card: Some(board.sd_card),
                 sd_tx_dma: Some(board.dma.sd_tx),
                 sd_rx_dma: Some(board.dma.sd_rx),
+                audio_ssi: Some(board.audio_ssi),
+                ssi_tx_dma: Some(board.dma.ssi_tx),
+                ssi_rx_dma: Some(board.dma.ssi_rx),
+                scux_ffd0_dma: Some(board.dma.scux_ffd0),
             });
 
             // App's synchronous, interrupts-masked initialisation.

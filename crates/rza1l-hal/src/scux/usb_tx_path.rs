@@ -23,14 +23,9 @@
 //!   output path (ch 0) and the USB RX SRC path (ch 3/5).
 //! - 2SRC unit 1, pair 0 is used (mask bit 2 in SCUX sub-block registers).
 
-use core::sync::atomic::{AtomicU8, Ordering};
-
 use crate::UNCACHED_MIRROR_OFFSET;
+use crate::dmac::Dma;
 use crate::scux::{self, AudioInfo, IpcSel, MixConfig, OpcSel, SrcConfig, SrcMode};
-
-/// DMA channels this path was initialised with (`u8::MAX` = not yet initialised).
-static FFD_DMA_CH: AtomicU8 = AtomicU8::new(u8::MAX);
-static FFU_DMA_CH: AtomicU8 = AtomicU8::new(u8::MAX);
 
 /// Number of stereo frames in the USB TX SRC input (TX) buffer.
 pub const SRC_TX_FRAMES: usize = 1024;
@@ -77,14 +72,12 @@ const SRC_PAIR: u8 = 0;
 /// Uses `start_path` (read-modify-write on DMACR) so concurrent DVU and USB
 /// RX SRC paths are not disturbed.
 ///
-/// `ffd_dma_ch`/`ffu_dma_ch` are the DMA channels the board assigns to this path's FFD and FFU;
-/// they are remembered for [`tx_current_ptr`] and [`rx_current_ptr`].
+/// `ffd`/`ffu` are the DMA channels the board assigns to this path's FFD and FFU; SCUX keeps
+/// them, with their completion interrupts masked, for [`tx_current_ptr`] and [`rx_current_ptr`].
 ///
 /// # Safety
 /// Must be called from a single-threaded context after `crate::stb::init()`.
-pub unsafe fn init(ffd_dma_ch: u8, ffu_dma_ch: u8, fin_hz: u32, fout_hz: u32) {
-    FFD_DMA_CH.store(ffd_dma_ch, Ordering::Relaxed);
-    FFU_DMA_CH.store(ffu_dma_ch, Ordering::Relaxed);
+pub unsafe fn init(ffd: Dma<'static>, ffu: Dma<'static>, fin_hz: u32, fout_hz: u32) {
     unsafe {
         log::debug!(
             "scux_usb_tx_path: init async SRC {} Hz → {} Hz",
@@ -97,12 +90,12 @@ pub unsafe fn init(ffd_dma_ch: u8, ffu_dma_ch: u8, fin_hz: u32, fout_hz: u32) {
         // DMA: TX buffer → FFD0_2 (DMA ch 2)
         let tx_ptr = core::ptr::addr_of!(SRC_TX_BUF.0[0]) as *const u32;
         let tx_bytes = SRC_TX_BUF_LEN * core::mem::size_of::<i32>();
-        scux::init_ffd_dma(FFD_CH, ffd_dma_ch, tx_ptr, tx_bytes);
+        scux::init_ffd_dma(FFD_CH, ffd, tx_ptr, tx_bytes);
 
         // DMA: FFU0_2 → RX buffer (DMA ch 8)
         let rx_ptr = core::ptr::addr_of_mut!(SRC_RX_BUF.0[0]) as *mut u32;
         let rx_bytes = SRC_RX_BUF_LEN * core::mem::size_of::<i32>();
-        scux::init_ffu_dma(FFU_CH, ffu_dma_ch, rx_ptr, rx_bytes);
+        scux::init_ffu_dma(FFU_CH, ffu, rx_ptr, rx_bytes);
 
         // Sub-block config
         scux::configure_ipc(IPC_CH, IpcSel::FfdToSrcAsync);
@@ -191,8 +184,7 @@ pub fn rx_buf_end() -> *const i32 {
 /// Current DMA write position in the RX buffer (uncached), aligned to one
 /// stereo frame.  Read up to this point to drain converted audio.
 pub fn rx_current_ptr() -> *const i32 {
-    let ch = scux::recorded_dma_channel(&FFU_DMA_CH);
-    let crda = unsafe { crate::dmac::raw::current_dst(ch) };
+    let crda = scux::ffu_current_dst(FFU_CH as usize);
     let aligned = crda & !7u32;
     (aligned as usize + crate::UNCACHED_MIRROR_OFFSET) as *const i32
 }
@@ -200,8 +192,7 @@ pub fn rx_current_ptr() -> *const i32 {
 /// Current DMA read position in the TX buffer (uncached), aligned to one
 /// stereo frame.  Write ahead of this pointer.
 pub fn tx_current_ptr() -> *mut i32 {
-    let ch = scux::recorded_dma_channel(&FFD_DMA_CH);
-    let crsa = unsafe { crate::dmac::raw::current_src(ch) };
+    let crsa = scux::ffd_current_src(FFD_CH as usize);
     let aligned = crsa & !7u32;
     (aligned as usize + crate::UNCACHED_MIRROR_OFFSET) as *mut i32
 }

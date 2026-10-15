@@ -25,7 +25,6 @@
 //! | STBCR12  | 0b11111011 | SDHI01                                       |
 
 use rza1l_hal::clocks::ClockConfig;
-use rza1l_hal::ssi::SsiConfig;
 use rza1l_hal::stb::StbConfig;
 
 // ---------------------------------------------------------------------------
@@ -88,19 +87,13 @@ pub const BOARD_CONFIG: rza1l_hal::Config = rza1l_hal::Config {
     stb: STB_CONFIG,
 };
 
-/// SSI0 configuration for the Deluge board.
+/// SSI0's SSICR: I²S master, 24-bit data in 32-bit words, clock ÷4 (44.1 kHz with the Deluge's
+/// audio crystal).
 ///
-/// SSICR value 0x002B_C020 decodes as: CKS=0 (AUDIO_X1 source), DWL=101
-/// (24-bit data words), SWL=011 (32-bit system words), SCKD=SWSD=1 (master),
-/// CKDV=0b0010 (AUDIOφ ÷ 4 → BCLK = 22.5792 MHz ÷ 4 = 5.6448 MHz).
-///
-/// - TX DMA channel 6 (SRAM → SSIFTDR).
-/// - RX DMA channel 7 (SSIFRDR → SRAM).
-pub const SSI_CONFIG: SsiConfig = SsiConfig {
-    ssicr: 0x002B_C020,
-    tx_dma_ch: 6,
-    rx_dma_ch: 7,
-};
+/// 0x002B_C020 decodes as: CKS=0 (AUDIO_X1 source), DWL=101 (24-bit data words), SWL=011 (32-bit
+/// system words), SCKD=SWSD=1 (master), CKDV=0b0010 (AUDIOφ ÷ 4 → BCLK = 22.5792 MHz ÷ 4 =
+/// 5.6448 MHz).
+pub const SSICR: u32 = 0x002B_C020;
 
 /// SD_OPTION register value for SDHI port 1 on the Deluge board.
 ///

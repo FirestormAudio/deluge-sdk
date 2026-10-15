@@ -11,8 +11,8 @@
 use core::cell::RefCell;
 
 use deluge_bsp::board::{
-    EncoderPollTimer, GateTimer, MidiRxDma, MidiScif, OledDma, PicRxDma, PicScif, PicTxDma, SdCard,
-    SdRxDma, SdTxDma, SharedSpi,
+    AudioSsi, EncoderPollTimer, GateTimer, MidiRxDma, MidiScif, OledDma, PicRxDma, PicScif,
+    PicTxDma, ScuxFfd0Dma, SdCard, SdRxDma, SdTxDma, SharedSpi, SsiRxDma, SsiTxDma,
 };
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -44,6 +44,14 @@ pub struct Parts {
     pub sd_tx_dma: Option<Peri<'static, SdTxDma>>,
     /// The SD card's receive DMA channel, for `deluge_bsp::sd::init_hw`.
     pub sd_rx_dma: Option<Peri<'static, SdRxDma>>,
+    /// SSIF0, the codec's I²S port, for `deluge_bsp::audio::{init, init_with_scux}`.
+    pub audio_ssi: Option<Peri<'static, AudioSsi>>,
+    /// SSI's transmit DMA channel, for `deluge_bsp::audio::init`.
+    pub ssi_tx_dma: Option<Peri<'static, SsiTxDma>>,
+    /// SSI's receive DMA channel, for `deluge_bsp::audio::{init, init_with_scux}`.
+    pub ssi_rx_dma: Option<Peri<'static, SsiRxDma>>,
+    /// SCUX FFD0's DMA channel, for `deluge_bsp::audio::init_with_scux`.
+    pub scux_ffd0_dma: Option<Peri<'static, ScuxFfd0Dma>>,
 }
 
 static PARTS: Mutex<CriticalSectionRawMutex, RefCell<Option<Parts>>> =

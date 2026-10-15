@@ -106,7 +106,18 @@ fn setup() {
     );
 
     info!("audio: initialising SSI0...");
-    unsafe { deluge_bsp::audio::init_with_scux() };
+    let (ssi, ssi_rx, ffd0) = deluge::parts::with(|p| {
+        (
+            p.audio_ssi.take(),
+            p.ssi_rx_dma.take(),
+            p.scux_ffd0_dma.take(),
+        )
+    });
+    deluge_bsp::audio::init_with_scux(
+        ssi.expect("SSIF0 is free"),
+        ssi_rx.expect("the SSI RX DMA channel is free"),
+        ffd0.expect("SCUX FFD0's DMA channel is free"),
+    );
     info!("audio: SSI0 + DMA + codec running");
     // Pre-fill SSI TX buffer with dither so the codec does not auto-mute before
     // the first USB stream arrives.
