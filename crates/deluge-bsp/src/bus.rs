@@ -36,6 +36,11 @@ use crate::board::{OledDma, SharedSpi};
 /// cycle), but the 2026 batch of these panels, the same model, glitches at 8.5 MHz and above; 4 MHz is safe.
 const RATE_HZ: u32 = 4_000_000;
 
+/// RSPI0's clock and data-out pins, `(port, pin, mux)`: P6.0 is RSPCLK0, P6.2 is MOSI0. Both
+/// devices on the bus share them; each has its own chip select.
+const SCK: (u8, u8, u8) = (6, 0, 3);
+const MOSI: (u8, u8, u8) = (6, 2, 3);
+
 rza1l_hal::bind_interrupts!(struct Irqs {
     DMAINT4 => dmac::InterruptHandler<OledDma>;
 });
@@ -135,13 +140,18 @@ static RSPI0: Mutex<CriticalSectionRawMutex, Option<Rspi0>> = Mutex::new(None);
 /// Type of the guard returned by [`lock_rspi0`].
 pub type Rspi0Guard = MappedMutexGuard<'static, CriticalSectionRawMutex, Rspi0>;
 
-/// Bring RSPI0 up as the shared bus: an SPI master at 4 MHz in 32-bit frames, with the OLED's
-/// DMA channel aimed at its transmit register.
+/// Bring RSPI0 up as the shared bus: its SCK and MOSI pins muxed, an SPI master at 4 MHz in
+/// 32-bit frames, and the OLED's DMA channel aimed at its transmit register.
 ///
 /// Firmware calls it once with the [`crate::Board`]'s `shared_spi` and `dma.oled`, before
 /// [`crate::cv_gate::init`] or [`crate::oled::init`]. The SDK calls it the first time an app
 /// uses either.
 pub fn init(spi: Peri<'static, SharedSpi>, oled_dma: Peri<'static, OledDma>) {
+    // SAFETY: RSPI0's own pins, which only this bus drives.
+    unsafe {
+        rza1l_hal::gpio::set_pin_mux(SCK.0, SCK.1, SCK.2);
+        rza1l_hal::gpio::set_pin_mux(MOSI.0, MOSI.1, MOSI.2);
+    }
     let rspi = Rspi::new(spi, RATE_HZ);
     let mut oled_dma = Dma::new(oled_dma, Irqs);
     // SAFETY: every OLED transfer writes SPDR's low byte, the transmit register of the RSPI0
@@ -238,5 +248,8 @@ mod tests {
         // DMA channel 4 (registers at 0xE820_0100): N0DA is SPDR's low byte, CHCFG the OLED's.
         assert_eq!(test::peek32(0xE820_0104), crate::oled::RSPI0_SPDR_LL);
         assert_eq!(test::peek32(0xE820_012C), crate::oled::OLED_CHCFG);
+        // SCK (P6_0) and MOSI (P6_2) are muxed to RSPI0: without them RSPI0 shifts the OLED's
+        // frames out to nothing. PMC6 at 0xFCFE_3418 marks both pins as peripheral functions.
+        assert_eq!(test::peek16(0xFCFE_3418) & 0b101, 0b101);
     }
 }

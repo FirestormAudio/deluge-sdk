@@ -41,16 +41,6 @@ pub const NUM_GATE_CHANNELS: usize = 4;
 
 // ── Pin definitions ───────────────────────────────────────────────────────────
 
-/// SPI clock pin: P6.0, mux 3 → RSPCLK0
-const SCK_PORT: u8 = 6;
-const SCK_PIN: u8 = 0;
-const SCK_MUX: u8 = 3;
-
-/// SPI MOSI pin: P6.2, mux 3 → MOSI0
-const MOSI_PORT: u8 = 6;
-const MOSI_PIN: u8 = 2;
-const MOSI_MUX: u8 = 3;
-
 /// SPI chip-select GPIO: P6.1 (software-controlled, active-low)
 const CS_PORT: u8 = 6;
 const CS_PIN: u8 = 1;
@@ -94,10 +84,7 @@ fn dac_word(ch: u8, value: u16) -> Option<u32> {
 pub unsafe fn init() {
     unsafe {
         log::debug!("cv_gate: init");
-        // ---- SPI pin-mux ---------------------------------------------------------
-        gpio::set_pin_mux(SCK_PORT, SCK_PIN, SCK_MUX);
-        gpio::set_pin_mux(MOSI_PORT, MOSI_PIN, MOSI_MUX);
-        log::debug!("cv_gate: pin-mux ok");
+        // RSPI0's SCK and MOSI pins are the bus's (`bus::init` muxes them); CS is cv_gate's.
 
         // ---- Chip-select: output, start deselected (high) -----------------------
         gpio::set_as_output(CS_PORT, CS_PIN);
