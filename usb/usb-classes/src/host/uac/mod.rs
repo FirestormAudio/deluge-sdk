@@ -6,6 +6,8 @@
 //! so it unit-tests against [`super::mock`].
 
 pub mod out;
+pub mod desc;
+pub mod pcm;
 pub mod resample;
 pub mod ring;
 
