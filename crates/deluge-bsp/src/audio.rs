@@ -39,7 +39,7 @@ const CODEC_POWER_DELAY_MS: u32 = 5;
 /// Configures SSI0 pin-mux + the SCUX DVU path + SSI RX DMA, waits the codec
 /// power-on delay, then asserts `CODEC_POWER`.
 ///
-/// **Call after:** `rza1l_hal::stb::init()` and `rza1l_hal::ostm::start_free_running(0)`.
+/// **Call after:** `rza1l_hal::stb::init()` and `rza1l_hal::time_driver::init`.
 ///
 /// # Safety
 /// Call exactly once from the single-threaded boot context, before interrupts

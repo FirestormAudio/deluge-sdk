@@ -91,9 +91,15 @@ pub struct Board {
     pub dma: BoardDma,
 }
 
+#[cfg(target_os = "none")]
+rza1l_hal::bind_interrupts!(struct TimeIrqs {
+    OSTMI0 => rza1l_hal::time_driver::OverflowHandler;
+    OSTMI1 => rza1l_hal::time_driver::AlarmHandler;
+});
+
 impl Board {
     /// Finish the bring-up `rza1l_hal::init(system::BOARD_CONFIG)` started (the GIC's SDRAM code
-    /// window, MMU, L1/L2 caches, SDRAM controller, OSTM clock and the Embassy time driver),
+    /// window, MMU, L1/L2 caches, SDRAM controller, the Embassy time driver on OSTM0/OSTM1),
     /// then hand out the peripherals.
     ///
     /// Safe: only the one `Peripherals` from `rza1l_hal::init` can reach it.
@@ -106,9 +112,8 @@ impl Board {
             rza1l_hal::cache::l1_enable();
             rza1l_hal::cache::l2_init();
             crate::sdram::init();
-            rza1l_hal::ostm::enable_clock();
-            rza1l_hal::time_driver::init();
         }
+        rza1l_hal::time_driver::init(p.OSTM0, p.OSTM1, TimeIrqs);
         Self {
             usb0: p.USB0,
             usb1: p.USB1,

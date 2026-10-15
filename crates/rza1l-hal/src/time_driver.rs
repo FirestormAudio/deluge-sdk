@@ -39,12 +39,13 @@ use embassy_time_driver::Driver;
 use crate::time_math::{AtomicTickRatio, TickRatio, extend};
 use embassy_time_queue_utils::Queue;
 
+use crate::Peri;
 use crate::gic;
+use crate::interrupt::typelevel::{OSTMI0, OSTMI1};
+use crate::interrupt::{self, Binding, Handler, Interrupt};
 use crate::ostm;
+use crate::peripherals::{OSTM0, OSTM1};
 
-// GIC interrupt IDs for OSTM0 and OSTM1 (RZ/A1L HW Manual §12)
-const OSTM0_IRQ: u16 = 134;
-const OSTM1_IRQ: u16 = 135;
 const OSTM_IRQ_PRIORITY: u8 = 14;
 
 /// Last value [`OstmDriver::raw_ostm_ticks`] published, as `(epoch << 32) | CNT`.
@@ -68,7 +69,7 @@ const OSTM_IRQ_PRIORITY: u8 = 14;
 ///
 /// The clock must be read at least once per wrap period (~129.9 s), or a wrap goes unobserved and
 /// time loses an epoch. Satisfied structurally — the audio render path reads it continuously — and
-/// guaranteed regardless by [`ostm0_overflow_isr`], which exists only to force one read per wrap.
+/// guaranteed regardless by [`OverflowHandler`], which exists only to force one read per wrap.
 static LAST_RAW: AtomicU64 = AtomicU64::new(0);
 
 /// OSTM0 ticks per µs, from the registered clock tree. Set by [`init`].
@@ -97,7 +98,7 @@ impl OstmDriver {
     fn raw_ostm_ticks() -> u64 {
         loop {
             let last = LAST_RAW.load(Ordering::Acquire);
-            // Safety: OSTM0 is initialised before interrupts are enabled.
+            // Safety: OSTM0 is owned by this driver, and reading its counter has no side effect.
             let cnt = unsafe { ostm::count(0) };
             let val = extend(last, cnt);
             if val <= last {
@@ -144,7 +145,7 @@ impl OstmDriver {
         // Safety: both channels are clocked and registers accessible.
         unsafe {
             ostm::start_alarm(1, delta_ostm);
-            gic::enable(OSTM1_IRQ);
+            gic::enable(OSTMI1::ID);
         }
         true
     }
@@ -177,63 +178,82 @@ embassy_time_driver::time_driver_impl!(static DRIVER: OstmDriver = OstmDriver::n
 // ISR handlers registered with the GIC
 // ---------------------------------------------------------------------------
 
-/// OSTM0 compare-match ISR — fires when CNT == 0 (after each 32-bit wrap).
-///
-/// Reads the clock, and nothing else. The wrap itself is detected in software by
-/// [`OstmDriver::raw_ostm_ticks`]; this ISR only guarantees the "read at least once per wrap
-/// period" requirement [`LAST_RAW`] documents, so its latency is not a correctness concern.
-fn ostm0_overflow_isr() {
-    let _ = OstmDriver::raw_ostm_ticks();
+/// OSTM0's compare match, at each 32-bit wrap: reads the clock, and nothing else. The wrap itself
+/// is detected in software by [`OstmDriver::raw_ostm_ticks`]; this only guarantees the "read at
+/// least once per wrap period" requirement [`LAST_RAW`] documents, so its latency is not a
+/// correctness concern.
+pub struct OverflowHandler;
+
+impl Handler<OSTMI0> for OverflowHandler {
+    unsafe fn on_interrupt() {
+        let _ = OstmDriver::raw_ostm_ticks();
+    }
 }
 
-/// OSTM1 interval ISR — fires when the one-shot alarm expires.
-fn ostm1_alarm_isr() {
-    // Stop OSTM1 immediately to prevent auto-reload in interval mode.
-    unsafe { ostm::stop(1) };
-    // Disarm the GIC source until the next alarm is programmed.
-    unsafe { gic::disable(OSTM1_IRQ) };
+/// OSTM1's interval interrupt: the one-shot alarm expired.
+pub struct AlarmHandler;
 
-    let now = DRIVER.now();
-    critical_section::with(|cs| {
-        let mut queue = DRIVER.queue.borrow_ref_mut(cs);
-        let mut next = queue.next_expiration(now);
-        while !DRIVER.try_set_alarm(&cs, next) {
-            next = queue.next_expiration(DRIVER.now());
+impl Handler<OSTMI1> for AlarmHandler {
+    unsafe fn on_interrupt() {
+        // Stop OSTM1 at once (interval mode would reload), and mask it until the next alarm.
+        unsafe {
+            ostm::stop(1);
+            gic::disable(OSTMI1::ID);
         }
-    });
+        let now = DRIVER.now();
+        critical_section::with(|cs| {
+            let mut queue = DRIVER.queue.borrow_ref_mut(cs);
+            let mut next = queue.next_expiration(now);
+            while !DRIVER.try_set_alarm(&cs, next) {
+                next = queue.next_expiration(DRIVER.now());
+            }
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Initialisation
 // ---------------------------------------------------------------------------
 
-/// Initialise the Embassy time driver.
+/// Start the Embassy time driver on OSTM0 (free-running clock, interrupting at each wrap) and
+/// OSTM1 (the alarm, dormant until a timer is scheduled).
 ///
-/// Configures OSTM0 for overflow-tracked free-running mode (CMP=0 so the
-/// interrupt fires immediately after each 32-bit wrap) and OSTM1 as a
-/// dormant alarm channel. Registers both ISRs with the GIC.
+/// # Panics
+/// If [`crate::clocks::init`] has not been called.
+pub fn init(
+    _ostm0: Peri<'static, OSTM0>,
+    _ostm1: Peri<'static, OSTM1>,
+    irq: impl Binding<OSTMI0, OverflowHandler> + Binding<OSTMI1, AlarmHandler> + Copy + 'static,
+) {
+    RATIO.store(TickRatio::from_clocks(&crate::clocks::get()));
+    // SAFETY: both channels are owned. CMP=0 makes OSTM0 interrupt as it wraps to 0.
+    unsafe {
+        ostm::enable_clock();
+        ostm::start_free_running_cmp(0, 0);
+    }
+    ostm::set_running(true);
+    interrupt::bind::<OSTMI0, OverflowHandler>(irq);
+    interrupt::bind::<OSTMI1, AlarmHandler>(irq);
+    // SAFETY: the two channels' own interrupts, below PMR so they reach the CPU. OSTM1 is
+    // unmasked by `try_set_alarm` when an alarm is armed.
+    unsafe {
+        gic::set_priority(OSTMI0::ID, OSTM_IRQ_PRIORITY);
+        gic::set_priority(OSTMI1::ID, OSTM_IRQ_PRIORITY);
+        gic::enable(OSTMI0::ID);
+    }
+}
+
+/// Stop the clock and the alarm: OSTM0 and OSTM1 halt and their interrupts are masked. For a
+/// loader handing the chip to another program.
 ///
 /// # Safety
-/// Must be called once, after [`gic::init`] and [`ostm::enable_clock`],
-/// but before `cpsie i`. OSTM0 must NOT already be started (this function
-/// re-starts it in the required mode). [`crate::clocks::init`] must have been called.
-pub unsafe fn init() {
+/// Embassy time stops: no timer may be awaited afterwards, and `Instant::now` stands still.
+pub unsafe fn stop() {
+    ostm::set_running(false);
     unsafe {
-        RATIO.store(TickRatio::from_clocks(&crate::clocks::get()));
-
-        // OSTM0: free-running with CMP=0 interrupt (fires at wrap to 0).
-        //
-        // `start_free_running_cmp(0, 0)` stops the channel, sets CMP=0, sets
-        // CTL to free-running-with-interrupt, then starts.  After this, the
-        // channel counts 0 → 1 → … → 0xFFFF_FFFF → [interrupt fires] → 0 → …
-        ostm::start_free_running_cmp(0, 0);
-
-        // Register ISRs and set priorities below PMR (default 31 = PMR, never fires).
-        gic::register(OSTM0_IRQ, ostm0_overflow_isr);
-        gic::register(OSTM1_IRQ, ostm1_alarm_isr);
-        gic::set_priority(OSTM0_IRQ, OSTM_IRQ_PRIORITY);
-        gic::set_priority(OSTM1_IRQ, OSTM_IRQ_PRIORITY);
-        gic::enable(OSTM0_IRQ);
-        // OSTM1 will be enabled by try_set_alarm when needed.
+        gic::disable(OSTMI0::ID);
+        gic::disable(OSTMI1::ID);
+        ostm::stop(0);
+        ostm::stop(1);
     }
 }

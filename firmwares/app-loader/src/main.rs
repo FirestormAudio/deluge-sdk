@@ -195,8 +195,7 @@ pub(crate) unsafe fn quiesce_for_handoff() {
         // Linux's rz-dmac claim SCIF1-RX cleanly.
         rza1l_hal::dmac::stop_all();
         // Stop the Embassy time-driver timers (OSTM0 free-run + OSTM1 alarm).
-        rza1l_hal::ostm::stop(0);
-        rza1l_hal::ostm::stop(1);
+        rza1l_hal::time_driver::stop();
         // Turn the interrupt controller off entirely.
         rza1l_hal::gic::shutdown();
     }

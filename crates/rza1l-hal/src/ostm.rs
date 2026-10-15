@@ -7,18 +7,11 @@
 //!   - Interval timer (CTL = 0x00): counts down from CMP, fires interrupt at 0
 //!   - Free-running  (CTL = 0x02): counts up from 0, optionally fires at CMP
 //!
-//! ## Usage
-//! ```rust,no_run
-//! # use rza1l_hal::ostm;
-//! # use rza1l_hal::clocks;
-//! unsafe {
-//!     ostm::enable_clock();          // ungate OSTM0+OSTM1 in CPG
-//!     ostm::start_free_running(0);   // start OSTM0 in free-running mode
-//!     let t0 = ostm::count(0);
-//!     // ... wait ~1 s ...
-//!     while ostm::count(0).wrapping_sub(t0) < clocks::get().p0_hz() {}
-//! }
-//! ```
+//! The time driver ([`crate::time_driver`]) owns both channels: OSTM0 free-runs as the clock,
+//! OSTM1 is the alarm. Code that needs a busy-wait (with interrupts masked, or before the
+//! executor runs) uses [`delay_ms`] or [`Delay`] on OSTM0's counter.
+
+use core::sync::atomic::{AtomicBool, Ordering};
 
 // ------- Peripheral base addresses -------------------------------------------
 const OSTM0_BASE: usize = 0xFCFE_C000;
@@ -60,8 +53,20 @@ const STBCR5_MSTP50: u8 = 1 << 0;
 /// STBCR5 bit 1: MSTP51 — stop OSTM1 clock (1 = stopped, 0 = running).
 const STBCR5_MSTP51: u8 = 1 << 1;
 
+/// Whether OSTM0 is counting: the time driver sets it when it starts the channel.
+static RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// Record whether OSTM0 is counting. Only the time driver starts or stops it.
+pub(crate) fn set_running(running: bool) {
+    RUNNING.store(running, Ordering::Release);
+}
+
+fn running() -> bool {
+    RUNNING.load(Ordering::Acquire)
+}
+
 // ---------------------------------------------------------------------------
-// Public API
+// Channel control (the time driver's)
 // ---------------------------------------------------------------------------
 
 /// Ungate OSTM0 and OSTM1 clocks in the CPG module stop register (STBCR5).
@@ -71,19 +76,14 @@ const STBCR5_MSTP51: u8 = 1 << 1;
 /// those two bits so it is safe to call even if the rest of STBCR5 was set
 /// by an earlier boot stage.
 ///
-/// In production firmware, prefer [`crate::stb::init`] which enables all
-/// peripheral clocks at once. Call this function directly only in isolated
-/// tests or examples that do not call `stb::init()`.
-///
 /// # Safety
-/// Writes to memory-mapped CPG registers. Safe to call once before starting
-/// any OSTM channel.
-pub unsafe fn enable_clock() {
+/// Writes to memory-mapped CPG registers.
+pub(crate) unsafe fn enable_clock() {
     unsafe {
-        let reg = STBCR5 as *mut u8;
-        let val = reg.read_volatile();
-        reg.write_volatile(val & !(STBCR5_MSTP50 | STBCR5_MSTP51)); // clear MSTP50 (OSTM0) and MSTP51 (OSTM1)
-        let _ = reg.read_volatile(); // mandatory dummy read per HW spec
+        let val = crate::mmio::read8(STBCR5);
+        // Clear MSTP50 (OSTM0) and MSTP51 (OSTM1).
+        crate::mmio::write8(STBCR5, val & !(STBCR5_MSTP50 | STBCR5_MSTP51));
+        let _ = crate::mmio::read8(STBCR5); // mandatory dummy read per HW spec
     }
 }
 
@@ -94,47 +94,84 @@ fn base(n: u8) -> usize {
 
 /// Configure OSTM channel `n` (0 or 1) for free-running mode and start it.
 ///
-/// The counter begins at 0 and increments at P0 (~33.33 MHz). No interrupt
-/// is generated. Safe to call when the channel is already stopped; if it is
-/// running it is stopped first to allow CTL to be written.
+/// The counter begins at 0 and increments at P0. No interrupt is generated. If the channel is
+/// running it is stopped first so CTL can be written.
 ///
 /// # Safety
-/// Writes to memory-mapped OSTM registers. Must only be called after
-/// [`enable_clock`].
-pub unsafe fn start_free_running(n: u8) {
+/// Writes to memory-mapped OSTM registers. Must only be called after [`enable_clock`].
+pub(crate) unsafe fn start_free_running(n: u8) {
     unsafe {
         let b = base(n);
         // Stop the timer in case it is already running (CTL can only be written
         // when the timer is stopped — TE must read 0 first).
-        let tt = (b + TT) as *mut u8;
-        let te = (b + TE) as *const u8;
-        tt.write_volatile(1);
+        crate::mmio::write8(b + TT, 1);
         // Wait for the hardware to confirm the timer has stopped.
-        while te.read_volatile() != 0 {}
-
+        while crate::mmio::read8(b + TE) != 0 {}
         // Free-running mode, compare interrupt disabled.
-        let ctl = (b + CTL) as *mut u8;
-        ctl.write_volatile(CTL_FREE_RUN);
-
-        // Start.
-        let ts = (b + TS) as *mut u8;
-        ts.write_volatile(1);
+        crate::mmio::write8(b + CTL, CTL_FREE_RUN);
+        crate::mmio::write8(b + TS, 1);
     }
 }
 
-/// Read the current counter value of OSTM channel `n` (0 or 1).
-///
-/// Increments at ~33.33 MHz. Wraps at `u32::MAX`.
+/// Read the current counter value of OSTM channel `n` (0 or 1). Wraps at `u32::MAX`.
 ///
 /// # Safety
 /// Reads from memory-mapped OSTM registers.
 #[inline]
-pub unsafe fn count(n: u8) -> u32 {
+pub(crate) unsafe fn count(n: u8) -> u32 {
+    unsafe { crate::mmio::read32(base(n) + CNT) }
+}
+
+/// Stop OSTM channel `n`.
+///
+/// # Safety
+/// Writes to memory-mapped OSTM registers.
+#[inline]
+pub(crate) unsafe fn stop(n: u8) {
+    unsafe { crate::mmio::write8(base(n) + TT, 1) }
+}
+
+/// Start OSTM channel `n` in free-running mode with a compare-match interrupt.
+///
+/// The interrupt fires when CNT == `cmp`. After firing, CNT continues counting
+/// (one-shot style; the channel stays running). Re-arm by calling this again.
+///
+/// Use `cmp = 0` to get an overflow notification (fires when CNT wraps to 0).
+///
+/// # Safety
+/// Writes to memory-mapped OSTM registers. Must only be called after [`enable_clock`].
+pub(crate) unsafe fn start_free_running_cmp(n: u8, cmp: u32) {
     unsafe {
-        let cnt = (base(n) + CNT) as *const u32;
-        cnt.read_volatile()
+        let b = base(n);
+        crate::mmio::write8(b + TT, 1); // stop first so CTL is writeable
+        crate::mmio::write32(b + CMP, cmp);
+        crate::mmio::write8(b + CTL, CTL_FREE_RUN_INT); // free-running with CMP interrupt
+        crate::mmio::write8(b + TS, 1);
     }
 }
+
+/// Start OSTM channel `n` in interval mode with a single-shot countdown.
+///
+/// The channel counts down from `delta_ticks` to 0, fires one interrupt
+/// (at the end of counting — NOT at the start), then auto-reloads.
+/// Call [`stop`] inside the ISR to prevent the auto-reload.
+///
+/// # Safety
+/// Writes to memory-mapped OSTM registers. Must only be called after [`enable_clock`].
+pub(crate) unsafe fn start_alarm(n: u8, delta_ticks: u32) {
+    unsafe {
+        let b = base(n);
+        crate::mmio::write8(b + TT, 1); // stop in case already running
+        crate::mmio::write32(b + CMP, delta_ticks);
+        // Interval mode: the interrupt fires at the end of the count (CNT=0), not at the start.
+        crate::mmio::write8(b + CTL, CTL_INTERVAL);
+        crate::mmio::write8(b + TS, 1);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Delays
+// ---------------------------------------------------------------------------
 
 /// OSTM ticks in `ms` milliseconds at `p0_hz`.
 fn ms_to_ticks(p0_hz: u32, ms: u32) -> u32 {
@@ -147,28 +184,15 @@ fn ns_to_ticks(p0_hz: u32, ns: u32) -> u32 {
     (ns as u64 * p0_hz as u64).div_ceil(1_000_000_000) as u32
 }
 
-/// Busy-wait for approximately `ticks` OSTM counts (~30 ns each at P0).
-///
-/// Uses OSTM channel 0. [`start_free_running`]`(0)` must have been called first.
+/// Busy-wait for approximately `ticks` OSTM0 counts (~30 ns each at P0).
 ///
 /// # Safety
-/// Reads from memory-mapped OSTM registers.
-pub unsafe fn delay_ticks(ticks: u32) {
+/// OSTM0 is running.
+unsafe fn delay_ticks(ticks: u32) {
     unsafe {
         let t0 = count(0);
         while count(0).wrapping_sub(t0) < ticks {}
     }
-}
-
-/// Busy-wait for approximately `ms` milliseconds using OSTM channel 0.
-///
-/// # Panics
-/// If [`crate::clocks::init`] has not been called.
-///
-/// # Safety
-/// See [`delay_ticks`].
-pub unsafe fn delay_ms(ms: u32) {
-    unsafe { delay_ticks(ms_to_ticks(crate::clocks::get().p0_hz(), ms)) }
 }
 
 /// OSTM ticks in `ms` milliseconds, or `None` if no clock tree is registered yet.
@@ -176,14 +200,26 @@ fn ms_ticks_if_clocked(clocks: Option<crate::clocks::ClockConfig>, ms: u32) -> O
     clocks.map(|c| ms_to_ticks(c.p0_hz(), ms))
 }
 
-/// Like [`delay_ms`], but returns `false` without waiting if [`crate::clocks::init`] has not
-/// been called, instead of panicking. For code that must not panic, such as a panic handler.
+/// Busy-wait for `ms` milliseconds on OSTM0's counter. Works with interrupts masked.
 ///
-/// # Safety
-/// See [`delay_ticks`].
-pub unsafe fn try_delay_ms(ms: u32) -> bool {
+/// # Panics
+/// If OSTM0 isn't running (the time driver starts it), or [`crate::clocks::init`] has not been
+/// called.
+pub fn delay_ms(ms: u32) {
+    assert!(running(), "ostm::delay_ms: OSTM0 isn't running; the time driver starts it");
+    // SAFETY: reads OSTM0's counter, which the time driver owns and never writes after start.
+    unsafe { delay_ticks(ms_to_ticks(crate::clocks::get().p0_hz(), ms)) }
+}
+
+/// Like [`delay_ms`], but returns `false` without waiting if OSTM0 isn't running or no clock tree
+/// is registered, instead of panicking. For code that must not panic, such as a panic handler.
+pub fn try_delay_ms(ms: u32) -> bool {
+    if !running() {
+        return false;
+    }
     match ms_ticks_if_clocked(crate::clocks::try_get(), ms) {
         Some(ticks) => {
+            // SAFETY: as in `delay_ms`.
             unsafe { delay_ticks(ticks) };
             true
         }
@@ -191,15 +227,11 @@ pub unsafe fn try_delay_ms(ms: u32) -> bool {
     }
 }
 
-/// A `DelayNs` implementation backed by the OSTM0 free-running counter.
-///
-/// [`start_free_running(0)`](start_free_running) must have been called before
-/// constructing or using a `Delay`.
+/// A `DelayNs` on OSTM0's counter, which the time driver runs.
 pub struct Delay;
 
 impl Delay {
-    /// Create a new `Delay`.  Does not start OSTM0; caller must have done
-    /// that already via [`start_free_running`]`(0)`.
+    /// Create a new `Delay`.
     #[inline]
     pub fn new() -> Self {
         Delay
@@ -213,149 +245,19 @@ impl Default for Delay {
 }
 
 impl embedded_hal::delay::DelayNs for Delay {
+    /// # Panics
+    /// As [`delay_ms`].
     fn delay_ns(&mut self, ns: u32) {
+        assert!(running(), "ostm::Delay: OSTM0 isn't running; the time driver starts it");
         let ticks = ns_to_ticks(crate::clocks::get().p0_hz(), ns);
+        // SAFETY: as in `delay_ms`.
         unsafe { delay_ticks(ticks) };
-    }
-}
-
-/// Stop OSTM channel `n`.
-///
-/// # Safety
-/// Writes to memory-mapped OSTM registers.
-#[inline]
-pub unsafe fn stop(n: u8) {
-    unsafe {
-        let tt = (base(n) + TT) as *mut u8;
-        tt.write_volatile(1);
-    }
-}
-
-/// Start OSTM channel `n` in free-running mode with a compare-match interrupt.
-///
-/// The interrupt fires when CNT == `cmp`. After firing, CNT continues counting
-/// (one-shot style; the channel stays running). Re-arm by calling this again.
-///
-/// Use `cmp = 0` to get an overflow notification (fires when CNT wraps to 0).
-///
-/// # Safety
-/// Writes to memory-mapped OSTM registers. Must only be called after
-/// [`enable_clock`].
-pub unsafe fn start_free_running_cmp(n: u8, cmp: u32) {
-    unsafe {
-        let b = base(n);
-        let tt = (b + TT) as *mut u8;
-        tt.write_volatile(1); // stop first so CTL is writeable
-
-        let cmp_reg = (b + CMP) as *mut u32;
-        cmp_reg.write_volatile(cmp);
-
-        let ctl = (b + CTL) as *mut u8;
-        ctl.write_volatile(CTL_FREE_RUN_INT); // free-running with CMP interrupt
-
-        let ts = (b + TS) as *mut u8;
-        ts.write_volatile(1);
-    }
-}
-
-/// Start OSTM channel `n` in interval mode with a single-shot countdown.
-///
-/// The channel counts down from `delta_ticks` to 0, fires one interrupt
-/// (at the end of counting — NOT at the start), then auto-reloads.
-/// Call [`stop`] inside the ISR to prevent the auto-reload.
-///
-/// # Safety
-/// Writes to memory-mapped OSTM registers. Must only be called after
-/// [`enable_clock`].
-pub unsafe fn start_alarm(n: u8, delta_ticks: u32) {
-    unsafe {
-        let b = base(n);
-        let tt = (b + TT) as *mut u8;
-        tt.write_volatile(1); // stop in case already running
-
-        let cmp_reg = (b + CMP) as *mut u32;
-        cmp_reg.write_volatile(delta_ticks);
-
-        let ctl = (b + CTL) as *mut u8;
-        ctl.write_volatile(CTL_INTERVAL); // interval mode; interrupt fires at end of count (CNT=0), not at start
-
-        let ts = (b + TS) as *mut u8;
-        ts.write_volatile(1);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Owned typed wrapper
-// ---------------------------------------------------------------------------
-
-/// Owned handle for OSTM channel `N` (0 or 1).
-///
-/// Wraps the free functions in an object-oriented API.  The type parameter `N`
-/// encodes the channel at compile time, preventing accidental mix-ups.
-pub struct Ostm<const N: u8>;
-
-impl<const N: u8> Ostm<N> {
-    /// Claim ownership of OSTM channel `N`.
-    ///
-    /// # Safety
-    /// The caller must ensure no other code uses channel `N` concurrently.
-    /// [`enable_clock`] must have been called before any method that accesses
-    /// hardware registers.
-    pub unsafe fn new() -> Self {
-        Ostm
-    }
-
-    /// Read the current counter value (increments at ~33.33 MHz).
-    ///
-    /// # Safety
-    /// Reads a memory-mapped register.
-    pub unsafe fn count(&self) -> u32 {
-        unsafe { count(N) }
-    }
-
-    /// Configure channel `N` for free-running mode and start it.
-    ///
-    /// # Safety
-    /// Writes memory-mapped registers.
-    pub unsafe fn start_free_running(&self) {
-        unsafe { start_free_running(N) }
-    }
-
-    /// Configure channel `N` for free-running mode with a compare interrupt.
-    ///
-    /// # Safety
-    /// Writes memory-mapped registers.
-    pub unsafe fn start_free_running_cmp(&self, cmp: u32) {
-        unsafe { start_free_running_cmp(N, cmp) }
-    }
-
-    /// Configure channel `N` for single-shot interval mode.
-    ///
-    /// # Safety
-    /// Writes memory-mapped registers.
-    pub unsafe fn start_alarm(&self, delta_ticks: u32) {
-        unsafe { start_alarm(N, delta_ticks) }
-    }
-
-    /// Stop channel `N`.
-    ///
-    /// # Safety
-    /// Writes memory-mapped registers.
-    pub unsafe fn stop(&self) {
-        unsafe { stop(N) }
-    }
-
-    /// Return a [`Delay`] backed by this channel.
-    ///
-    /// Channel `N` must already be running in free-running mode.
-    pub fn delay(&self) -> Delay {
-        Delay
     }
 }
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
-    use super::{OSTM0_BASE, OSTM1_BASE, base, ms_ticks_if_clocked, ms_to_ticks, ns_to_ticks};
+    use super::*;
     use crate::clocks::TEST_CLOCKS;
 
     #[test]
@@ -396,5 +298,47 @@ mod tests {
     fn no_delay_ticks_before_clocks_are_registered() {
         assert_eq!(ms_ticks_if_clocked(None, 100), None);
         assert_eq!(ms_ticks_if_clocked(Some(TEST_CLOCKS), 100), Some(3_306_400));
+    }
+
+    #[test]
+    fn the_time_drivers_ostm0_setup_is_free_running_with_a_wrap_interrupt() {
+        crate::mmio::test::reset();
+        unsafe { start_free_running_cmp(0, 0) };
+        assert_eq!(
+            crate::mmio::test::writes(),
+            [
+                (OSTM0_BASE + TT, 1),
+                (OSTM0_BASE + CMP, 0),
+                (OSTM0_BASE + CTL, CTL_FREE_RUN_INT as u32),
+                (OSTM0_BASE + TS, 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_alarm_counts_down_once_from_its_delta() {
+        crate::mmio::test::reset();
+        unsafe { start_alarm(1, 33_064) };
+        assert_eq!(
+            crate::mmio::test::writes(),
+            [
+                (OSTM1_BASE + TT, 1),
+                (OSTM1_BASE + CMP, 33_064),
+                (OSTM1_BASE + CTL, CTL_INTERVAL as u32),
+                (OSTM1_BASE + TS, 1),
+            ]
+        );
+    }
+
+    /// Before the time driver starts OSTM0 its counter stands still: a delay would spin forever.
+    #[test]
+    fn a_delay_before_ostm0_runs_reports_it_instead_of_spinning() {
+        assert!(!try_delay_ms(100));
+    }
+
+    #[test]
+    #[should_panic(expected = "OSTM0 isn't running")]
+    fn delay_ms_before_ostm0_runs_panics() {
+        delay_ms(1);
     }
 }
