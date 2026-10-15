@@ -29,7 +29,7 @@ testing.
 | [`uart`] | SCIF0 MIDI DIN (31 250 bps) + SCIF1 PIC UART; DMA-backed RX/TX |
 | [`sd`] | SDHI SD v2 card — full JEDEC init, block read/write, SDHC/SDXC auto-detect, DMA bounce buffer |
 | [`fat`] | `embedded-sdmmc` wrapper — `DelugeVolumeManager`, `DelugeBlockDevice`, FAT filesystem access |
-| [`usb`] | The Deluge's USB identities (`ids`), the SD card as a Mass Storage medium (`sd_block`), and (feature `usb-host`) the host-role supervisor; the classes themselves are in the [`usb-classes`](../../usb/usb-classes) crate |
+| [`usb`] | The Deluge's USB identities (`ids`), (feature `usb-msc`) the SD card as a Mass Storage medium (`sd_block`), and (feature `usb-host`) the host-role supervisor; the classes themselves are in the [`usb-classes`](../../usb/usb-classes) crate |
 | [`bus`] | RSPI0 ownership guard shared by the OLED and the CV DAC (`lock_rspi0`, `enter_8bit` / `enter_32bit`) |
 | [`audio_block`] | Block-oriented audio tap over the SSI0 DMA rings, used by the SDK's `dlg.audio()` |
 | [`jacks`] | Audio jack-detect inputs and the speaker-amp enable |
@@ -65,6 +65,8 @@ its USB identities, the SD-backed `SdBlock`, and the host-role supervisor.
 | `audio-irq` | Clock `audio_block` from a per-block RX-DMA interrupt instead of a poll loop |
 | `embedded-graphics` | `DrawTarget` impl for `oled::FrameBuffer` |
 | `usb-host` | The USB host-role supervisor (turns on `usb-classes`' `host-midi` and `host-uac`) |
+| `usb-msc` | `usb::sd_block`, the SD card as a USB Mass Storage medium (turns on `usb-classes`' `device-msc`) |
+| `host-panel` | Host builds: `host_panel::install`, so a simulator can stand in for the front panel (`deluge-sdk`'s `sim` turns it on) |
 
 Modules that need the bare-metal target (Embassy tasks, DMA, MTU2) are gated on
 `#[cfg(target_os = "none")]`; the pure-logic modules also build on the host for

@@ -379,7 +379,7 @@ pub async fn read_byte() -> u8 {
 }
 
 /// How often the host [`read_byte`] looks for panel input when it has none.
-#[cfg(not(target_os = "none"))]
+#[cfg(all(not(target_os = "none"), any(test, feature = "host-panel")))]
 const HOST_INPUT_POLL_MS: u64 = 1;
 
 #[cfg(not(target_os = "none"))]
@@ -387,11 +387,18 @@ async fn read_byte_via(panel: Option<&dyn crate::host_panel::HostPanel>) -> u8 {
     let Some(panel) = panel else {
         return core::future::pending().await;
     };
+    #[cfg(any(test, feature = "host-panel"))]
     loop {
         if let Some(byte) = panel.next_pic_byte() {
             return byte;
         }
         embassy_time::Timer::after_millis(HOST_INPUT_POLL_MS).await;
+    }
+    // Without `host-panel` nothing can call `host_panel::install`, so no panel exists.
+    #[cfg(not(any(test, feature = "host-panel")))]
+    {
+        let _ = panel;
+        unreachable!("a host panel needs deluge-bsp's `host-panel` feature")
     }
 }
 

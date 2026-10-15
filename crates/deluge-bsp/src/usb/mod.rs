@@ -7,7 +7,7 @@
 //! the `usb-classes` crate. This module keeps what is specific to the Deluge:
 //!
 //! - [`ids`]: the Deluge's USB vendor/product identities.
-//! - `sd_block`: the SD card as a Mass Storage medium for `usb_classes::bot`.
+//! - `sd_block` (feature `usb-msc`): the SD card as a Mass Storage medium for `usb_classes::bot`.
 //! - `host` (feature `usb-host`): the host-role supervisor and the hosted-MIDI
 //!   device registry.
 //!
@@ -19,6 +19,7 @@
 #[cfg(feature = "usb-host")]
 pub mod host;
 pub mod ids;
-/// The SD card as a Mass Storage medium for `usb_classes::bot`.
-#[cfg(target_os = "none")]
+/// The SD card as a Mass Storage medium for `usb_classes::bot`; opt-in via the
+/// `usb-msc` feature.
+#[cfg(all(target_os = "none", feature = "usb-msc"))]
 pub mod sd_block;

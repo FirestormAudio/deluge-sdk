@@ -77,7 +77,7 @@ libc = { version = "0.2", optional = true }
 default = []
 ## Desktop simulator backend (`cargo deluge sim`): drives the in-process
 ## simulator panel (deluge-sim-link) instead of real peripherals.
-sim = ["dep:deluge-sim-link", "dep:deluge-simulator"]
+sim = ["dep:deluge-sim-link", "dep:deluge-simulator", "deluge-bsp/host-panel"]
 ## Linux backend: drives the hardware through libdeluge (deluge-hal-linux).
 linux = ["dep:deluge-hal-linux", "dep:libc"]
 ## Register the on-chip SRAM heap (`deluge-alloc`) as the global allocator, so

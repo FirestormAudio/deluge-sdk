@@ -38,6 +38,13 @@ embedded-graphics = ["dep:embedded-graphics-core"]
 ## The USB host stack (`usb::host`: class drivers, UAC and MIDI). Opt-in; only
 ## host-role firmware needs it.
 usb-host = ["dep:embassy-usb-host", "usb-classes/host-midi", "usb-classes/host-uac"]
+## `usb::sd_block`: the SD card as a USB Mass Storage medium for
+## `usb_classes::bot`. Opt-in; only firmware that exposes the card over USB
+## needs it.
+usb-msc = ["usb-classes/device-msc"]
+## `host_panel::install`: let a host simulator stand in for the front panel
+## (pads, LEDs, OLED). Host builds only; `deluge-sdk`'s `sim` feature turns it on.
+host-panel = ["dep:embassy-time"]
 
 [dependencies]
 max5136 = { workspace = true }
@@ -55,7 +62,6 @@ embassy-usb-driver = { workspace = true }
 embassy-usb-host = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "none")'.dependencies]
-usb-classes = { workspace = true, features = ["device-msc"] }
 cortex-ar = { workspace = true }
 embassy-futures = { workspace = true }
 embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
@@ -64,8 +70,8 @@ embassy-usb = { workspace = true }
 embassy-executor = { workspace = true }
 
 [target.'cfg(not(target_os = "none"))'.dependencies]
-# Polls the host panel's input for `pic::read_byte` (`host_panel`).
-embassy-time = { workspace = true }
+# Polls the host panel's input for `pic::read_byte` (the `host-panel` feature).
+embassy-time = { workspace = true, optional = true }
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
 critical-section = { workspace = true, features = ["std"] }

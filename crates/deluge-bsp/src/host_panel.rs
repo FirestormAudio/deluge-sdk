@@ -26,6 +26,7 @@ impl Slot {
         Self(OnceLock::new())
     }
 
+    #[cfg(any(test, feature = "host-panel"))]
     fn install(&self, panel: &'static dyn HostPanel) {
         if self.0.set(panel).is_err() {
             panic!("deluge_bsp::host_panel::install called twice");
@@ -41,8 +42,12 @@ static SLOT: Slot = Slot::new();
 
 /// Install the host panel. Call once, before the program starts.
 ///
+/// Needs the `host-panel` feature: polling the panel's input uses `embassy-time`,
+/// which a host build without a panel shouldn't have to link.
+///
 /// # Panics
 /// If a panel is already installed.
+#[cfg(any(test, feature = "host-panel"))]
 pub fn install(panel: &'static dyn HostPanel) {
     SLOT.install(panel);
 }
