@@ -205,20 +205,26 @@ mod shadow {
         /// widths at the same address stay consistent.
         mem: BTreeMap<usize, u8>,
         log: Vec<Access>,
+        /// Registers whose writes clear the 0 bits and leave the 1 bits (RC-W0 status flags).
+        rcw0: Vec<usize>,
     }
 
     thread_local! {
         static STATE: RefCell<State> = const { RefCell::new(State {
             mem: BTreeMap::new(),
             log: Vec::new(),
+            rcw0: Vec::new(),
         }) };
     }
 
     pub fn store(addr: usize, val: u32, width: u8) {
         STATE.with(|s| {
             let mut s = s.borrow_mut();
+            let rcw0 = s.rcw0.contains(&addr);
             for i in 0..width as usize {
-                s.mem.insert(addr + i, (val >> (8 * i)) as u8);
+                let byte = (val >> (8 * i)) as u8;
+                let old = *s.mem.get(&(addr + i)).unwrap_or(&0);
+                s.mem.insert(addr + i, if rcw0 { old & byte } else { byte });
             }
             s.log.push(Access {
                 write: true,
@@ -251,7 +257,12 @@ mod shadow {
             let mut s = s.borrow_mut();
             s.mem.clear();
             s.log.clear();
+            s.rcw0.clear();
         });
+    }
+
+    pub fn rcw0(addr: usize) {
+        STATE.with(|s| s.borrow_mut().rcw0.push(addr));
     }
 
     pub fn log() -> Vec<Access> {
@@ -306,6 +317,12 @@ pub mod test {
             .filter(|a| a.write)
             .map(|a| (a.addr, a.val))
             .collect()
+    }
+
+    /// Make writes to the register at `addr` clear its 0 bits and leave its 1 bits, as the
+    /// hardware's RC-W0 status flags do, instead of storing the value. Cleared by [`reset`].
+    pub fn rcw0(addr: usize) {
+        shadow::rcw0(addr);
     }
 
     /// Preload a register so a later read returns `val` (does not log).
@@ -399,5 +416,26 @@ mod tests {
         assert!(test::log().is_empty(), "poke must not log");
         assert_eq!(unsafe { read32(0x2000) }, 0xCAFE);
         assert_eq!(test::log().len(), 1, "the read is logged");
+    }
+
+    #[test]
+    fn an_rcw0_register_clears_only_the_bits_written_as_0() {
+        test::reset();
+        test::rcw0(0x3000);
+        test::poke16(0x3000, 0b1110);
+        unsafe { write16(0x3000, !0b0100) };
+        assert_eq!(test::peek16(0x3000), 0b1010);
+        assert_eq!(
+            test::writes(),
+            [(0x3000, !0b0100u16 as u32)],
+            "the written value is logged"
+        );
+        test::reset();
+        unsafe { write16(0x3000, 0b1) };
+        assert_eq!(
+            test::peek16(0x3000),
+            0b1,
+            "reset makes the register plain again"
+        );
     }
 }
