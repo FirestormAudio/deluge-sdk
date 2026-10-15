@@ -37,14 +37,20 @@ TTB_SIZE = 0x4000;
  * PIPCn; matches rza1l_hal::gpio). Port 0 is input-only, so it has no PM/PIPC register. */
 ASSERT(DEFINED(RZA1_STATUS_LED_PORT) && DEFINED(RZA1_STATUS_LED_PIN),
        "memory.x must define RZA1_STATUS_LED_PORT and RZA1_STATUS_LED_PIN")
-ASSERT(RZA1_STATUS_LED_PORT >= 1 && RZA1_STATUS_LED_PORT <= 11,
+/* Every other use is guarded with DEFINED(), so a missing symbol fails on the ASSERT above
+ * rather than as a bare "symbol not found" at each use. */
+ASSERT(!DEFINED(RZA1_STATUS_LED_PORT)
+       || (RZA1_STATUS_LED_PORT >= 1 && RZA1_STATUS_LED_PORT <= 11),
        "RZA1_STATUS_LED_PORT must be 1-11 (P1-P11)")
-ASSERT(RZA1_STATUS_LED_PIN <= 15, "RZA1_STATUS_LED_PIN must be 0-15")
-__rza1_status_led_p    = 0xFCFE3000 + 4 * RZA1_STATUS_LED_PORT;
-__rza1_status_led_pm   = 0xFCFE3300 + 4 * RZA1_STATUS_LED_PORT;
-__rza1_status_led_pmc  = 0xFCFE3400 + 4 * RZA1_STATUS_LED_PORT;
-__rza1_status_led_pipc = 0xFCFE7200 + 4 * RZA1_STATUS_LED_PORT;
-__rza1_status_led_mask = 1 << RZA1_STATUS_LED_PIN;
+ASSERT(!DEFINED(RZA1_STATUS_LED_PIN) || RZA1_STATUS_LED_PIN <= 15,
+       "RZA1_STATUS_LED_PIN must be 0-15")
+__rza1_status_led_port = DEFINED(RZA1_STATUS_LED_PORT) ? RZA1_STATUS_LED_PORT : 1;
+__rza1_status_led_pin  = DEFINED(RZA1_STATUS_LED_PIN) ? RZA1_STATUS_LED_PIN : 0;
+__rza1_status_led_p    = 0xFCFE3000 + 4 * __rza1_status_led_port;
+__rza1_status_led_pm   = 0xFCFE3300 + 4 * __rza1_status_led_port;
+__rza1_status_led_pmc  = 0xFCFE3400 + 4 * __rza1_status_led_port;
+__rza1_status_led_pipc = 0xFCFE7200 + 4 * __rza1_status_led_port;
+__rza1_status_led_mask = 1 << __rza1_status_led_pin;
 
 SECTIONS {
     /*
