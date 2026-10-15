@@ -194,7 +194,7 @@ pub fn rx_buf_end() -> *const i32 {
 /// stereo frame.  Read up to this point to drain converted audio.
 pub fn rx_current_ptr() -> *const i32 {
     let ch = scux::recorded_dma_channel(&FFU_DMA_CH);
-    let crda = unsafe { crate::dmac::current_dst(ch) };
+    let crda = unsafe { crate::dmac::raw::current_dst(ch) };
     let aligned = crda & !7u32;
     (aligned as usize + crate::UNCACHED_MIRROR_OFFSET) as *const i32
 }
@@ -203,7 +203,7 @@ pub fn rx_current_ptr() -> *const i32 {
 /// stereo frame.  Write ahead of this pointer.
 pub fn tx_current_ptr() -> *mut i32 {
     let ch = scux::recorded_dma_channel(&FFD_DMA_CH);
-    let crsa = unsafe { crate::dmac::current_src(ch) };
+    let crsa = unsafe { crate::dmac::raw::current_src(ch) };
     let aligned = crsa & !7u32;
     (aligned as usize + crate::UNCACHED_MIRROR_OFFSET) as *mut i32
 }

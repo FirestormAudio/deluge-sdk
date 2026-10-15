@@ -1084,12 +1084,12 @@ pub async unsafe fn read_blocks_dma(
         }
 
         // 3. Configure DMAC: SD_BUF0 (fixed source) → buf (incrementing dest).
-        crate::dmac::init_register_mode_rx(dma_ch, chcfg_sdhi_rx(dma_ch), sd_buf0, dmars_rx);
+        crate::dmac::raw::init_register_mode_rx(dma_ch, chcfg_sdhi_rx(dma_ch), sd_buf0, dmars_rx);
 
         // 4. Enable DATA_TRNS + error interrupts, then kick the DMAC.
         reg16(base, OFF_INFO1_MASK).write_volatile(!INFO1_DATA_TRNS);
         reg16(base, OFF_INFO2_MASK).write_volatile(!INFO2_ERR_ALL);
-        crate::dmac::start_transfer_rx(dma_ch, buf as u32, count * 512);
+        crate::dmac::raw::start_transfer_rx(dma_ch, buf as u32, count * 512);
 
         // 5. Wait for transfer complete (DATA_TRNS via SDHI interrupt).
         let data_result = wait_access_end(port).await;
@@ -1100,7 +1100,7 @@ pub async unsafe fn read_blocks_dma(
         // buffer before CHSTAT.TC would observe stale data.
         // (register_completion_irq must be called once for dma_ch at init.)
         if data_result.is_ok() {
-            crate::dmac::wait_transfer_complete(dma_ch).await;
+            crate::dmac::raw::wait_transfer_complete(dma_ch).await;
         }
 
         // 6. Restore software transfer mode.
@@ -1164,12 +1164,12 @@ pub async unsafe fn write_blocks_dma(
         }
 
         // 3. Configure DMAC: buf (incrementing source) → SD_BUF0 (fixed dest).
-        crate::dmac::init_register_mode(dma_ch, chcfg_sdhi_tx(dma_ch), sd_buf0, dmars_tx);
+        crate::dmac::raw::init_register_mode(dma_ch, chcfg_sdhi_tx(dma_ch), sd_buf0, dmars_tx);
 
         // 4. Enable DATA_TRNS + error interrupts, then kick the DMAC.
         reg16(base, OFF_INFO1_MASK).write_volatile(!INFO1_DATA_TRNS);
         reg16(base, OFF_INFO2_MASK).write_volatile(!INFO2_ERR_ALL);
-        crate::dmac::start_transfer(dma_ch, buf as u32, count * 512);
+        crate::dmac::raw::start_transfer(dma_ch, buf as u32, count * 512);
 
         // 5. Wait for transfer complete (DATA_TRNS via SDHI interrupt).
         let data_result = wait_access_end(port).await;

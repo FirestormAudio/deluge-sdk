@@ -319,7 +319,7 @@ mod device {
 
             // Register the DMAC completion IRQ for the RX channel so that
             // read_blocks_dma can await DMAC TC after DATA_TRNS.
-            dmac::register_completion_irq(SD_DMA_RX_CH);
+            dmac::raw::register_completion_irq(SD_DMA_RX_CH);
 
             // Clean-invalidate the DMA bounce buffer's cacheable alias.  BSS
             // zeroing wrote dirty lines there; if those lines were later evicted

@@ -172,5 +172,5 @@ impl Default for BlockState {
 /// `audio::init` under the `audio-irq` feature).
 #[cfg(feature = "audio-irq")]
 pub async fn wait_block() {
-    rza1l_hal::dmac::wait_block(ssi::rx_dma_ch()).await;
+    rza1l_hal::dmac::raw::wait_block(ssi::rx_dma_ch()).await;
 }

@@ -107,143 +107,6 @@ fn dmars_reg(ch: u8) -> *mut u32 {
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
-/// Initialise a DMA channel in link-descriptor mode.
-///
-/// Mirrors `initDMAWithLinkDescriptor()` from the C firmware:
-/// 1. Clears DCTRL for the channel's group.
-/// 2. Loads `CHCFG` from word \[4\] of the descriptor.
-/// 3. Programs the DMARS resource selector.
-/// 4. Writes the descriptor pointer to `NXLA`.
-///
-/// # Safety
-/// - `descriptor` must point to a valid, 32-byte-aligned 8-word link
-///   descriptor whose lifetime extends past the end of the DMA operation.
-/// - Must be called before [`channel_start`] for the same channel.
-pub unsafe fn init_with_link_descriptor(ch: u8, descriptor: *const u32, dmars_val: u32) {
-    unsafe {
-        log::trace!(
-            "dmac: ch{} init, desc={:#010x}, dmars={:#06x}",
-            ch,
-            descriptor as usize,
-            dmars_val
-        );
-        // 1. Clear group DCTRL (priority mode / round-robin reset)
-        log::trace!(
-            "dmac: ch{} writing DCTRL={:#010x}",
-            ch,
-            dctrl_reg(ch) as usize
-        );
-        crate::mmio::write32(dctrl_reg(ch) as usize, 0);
-        log::trace!("dmac: ch{} DCTRL ok", ch);
-
-        // 2. CHCFG comes from link-descriptor word [4]
-        let chcfg_val = descriptor.add(4).read();
-        crate::mmio::write32(ch_reg(ch, OFF_CHCFG) as usize, chcfg_val);
-        log::trace!("dmac: ch{} CHCFG ok", ch);
-
-        // 3. DMARS: even channel → bits [15:0], odd channel → bits [31:16]
-        let dmars = dmars_reg(ch) as usize;
-        let (shifted, mask) = if ch & 1 == 0 {
-            (dmars_val & 0xFFFF, 0xFFFF_0000u32)
-        } else {
-            ((dmars_val & 0xFFFF) << 16, 0x0000_FFFFu32)
-        };
-        crate::mmio::write32(dmars, (crate::mmio::read32(dmars) & mask) | shifted);
-        log::trace!("dmac: ch{} DMARS ok", ch);
-
-        // 4. NXLA = address of the link descriptor
-        crate::mmio::write32(ch_reg(ch, OFF_NXLA) as usize, descriptor as u32);
-        log::trace!("dmac: ch{} NXLA ok", ch);
-    }
-}
-
-/// Start a DMA channel: software-reset then set-enable.
-///
-/// Mirrors `dmaChannelStart()` from the C firmware.
-///
-/// A DSB is inserted between SWRST and SETEN to ensure the peripheral sees
-/// the reset complete before the enable is asserted (ARMv7-A write-buffer
-/// ordering requirement for back-to-back MMIO writes to the same device).
-///
-/// # Safety
-/// The channel must have been initialised with [`init_with_link_descriptor`].
-pub unsafe fn channel_start(ch: u8) {
-    unsafe {
-        log::trace!("dmac: ch{} start (SWRST + SETEN)", ch);
-        let chctrl = ch_reg(ch, OFF_CHCTRL);
-        // CHCTRL bits are write-1-to-trigger; write as clean values, not RMW.
-        chctrl.write_volatile(CHCTRL_SWRST);
-        // DSB required: drain write buffer so SWRST reaches the DMAC before SETEN.
-        // (Host builds — the simulator — have no DMAC and no barrier instruction.)
-        #[cfg(target_os = "none")]
-        core::arch::asm!("dsb", options(nostack));
-        chctrl.write_volatile(CHCTRL_SETEN);
-    }
-}
-
-/// Stop a DMA channel immediately: clear its enable bit, then software-reset
-/// it so any in-flight (including circular/peripheral-driven) transfer ceases.
-/// Also clears the channel's half of its DMARS register, releasing its
-/// peripheral-request route; the paired channel's selector is left alone.
-///
-/// Intended for use before handing the SoC to another program — a circular
-/// channel such as the SCIF RX DMA keeps writing to its buffer forever and is
-/// unaffected by masking CPU interrupts, so it must be stopped explicitly or
-/// it will corrupt the next program's memory.
-///
-/// # Safety
-/// Writes the channel's `CHCTRL` and DMARS registers.
-pub unsafe fn stop(ch: u8) {
-    unsafe {
-        let chctrl = ch_reg(ch, OFF_CHCTRL) as usize;
-        crate::mmio::write32(chctrl, CHCTRL_CLREN);
-        #[cfg(target_os = "none")]
-        core::arch::asm!("dsb", options(nostack));
-        crate::mmio::write32(chctrl, CHCTRL_SWRST);
-        // Release the peripheral request route too: SWRST resets CHCTRL but not
-        // DMARS, so a latched route (e.g. SCIF1-RX = 0x66) would keep claiming
-        // its request line and starve the next program's channel. Only this
-        // channel's half: the other half routes its pair.
-        let dmars = dmars_reg(ch) as usize;
-        let keep = if ch % 2 == 0 { 0xFFFF_0000 } else { 0x0000_FFFF };
-        crate::mmio::write32(dmars, crate::mmio::read32(dmars) & keep);
-    }
-}
-
-/// Whether a one-shot transfer started with [`start_transfer`] is still running on channel `ch`:
-/// enabled and not yet at its terminal count. Polls the status register, so it works with
-/// interrupts masked, where [`wait_transfer_complete`] cannot.
-///
-/// # Safety
-/// Reads a memory-mapped DMA register.
-#[inline]
-pub unsafe fn transfer_in_flight(ch: u8) -> bool {
-    let chstat = unsafe { ch_reg(ch, OFF_CHSTAT).read_volatile() };
-    chstat & CHSTAT_EN != 0 && chstat & CHSTAT_TC == 0
-}
-
-/// Read the current DMA **source** address for channel `ch` (`CRSA_n`).
-///
-/// For a memory→peripheral transfer (TX), this is the SRAM read pointer.
-///
-/// # Safety
-/// Reads a memory-mapped DMA register.
-#[inline]
-pub unsafe fn current_src(ch: u8) -> u32 {
-    unsafe { ch_reg(ch, OFF_CRSA).read_volatile() }
-}
-
-/// Read the current DMA **destination** address for channel `ch` (`CRDA_n`).
-///
-/// For a peripheral→memory transfer (RX), this is the SRAM write pointer.
-///
-/// # Safety
-/// Reads a memory-mapped DMA register.
-#[inline]
-pub unsafe fn current_dst(ch: u8) -> u32 {
-    unsafe { ch_reg(ch, OFF_CRDA).read_volatile() }
-}
-
 // ── Register-mode (one-shot) DMA ─────────────────────────────────────────────
 //
 // Used for memory→peripheral block transfers where the transfer size is known
@@ -252,10 +115,152 @@ pub unsafe fn current_dst(ch: u8) -> u32 {
 // again.  Completion is signalled via a GIC interrupt (DMAINT_n, GIC IDs
 // 41–56 for channels 0–15).
 
+#[doc(hidden)]
+pub mod raw;
+
+// The table handlers and tests below call the channel-number functions by name.
+use raw::*;
+
 use core::future::poll_fn;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::Poll;
 use embassy_sync::waitqueue::AtomicWaker;
+
+use core::marker::PhantomData;
+
+use crate::Peri;
+use crate::interrupt::{self, Binding, Handler, Interrupt};
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// A DMAC channel singleton (`peripherals::DMA_CH0`–`DMA_CH15`).
+pub trait Channel: crate::PeripheralType + sealed::Sealed + 'static {
+    /// The channel number, 0–15.
+    const NUMBER: u8;
+    /// Its completion interrupt (DMAINT<NUMBER>).
+    type Interrupt: Interrupt;
+}
+
+macro_rules! channels {
+    ($($ch:ident = $n:literal, $irq:ident;)*) => {$(
+        impl sealed::Sealed for crate::peripherals::$ch {}
+        impl Channel for crate::peripherals::$ch {
+            const NUMBER: u8 = $n;
+            type Interrupt = crate::interrupt::typelevel::$irq;
+        }
+    )*};
+}
+
+channels! {
+    DMA_CH0 = 0, DMAINT0; DMA_CH1 = 1, DMAINT1; DMA_CH2 = 2, DMAINT2; DMA_CH3 = 3, DMAINT3;
+    DMA_CH4 = 4, DMAINT4; DMA_CH5 = 5, DMAINT5; DMA_CH6 = 6, DMAINT6; DMA_CH7 = 7, DMAINT7;
+    DMA_CH8 = 8, DMAINT8; DMA_CH9 = 9, DMAINT9; DMA_CH10 = 10, DMAINT10; DMA_CH11 = 11, DMAINT11;
+    DMA_CH12 = 12, DMAINT12; DMA_CH13 = 13, DMAINT13; DMA_CH14 = 14, DMAINT14; DMA_CH15 = 15, DMAINT15;
+}
+
+/// Channel `C`'s completion interrupt handler: wakes [`Dma::wait_transfer_complete`].
+pub struct InterruptHandler<C: Channel> {
+    _channel: PhantomData<C>,
+}
+
+impl<C: Channel> Handler<C::Interrupt> for InterruptHandler<C> {
+    unsafe fn on_interrupt() {
+        raw::on_dma_int(C::NUMBER);
+    }
+}
+
+/// An owned DMAC channel.
+///
+/// The methods that take bus addresses stay `unsafe`: the DMAC writes wherever it is told.
+/// Owning the channel is what the caller no longer has to promise.
+pub struct Dma<'d> {
+    ch: u8,
+    _channel: PhantomData<&'d mut ()>,
+}
+
+impl<'d> Dma<'d> {
+    /// Take channel `C`, install its completion handler, and enable its interrupt.
+    pub fn new<C: Channel>(
+        _channel: Peri<'d, C>,
+        irq: impl Binding<C::Interrupt, InterruptHandler<C>> + 'd,
+    ) -> Self {
+        interrupt::bind(irq);
+        // SAFETY: this channel's own interrupt, at the DMAC priority raw::register_completion_irq uses.
+        unsafe {
+            crate::gic::set_priority(C::Interrupt::ID, DMAC_IRQ_PRIORITY);
+            crate::gic::enable(C::Interrupt::ID);
+        }
+        Self { ch: C::NUMBER, _channel: PhantomData }
+    }
+
+    /// The channel number.
+    pub fn number(&self) -> u8 {
+        self.ch
+    }
+
+    /// See [`raw::init_register_mode`].
+    ///
+    /// # Safety
+    /// `dst` is the bus address every transfer writes to.
+    pub unsafe fn init_register_mode(&mut self, chcfg: u32, dst: u32, dmars: u32) {
+        unsafe { raw::init_register_mode(self.ch, chcfg, dst, dmars) }
+    }
+
+    /// See [`raw::init_register_mode_rx`].
+    ///
+    /// # Safety
+    /// `src` is the bus address every transfer reads from.
+    pub unsafe fn init_register_mode_rx(&mut self, chcfg: u32, src: u32, dmars: u32) {
+        unsafe { raw::init_register_mode_rx(self.ch, chcfg, src, dmars) }
+    }
+
+    /// See [`raw::start_transfer`].
+    ///
+    /// # Safety
+    /// `src..src + count` must stay valid and unaliased until the transfer completes.
+    pub unsafe fn start_transfer(&mut self, src: u32, count: u32) {
+        unsafe { raw::start_transfer(self.ch, src, count) }
+    }
+
+    /// See [`raw::start_transfer_rx`].
+    ///
+    /// # Safety
+    /// `dst..dst + count` must stay valid and unaliased until the transfer completes.
+    pub unsafe fn start_transfer_rx(&mut self, dst: u32, count: u32) {
+        unsafe { raw::start_transfer_rx(self.ch, dst, count) }
+    }
+
+    /// Wait for the transfer in flight to complete.
+    pub async fn wait_transfer_complete(&mut self) {
+        raw::wait_transfer_complete(self.ch).await
+    }
+
+    /// Stop the channel and release its peripheral-request route.
+    pub fn stop(&mut self) {
+        // SAFETY: this channel is owned, so no other code drives it.
+        unsafe { raw::stop(self.ch) }
+    }
+
+    /// Whether a transfer is in flight.
+    pub fn transfer_in_flight(&self) -> bool {
+        // SAFETY: a read of this owned channel's status.
+        unsafe { raw::transfer_in_flight(self.ch) }
+    }
+
+    /// The current source address.
+    pub fn current_src(&self) -> u32 {
+        // SAFETY: a read of this owned channel's register.
+        unsafe { raw::current_src(self.ch) }
+    }
+
+    /// The current destination address.
+    pub fn current_dst(&self) -> u32 {
+        // SAFETY: a read of this owned channel's register.
+        unsafe { raw::current_dst(self.ch) }
+    }
+}
 
 /// GIC interrupt ID base for DMAC completion interrupts.
 /// DMAINT0 = GIC ID 41; channels 0–15 map to IDs 41–56 (RZ/A1L TRM §A.2).
@@ -280,204 +285,6 @@ static DMAC_WAKERS: [AtomicWaker; 16] = [
     AtomicWaker::new(),
     AtomicWaker::new(),
 ];
-
-/// Initialise a DMAC channel in **register mode** for a memory→peripheral
-/// block transfer.
-///
-/// Mirrors `oledDMAInit()` from the C firmware:
-/// 1. Clears `DCTRL` for the channel's group.
-/// 2. Programs `CHCFG`, `CHITVL`, `CHEXT`.
-/// 3. Writes the fixed destination address (`N0DA`) — e.g. peripheral data register.
-/// 4. Software-resets the channel (clears `TC`).
-/// 5. Programs the DMARS resource selector.
-///
-/// The channel is left idle.  Call [`start_transfer`] for each block.  Call
-/// [`register_completion_irq`] separately to receive a GIC interrupt on
-/// transfer end.
-///
-/// # Safety
-/// Writes to DMAC registers.  Must be called before the channel is used.
-pub unsafe fn init_register_mode(ch: u8, chcfg: u32, dst: u32, dmars: u32) {
-    unsafe {
-        log::debug!(
-            "dmac: ch{} register-mode init, chcfg={:#010x}, dst={:#010x}, dmars={:#06x}",
-            ch,
-            chcfg,
-            dst,
-            dmars
-        );
-
-        // 1. Clear group DCTRL.
-        dctrl_reg(ch).write_volatile(0);
-
-        // 2. CHCFG / CHITVL / CHEXT.
-        ch_reg(ch, OFF_CHCFG).write_volatile(chcfg);
-        ch_reg(ch, OFF_CHITVL).write_volatile(0);
-        ch_reg(ch, OFF_CHEXT).write_volatile(0);
-
-        // 3. Fixed destination (peripheral register).
-        ch_reg(ch, OFF_N0DA).write_volatile(dst);
-
-        // 4. Software reset + clear TC.
-        // CHCTRL action bits are write-1-to-trigger; write as a clean value
-        // (not RMW) to avoid re-triggering actions from stale status read-back.
-        let chctrl = ch_reg(ch, OFF_CHCTRL);
-        chctrl.write_volatile(CHCTRL_SWRST | CHCTRL_CLRTC);
-        // Re-write N0DA after reset (matches C firmware's double-write pattern).
-        ch_reg(ch, OFF_N0DA).write_volatile(dst);
-
-        // 5. DMARS.
-        let dmars_ptr = dmars_reg(ch);
-        let (shifted, mask) = if ch & 1 == 0 {
-            (dmars & 0xFFFF, 0xFFFF_0000u32)
-        } else {
-            ((dmars & 0xFFFF) << 16, 0x0000_FFFFu32)
-        };
-        dmars_ptr.write_volatile((dmars_ptr.read_volatile() & mask) | shifted);
-    }
-}
-
-/// Register the DMAC completion (DMAINT) GIC interrupt for channel `ch`.
-///
-/// The ISR calls [`on_dma_int`] which wakes any task awaiting
-/// [`wait_transfer_complete`].
-///
-/// # Safety
-/// Writes to GIC registers. Call after [`crate::gic::init`] and before IRQs
-/// are enabled.
-pub unsafe fn register_completion_irq(ch: u8) {
-    unsafe {
-        use crate::gic;
-        let id = DMAINT_BASE + ch as u16;
-        gic::register(id, DMA_INT_HANDLERS[ch as usize]);
-        gic::set_priority(id, DMAC_IRQ_PRIORITY);
-        gic::enable(id);
-    }
-}
-
-/// Call from the DMAINT completion ISR for channel `ch`.
-///
-/// Wakes any Embassy task waiting in [`wait_transfer_complete`].
-pub fn on_dma_int(ch: u8) {
-    DMAC_WAKERS[ch as usize].wake();
-}
-
-/// Initialise a DMAC channel in **register mode** for a peripheral→memory
-/// block transfer.
-///
-/// Like [`init_register_mode`] but holds the *source* address fixed (e.g.
-/// `SD_BUF0`) and lets the destination address increment with each transfer.
-///
-/// The channel is left idle.  Call [`start_transfer_rx`] for each block.
-///
-/// # Safety
-/// Writes to DMAC registers.  Must be called before the channel is used.
-pub unsafe fn init_register_mode_rx(ch: u8, chcfg: u32, src: u32, dmars: u32) {
-    unsafe {
-        log::debug!(
-            "dmac: ch{} register-mode-rx init, chcfg={:#010x}, src={:#010x}, dmars={:#06x}",
-            ch,
-            chcfg,
-            src,
-            dmars
-        );
-
-        // 1. Clear group DCTRL.
-        dctrl_reg(ch).write_volatile(0);
-
-        // 2. CHCFG / CHITVL / CHEXT.
-        ch_reg(ch, OFF_CHCFG).write_volatile(chcfg);
-        ch_reg(ch, OFF_CHITVL).write_volatile(0);
-        ch_reg(ch, OFF_CHEXT).write_volatile(0);
-
-        // 3. Fixed source (peripheral register).
-        ch_reg(ch, OFF_N0SA).write_volatile(src);
-
-        // 4. Software reset + clear TC.
-        let chctrl = ch_reg(ch, OFF_CHCTRL);
-        chctrl.write_volatile(CHCTRL_SWRST | CHCTRL_CLRTC);
-        // Re-write N0SA after reset (matches C firmware's double-write pattern).
-        ch_reg(ch, OFF_N0SA).write_volatile(src);
-
-        // 5. DMARS.
-        let dmars_ptr = dmars_reg(ch);
-        let (shifted, mask) = if ch & 1 == 0 {
-            (dmars & 0xFFFF, 0xFFFF_0000u32)
-        } else {
-            ((dmars & 0xFFFF) << 16, 0x0000_FFFFu32)
-        };
-        dmars_ptr.write_volatile((dmars_ptr.read_volatile() & mask) | shifted);
-    }
-}
-
-/// Arm and start a one-shot peripheral→memory DMA transfer on a channel
-/// initialised with [`init_register_mode_rx`].
-///
-/// Sets `N0DA = dst`, `N0TB = count`, then writes `CLRTC | SETEN`.
-///
-/// # Safety
-/// The destination region `[dst, dst+count)` must be uncached memory (or have
-/// had its cache lines invalidated) so the CPU reads the DMAC-written data.
-pub unsafe fn start_transfer_rx(ch: u8, dst: u32, count: u32) {
-    unsafe {
-        log::trace!(
-            "dmac: ch{} start_transfer_rx dst={:#010x} count={}",
-            ch,
-            dst,
-            count
-        );
-        ch_reg(ch, OFF_N0DA).write_volatile(dst);
-        ch_reg(ch, OFF_N0TB).write_volatile(count);
-        let chctrl = ch_reg(ch, OFF_CHCTRL);
-        chctrl.write_volatile(CHCTRL_CLRTC | CHCTRL_SETEN);
-    }
-}
-
-/// Arm and start a one-shot DMA transfer on a channel set up with
-/// [`init_register_mode`].
-///
-/// Sets `N0SA = src`, `N0TB = count`, then writes `CLRTC | SETEN` to kick
-/// the channel.  Matches the per-frame part of `oledSelectingComplete()`.
-///
-/// # Safety
-/// The source data at `[src, src+count)` must be in uncached memory (or have
-/// had its cache lines flushed) so the DMAC reads the correct bytes.
-pub unsafe fn start_transfer(ch: u8, src: u32, count: u32) {
-    unsafe {
-        log::trace!(
-            "dmac: ch{} start_transfer src={:#010x} count={}",
-            ch,
-            src,
-            count
-        );
-        ch_reg(ch, OFF_N0SA).write_volatile(src);
-        ch_reg(ch, OFF_N0TB).write_volatile(count);
-        // CHCTRL action bits are write-1-to-trigger; write as a clean value.
-        let chctrl = ch_reg(ch, OFF_CHCTRL);
-        chctrl.write_volatile(CHCTRL_CLRTC | CHCTRL_SETEN);
-    }
-}
-
-/// Suspend until the DMA transfer on channel `ch` completes.
-///
-/// Completion is signalled by the DMAINT GIC interrupt (registered via
-/// [`register_completion_irq`]).  This function must be called **after**
-/// [`start_transfer`] has kicked the channel.
-pub async fn wait_transfer_complete(ch: u8) {
-    poll_fn(|cx| {
-        DMAC_WAKERS[ch as usize].register(cx.waker());
-        // Check TC flag (CHSTAT.TC = bit 6) directly to avoid missing a
-        // completion that arrived before we registered the waker.
-        let chstat = unsafe { ch_reg(ch, OFF_CHSTAT).read_volatile() };
-        if chstat & CHSTAT_TC != 0 {
-            // TC bit set — transfer complete
-            Poll::Ready(())
-        } else {
-            Poll::Pending
-        }
-    })
-    .await
-}
 
 // Per-channel ISR dispatch table (16 entries; only populated channels matter).
 fn dma_int_0() {
@@ -580,37 +387,6 @@ block_handlers!(
     dbi_14 = 14,
     dbi_15 = 15,
 );
-
-/// Register the GIC handler for a channel running a **descriptor ring** with
-/// per-descriptor END interrupts. The handler clears TC each block (re-arming the
-/// running ring) and signals [`wait_block`].
-///
-/// # Safety
-/// Writes the GIC handler table / distributor; the channel must use a ring whose
-/// descriptors have the END interrupt enabled (DEM=0).
-pub unsafe fn register_block_irq(ch: u8) {
-    unsafe {
-        use crate::gic;
-        let id = DMAINT_BASE + ch as u16;
-        gic::register(id, DMA_BLOCK_HANDLERS[ch as usize]);
-        gic::set_priority(id, DMAC_IRQ_PRIORITY);
-        gic::enable(id);
-    }
-}
-
-/// Await the next per-block END interrupt on a ring channel (see
-/// [`register_block_irq`]). Recurring: call it in a loop.
-pub async fn wait_block(ch: u8) {
-    poll_fn(|cx| {
-        DMAC_WAKERS[ch as usize].register(cx.waker());
-        if DMAC_BLOCK_READY[ch as usize].swap(false, Ordering::AcqRel) {
-            Poll::Ready(())
-        } else {
-            Poll::Pending
-        }
-    })
-    .await
-}
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
@@ -756,5 +532,69 @@ mod tests {
         crate::mmio::test::poke32(dmars, 0x0062_0066);
         unsafe { stop(5) };
         assert_eq!(crate::mmio::test::peek32(dmars), 0x0000_0066, "ch4 kept");
+    }
+}
+
+#[cfg(all(test, not(target_os = "none")))]
+mod typed_tests {
+    use super::*;
+    use crate::interrupt::{Handler, Interrupt};
+    use crate::mmio::test;
+    use crate::peripherals::{DMA_CH0, DMA_CH4, DMA_CH7, DMA_CH9, DMA_CH15};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::task::{Wake, Waker};
+
+    crate::bind_interrupts!(struct Irqs {
+        DMAINT4 => InterruptHandler<DMA_CH4>;
+        DMAINT7 => InterruptHandler<DMA_CH7>;
+    });
+
+    #[test]
+    fn channels_know_their_number_and_interrupt() {
+        assert_eq!(<DMA_CH0 as Channel>::NUMBER, 0);
+        assert_eq!(<DMA_CH15 as Channel>::NUMBER, 15);
+        assert_eq!(<<DMA_CH9 as Channel>::Interrupt as Interrupt>::ID, 41 + 9);
+    }
+
+    #[test]
+    fn a_channel_is_bound_prioritised_and_enabled_when_built() {
+        test::reset();
+        let dma = Dma::new(unsafe { DMA_CH4::steal() }, Irqs);
+        assert_eq!(dma.number(), 4);
+        assert!(crate::gic::handler(45).is_some(), "DMAINT4 has a handler");
+        // Priority 13 into IPRIORITYR11 lane 1, then ISENABLER1 bit 13: what
+        // raw::register_completion_irq(4) writes.
+        assert_eq!(
+            test::writes(),
+            [(0xE820_142C, (13 << 3) << 8), (0xE820_1104, 1 << 13)]
+        );
+    }
+
+    #[test]
+    fn stopping_an_owned_channel_writes_what_raw_stop_writes() {
+        test::reset();
+        unsafe { raw::stop(7) };
+        let raw_writes = test::writes();
+
+        let mut dma = Dma::new(unsafe { DMA_CH7::steal() }, Irqs);
+        test::reset();
+        dma.stop();
+        assert_eq!(test::writes(), raw_writes);
+    }
+
+    struct CountWakes(AtomicU32);
+    impl Wake for CountWakes {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn the_completion_handler_wakes_its_channel() {
+        let wakes = Arc::new(CountWakes(AtomicU32::new(0)));
+        DMAC_WAKERS[4].register(&Waker::from(wakes.clone()));
+        unsafe { <InterruptHandler<DMA_CH4> as Handler<_>>::on_interrupt() };
+        assert_eq!(wakes.0.load(Ordering::Relaxed), 1);
     }
 }

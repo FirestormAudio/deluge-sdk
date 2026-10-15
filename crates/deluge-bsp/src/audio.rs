@@ -105,7 +105,7 @@ pub unsafe fn init() {
         // IRQ. The block handler must be registered before the ring DMA starts.
         #[cfg(feature = "audio-irq")]
         {
-            rza1l_hal::dmac::register_block_irq(crate::system::SSI_CONFIG.rx_dma_ch);
+            rza1l_hal::dmac::raw::register_block_irq(crate::system::SSI_CONFIG.rx_dma_ch);
             ssi::init_block_irq(&crate::system::SSI_CONFIG);
         }
 

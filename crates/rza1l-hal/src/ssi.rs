@@ -348,12 +348,12 @@ pub unsafe fn init(cfg: &SsiConfig) {
             (core::ptr::addr_of!(TX_DESC) as usize + UNCACHED_MIRROR_OFFSET) as *const u32;
         let rx_desc_u =
             (core::ptr::addr_of!(RX_DESC) as usize + UNCACHED_MIRROR_OFFSET) as *const u32;
-        dmac::init_with_link_descriptor(cfg.tx_dma_ch, tx_desc_u, DMARS_SSI0_TX);
-        dmac::init_with_link_descriptor(cfg.rx_dma_ch, rx_desc_u, DMARS_SSI0_RX);
+        dmac::raw::init_with_link_descriptor(cfg.tx_dma_ch, tx_desc_u, DMARS_SSI0_TX);
+        dmac::raw::init_with_link_descriptor(cfg.rx_dma_ch, rx_desc_u, DMARS_SSI0_RX);
 
         // 5. Start both DMA channels (software-reset then enable).
-        dmac::channel_start(cfg.tx_dma_ch);
-        dmac::channel_start(cfg.rx_dma_ch);
+        dmac::raw::channel_start(cfg.tx_dma_ch);
+        dmac::raw::channel_start(cfg.rx_dma_ch);
         log::debug!(
             "ssi: DMA TX ch{} + RX ch{} started",
             cfg.tx_dma_ch,
@@ -392,7 +392,7 @@ static mut RX_RING: [LinkDesc; RX_RING_DESCS] = [const { LinkDesc([0u32; 8]) }; 
 /// (each [`RX_IRQ_BLOCK_FRAMES`] long, with the END interrupt **enabled**) that
 /// tile the *same* contiguous `RX_BUF`. The RX DMAINT therefore fires once per
 /// block instead of once per full buffer, giving an interrupt-driven block clock
-/// ([`crate::dmac::register_block_irq`] / [`crate::dmac::wait_block`]).
+/// ([`crate::dmac::raw::register_block_irq`] / [`crate::dmac::raw::wait_block`]).
 ///
 /// Because the descriptors tile one contiguous buffer, [`rx_current_ptr`] (CRDA)
 /// still sweeps linearly, exactly as with [`init`]. TX is the same single
@@ -448,10 +448,10 @@ pub unsafe fn init_block_irq(cfg: &SsiConfig) {
         ssi_reg(SSIFCR_OFF).write_volatile(SSIFCR_INIT);
 
         // ── Connect DMA: TX single descriptor, RX descriptor ring. ───────────
-        dmac::init_with_link_descriptor(cfg.tx_dma_ch, tx_desc_u as *const u32, DMARS_SSI0_TX);
-        dmac::init_with_link_descriptor(cfg.rx_dma_ch, rx_ring_head, DMARS_SSI0_RX);
-        dmac::channel_start(cfg.tx_dma_ch);
-        dmac::channel_start(cfg.rx_dma_ch);
+        dmac::raw::init_with_link_descriptor(cfg.tx_dma_ch, tx_desc_u as *const u32, DMARS_SSI0_TX);
+        dmac::raw::init_with_link_descriptor(cfg.rx_dma_ch, rx_ring_head, DMARS_SSI0_RX);
+        dmac::raw::channel_start(cfg.tx_dma_ch);
+        dmac::raw::channel_start(cfg.rx_dma_ch);
 
         // ── Release FIFOs + enable TX/RX (identical to `init`). ──────────────
         let fcr = ssi_reg(SSIFCR_OFF);
@@ -509,8 +509,8 @@ pub unsafe fn init_rx_only(cfg: &SsiConfig) {
         // 4. Initialise and start RX DMA only.
         let rx_desc_u =
             (core::ptr::addr_of!(RX_DESC) as usize + UNCACHED_MIRROR_OFFSET) as *const u32;
-        dmac::init_with_link_descriptor(cfg.rx_dma_ch, rx_desc_u, DMARS_SSI0_RX);
-        dmac::channel_start(cfg.rx_dma_ch);
+        dmac::raw::init_with_link_descriptor(cfg.rx_dma_ch, rx_desc_u, DMARS_SSI0_RX);
+        dmac::raw::channel_start(cfg.rx_dma_ch);
         log::debug!(
             "ssi: DMA RX ch{} started (TX skipped — SCUX owns TX)",
             cfg.rx_dma_ch
@@ -562,7 +562,7 @@ pub unsafe fn enable_tx() {
 /// Write audio samples *ahead of* this pointer.  Wrap at [`tx_buf_end`].
 pub fn tx_current_ptr() -> *mut i32 {
     let ch = TX_DMA_CH_ACTIVE.load(core::sync::atomic::Ordering::Relaxed);
-    let crsa = unsafe { dmac::current_src(ch) };
+    let crsa = unsafe { dmac::raw::current_src(ch) };
     // Align down to a stereo frame (2 × i32 = 8 bytes).
     let aligned = crsa & STEREO_FRAME_ALIGN_MASK;
     (aligned as usize + UNCACHED_MIRROR_OFFSET) as *mut i32
@@ -574,7 +574,7 @@ pub fn tx_current_ptr() -> *mut i32 {
 /// Read received samples *behind* this pointer.  Wrap at [`rx_buf_start`].
 pub fn rx_current_ptr() -> *const i32 {
     let ch = RX_DMA_CH_ACTIVE.load(core::sync::atomic::Ordering::Relaxed);
-    let crda = unsafe { dmac::current_dst(ch) };
+    let crda = unsafe { dmac::raw::current_dst(ch) };
     let aligned = crda & STEREO_FRAME_ALIGN_MASK;
     (aligned as usize + UNCACHED_MIRROR_OFFSET) as *const i32
 }

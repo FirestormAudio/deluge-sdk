@@ -453,8 +453,8 @@ pub unsafe fn init_dma_rx(ch: usize, dma_ch: u8, dmars: u32) {
 
         // Start DMAC — pass the uncached descriptor address so the hardware can
         // always fetch it coherently.
-        crate::dmac::init_with_link_descriptor(dma_ch, desc_addr_uncached as *const u32, dmars);
-        crate::dmac::channel_start(dma_ch);
+        crate::dmac::raw::init_with_link_descriptor(dma_ch, desc_addr_uncached as *const u32, dmars);
+        crate::dmac::raw::channel_start(dma_ch);
 
         // TIE|RIE|TE|RE = 0x00F0: enables DMA triggers on each TX/RX event.
         // Because GIC RXI is not enabled, the SCIF request goes only to the DMAC.
@@ -499,8 +499,8 @@ pub unsafe fn init_dma_tx(ch: usize, dma_ch: u8, dmars: u32) {
         //   | DMA_AM_FOR_SCIF (0x0000_0200)  — AM=2: cycle-steal level, SCIF pacing
         //   | (dma_ch & 7)                   — channel-group index in CHCFG[2:0]
         let chcfg = 0x0020_0068_u32 | DMA_AM_FOR_SCIF | (dma_ch as u32 & 7);
-        crate::dmac::init_register_mode(dma_ch, chcfg, ftdr as u32, dmars);
-        crate::dmac::register_completion_irq(dma_ch);
+        crate::dmac::raw::init_register_mode(dma_ch, chcfg, ftdr as u32, dmars);
+        crate::dmac::raw::register_completion_irq(dma_ch);
         DMA_TX_DMACH[ch] = dma_ch;
         DMA_TX_ACTIVE[ch] = true;
         // Enable the SCIF TX path and the SCIF→DMAC TX request, independently of
@@ -646,7 +646,7 @@ async fn read_byte_dma(ch: usize) -> u8 {
     ];
     if FIRST_CALL[ch].swap(false, core::sync::atomic::Ordering::Relaxed) {
         let dma_ch = unsafe { DMA_RX_DMACH[ch] };
-        let crda = unsafe { crate::dmac::current_dst(dma_ch) };
+        let crda = unsafe { crate::dmac::raw::current_dst(dma_ch) };
         let read_ptr = unsafe { DMA_RX_READ[ch] };
         let buf_base = unsafe { DMA_RX_BASE[ch] };
         let b = base(ch);
@@ -688,7 +688,7 @@ pub unsafe fn try_read_dma(ch: usize) -> Option<u8> {
         let read_ptr = DMA_RX_READ[ch];
 
         // CRDA_n: current DMA write position (cached address space).
-        let write_ptr = crate::dmac::current_dst(dma_ch);
+        let write_ptr = crate::dmac::raw::current_dst(dma_ch);
 
         if write_ptr == read_ptr {
             return None;
@@ -736,9 +736,9 @@ pub async fn write_bytes(ch: usize, buf: &[u8]) {
                 let cached_ptr = core::ptr::addr_of!(DMA_TX_BUF[ch].0[0]);
                 let uncached_ptr = (cached_ptr as usize + UNCACHED_MIRROR_OFFSET) as *mut u8;
                 core::ptr::copy_nonoverlapping(buf.as_ptr().add(pos), uncached_ptr, chunk_len);
-                crate::dmac::start_transfer(dma_ch, uncached_ptr as u32, chunk_len as u32);
+                crate::dmac::raw::start_transfer(dma_ch, uncached_ptr as u32, chunk_len as u32);
             }
-            crate::dmac::wait_transfer_complete(dma_ch).await;
+            crate::dmac::raw::wait_transfer_complete(dma_ch).await;
             pos += chunk_len;
         }
         return;

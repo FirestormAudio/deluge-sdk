@@ -872,7 +872,7 @@ pub unsafe fn init_ffd_dma(ffd_ch: u8, dma_ch: u8, src_buf: *const u32, buf_byte
         // Patch: self-referential NXLA (uncached alias)
         desc_u.add(7).write_volatile(desc_u as u32);
 
-        dmac::init_with_link_descriptor(dma_ch, desc_u as *const u32, dmars);
+        dmac::raw::init_with_link_descriptor(dma_ch, desc_u as *const u32, dmars);
     }
 }
 
@@ -922,7 +922,7 @@ pub unsafe fn init_ffu_dma(ffu_ch: u8, dma_ch: u8, dst_buf: *mut u32, buf_bytes:
         // Patch: NXLA
         desc_u.add(7).write_volatile(desc_u as u32);
 
-        dmac::init_with_link_descriptor(dma_ch, desc_u as *const u32, dmars);
+        dmac::raw::init_with_link_descriptor(dma_ch, desc_u as *const u32, dmars);
     }
 }
 
@@ -972,14 +972,14 @@ pub unsafe fn start(
         // Start DMA channels
         for ch in 0..4u8 {
             if ffd_mask & (1 << ch) != 0 {
-                dmac::channel_start(
+                dmac::raw::channel_start(
                     FFD_DMA_CH_STORED[ch as usize].load(core::sync::atomic::Ordering::Relaxed),
                 );
             }
         }
         for ch in 0..4u8 {
             if ffu_mask & (1 << ch) != 0 {
-                dmac::channel_start(
+                dmac::raw::channel_start(
                     FFU_DMA_CH_STORED[ch as usize].load(core::sync::atomic::Ordering::Relaxed),
                 );
             }
@@ -1079,14 +1079,14 @@ pub unsafe fn start_path(
         // Start new DMA channels only.
         for ch in 0..4u8 {
             if ffd_mask & (1 << ch) != 0 {
-                dmac::channel_start(
+                dmac::raw::channel_start(
                     FFD_DMA_CH_STORED[ch as usize].load(core::sync::atomic::Ordering::Relaxed),
                 );
             }
         }
         for ch in 0..4u8 {
             if ffu_mask & (1 << ch) != 0 {
-                dmac::channel_start(
+                dmac::raw::channel_start(
                     FFU_DMA_CH_STORED[ch as usize].load(core::sync::atomic::Ordering::Relaxed),
                 );
             }

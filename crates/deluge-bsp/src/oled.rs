@@ -408,8 +408,8 @@ pub async fn init() {
     // Mirrors oledDMAInit() from the C firmware.  Must be done after RSPI0
     // is initialised (stb clock enabled) but before the first send_frame.
     unsafe {
-        dmac::init_register_mode(OLED_DMA_CH, OLED_CHCFG, RSPI0_SPDR_LL, OLED_DMA_DMARS);
-        dmac::register_completion_irq(OLED_DMA_CH);
+        dmac::raw::init_register_mode(OLED_DMA_CH, OLED_CHCFG, RSPI0_SPDR_LL, OLED_DMA_DMARS);
+        dmac::raw::register_completion_irq(OLED_DMA_CH);
     }
 
     // ---- 2. PIC: DC_LOW, ENABLE_OLED, SELECT_OLED -----------------------
@@ -633,11 +633,11 @@ pub async fn send_frame(fb: &FrameBuffer) {
         // bus address the DMAC will read from — same physical RAM as the cached
         // alias but coherent since we wrote through the uncached window above.
         let src_uncached = dst_uncached as u32;
-        dmac::start_transfer(OLED_DMA_CH, src_uncached, FRAME_BYTES as u32);
+        dmac::raw::start_transfer(OLED_DMA_CH, src_uncached, FRAME_BYTES as u32);
     }
 
     // Await DMA completion interrupt (still holding the RSPI0 guard).
-    dmac::wait_transfer_complete(OLED_DMA_CH).await;
+    dmac::raw::wait_transfer_complete(OLED_DMA_CH).await;
 
     // Wait for RSPI0 to finish clocking out its FIFO/shift register (TEND=1).
     // DMA completion only means all bytes have been *enqueued*; deselecting
