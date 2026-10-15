@@ -348,8 +348,11 @@ mod device {
         // report a stale `true` from the previous session.
         CARD_HS.store(false, Ordering::Release);
 
-        // The controller, pins and interrupts came up once, in `init_hw`; this is the card's
-        // protocol, which runs again after every card change.
+        // The pins and interrupts came up once, in `init_hw`. The controller goes back to its
+        // identification state each time: the previous card may have left SD_CLK at 16.7 or
+        // 33.3 MHz (identification allows 400 kHz), or the controller wedged by a pull
+        // mid-transfer.
+        controller().reset();
         unsafe {
             // Clean-invalidate the DMA bounce buffer's cacheable alias.  BSS
             // zeroing wrote dirty lines there; if those lines were later evicted

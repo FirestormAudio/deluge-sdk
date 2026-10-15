@@ -347,7 +347,7 @@ fn reg32(base: usize, off: usize) -> crate::mmio::Reg32 {
 /// Enables the module clock (STBCR12), releases soft-reset, configures
 /// interrupt masks, and sets the SD timing option register.
 ///
-/// Called once, by [`Sdhi::new`].
+/// Called by [`Sdhi::new`], and by [`Sdhi::reset`] before each re-identification.
 ///
 /// # Safety
 /// Writes to memory-mapped peripheral registers.
@@ -1556,6 +1556,8 @@ impl<T: Instance> Handler<T::OperationInterrupt> for OperationInterruptHandler<T
 /// sequence: issue one command (and its transfer) at a time.
 pub struct Sdhi<'d> {
     port: u8,
+    /// The board's SD_OPTION, which [`reset`](Self::reset) restores.
+    sd_option: u16,
     /// The DMA channels, each held by one block transfer at a time across its awaits.
     tx_dma: Mutex<CriticalSectionRawMutex, Dma<'d>>,
     rx_dma: Mutex<CriticalSectionRawMutex, Dma<'d>>,
@@ -1594,10 +1596,23 @@ impl<'d> Sdhi<'d> {
         }
         Self {
             port: T::PORT,
+            sd_option,
             tx_dma: Mutex::new(tx_dma),
             rx_dma: Mutex::new(rx_dma),
             _sdhi: PhantomData,
         }
+    }
+
+    /// Return the controller to the state [`new`](Self::new) left it in, ready to identify a
+    /// card: soft reset, interrupt masks, `sd_option`, 512-byte blocks and the ~130 kHz
+    /// identification clock. Bindings and GIC enables are kept.
+    ///
+    /// Run it before re-identifying a card: the previous card may have left the clock at
+    /// 16.7 or 33.3 MHz, far above identification mode's 400 kHz, or the controller wedged
+    /// by a pull mid-transfer. No command or transfer may be in flight.
+    pub fn reset(&self) {
+        // SAFETY: the owned controller; nothing is in flight (this method's contract).
+        unsafe { init(self.port, self.sd_option) }
     }
 
     /// Set the SD clock divider (`CLK_DIV_*`). `CLK_DIV_2` needs a High-Speed card.
@@ -1859,5 +1874,23 @@ mod typed_tests {
         assert!(sdhi.card_inserted());
         test::poke16(SDHI1_BASE + OFF_INFO1, 0);
         assert!(!sdhi.card_inserted());
+    }
+    #[test]
+    fn a_reset_returns_the_controller_to_the_identification_clock() {
+        test::reset();
+        let sdhi = sdhi1();
+        // The previous card ran at the High-Speed clock with an odd block size.
+        sdhi.set_clock_div(CLK_DIV_2);
+        test::poke16(SDHI1_BASE + OFF_SIZE, 64);
+        test::poke16(SDHI1_BASE + OFF_OPTION, 0);
+        sdhi.reset();
+        assert_eq!(
+            test::peek16(SDHI1_BASE + OFF_CLK_CTRL),
+            CLK_DIV_512 | CLK_ENABLE,
+            "re-identification runs at P1/512"
+        );
+        assert_eq!(test::peek16(SDHI1_BASE + OFF_SIZE), 512);
+        assert_eq!(test::peek16(SDHI1_BASE + OFF_OPTION), 0x00BD);
+        assert_eq!(test::peek16(SDHI1_BASE + OFF_SOFT_RST), SOFT_RST_DEASSERT);
     }
 }
