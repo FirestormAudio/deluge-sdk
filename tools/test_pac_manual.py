@@ -50,6 +50,12 @@ class Malformed(unittest.TestCase):
         with self.assertRaises(ValueError):
             a1l_registers(path)
 
+    def test_two_rows_at_one_address_are_an_error(self):
+        path = self.table("|Timer|First register|ONE|32|H'E8000000|32|\n"
+                          "||Second register|TWO|32|H'E8000000|32|")
+        with self.assertRaises(ValueError):
+            a1l_registers(path)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -1,7 +1,12 @@
 """Parse the RZ/A1L manual's Table 46.1 (List of Registers) from its Markdown conversion."""
 import re
 
-HEX = r"H['’‘]\s*([0-9A-Fa-f]{8})"
+# Table 46.1 gives the Cortex-A9 PMU's last page (CA9_PMU_CLAIMSET .. COMPID3) the PTM's addresses,
+# H'FC031FA0–H'FC031FFC: a manual erratum, in a module the PAC doesn't describe. Duplicates there
+# keep the first row; anywhere else they are an error.
+DUPLICATES_TOLERATED_IN = {'Debugger interface'}
+
+HEX =r"H['’‘]\s*([0-9A-Fa-f]{8})"
 STRIDE = r"H['’‘]\s*([0-9A-Fa-f]{1,8})"
 
 
@@ -47,8 +52,9 @@ def a1l_registers(md_path, include_a1lu_only=False):
     """{address: (module, abbreviation, access sizes)} for every register the RZ/A1L has.
 
     Table 46.1's legend: note *1 = RZ/A1L only, *2 = RZ/A1LU only. A module heading's note applies
-    to its continuation rows. An address cell this can't read raises `ValueError` rather than
-    dropping the row: a dropped row would read as a register the RZ/A1L lacks.
+    to its continuation rows. An address cell this can't read, or a second register at one address,
+    raises `ValueError` rather than dropping or overwriting a row: either would read as a register
+    the RZ/A1L lacks.
     """
     regs = {}
     module, module_note = None, ''
@@ -73,5 +79,10 @@ def a1l_registers(md_path, include_a1lu_only=False):
         sizes = tuple(sorted({int(x) for x in re.findall(r'\d+', acc)}))
         name = re.sub(r'\*\d+|<br>', '', abbr).strip()
         for a in addrs:
+            if a in regs:
+                if module in DUPLICATES_TOLERATED_IN and regs[a][0] == module:
+                    continue
+                raise ValueError('two registers at 0x%08X (%s and %s): %s'
+                                 % (a, regs[a][1], name, line.strip()))
             regs[a] = (module, name, sizes)
     return regs
