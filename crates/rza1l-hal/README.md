@@ -51,7 +51,7 @@ without explicit cache maintenance.
 | Module        | Description |
 |---------------|-------------|
 | `ostm`        | OS Timer — two 32-bit channels clocked from P0φ = EXTAL × 2.5 (see `clocks`; 33.064 MHz on the Deluge). Supports free-running and interval modes. Used as the Embassy time-driver tick source. |
-| `time_driver`  | Embassy `time-driver` implementation backed by OSTM0 (free-running) + OSTM1 (alarm). |
+| `time_driver`  | Embassy `time-driver` implementation backed by OSTM0 (free-running) + OSTM1 (alarm). Behind the `time-driver-ostm` feature (on by default). |
 | `time_math`   | Pure tick/µs conversion and wrap arithmetic behind `time_driver` (host-testable). |
 | `mtu2`        | Multi-Function Timer Pulse Unit 2 — five 16-bit channels. Used for bare-metal timing where OSTM is unavailable. |
 

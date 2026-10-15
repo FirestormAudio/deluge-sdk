@@ -53,7 +53,9 @@ host-panel = ["dep:embassy-time"]
 [dependencies]
 max5136 = { workspace = true }
 usb-classes = { workspace = true, features = ["device-midi"] }
-rza1l-hal = { path = "../rza1l-hal", version = "0.1.0" }
+# `time-driver-ostm`: `system::init` starts the OSTM time driver, so the BSP needs it even if a
+# dependent turns rza1l-hal's default features off.
+rza1l-hal = { path = "../rza1l-hal", version = "0.1.0", features = ["time-driver-ostm"] }
 rza1-rt = { path = "../rza1-rt", version = "0.1.0" }
 embedded-sdmmc = { version = "0.9", default-features = false, features = ["log"], optional = true }
 critical-section = { workspace = true }

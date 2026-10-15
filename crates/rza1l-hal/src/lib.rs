@@ -43,8 +43,9 @@ pub mod stb;
 // The OSTM-backed embassy time driver does raw MMIO and registers the global
 // `_embassy_time_now`/`_embassy_time_schedule_wake` symbols. On host the
 // simulator uses embassy-time's `std` wall-clock driver instead, so keep this
-// device-only to avoid a faulting driver and a duplicate-symbol link error.
-#[cfg(target_os = "none")]
+// device-only to avoid a faulting driver and a duplicate-symbol link error. It is behind the
+// `time-driver-ostm` feature (on by default) so an application can register its own driver instead.
+#[cfg(all(target_os = "none", feature = "time-driver-ostm"))]
 pub mod time_driver;
 /// Pure arithmetic for the time driver — always compiled so its tests run on the host.
 pub mod time_math;
