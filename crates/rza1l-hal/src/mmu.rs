@@ -44,7 +44,7 @@ struct Ttb([u32; 4096]);
 /// The Level-1 Translation Table, filled entry by entry by [`init_and_enable`]
 /// before the MMU is turned on.
 ///
-/// Placed in `.ttb_mmu1`, the NOLOAD window `rza1l.x` / `rza1l_rtt.x` reserve at
+/// Placed in `.ttb_mmu1`, the NOLOAD window rza1-rt's `link.x` reserves at
 /// the bottom of on-chip SRAM for exactly this table. Keeping it out of `.bss`
 /// gives it a fixed address and avoids up to 16 KB of alignment padding there.
 /// Nothing zeroes `.ttb_mmu1`, and nothing needs to: [`init_and_enable`] writes

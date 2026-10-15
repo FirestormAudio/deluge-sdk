@@ -554,8 +554,8 @@ pub mod __rt {
         /// Set up RTT (only with the `rtt` feature).
         ///
         /// Always defines the `_SEGGER_RTT` control block (in the `.rtt_buffer`
-        /// section provided by the rtt linker script) — the HAL's abort/panic
-        /// handlers reference this symbol whenever `rza1l-hal/rtt` is on, so it must
+        /// section provided by the rtt linker script) — rza1-rt's fault handlers
+        /// reference this symbol whenever `deluge-bsp/rtt` (`rza1-rt/rtt`) is on, so it must
         /// exist even when `usb-log` is the active logger (e.g. when both features
         /// are unified on in a workspace build). The `log` backend is registered
         /// only when `usb-log` is *not* enabled, since there can be just one global
