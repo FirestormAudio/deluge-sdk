@@ -89,7 +89,9 @@ pub mod adc;
 // mmu and cache use ARM coprocessor instructions and cannot compile on the host. The reset
 // vector and exception entry live in the `rza1-rt` crate.
 pub mod bsc;
-#[cfg(target_os = "none")]
+// Host tests run on 32-bit ARM Linux (QEMU), where the coprocessor instructions assemble; only
+// the PL310 register paths run there.
+#[cfg(any(target_os = "none", all(test, target_arch = "arm")))]
 pub mod cache;
 /// The clock tree, derived from the board's crystal (set once at boot by the BSP).
 pub mod clocks;
