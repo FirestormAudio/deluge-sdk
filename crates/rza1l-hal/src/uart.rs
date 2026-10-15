@@ -40,21 +40,7 @@ use crate::dmac::Dma;
 use crate::gic;
 use crate::interrupt::{self, Binding, Handler, Interrupt};
 
-// ---------------------------------------------------------------------------
-// SCIF register offsets (see RZ/A1L HW Manual §24, struct st_scif layout)
-// ---------------------------------------------------------------------------
-
-const SCSMR: usize = 0x00; // u16  Serial Mode Register
-const SCBRR: usize = 0x04; // u8   Bit Rate Register
-const SCSCR: usize = 0x08; // u16  Serial Control Register
-const FTDR: usize = 0x0C; // u8   FIFO Transmit Data Register (write-only)
-const SCFSR: usize = 0x10; // u16  FIFO Status Register
-const SCFRDR: usize = 0x14; // u8   FIFO Receive Data Register (read-only)
-const SCFCR: usize = 0x18; // u16  FIFO Control Register
-const SCFDR: usize = 0x1C; // u16  FIFO Data Count Register  [12:8]=TX  [4:0]=RX
-const SCSPTR: usize = 0x20; // u16  Serial Port Register
-const SCLSR: usize = 0x24; // u16  Line Status Register
-const SCEMR: usize = 0x28; // u16  Serial Extended Mode Register
+use crate::pac::scif::regs::{Brr, Emr, Fcr, Fsr, Ftdr, Lsr, Scr, Smr, Sptr};
 
 // SCSCR bit masks
 const TE: u16 = 1 << 5; // Transmit Enable  (SCSCR bit 5, HW manual §14.3.7)
@@ -99,7 +85,6 @@ const UART_IRQ_PRIORITY: u8 = 10;
 // ---------------------------------------------------------------------------
 // DMA RX constants and static storage
 // ---------------------------------------------------------------------------
-
 
 /// DMA trigger-mode bits for SCIF: DMA_AM_FOR_SCIF = 0b010 << 8.
 const DMA_AM_FOR_SCIF: u32 = 0x0200;
@@ -188,31 +173,17 @@ static UART_STATE: [UartState; NUM_CHANNELS] = [
 // Register helpers
 // ---------------------------------------------------------------------------
 
-#[inline(always)]
-unsafe fn rr16(addr: usize) -> u16 {
-    unsafe { crate::mmio::read16(addr) }
+/// SCIF channel `ch`'s registers.
+fn scif(ch: usize) -> crate::pac::scif::Scif {
+    [
+        crate::pac::SCIF0,
+        crate::pac::SCIF1,
+        crate::pac::SCIF2,
+        crate::pac::SCIF3,
+        crate::pac::SCIF4,
+    ][ch]
 }
 
-#[inline(always)]
-unsafe fn wr16(addr: usize, val: u16) {
-    unsafe { crate::mmio::write16(addr, val) }
-}
-
-#[inline(always)]
-unsafe fn rr8(addr: usize) -> u8 {
-    unsafe { crate::mmio::read8(addr) }
-}
-
-#[inline(always)]
-unsafe fn wr8(addr: usize, val: u8) {
-    unsafe { crate::mmio::write8(addr, val) }
-}
-
-/// Base address of SCIF channel `ch`.
-#[inline(always)]
-fn base(ch: usize) -> usize {
-    0xE800_7000 + ch * 0x0800
-}
 
 // ---------------------------------------------------------------------------
 // Baud rate calculation
@@ -242,48 +213,46 @@ fn scbrr(p1_hz: u32, baud: u32) -> u8 {
 /// # Safety
 /// Writes to memory-mapped SCIF registers. Caller must ensure `ch` < [`NUM_CHANNELS`].
 unsafe fn configure(ch: usize, baud_rate: u32) {
-    unsafe {
-        debug_assert!(ch < NUM_CHANNELS);
-        let brr = scbrr(crate::clocks::get().p1_hz(), baud_rate);
-        log::debug!("uart: ch{} init at {} bps (SCBRR={})", ch, baud_rate, brr);
-        let b = base(ch);
+    debug_assert!(ch < NUM_CHANNELS);
+    let brr = scbrr(crate::clocks::get().p1_hz(), baud_rate);
+    log::debug!("uart: ch{} init at {} bps (SCBRR={})", ch, baud_rate, brr);
+    let sc = scif(ch);
 
-        // 1. Stop all SCIF operations.
-        wr16(b + SCSCR, 0x0000);
+    // 1. Stop all SCIF operations.
+    sc.scr().write_value(Scr(0x0000));
 
-        // 2. Reset TX and RX FIFOs (TFRST=bit2, RFRST=bit1).
-        wr16(b + SCFCR, 0x0006);
+    // 2. Reset TX and RX FIFOs (TFRST=bit2, RFRST=bit1).
+    sc.fcr().write_value(Fcr(0x0006));
 
-        // 3. Clear status flags: mask out reserved/sticky bits, keep ER/BRK/DR clear.
-        let scfsr = rr16(b + SCFSR);
-        wr16(b + SCFSR, scfsr & 0xFF6E);
+    // 3. Clear status flags: mask out reserved/sticky bits, keep ER/BRK/DR clear.
+    let scfsr = sc.fsr().read().0;
+    sc.fsr().write_value(Fsr(scfsr & 0xFF6E));
 
-        // 4. Clear overrun error in SCLSR (ORER = bit 0).
-        let sclsr = rr16(b + SCLSR);
-        wr16(b + SCLSR, sclsr & !1u16);
+    // 4. Clear overrun error in SCLSR (ORER = bit 0).
+    let sclsr = sc.lsr().read().0;
+    sc.lsr().write_value(Lsr(sclsr & !1u16));
 
-        // 5. Internal clock source: CKE[1:0] = 00 (already 0 from step 1).
+    // 5. Internal clock source: CKE[1:0] = 00 (already 0 from step 1).
 
-        // 6. Async 8N1, CKS=00 (P_CLK/1).
-        wr16(b + SCSMR, 0x0000);
+    // 6. Async 8N1, CKS=00 (P_CLK/1).
+    sc.smr().write_value(Smr(0x0000));
 
-        // 7. Double-speed mode: BGDM = bit 7.
-        wr16(b + SCEMR, 0x0080);
+    // 7. Double-speed mode: BGDM = bit 7.
+    sc.emr().write_value(Emr(0x0080));
 
-        // 8. Baud rate.
-        wr8(b + SCBRR, brr);
+    // 8. Baud rate.
+    sc.brr().write_value(Brr(brr));
 
-        // 9. Release FIFO resets.  TX trigger=8 (TTRG=00), RX trigger=1 (RTRG=00).
-        wr16(b + SCFCR, 0x0000);
+    // 9. Release FIFO resets.  TX trigger=8 (TTRG=00), RX trigger=1 (RTRG=00).
+    sc.fcr().write_value(Fcr(0x0000));
 
-        // 10. Break: keep TxD high.
-        let scsptr = rr16(b + SCSPTR);
-        wr16(b + SCSPTR, scsptr | 0x0003);
+    // 10. Break: keep TxD high.
+    let scsptr = sc.sptr().read().0;
+    sc.sptr().write_value(Sptr(scsptr | 0x0003));
 
-        // 11. Enable TX and RX; leave TIE/RIE off (enabled on demand by futures).
-        wr16(b + SCSCR, TE | RE);
-        log::debug!("uart: ch{} ready", ch);
-    }
+    // 11. Enable TX and RX; leave TIE/RIE off (enabled on demand by futures).
+    sc.scr().write_value(Scr(TE | RE));
+    log::debug!("uart: ch{} ready", ch);
 }
 
 // ---------------------------------------------------------------------------
@@ -303,31 +272,30 @@ unsafe fn configure(ch: usize, baud_rate: u32) {
 /// # Safety
 /// Writes to memory-mapped SCIF registers. Caller must ensure `ch` < [`NUM_CHANNELS`].
 unsafe fn set_baud_regs(ch: usize, baud_rate: u32) {
-    unsafe {
-        debug_assert!(ch < NUM_CHANNELS);
-        let b = base(ch);
-        // Stop TE/RE so the baud rate change takes effect cleanly.
-        wr16(b + SCSCR, 0x0000);
-        wr8(b + SCBRR, scbrr(crate::clocks::get().p1_hz(), baud_rate));
-        // Clear any accumulated error flags from the previous baud rate.  The TRM
-        // states that ORER (overrun) is NOT cleared by toggling RE, so stale errors
-        // from e.g. the baud-switch transition window must be cleared explicitly;
-        // otherwise the SCIF silently discards all subsequent received bytes.
-        let scfsr = rr16(b + SCFSR);
-        wr16(b + SCFSR, scfsr & 0xFF6E); // clear ER/BRK/DR
-        let sclsr = rr16(b + SCLSR);
-        wr16(b + SCLSR, sclsr & !1u16); // clear ORER
-        // Re-enable TE/RE, plus the DMA trigger-enable bits that route the SCIF
-        // request to the DMAC: RIE for DMA RX, TIE for DMA TX.
-        let mut scscr = TE | RE;
-        if RX_DMA_ACTIVE[ch].load(Ordering::Relaxed) {
-            scscr |= RIE;
-        }
-        if TX_DMA_ACTIVE[ch].load(Ordering::Relaxed) {
-            scscr |= TIE;
-        }
-        wr16(b + SCSCR, scscr);
+    debug_assert!(ch < NUM_CHANNELS);
+    let sc = scif(ch);
+    // Stop TE/RE so the baud rate change takes effect cleanly.
+    sc.scr().write_value(Scr(0x0000));
+    sc.brr()
+        .write_value(Brr(scbrr(crate::clocks::get().p1_hz(), baud_rate)));
+    // Clear any accumulated error flags from the previous baud rate.  The TRM
+    // states that ORER (overrun) is NOT cleared by toggling RE, so stale errors
+    // from e.g. the baud-switch transition window must be cleared explicitly;
+    // otherwise the SCIF silently discards all subsequent received bytes.
+    let scfsr = sc.fsr().read().0;
+    sc.fsr().write_value(Fsr(scfsr & 0xFF6E)); // clear ER/BRK/DR
+    let sclsr = sc.lsr().read().0;
+    sc.lsr().write_value(Lsr(sclsr & !1u16)); // clear ORER
+    // Re-enable TE/RE, plus the DMA trigger-enable bits that route the SCIF
+    // request to the DMAC: RIE for DMA RX, TIE for DMA TX.
+    let mut scscr = TE | RE;
+    if RX_DMA_ACTIVE[ch].load(Ordering::Relaxed) {
+        scscr |= RIE;
     }
+    if TX_DMA_ACTIVE[ch].load(Ordering::Relaxed) {
+        scscr |= TIE;
+    }
+    sc.scr().write_value(Scr(scscr));
 }
 
 // NOTE: SCIF receive-interrupt (RXI) driven RX is intentionally NOT supported.
@@ -346,17 +314,15 @@ unsafe fn set_baud_regs(ch: usize, baud_rate: u32) {
 /// Writes 0 to the genuine receive-error flags (ER, BRK, FER, PER); SCLSR.ORER
 /// is bit 0. Shared by the ERI and BRI handlers.
 fn clear_rx_errors(ch: usize) {
-    let b = base(ch);
-    unsafe {
-        // Write 0 to the genuine receive-error flags (ER, BRK, FER, PER) to clear
-        // them; preserve RDF/DR (data) and the TX flags. A status flag is only
-        // cleared by writing 0 after it has been read as 1, so the read-modify-
-        // write below is required.
-        let scfsr = rr16(b + SCFSR);
-        wr16(b + SCFSR, scfsr & !(ER | BRK | FER | PER));
-        let sclsr = rr16(b + SCLSR);
-        wr16(b + SCLSR, sclsr & !1u16); // ORER = bit 0
-    }
+    let sc = scif(ch);
+    // Write 0 to the genuine receive-error flags (ER, BRK, FER, PER) to clear
+    // them; preserve RDF/DR (data) and the TX flags. A status flag is only
+    // cleared by writing 0 after it has been read as 1, so the read-modify-
+    // write below is required.
+    let scfsr = sc.fsr().read().0;
+    sc.fsr().write_value(Fsr(scfsr & !(ER | BRK | FER | PER)));
+    let sclsr = sc.lsr().read().0;
+    sc.lsr().write_value(Lsr(sclsr & !1u16)); // ORER = bit 0
 }
 
 /// Called from GIC dispatch when ERI (framing/parity error) fires for SCIF `ch`.
@@ -370,36 +336,30 @@ fn on_eri(ch: usize) {
 /// Called from GIC dispatch when TXI fires for SCIF `ch`.
 /// Disables TIE (stops further TXI) and wakes any pending tx future.
 fn on_txi(ch: usize) {
-    let b = base(ch);
-    unsafe {
-        let scscr = rr16(b + SCSCR);
-        wr16(b + SCSCR, scscr & !TIE);
-    }
+    let sc = scif(ch);
+    let scscr = sc.scr().read().0;
+    sc.scr().write_value(Scr(scscr & !TIE));
     UART_STATE[ch].tx_waker.wake();
 }
 
 /// Suspend until the TX FIFO has drained below the trigger level (TDFE=1).
 async fn wait_tdfe(ch: usize) {
-    let b = base(ch);
+    let sc = scif(ch);
     poll_fn(|cx| {
         UART_STATE[ch].tx_waker.register(cx.waker());
 
-        let scfsr = unsafe { rr16(b + SCFSR) };
+        let scfsr = sc.fsr().read().0;
         if scfsr & TDFE != 0 {
             Poll::Ready(())
         } else {
             // Enable TIE so the ISR fires when TDFE goes high.
-            unsafe {
-                let scscr = rr16(b + SCSCR);
-                wr16(b + SCSCR, scscr | TIE);
-            }
+            let scscr = sc.scr().read().0;
+            sc.scr().write_value(Scr(scscr | TIE));
             // Double-check after enabling TIE to close the race.
-            let scfsr = unsafe { rr16(b + SCFSR) };
+            let scfsr = sc.fsr().read().0;
             if scfsr & TDFE != 0 {
-                unsafe {
-                    let scscr = rr16(b + SCSCR);
-                    wr16(b + SCSCR, scscr & !TIE);
-                }
+                let scscr = sc.scr().read().0;
+                sc.scr().write_value(Scr(scscr & !TIE));
                 Poll::Ready(())
             } else {
                 Poll::Pending
@@ -563,7 +523,7 @@ impl<'d> UartRx<'d> {
     /// Start the circular receive DMA for SCIF `T` on `dma`.
     fn start<T: RxDmaInstance>(mut dma: Dma<'d>) -> Self {
         let ch = T::INDEX;
-        let b = base(ch);
+        let sc = scif(ch);
         let dma_ch = dma.number();
         // SAFETY: ring T::RING is SCIF T's alone, and SCIF T is owned. The descriptor is written
         // through the uncached alias, the address the DMAC fetches it from, so no cache
@@ -576,7 +536,7 @@ impl<'d> UartRx<'d> {
             let desc = crate::uncached(core::ptr::addr_of_mut!(DMA_RX_DESC[T::RING]) as *mut u32);
             let desc_addr = desc as u32;
             desc.add(0).write_volatile(0b1101); // header
-            desc.add(1).write_volatile((b + SCFRDR) as u32); // source: SCFRDR
+            desc.add(1).write_volatile(sc.frdr().addr() as u32); // source: SCFRDR
             desc.add(2).write_volatile(buf_base); // destination: the ring
             desc.add(3).write_volatile(DMA_RX_BUF_SIZE as u32); // byte count
             desc.add(4).write_volatile(chcfg);
@@ -593,7 +553,7 @@ impl<'d> UartRx<'d> {
             RX_DMA_ACTIVE[ch].store(true, Ordering::Release);
             // TIE|RIE|TE|RE: route both requests; the GIC's RXI stays off, so receive requests go
             // only to the DMAC.
-            wr16(b + SCSCR, TIE | RIE | RE | TE);
+            sc.scr().write_value(Scr(TIE | RIE | RE | TE));
             log::debug!(
                 "uart: ch{} DMA RX active (dma_ch={}, buf={:#010x})",
                 ch,
@@ -673,8 +633,8 @@ pub struct UartTx<'d> {
 impl<'d> UartTx<'d> {
     fn new(ch: usize, mut dma: Option<Dma<'d>>) -> Self {
         if let Some(dma) = dma.as_mut() {
-            let b = base(ch);
-            let ftdr = b + FTDR;
+            let sc = scif(ch);
+            let ftdr = sc.ftdr().addr();
             // As the C firmware's DMA_SCIF_TX_CONFIG: 8-bit, source increments, destination
             // fixed (FTDR), destination-side request; AM=2 so SCIF TDFE paces it.
             let chcfg = 0x0020_0068_u32 | DMA_AM_FOR_SCIF | (dma.number() as u32 & 7);
@@ -683,8 +643,8 @@ impl<'d> UartTx<'d> {
                 dma.init_register_mode(chcfg, ftdr as u32, tx_dmars(ch));
                 TX_DMA_ACTIVE[ch].store(true, Ordering::Relaxed);
                 // TIE is both the TXI enable and the DMAC request; OR it in, keeping RE/RIE.
-                let scscr = rr16(b + SCSCR);
-                wr16(b + SCSCR, scscr | TIE | TE);
+                let scscr = sc.scr().read().0;
+                sc.scr().write_value(Scr(scscr | TIE | TE));
                 // TXI's handler clears TIE, which would stall the DMAC: mask TXI at the GIC.
                 gic::disable(TXI_BASE + (ch as u16) * 4);
             }
@@ -728,9 +688,8 @@ impl<'d> UartTx<'d> {
     /// so this polls it every 100 µs; it holds the writer lock meanwhile, so no write starts.
     pub async fn flush(&self) {
         let _writer = self.dma.lock().await;
-        let b = base(self.ch);
-        // SAFETY: a read of the owned SCIF's status.
-        while unsafe { rr16(b + SCFSR) } & TEND == 0 {
+        let sc = scif(self.ch);
+        while sc.fsr().read().0 & TEND == 0 {
             embassy_time::Timer::after_micros(100).await;
         }
     }
@@ -741,8 +700,7 @@ impl<'d> UartTx<'d> {
         let free = self.tx_free();
         let n = buf.len().min(free);
         for &byte in &buf[..n] {
-            // SAFETY: the owned SCIF's FIFO.
-            unsafe { wr8(base(self.ch) + FTDR, byte) };
+            scif(self.ch).ftdr().write_value(Ftdr(byte));
         }
         n
     }
@@ -750,8 +708,7 @@ impl<'d> UartTx<'d> {
     /// Free space in the transmit FIFO, in bytes: how many [`try_write`](Self::try_write) would
     /// take now.
     pub fn tx_free(&self) -> usize {
-        // SAFETY: a read of the owned SCIF's FIFO count.
-        let in_fifo = unsafe { (rr16(base(self.ch) + SCFDR) >> 8) & 0x1F } as usize;
+        let in_fifo = ((scif(self.ch).fdr().read().0 >> 8) & 0x1F) as usize;
         TX_FIFO_SIZE.saturating_sub(in_fifo)
     }
 
@@ -810,18 +767,8 @@ impl embedded_io_async::Write for UartTx<'_> {
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
-    use super::{NUM_CHANNELS, RXI_BASE, TXI_BASE, base, scbrr};
+    use super::{NUM_CHANNELS, RXI_BASE, TXI_BASE, scbrr, scif};
     use crate::clocks::TEST_CLOCKS;
-
-    // SCIF0 base = 0xE800_7000, stride 0x800 per channel.
-    #[test]
-    fn scif_base_addresses() {
-        assert_eq!(base(0), 0xE800_7000);
-        assert_eq!(base(1), 0xE800_7800);
-        assert_eq!(base(2), 0xE800_8000);
-        assert_eq!(base(3), 0xE800_8800);
-        assert_eq!(base(4), 0xE800_9000);
-    }
 
     #[test]
     fn num_channels_is_five() {
@@ -868,6 +815,44 @@ mod tests {
             assert_eq!(TXI_BASE + ch * 4, 224 + ch * 4);
         }
     }
+
+    #[test]
+    fn the_pac_names_the_same_scif_registers() {
+        for ch in 0..NUM_CHANNELS {
+            let s = scif(ch);
+            let base = 0xE800_7000 + ch * 0x800;
+            let got = [
+                (s.smr().addr(), s.smr().width()),
+                (s.brr().addr(), s.brr().width()),
+                (s.scr().addr(), s.scr().width()),
+                (s.ftdr().addr(), s.ftdr().width()),
+                (s.fsr().addr(), s.fsr().width()),
+                (s.frdr().addr(), s.frdr().width()),
+                (s.fcr().addr(), s.fcr().width()),
+                (s.fdr().addr(), s.fdr().width()),
+                (s.sptr().addr(), s.sptr().width()),
+                (s.lsr().addr(), s.lsr().width()),
+                (s.emr().addr(), s.emr().width()),
+            ];
+            assert_eq!(
+                got,
+                [
+                    (base, 2),
+                    (base + 0x04, 1),
+                    (base + 0x08, 2),
+                    (base + 0x0C, 1),
+                    (base + 0x10, 2),
+                    (base + 0x14, 1),
+                    (base + 0x18, 2),
+                    (base + 0x1C, 2),
+                    (base + 0x20, 2),
+                    (base + 0x24, 2),
+                    (base + 0x28, 2),
+                ],
+                "SCIF{ch}"
+            );
+        }
+    }
 }
 
 #[cfg(all(test, not(target_os = "none")))]
@@ -901,10 +886,18 @@ mod typed_tests {
         let (rx, mut tx) =
             Uart::new(unsafe { SCIF0::steal() }, rx_dma, Some(tx_dma), Irqs, 31_250).split();
 
-        let b = base(0);
-        assert_eq!(test::peek8(b + SCBRR), 131, "31 250 bps");
-        assert_eq!(test::peek16(b + SCEMR), 0x0080, "double-speed baud generator");
-        assert_eq!(test::peek16(b + SCSCR), TIE | RIE | RE | TE, "both requests go to the DMAC");
+        let b = 0xE800_7000usize; // SCIF0
+        assert_eq!(test::peek8(b + 0x04), 131, "31 250 bps");
+        assert_eq!(
+            test::peek16(b + 0x28),
+            0x0080,
+            "double-speed baud generator"
+        );
+        assert_eq!(
+            test::peek16(b + 0x08),
+            TIE | RIE | RE | TE,
+            "both requests go to the DMAC"
+        );
         assert!(crate::gic::handler(222).is_some(), "ERI0 bound");
         assert!(crate::gic::handler(224).is_some(), "TXI0 bound");
         // DMARS5 holds channel 10 (low half: SCIF0 transmit); DMARS6 channel 13 (high: receive).
@@ -913,7 +906,7 @@ mod typed_tests {
         // The receive descriptor (NXLA): SCFRDR into the ring, linked back to itself.
         let desc = test::peek32(chreg(13, 0x38)) as *const u32;
         unsafe {
-            assert_eq!(*desc.add(1), (b + SCFRDR) as u32);
+            assert_eq!(*desc.add(1), (b + 0x14) as u32);
             assert_eq!(*desc.add(2), rx.base);
             assert_eq!(*desc.add(7), desc as u32);
         }
@@ -935,17 +928,23 @@ mod typed_tests {
         // A flush waits for the last byte to leave the shift register (SCFSR.TEND), not just for
         // the DMA to hand it to the FIFO: a baud change after it must not garble the tail.
         let scfsr_reads = || {
-            test::log().iter().filter(|a| !a.write && a.addr == b + SCFSR).count()
+            test::log()
+                .iter()
+                .filter(|a| !a.write && a.addr == b + 0x10)
+                .count()
         };
         let before = scfsr_reads();
-        test::poke16(b + SCFSR, 1 << 6);
+        test::poke16(b + 0x10, 1 << 6);
         embassy_futures::block_on(embedded_io_async::Write::flush(&mut tx)).unwrap();
         assert!(scfsr_reads() > before, "flush checked TEND");
 
         // A baud change keeps both DMA requests enabled.
         tx.set_baud(200_000);
-        assert_eq!(test::peek8(b + SCBRR), scbrr(crate::clocks::TEST_CLOCKS.p1_hz(), 200_000));
-        assert_eq!(test::peek16(b + SCSCR), TIE | RIE | RE | TE);
+        assert_eq!(
+            test::peek8(b + 0x04),
+            scbrr(crate::clocks::TEST_CLOCKS.p1_hz(), 200_000)
+        );
+        assert_eq!(test::peek16(b + 0x08), TIE | RIE | RE | TE);
     }
 
     #[test]
