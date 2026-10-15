@@ -30,6 +30,9 @@ fn main() {
     // (0x202B0000–0x202C0000). The --defsym must come before -Tlink.x: lld applies it in
     // command-line order, so after the script it would rename the symbol without moving the
     // stacks.
+    // The stack size follows this crate's `rtt` feature, so turn RTT on through it
+    // (`--features rtt`): RTT enabled only further down (`deluge-sdk/rtt`) keeps the 256 KB
+    // stack, which link_rtt.x rejects as overlapping the RTT reserve.
     let program_stack = if env::var_os("CARGO_FEATURE_RTT").is_some() { "0x30000" } else { "0x40000" };
     println!("cargo:rustc-link-arg-bins=--defsym=PROGRAM_STACK_SIZE={program_stack}");
     println!("cargo:rustc-link-arg-bins=-Tlink.x");

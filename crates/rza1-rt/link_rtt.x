@@ -38,14 +38,20 @@ TTB_SIZE = 0x4000;
  * PIPCn; matches rza1l_hal::gpio). Port 0 is input-only, so it has no PM/PIPC register. */
 ASSERT(DEFINED(RZA1_STATUS_LED_PORT) && DEFINED(RZA1_STATUS_LED_PIN),
        "memory.x must define RZA1_STATUS_LED_PORT and RZA1_STATUS_LED_PIN")
-ASSERT(RZA1_STATUS_LED_PORT >= 1 && RZA1_STATUS_LED_PORT <= 11,
+/* Every other use is guarded with DEFINED(), so a missing symbol fails on the ASSERT above
+ * rather than as a bare "symbol not found" at each use. */
+ASSERT(!DEFINED(RZA1_STATUS_LED_PORT)
+       || (RZA1_STATUS_LED_PORT >= 1 && RZA1_STATUS_LED_PORT <= 11),
        "RZA1_STATUS_LED_PORT must be 1-11 (P1-P11)")
-ASSERT(RZA1_STATUS_LED_PIN <= 15, "RZA1_STATUS_LED_PIN must be 0-15")
-__rza1_status_led_p    = 0xFCFE3000 + 4 * RZA1_STATUS_LED_PORT;
-__rza1_status_led_pm   = 0xFCFE3300 + 4 * RZA1_STATUS_LED_PORT;
-__rza1_status_led_pmc  = 0xFCFE3400 + 4 * RZA1_STATUS_LED_PORT;
-__rza1_status_led_pipc = 0xFCFE7200 + 4 * RZA1_STATUS_LED_PORT;
-__rza1_status_led_mask = 1 << RZA1_STATUS_LED_PIN;
+ASSERT(!DEFINED(RZA1_STATUS_LED_PIN) || RZA1_STATUS_LED_PIN <= 15,
+       "RZA1_STATUS_LED_PIN must be 0-15")
+__rza1_status_led_port = DEFINED(RZA1_STATUS_LED_PORT) ? RZA1_STATUS_LED_PORT : 1;
+__rza1_status_led_pin  = DEFINED(RZA1_STATUS_LED_PIN) ? RZA1_STATUS_LED_PIN : 0;
+__rza1_status_led_p    = 0xFCFE3000 + 4 * __rza1_status_led_port;
+__rza1_status_led_pm   = 0xFCFE3300 + 4 * __rza1_status_led_port;
+__rza1_status_led_pmc  = 0xFCFE3400 + 4 * __rza1_status_led_port;
+__rza1_status_led_pipc = 0xFCFE7200 + 4 * __rza1_status_led_port;
+__rza1_status_led_mask = 1 << __rza1_status_led_pin;
 
 SECTIONS {
     /* _SEGGER_RTT control block in the uncached SRAM mirror so the debug
@@ -157,6 +163,11 @@ SECTIONS {
      * hand that tail to the heap too. 16-byte aligned, as TLSF pools require. */
     __sram_heap_start = DEFINED(__sram_heap_base) ? __sram_heap_base : ALIGN(__image_end, 16);
     __sram_heap_end   = ORIGIN(RTT_RAM);
+    /* The per-mode stacks sit above the RTT reserve. Without this check, stacks that grew into
+     * it fail later as an unexplained section overlap. */
+    ASSERT(INTERNAL_RAM_END - PROGRAM_STACK_SIZE - ABT_STACK_SIZE - SVC_STACK_SIZE - FIQ_STACK_SIZE
+           - IRQ_STACK_SIZE >= ORIGIN(RTT_RAM) + LENGTH(RTT_RAM),
+           "the stacks overlap the RTT reserve: with RTT on, the per-mode stacks must fit between RTT_RAM's end and INTERNAL_RAM_END (is a --defsym'd PROGRAM_STACK_SIZE meant for a build without RTT?)")
     ASSERT(__sram_heap_start <= __sram_heap_end,
            "the image overruns the SRAM heap: it ends past __sram_heap_end")
 
