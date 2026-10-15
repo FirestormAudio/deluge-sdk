@@ -167,6 +167,9 @@ mod runtime {
     /// `Rusb1Allocator`, is the type that flows into the class drivers.
     type HostAlloc = BusHandle<'static, Rusb1Allocator>;
 
+    /// Pause before retrying a device whose enumeration failed.
+    const ENUMERATION_RETRY_MS: u64 = 500;
+
     /// Maximum hub ports serviced.
     ///
     /// The RUSB1 `DEVADDn.HUBPORT` field is 3 bits (TRM §28.3), so a device can
@@ -456,6 +459,10 @@ mod runtime {
                 Ok(v) => v,
                 Err(e) => {
                     error!("usb_host: enumeration failed: {:?}", e);
+                    // The device stays on the line and is found again at once; pace
+                    // the retries so one that cannot enumerate is not reset in a
+                    // tight loop.
+                    embassy_time::Timer::after_millis(ENUMERATION_RETRY_MS).await;
                     continue;
                 }
             };
