@@ -190,6 +190,13 @@ them to the exit criterion, and the HAL lost its RZ/A1H-isms (RSPI3/4, a 587-ID 
 DMAC, SSI, SCUX, SDHI (a hand-written YAML block: the SVD lacks it, and the RZ/A1L check then
 covers it), SPIBSC and USB (a full migration of its register struct).
 
+**5b done (2026-10-15 plan):** DMAC (per-channel blocks), SSI, SCUX (per-sub-unit blocks), SDHI (a
+block from the RZ/A1L manual's Table 46.1, which the manual check now covers), SPIBSC and USB (its
+`Rusb1Regs` struct replaced by the PAC, the FIFO's byte lanes as PAC views) take their registers
+from `rza1-pac`; SCUX, SPIBSC and USB now go through the MMIO seam. `tools/check-register-tables.sh`
+checks every HAL module apart from `memmap.rs` and `mmu.rs`, which describe memory: Phase 5's exit
+holds.
+
 ### Phase 5: PAC
 
 - Generate `rza1-pac` with chiptool from `vendor/rza1.svd`, fixing the SVD with YAML transforms.
