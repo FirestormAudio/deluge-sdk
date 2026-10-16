@@ -10,8 +10,8 @@ name = "sd-bench"
 test = false
 
 [dependencies]
-rza1l-hal = { path = "../../crates/rza1l-hal" }
-rza1-alloc = { path = "../../crates/rza1-alloc" }
+rza1l-hal = { path = "../../rza1/rza1l-hal" }
+rza1-alloc = { path = "../../rza1/rza1-alloc" }
 deluge-bsp = { path = "../../crates/deluge-bsp" }
 cortex-ar = { workspace = true }
 embassy-executor = { workspace = true, features = ["nightly", "platform-cortex-ar", "executor-thread"] }

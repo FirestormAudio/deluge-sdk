@@ -24,8 +24,8 @@ path = "src/lib.rs"
 [dependencies]
 deluge-macros = { path = "../deluge-sdk-macros", version = "0.1.0", package = "deluge-sdk-macros" }
 deluge-bsp = { path = "../deluge-bsp", version = "0.1.0" }
-rza1-alloc = { path = "../rza1-alloc", version = "0.1.0" }
-rza1l-hal = { path = "../rza1l-hal", version = "0.1.0" }
+rza1-alloc = { path = "../../rza1/rza1-alloc", version = "0.1.0" }
+rza1l-hal = { path = "../../rza1/rza1l-hal", version = "0.1.0" }
 fixedpoint = { workspace = true }
 cortex-ar = { workspace = true }
 log = { workspace = true }

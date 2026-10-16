@@ -7,10 +7,6 @@ members = [
   "hw-tests/sd-bench",
   "hw-tests/vbus-probe",
   "hw-tests/uac-host-firmware",
-  "crates/rza1l-hal",
-  "crates/rza1-rt",
-  "crates/rza1-alloc",
-  "crates/rza1-pac",
   "crates/deluge-bsp",
   "firmwares/app-loader",
   "crates/deluge-sdk",
@@ -47,6 +43,8 @@ members = [
 # wasm web-simulator core, and the Linux backend and examples. Each builds for
 # its own target from its own directory.
 exclude = [
+  # The chip crates are their own workspace (rza1/Cargo.toml); path dependencies below reach them.
+  "rza1",
   "tools/cargo-deluge",
   "crates/deluge-simulator",
   "wren/wren-web",

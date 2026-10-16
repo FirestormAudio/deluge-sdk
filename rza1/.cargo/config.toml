@@ -1,0 +1,22 @@
+# The chip crates' build settings, as deluge-sdk's root .cargo/config.toml has them for these
+# targets. Cargo merges this with any config in parent directories; this file is what remains
+# after the Phase 6 split.
+[build]
+target = "armv7a-none-eabihf"
+
+# ARM Linux under QEMU, for the host-side tests (the MMIO seam).
+[target.armv7-unknown-linux-gnueabihf]
+linker = "arm-linux-gnueabihf-gcc"
+runner = ["qemu-arm", "-cpu", "cortex-a9", "-L", "/usr/arm-linux-gnueabihf"]
+rustflags = [
+  "-C", "target-cpu=cortex-a9",
+  "-C", "target-feature=+neon",
+]
+
+[target.armv7a-none-eabihf]
+rustflags = [
+  "-C", "target-cpu=cortex-a9",
+  "-C", "target-feature=+neon",
+  "-C", "link-arg=--gc-sections",
+  "-C", "force-frame-pointers=yes",
+]

@@ -1,0 +1,28 @@
+# The RZ/A1 chip crates: PAC, runtime, HAL and heap allocators. A workspace of their own, outside
+# deluge-sdk's, so they build and test with no `deluge-*` crate in reach. This directory is what
+# Phase 6 splits into the rza1-rs repository.
+[workspace]
+resolver = "2"
+members = ["rza1-pac", "rza1-rt", "rza1l-hal", "rza1-alloc"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["Katherine Whitlock <kate@skylinesynths.nyc>"]
+repository = "https://github.com/FirestormAudio/deluge-sdk"
+homepage = "https://github.com/FirestormAudio/deluge-sdk"
+
+# Must stay version-compatible with deluge-sdk's root workspace, which resolves these crates for
+# the firmware: one copy each in the final link (Task 1 Step 7 checks).
+[workspace.dependencies]
+cortex-ar = "0.3"
+critical-section = "1"
+embassy-futures = "0.1.2"
+embassy-hal-internal = "0.5.0"
+embassy-sync = "0.8.0"
+embassy-time = "0.5.1"
+embassy-time-driver = "0.2.2"
+embassy-time-queue-utils = "0.3.2"
+embassy-usb-driver = "0.2.2"
+log = { version = "0.4", features = ["release_max_level_info"] }

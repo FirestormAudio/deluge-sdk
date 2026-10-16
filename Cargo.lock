@@ -4890,7 +4890,6 @@ version = "0.1.0"
 dependencies = [
  "cortex-ar",
  "critical-section",
- "embassy-futures",
  "embassy-hal-internal",
  "embassy-sync",
  "embassy-time",

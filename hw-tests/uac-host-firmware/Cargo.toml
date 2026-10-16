@@ -11,9 +11,9 @@ test = false
 
 [dependencies]
 usb-classes = { workspace = true, features = ["host-uac"] }
-rza1l-hal = { path = "../../crates/rza1l-hal" }
+rza1l-hal = { path = "../../rza1/rza1l-hal" }
 deluge-bsp = { path = "../../crates/deluge-bsp", features = ["usb-host"] }
-rza1-alloc = { path = "../../crates/rza1-alloc" }
+rza1-alloc = { path = "../../rza1/rza1-alloc" }
 cortex-ar = { workspace = true }
 embassy-executor = { workspace = true, features = ["nightly", "platform-cortex-ar", "executor-thread"] }
 embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
@@ -27,7 +27,7 @@ rtt-target = { workspace = true, optional = true }
 # flashed with RTT on.  Cargo unifies features across every workspace member
 # built for the same target, so a default-on `rtt` here turns on
 # `deluge-bsp/rtt` in the ONE shared runtime rlib that all firmwares link.
-# That compiles the runtime's RTT fault-dump assembly (crates/rza1-rt/src/
+# That compiles the runtime's RTT fault-dump assembly (rza1/rza1-rt/src/
 # startup.rs), which references `_SEGGER_RTT` — a symbol only a firmware's own
 # `rtt_init!` defines.  Every other member defaults `rtt` off and so has no
 # `rtt_init!`, making a workspace-wide `cargo build` fail to link them all with

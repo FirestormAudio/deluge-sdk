@@ -44,9 +44,9 @@ cargo test --target "$QEMU" -p armv7-dsp-intrinsics --features nightly --lib
 # here because the FFT crate (flare-fft) is in its own repo and must not
 # dev-depend on the SDK.
 cargo test --target "$QEMU" -p deluge-fixedpoint
-cargo test --target "$QEMU" -p rza1-pac --features rza1l --lib
-cargo test --target "$QEMU" -p rza1-pac --features rza1h --lib
-cargo test --target "$QEMU" -p rza1l-hal --lib
+# The chip crates are their own workspace; their suite (tests, PAC checks, register-table check)
+# runs from rza1/tools/test.sh, which CI also runs on its own.
+rza1/tools/test.sh
 cargo test --target "$QEMU" -p deluge-bsp --features usb-host --lib
 cargo test --target "$QEMU" -p usb-classes --features device-midi,host-midi,host-uac --lib
 cargo test --target "$QEMU" -p deluge-fonts --lib
