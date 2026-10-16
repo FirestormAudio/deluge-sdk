@@ -551,7 +551,7 @@ fn repoint_shared(u: Usb, pipe: usize, user: &OutUser) {
         ctr.write_value((ctr.read() & !PIPECTR_PID_MASK) | PIPECTR_PID_STALL10);
     }
     ctr.write_value((ctr.read() & !PIPECTR_PID_MASK) | PIPECTR_PID_NAK);
-    while ctr.read() & PIPECTR_PBUSY != 0 {}
+    wait_pbusy(ctr);
     u.pipesel().write_value(pipe as u16);
     let cfg = u.pipecfg().read();
     u.pipecfg().write_value(
@@ -607,7 +607,7 @@ fn fail_shared_send(u: Usb, cs: critical_section::CriticalSection<'_>, pipe: usi
     if ctr.read() & PIPECTR_PID_MASK == PIPECTR_PID_BUF {
         ctr.write_value((ctr.read() & !PIPECTR_PID_MASK) | PIPECTR_PID_NAK);
     }
-    while ctr.read() & PIPECTR_PBUSY != 0 {}
+    wait_pbusy(ctr);
     let xfer = unsafe { &mut *HCD_XFER[pipe].borrow(cs).get() };
     xfer.buf = core::ptr::null_mut();
     xfer.remaining = 0;
@@ -642,7 +642,7 @@ fn finish_shared_send(port: u8, pipe: usize, i: u8, abandon: bool) {
             if ctr.read() & PIPECTR_PID_MASK == PIPECTR_PID_BUF {
                 ctr.write_value((ctr.read() & !PIPECTR_PID_MASK) | PIPECTR_PID_NAK);
             }
-            while ctr.read() & PIPECTR_PBUSY != 0 {}
+            wait_pbusy(ctr);
             // The interrupt handler must not read the dropped buffer.
             let xfer = unsafe { &mut *HCD_XFER[pipe].borrow(cs).get() };
             xfer.buf = core::ptr::null_mut();
@@ -2076,6 +2076,17 @@ fn wait_frdy(u: Usb) {
     }
 }
 
+/// Wait, bounded, for a halted pipe's SIE to go idle (PBUSY = 0), as [`wait_frdy`] is bounded:
+/// a pipe left mid-transaction on a stopped port (UACT = 0 after a detach) may never go idle,
+/// and the callers run with interrupts masked.
+fn wait_pbusy(ctr: crate::pac::common::Reg<u16, crate::pac::common::RW>) {
+    for _ in 0..100_000u32 {
+        if ctr.read() & PIPECTR_PBUSY == 0 {
+            return;
+        }
+    }
+}
+
 /// Whether D0FIFO is ready (FRDY) within a few reads: a check, not a wait.
 fn frdy_now(u: Usb) -> bool {
     (0..8).any(|_| u.d0fifoctr().read() & FIFOCTR_FRDY != 0)
@@ -2888,7 +2899,7 @@ impl<T: pipe::Type, D: pipe::Direction> UsbPipe<T, D> for Rusb1Pipe<T, D> {
         // SQCLR (reset toggle to DATA0) may only be written while the pipe
         // is halted: NAK it and wait for the SIE to go idle first.
         ctr.write_value((ctr.read() & !PIPECTR_PID_MASK) | PIPECTR_PID_NAK);
-        while ctr.read() & PIPECTR_PBUSY != 0 {}
+        wait_pbusy(ctr);
         ctr.write_value(PIPECTR_SQCLR);
         // OUT pipes are re-armed immediately; IN pipes wait for request_in().
         if !dir_in {
@@ -4037,6 +4048,26 @@ mod tests {
         );
         let w = send(1, 0x01, false);
         assert!(!repointed(&w), "a repeat send does not re-point");
+    }
+
+    /// Final review M2: a pipe that never goes idle (a stopped port) doesn't hang a re-point,
+    /// which runs with interrupts masked.
+    #[test]
+    fn a_pipe_that_stays_busy_does_not_hang_a_repoint() {
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let _h = host_with_bus(0b00, DVSTCTR0_RHST_HS | DVSTCTR0_UACT);
+        let u = usb(0);
+        crate::mmio::test::poke16(pipectr(u, 5).addr(), PIPECTR_PBUSY | PIPECTR_PID_BUF);
+        let user = OutUser {
+            dev_addr: 1,
+            epn: 1,
+            mps: 64,
+            toggle: false,
+            generation: 1,
+        };
+        // The NAK write keeps the poked PBUSY, as the hardware would while it stays busy.
+        // Returning at all is the test.
+        repoint_shared(u, 5, &user);
     }
 
     #[test]
