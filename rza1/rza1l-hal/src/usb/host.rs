@@ -184,6 +184,34 @@ static RX_DMA: [critical_section::Mutex<core::cell::RefCell<Option<crate::dmac::
     2] = [const { critical_section::Mutex::new(core::cell::RefCell::new(None)) }; 2];
 /// Per port: the pipe bound to D1FIFO for DMA receive, or 0.
 static RX_DMA_PIPE: [AtomicU8; 2] = [const { AtomicU8::new(0) }; 2];
+/// No packet is waiting in D1FIFO.
+const NO_DTLN: u16 = u16::MAX;
+/// Per port: the length (DTLN) of the packet waiting in D1FIFO for the reader to drain, or
+/// [`NO_DTLN`]. The interrupt handler records it; one that arrives with no read pending stays
+/// in the FIFO until the next read drains it (the controller raises no second BRDY for it).
+static RX_DMA_DTLN: [AtomicU16; 2] = [const { AtomicU16::new(NO_DTLN) }; 2];
+
+/// Owns the receive channel while a drain runs, and hands it back however the drain ends.
+/// Dropped mid-transfer (the reading future was cancelled), it halts the DMA and clears the
+/// half-read block from the FIFO, so the channel and the FIFO are ready for the next read.
+struct DrainGuard {
+    port: u8,
+    dma: Option<crate::dmac::Dma<'static>>,
+    armed: bool,
+}
+
+impl Drop for DrainGuard {
+    fn drop(&mut self) {
+        let Some(mut dma) = self.dma.take() else {
+            return;
+        };
+        if self.armed {
+            dma.halt();
+            usb(self.port).d1fifoctr().write_value(FIFOCTR_BCLR);
+        }
+        critical_section::with(|cs| RX_DMA[self.port as usize].borrow(cs).replace(Some(dma)));
+    }
+}
 
 /// A 1 KB, cache-line-aligned block buffer.
 #[repr(align(32))]
@@ -201,6 +229,7 @@ fn port_of(u: Usb) -> usize {
 fn reset_rx_dma(port: usize) {
     critical_section::with(|cs| RX_DMA[port].borrow(cs).replace(None));
     RX_DMA_PIPE[port].store(0, Ordering::Release);
+    RX_DMA_DTLN[port].store(NO_DTLN, Ordering::Release);
 }
 
 /// Packets an isochronous IN pipe holds for its reader (1 ms at high speed).
@@ -1083,17 +1112,67 @@ impl<'d> Rusb1HostDriver<'d> {
     /// D1FIFO to `buf` by DMA. A length the 4-byte DMA can't move, or past the bounce buffer,
     /// is cleared from the FIFO and reported as 0 bytes, which the class counts as a framing
     /// error.
+    /// A read on the receive-DMA pipe: drain a packet already waiting in D1FIFO, or arm the
+    /// pipe and wait for the handler to record one, then drain it.
+    async fn dma_xfer_in(
+        &self,
+        pipe: usize,
+        dev_addr: u8,
+        ep_addr: u8,
+        buf: &mut [u8],
+    ) -> Result<usize, PipeError> {
+        let p = self.port as usize;
+        let mask = 1u16 << pipe;
+        // Check for a waiting packet and publish the read in one critical section, so the
+        // handler can't record one in between and leave this read waiting for a BRDY that
+        // never comes.
+        let waiting = critical_section::with(|cs| unsafe {
+            let dtln = RX_DMA_DTLN[p].swap(NO_DTLN, Ordering::AcqRel);
+            if dtln == NO_DTLN {
+                HCD_PIPE_DONE.fetch_and(!mask, Ordering::Release);
+                HCD_PIPE_NRDY.fetch_and(!mask, Ordering::Release);
+                HCD_PIPE_STALL.fetch_and(!mask, Ordering::Release);
+                let xfer = &mut *HCD_XFER[pipe].borrow(cs).get();
+                xfer.buf = buf.as_mut_ptr();
+                xfer.length = buf.len() as u16;
+                xfer.remaining = buf.len() as u16;
+                xfer.ep_addr = ep_addr;
+                xfer.dev_addr = dev_addr;
+            }
+            dtln
+        });
+        if waiting != NO_DTLN {
+            return self.dma_drain(buf, waiting as usize).await;
+        }
+        let ctr = pipectr(usb(self.port), pipe);
+        ctr.write_value((ctr.read() & !PIPECTR_PID_MASK) | PIPECTR_PID_BUF);
+        poll_pipe(pipe).await?;
+        let dtln = RX_DMA_DTLN[p].swap(NO_DTLN, Ordering::AcqRel);
+        if dtln == NO_DTLN {
+            return Ok(0);
+        }
+        self.dma_drain(buf, dtln as usize).await
+    }
+
     async fn dma_drain(&self, buf: &mut [u8], n: usize) -> Result<usize, PipeError> {
         let p = self.port as usize;
         let u = usb(self.port);
         if n == 0 {
+            // A zero-length packet: DCLRM has cleared it (TRM Table 28.23).
             return Ok(0);
         }
         if n % 4 != 0 || n > 1024 {
             u.d1fifoctr().write_value(FIFOCTR_BCLR);
             return Ok(0);
         }
-        let Some(mut dma) = critical_section::with(|cs| RX_DMA[p].borrow(cs).take()) else {
+        let mut guard = DrainGuard {
+            port: self.port,
+            dma: critical_section::with(|cs| RX_DMA[p].borrow(cs).take()),
+            armed: false,
+        };
+        let Some(dma) = guard.dma.as_mut() else {
+            // No channel: drop the block rather than leave it to stall the pipe.
+            u.d1fifoctr().write_value(FIFOCTR_BCLR);
             return Err(PipeError::Canceled);
         };
         // SAFETY: the bounce buffer is this port's, used only here, one block at a time.
@@ -1101,13 +1180,17 @@ impl<'d> Rusb1HostDriver<'d> {
         let src = u.d1fifo().addr() as u32;
         // SAFETY: `bounce` is 1 KB and `n` ≤ 1024; nothing else touches it until this returns.
         unsafe { dma.rearm_rx(src, bounce as u32, n as u32) };
+        guard.armed = true;
         let done = embassy_futures::select::select(
             dma.wait_transfer_complete(),
             embassy_time::Timer::after_millis(RX_DMA_TIMEOUT_MS),
         )
         .await;
-        let result = match done {
+        match done {
             embassy_futures::select::Either::First(()) => {
+                guard.armed = false;
+                // The whole packet was read (DCLRM cleared it); a caller's shorter buffer gets
+                // its first bytes.
                 let len = n.min(buf.len());
                 // SAFETY: the DMAC has finished writing `n` bytes; read them through the alias.
                 unsafe {
@@ -1116,17 +1199,14 @@ impl<'d> Rusb1HostDriver<'d> {
                 Ok(len)
             }
             embassy_futures::select::Either::Second(()) => {
-                dma.halt();
-                u.d1fifoctr().write_value(FIFOCTR_BCLR);
                 log::warn!(
                     "usb{}: receive DMA did not finish; block dropped",
                     self.port
                 );
+                // The guard halts the channel and clears the FIFO.
                 Err(PipeError::Timeout)
             }
-        };
-        critical_section::with(|cs| RX_DMA[p].borrow(cs).replace(Some(dma)));
-        result
+        }
     }
 
     /// Allocate a hardware pipe and configure it for `ep_addr` on `dev_addr`.
@@ -1308,6 +1388,9 @@ impl<'d> Rusb1HostDriver<'d> {
         if HCD_PIPE_ISO_IN.load(Ordering::Acquire) & (1 << pipe) != 0 {
             return self.iso_in_read(pipe, buf).await;
         }
+        if RX_DMA_PIPE[self.port as usize].load(Ordering::Acquire) as usize == pipe {
+            return self.dma_xfer_in(pipe, dev_addr, ep_addr, buf).await;
+        }
 
         // Clear the pipe's flags, then publish the transfer, in one critical section: the
         // interrupt handler completes a transfer as soon as its buffer is published, and a
@@ -1331,11 +1414,6 @@ impl<'d> Rusb1HostDriver<'d> {
         let ctr = pipectr(u, pipe);
         ctr.write_value((ctr.read() & !PIPECTR_PID_MASK) | PIPECTR_PID_BUF);
 
-        if RX_DMA_PIPE[self.port as usize].load(Ordering::Acquire) as usize == pipe {
-            // The handler recorded the length; the data is still in D1FIFO.
-            let n = poll_pipe(pipe).await?;
-            return self.dma_drain(buf, n).await;
-        }
         poll_pipe(pipe).await
     }
 
@@ -1887,18 +1965,15 @@ unsafe fn dma_brdy_in(u: Usb, n: usize) {
     unsafe {
         let cs = critical_section::CriticalSection::new();
         let xfer = &mut *HCD_XFER[n].borrow(cs).get();
-        let dtln = (u.d1fifoctr().read() & FIFOCTR_DTLN_MASK) as usize;
-        if dtln == 0 {
-            u.d1fifoctr().write_value(FIFOCTR_BCLR);
-        }
+        let dtln = u.d1fifoctr().read() & FIFOCTR_DTLN_MASK;
+        RX_DMA_DTLN[port_of(u)].store(dtln, Ordering::Release);
         let ctr = pipectr(u, n);
         ctr.write_value((ctr.read() & !PIPECTR_PID_MASK) | PIPECTR_PID_NAK);
         if xfer.buf.is_null() {
-            // No read pending (a cancelled one): the packet stays in the FIFO for the next.
+            // No read pending: the packet waits in the FIFO, its length recorded, for the next.
             return;
         }
-        let len = dtln.min(xfer.remaining as usize);
-        xfer.remaining -= len as u16;
+        xfer.remaining = 0;
         xfer.buf = core::ptr::null_mut();
         HCD_PIPE_DONE.fetch_or(1u16 << n, Ordering::Release);
         HCD_PIPE_WAKERS[n].wake();
@@ -2076,8 +2151,11 @@ fn release_pipe(port: u8, pipe: usize, dev_addr: u8, ep_addr: u8) {
     HCD_PIPE_ISO_IN.fetch_and(!(1 << pipe), Ordering::Release);
     HCD_PIPE_INTR_ON_BULK_IN.fetch_and(!(1 << pipe), Ordering::Release);
     if RX_DMA_PIPE[p].load(Ordering::Acquire) as usize == pipe {
+        // DREQE off before CURPIPE changes (TRM §28.3.8 DREQE).
+        u.d1fifosel().modify(|r| *r &= !FIFOSEL_DREQE);
         u.d1fifosel().write_value(0);
         RX_DMA_PIPE[p].store(0, Ordering::Release);
+        RX_DMA_DTLN[p].store(NO_DTLN, Ordering::Release);
     }
     u.nrdyenb().modify(|r| *r &= !(1 << pipe));
     u.brdyenb().modify(|r| *r &= !(1 << pipe));
@@ -2088,8 +2166,13 @@ fn release_pipe(port: u8, pipe: usize, dev_addr: u8, ep_addr: u8) {
     critical_section::with(|cs| {
         let alloc = unsafe { &mut *HCD_ALLOC[p].borrow(cs).get() };
         alloc.free_pipe(pipe);
+        // Clear the mapping only if it is still this pipe's: a device re-enumerated at the same
+        // address may already have the endpoint on another pipe.
         if dev_addr > 0 && (dev_addr as usize) < HCD_MAX_DEV && epn > 0 && epn <= 15 {
-            alloc.ep_to_pipe[dev_addr as usize - 1][dir_in as usize][epn - 1] = 0;
+            let slot = &mut alloc.ep_to_pipe[dev_addr as usize - 1][dir_in as usize][epn - 1];
+            if *slot as usize == pipe {
+                *slot = 0;
+            }
         }
     });
 }
@@ -3466,5 +3549,74 @@ mod tests {
             drive(h.dma_drain(&mut out, 368), 50).unwrap(),
             Err(PipeError::Timeout)
         );
+    }
+
+    /// Review C1: a block that arrives with no read pending stays in D1FIFO with its length
+    /// recorded, and the next read drains it at once instead of waiting for a BRDY that the
+    /// controller won't raise again.
+    #[test]
+    fn a_block_that_arrives_between_reads_is_drained_by_the_next_read() {
+        use crate::mmio::test;
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = dma_host();
+        h.edpt_open(1, 0x83, EndpointType::Interrupt, 368, 1)
+            .unwrap();
+        let pipe = h.ep_to_pipe(1, 0x83).unwrap();
+        let u = usb(0);
+        critical_section::with(|cs| unsafe {
+            (*HCD_XFER[pipe].borrow(cs).get()).buf = core::ptr::null_mut()
+        });
+        test::poke16(u.d1fifoctr().addr(), FIFOCTR_FRDY | 368);
+        unsafe { pipe_brdy_in(u, pipe) };
+        test::poke32(
+            crate::pac::DMAC.ch(1).chstat().addr(),
+            crate::dmac::CHSTAT_TC,
+        );
+        let mut out = [0u8; 368];
+        let n = drive(h.xfer_in(1, 0x83, &mut out), 10)
+            .expect("the read must not wait for another BRDY");
+        assert_eq!(n, Ok(368));
+    }
+
+    /// Review I1: dropping a drain mid-transfer halts the DMA, clears the FIFO and keeps the
+    /// channel, so the next block still uses DMA.
+    #[test]
+    fn a_cancelled_drain_keeps_the_channel() {
+        use core::future::Future;
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = dma_host();
+        h.edpt_open(1, 0x83, EndpointType::Interrupt, 368, 1)
+            .unwrap();
+        let mut out = [0u8; 368];
+        {
+            let mut drain = core::pin::pin!(h.dma_drain(&mut out, 368));
+            let mut cx = core::task::Context::from_waker(core::task::Waker::noop());
+            assert!(drain.as_mut().poll(&mut cx).is_pending());
+        }
+        assert!(
+            critical_section::with(|cs| RX_DMA[0].borrow(cs).borrow().is_some()),
+            "channel kept"
+        );
+        assert_ne!(
+            usb(0).d1fifoctr().read() & FIFOCTR_BCLR,
+            0,
+            "the half-read block is cleared"
+        );
+    }
+
+    #[test]
+    fn the_drain_targets_the_bounce_buffer() {
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = dma_host();
+        h.edpt_open(1, 0x83, EndpointType::Interrupt, 368, 1)
+            .unwrap();
+        crate::mmio::test::poke32(
+            crate::pac::DMAC.ch(1).chstat().addr(),
+            crate::dmac::CHSTAT_TC,
+        );
+        let mut out = [0u8; 368];
+        drive(h.dma_drain(&mut out, 368), 10).unwrap().unwrap();
+        let bounce = crate::uncached(unsafe { core::ptr::addr_of_mut!(RX_BOUNCE[0]) }) as u32;
+        assert_eq!(crate::pac::DMAC.ch(1).n0da().read(), bounce);
     }
 }
