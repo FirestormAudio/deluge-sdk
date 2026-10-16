@@ -318,7 +318,7 @@ mod runtime {
     use embassy_usb_driver::host::DeviceEvent;
     use embassy_usb_host::class::hub::{HubEvent, HubHandler};
     use embassy_usb_host::descriptor::ConfigurationDescriptor;
-    use embassy_usb_host::handler::{BusRoute, HandlerEvent, RegisterError};
+    use embassy_usb_host::handler::{BusRoute, HandlerEvent};
     use embassy_usb_host::{BusHandle, BusState, bus};
     use log::{error, info, warn};
     use rza1l_hal::usb::{Rusb1Allocator, Rusb1HostDriver};
