@@ -4125,6 +4125,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "overbridge-device-firmware"
+version = "0.1.0"
+dependencies = [
+ "cortex-ar",
+ "deluge-bsp",
+ "embassy-executor",
+ "embassy-time",
+ "embassy-usb",
+ "log",
+ "rtt-target",
+ "rza1-alloc",
+ "rza1l-hal",
+ "usb-classes",
+]
+
+[[package]]
 name = "overbridge-host-firmware"
 version = "0.1.0"
 dependencies = [

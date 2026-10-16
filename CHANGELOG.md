@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Elektron Overbridge 2 device class (`usb-classes` feature `device-overbridge`,
+  `overbridge::device`). It has the Digitakt's interface layout and name requests; the board
+  supplies the identity and channel counts. The RZ/A1L device driver carries interrupt
+  endpoints over 64 bytes on bulk pipes.
 - Elektron Overbridge 2 host support (`usb-classes` feature `host-overbridge`; `deluge-bsp`
   feature `usb-host-overbridge`). A Digitakt, Digitone, Syntakt, Analog Four/Rytm/Heat MKII,
   Digitakt II or Digitone II in Overbridge mode streams every track to the Deluge as 48 kHz

@@ -8,6 +8,7 @@ members = [
   "hw-tests/vbus-probe",
   "hw-tests/uac-host-firmware",
   "hw-tests/overbridge-host-firmware",
+  "hw-tests/overbridge-device-firmware",
   "crates/deluge-bsp",
   "firmwares/app-loader",
   "crates/deluge-sdk",

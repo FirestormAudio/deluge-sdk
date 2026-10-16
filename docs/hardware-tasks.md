@@ -59,8 +59,13 @@ often than before.
 
 ## 6. Overbridge device class (spec §8.4 step 6)
 
-- **Setup:** two Deluges, one hosting and one presenting the Overbridge device class with a test
-  identity. Then the device Deluge against Overwitch on Linux, with a local `devices.json` entry
-  for its test PID.
-- **Pass:** stems loop through Deluge to Deluge, and Overwitch streams them.
+- **Setup:** two Deluges. One runs `overbridge-host-firmware`; the other runs
+  `overbridge-device-firmware` built with `--features elektron-vid` (`cargo build-overbridge-device
+  --features elektron-vid`), which presents `0x1935:0x0BF0`. The default build's pid.codes test
+  identity binds to neither the host class nor Overwitch. Then connect the device Deluge to
+  Overwitch on Linux, with a local `devices.json` entry for PID `0x0BF0` (12 tracks out, 2 in,
+  version 2).
+- **Pass:** the host Deluge logs stems 0–11 at the device's DC levels ((k + 1) << 24, about
+  −42 dBFS for stem 0 rising 6 dB per doubling), with no counter gaps. The device logs the host's
+  1 kHz tone arriving. Overwitch streams the same stems.
 - **Record:** the Overwitch version, and anything it logs about the device.
