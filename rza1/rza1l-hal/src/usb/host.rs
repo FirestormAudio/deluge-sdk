@@ -427,6 +427,28 @@ impl HcdAlloc {
         }
     }
 
+    /// Drop `epn` on `dev_addr` from the shared send pipe, if `pipe` is it. Returns true while
+    /// other endpoints still use the pipe, which must then stay configured; when the last one
+    /// leaves, the shared state is cleared and the caller frees the hardware pipe.
+    fn leave_shared_out(&mut self, pipe: usize, dev_addr: u8, epn: u8) -> bool {
+        if self.shared_out.as_ref().map(|s| s.pipe as usize) != Some(pipe) {
+            return false;
+        }
+        if let Some(i) = self.shared_user(dev_addr, epn) {
+            let shared = self.shared_out.as_mut().unwrap();
+            shared.users[i] = None;
+            if shared.owner == Some(i as u8) {
+                shared.owner = None;
+            }
+        }
+        if self.shared_out.as_ref().unwrap().users.iter().any(|u| u.is_some()) {
+            true
+        } else {
+            self.shared_out = None;
+            false
+        }
+    }
+
     /// The index in the shared pipe's user table of `epn` on `dev_addr`.
     fn shared_user(&self, dev_addr: u8, epn: u8) -> Option<usize> {
         self.shared_out
@@ -929,6 +951,11 @@ impl<'d> Rusb1HostDriver<'d> {
                     for epn in 0..15usize {
                         let pipe = alloc.ep_to_pipe[dev_addr as usize - 1][dir][epn] as usize;
                         if pipe == 0 {
+                            continue;
+                        }
+                        // The shared send pipe stays configured while other devices use it.
+                        if dir == 0 && alloc.leave_shared_out(pipe, dev_addr, epn as u8 + 1) {
+                            alloc.ep_to_pipe[dev_addr as usize - 1][dir][epn] = 0;
                             continue;
                         }
 
@@ -2255,29 +2282,16 @@ fn release_pipe(port: u8, pipe: usize, dev_addr: u8, ep_addr: u8) {
     let still_shared = !dir_in
         && critical_section::with(|cs| {
             let alloc = unsafe { &mut *HCD_ALLOC[p].borrow(cs).get() };
-            if alloc.shared_out.as_ref().map(|s| s.pipe as usize) != Some(pipe) {
+            if !alloc.leave_shared_out(pipe, dev_addr, epn as u8) {
                 return false;
             }
-            if let Some(i) = alloc.shared_user(dev_addr, epn as u8) {
-                let shared = alloc.shared_out.as_mut().unwrap();
-                shared.users[i] = None;
-                if shared.owner == Some(i as u8) {
-                    shared.owner = None;
+            if dev_addr > 0 && (dev_addr as usize) < HCD_MAX_DEV && epn > 0 && epn <= 15 {
+                let slot = &mut alloc.ep_to_pipe[dev_addr as usize - 1][0][epn - 1];
+                if *slot as usize == pipe {
+                    *slot = 0;
                 }
             }
-            let shared = alloc.shared_out.as_ref().unwrap();
-            if shared.users.iter().any(|u| u.is_some()) {
-                if dev_addr > 0 && (dev_addr as usize) < HCD_MAX_DEV && epn > 0 && epn <= 15 {
-                    let slot = &mut alloc.ep_to_pipe[dev_addr as usize - 1][0][epn - 1];
-                    if *slot as usize == pipe {
-                        *slot = 0;
-                    }
-                }
-                true
-            } else {
-                alloc.shared_out = None;
-                false
-            }
+            true
         });
     if still_shared {
         return;
@@ -3489,6 +3503,31 @@ mod tests {
         h.edpt_close(2, 0x01);
         assert_eq!(used() & (1 << shared), 0);
         assert_eq!(shared_pipe(0), None);
+    }
+
+    #[test]
+    fn closing_a_device_leaves_the_shared_pipe_to_the_others() {
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = host_with_bus(0b00, DVSTCTR0_RHST_HS | DVSTCTR0_UACT);
+        critical_section::with(|cs| unsafe { *HCD_ALLOC[0].borrow(cs).get() = HcdAlloc::new() });
+        h.edpt_open(1, 0x01, EndpointType::Bulk, 64, 0).unwrap();
+        h.edpt_open(2, 0x01, EndpointType::Bulk, 64, 0).unwrap();
+        let shared = the_shared_pipe();
+        h.device_close(1);
+        let (used, users, gone, kept) = critical_section::with(|cs| unsafe {
+            let a = &*HCD_ALLOC[0].borrow(cs).get();
+            let n = a.shared_out.as_ref().unwrap().users.iter().flatten().count();
+            (a.pipes_used, n, a.shared_user(1, 1), a.shared_user(2, 1))
+        });
+        assert_ne!(used & (1 << shared), 0, "the pipe is still allocated");
+        assert_eq!((users, gone), (1, None));
+        assert!(kept.is_some());
+        assert_eq!(h.ep_to_pipe(1, 0x01), None);
+        assert_eq!(h.ep_to_pipe(2, 0x01), Some(shared));
+        h.device_close(2);
+        assert_eq!(shared_pipe(0), None);
+        let used = critical_section::with(|cs| unsafe { (*HCD_ALLOC[0].borrow(cs).get()).pipes_used });
+        assert_eq!(used, 0x0001);
     }
 
     #[test]
