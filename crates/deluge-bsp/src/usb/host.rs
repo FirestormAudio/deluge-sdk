@@ -13,7 +13,9 @@ use embassy_sync::channel::Channel;
 /// (USB is host-polled, so a receive must be armed to catch unsolicited MIDI).
 /// All bulk OUT endpoints share one send pipe, re-pointed per transfer, so
 /// the budget is four receive pipes plus one shared send pipe among bulk
-/// pipes 1-5 — **4 bidirectional devices**.
+/// pipes 1-5 — **4 bidirectional devices**. A USB audio (UAC) device on the
+/// same port takes pipes 1-2 for its isochronous streams out of that budget,
+/// leaving room for 2 MIDI devices beside it.
 ///
 /// The C firmware reaches 6 by also servicing MIDI devices that use
 /// *interrupt* endpoints on RX pipes 7-8 (`USB_CFG_HMIDI_INT_RECV_MIN/MAX`).
