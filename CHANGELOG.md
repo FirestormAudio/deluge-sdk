@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `rza1l-hal` USB host: an interrupt endpoint over 64 bytes (such as Overbridge's 368-byte
+  audio blocks) opens on a bulk pipe (MXPS 512 on pipes 3-5, or its own size up to 1024 on
+  pipes 1-2) instead of failing for lack of a large interrupt pipe.
 - Initial public release of the Deluge SDK: write apps for the Synthstrom
   Deluge in async Rust via the `#[deluge::app]` attribute and the `Deluge`
   capability handle.

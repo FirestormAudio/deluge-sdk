@@ -29,12 +29,12 @@
 //!
 //! Host mode uses pipes 0-9 only, as TinyUSB's `hcd_rusb1.c` does.
 //!
-//! | Pipe | Purpose       |
-//! |------|---------------|
+//! | Pipe | Purpose |
+//! |------|---------|
 //! | 0    | Control (DCP) |
-//! | 1-2  | ISO or Bulk   |
-//! | 3-5  | Bulk          |
-//! | 6-9  | Interrupt     |
+//! | 1-2  | ISO, Bulk, or Interrupt over 512 bytes (as bulk) |
+//! | 3-5  | Bulk, or Interrupt of 65-512 bytes (as bulk, MXPS 512) |
+//! | 6-9  | Interrupt of 64 bytes or less |
 //!
 //! ## FIFO routing (host mode)
 //!
@@ -216,6 +216,44 @@ static PROBE_PENDING: [AtomicBool; 2] = [const { AtomicBool::new(false) }; 2];
 // Pipe-allocation + EP→pipe mapping, per port
 // ---------------------------------------------------------------------------
 
+/// How an endpoint is carried: the pipes it may use, the MXPS to programme and the transfer
+/// type the pipe is configured as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PipeLayout {
+    /// Lowest and highest pipe the endpoint may use; searched highest first.
+    first: usize,
+    last: usize,
+    /// PIPEMAXP.MXPS to programme.
+    mxps: u16,
+    /// The transfer type the pipe is configured as (PIPECFG.TYPE).
+    carry: EndpointType,
+}
+
+/// The pipe layout for an endpoint of `ep_type` with descriptor `w_max_packet`.
+///
+/// Interrupt pipes (6-9) stop at 64 bytes, so a larger interrupt endpoint (Overbridge's
+/// 368-byte blocks) rides a bulk pipe. On the wire an interrupt and a bulk transaction use the
+/// same tokens, handshakes and toggles, and a bulk pipe is polled every microframe the bus has
+/// room for, at least as often as `bInterval` 1. Pipes 3-5 take only MXPS 8/16/32/64/512
+/// (TRM §28.3.34), so up to 512 bytes the pipe is programmed at 512 and every packet is short;
+/// above that only pipes 1-2 take the size. A high-bandwidth endpoint (bits 12:11) can't ride
+/// a bulk pipe and is rejected.
+fn pipe_layout(ep_type: EndpointType, w_max_packet: u16) -> Result<PipeLayout, HostError> {
+    let mps = w_max_packet & PIPEMAXP_MXPS_MASK;
+    let layout = |first, last, mxps, carry| Ok(PipeLayout { first, last, mxps, carry });
+    match ep_type {
+        EndpointType::Control => Err(HostError::OutOfPipes), // control uses pipe 0 directly
+        EndpointType::Isochronous => layout(1, 2, mps, EndpointType::Isochronous),
+        EndpointType::Bulk => layout(1, 5, mps, EndpointType::Bulk),
+        EndpointType::Interrupt if mps <= 64 => layout(6, 9, mps, EndpointType::Interrupt),
+        EndpointType::Interrupt if w_max_packet >> 11 != 0 || mps > 1024 => Err(
+            HostError::Other("interrupt endpoint is high-bandwidth or over 1024 bytes"),
+        ),
+        EndpointType::Interrupt if mps <= 512 => layout(1, 5, 512, EndpointType::Bulk),
+        EndpointType::Interrupt => layout(1, 2, mps, EndpointType::Bulk),
+    }
+}
+
 struct HcdAlloc {
     /// True between DeviceAttached and the next bus_reset().
     need_reset: bool,
@@ -248,15 +286,8 @@ impl HcdAlloc {
         }
     }
 
-    /// Allocate a free pipe for `ep_type`.  Searches backward (highest pipe
-    /// first) within the type's range, as TinyUSB's `find_pipe` does.
-    fn alloc_pipe(&mut self, ep_type: EndpointType) -> Option<usize> {
-        let (first, last): (usize, usize) = match ep_type {
-            EndpointType::Isochronous => (1, 2),
-            EndpointType::Bulk => (1, 5),
-            EndpointType::Interrupt => (6, 9),
-            EndpointType::Control => return None, // control uses pipe 0 directly
-        };
+    /// Allocate a free pipe in `first..=last`, highest first, as TinyUSB's `find_pipe` does.
+    fn alloc_pipe(&mut self, first: usize, last: usize) -> Option<usize> {
         for p in (first..=last).rev() {
             if self.pipes_used & (1 << p) == 0 {
                 self.pipes_used |= 1 << p;
@@ -975,7 +1006,10 @@ impl<'d> Rusb1HostDriver<'d> {
 
         critical_section::with(|cs| {
             let alloc = unsafe { &mut *HCD_ALLOC[p].borrow(cs).get() };
-            let pipe = alloc.alloc_pipe(ep_type).ok_or(HostError::OutOfPipes)?;
+            let layout = pipe_layout(ep_type, mps)?;
+            let pipe = alloc
+                .alloc_pipe(layout.first, layout.last)
+                .ok_or(HostError::OutOfPipes)?;
 
             // Reserve packet-buffer blocks for programmable pipes.  Pipes 6-8
             // have hardware-fixed buffers (blocks 4/5/6, BUFNMB writes ignored),
@@ -986,8 +1020,9 @@ impl<'d> Rusb1HostDriver<'d> {
             let pipebuf: Option<(u8, u8)> = if (6..=8).contains(&pipe) {
                 None
             } else {
-                let double_buf = matches!(ep_type, EndpointType::Bulk | EndpointType::Isochronous);
-                match alloc.alloc_pipe_buf(pipe, mps, double_buf) {
+                let double_buf =
+                    matches!(layout.carry, EndpointType::Bulk | EndpointType::Isochronous);
+                match alloc.alloc_pipe_buf(pipe, layout.mxps, double_buf) {
                     Some(v) => Some(v),
                     None => {
                         alloc.free_pipe(pipe);
@@ -1013,12 +1048,12 @@ impl<'d> Rusb1HostDriver<'d> {
 
                 // PIPEMAXP: MPS | (dev_addr << 12).
                 u.pipemaxp().write_value(
-                    ((dev_addr as u16) << PIPEMAXP_DEVSEL_SHIFT) | (mps & PIPEMAXP_MXPS_MASK),
+                    ((dev_addr as u16) << PIPEMAXP_DEVSEL_SHIFT) | (layout.mxps & PIPEMAXP_MXPS_MASK),
                 );
 
                 // PIPECFG.DIR: 1 = host sends (OUT), 0 = host receives (IN).
                 let dir_field: u16 = if dir_in { 0x0000 } else { 0x0010 };
-                let type_field: u16 = match ep_type {
+                let type_field: u16 = match layout.carry {
                     EndpointType::Bulk => PIPECFG_TYPE_BULK | PIPECFG_SHTNAK | PIPECFG_DBLB,
                     EndpointType::Interrupt => PIPECFG_TYPE_INTR,
                     EndpointType::Isochronous => PIPECFG_TYPE_ISO | PIPECFG_DBLB,
@@ -1041,7 +1076,7 @@ impl<'d> Rusb1HostDriver<'d> {
                 // PIPEPERI: set IITV for interrupt pipes (valid for pipes 6-9).
                 // TRM §28.3.35: IITV = floor(log2(bInterval)).min(7).
                 // Bulk pipes (3-5) and pipes 10-15 must have IITV=0.
-                let iitv: u16 = if ep_type == EndpointType::Interrupt {
+                let iitv: u16 = if layout.carry == EndpointType::Interrupt {
                     let b = binterval.max(1);
                     (u8::BITS - 1 - b.leading_zeros()) as u16
                 } else {
@@ -2685,9 +2720,9 @@ mod tests {
         // block 0 (the DCP region). Two 512-byte double-buffered bulk pipes
         // must get disjoint regions, both clear of the reserved blocks 0-6.
         let mut a = HcdAlloc::new();
-        let p1 = a.alloc_pipe(EndpointType::Bulk).unwrap();
+        let p1 = a.alloc_pipe(1, 5).unwrap();
         let (s1, n1) = a.alloc_pipe_buf(p1, 512, true).unwrap();
-        let p2 = a.alloc_pipe(EndpointType::Bulk).unwrap();
+        let p2 = a.alloc_pipe(1, 5).unwrap();
         let (s2, n2) = a.alloc_pipe_buf(p2, 512, true).unwrap();
 
         assert_eq!(n1, 8, "512 bytes = 8 blocks per bank");
@@ -2702,5 +2737,182 @@ mod tests {
         // Freeing the pipe returns its blocks to the pool.
         a.free_pipe(p1);
         assert_eq!(a.buf_reserved[p1], 0);
+    }
+
+    /// The Digitakt's Overbridge IN endpoint (interrupt, 368 bytes) is too big for an
+    /// interrupt pipe (6-9 stop at 64), so it rides a bulk pipe. Pipes 3-5 only take MXPS
+    /// 8/16/32/64/512, so it is programmed at 512 and every block arrives as a short packet.
+    #[test]
+    fn an_interrupt_endpoint_over_64_bytes_is_carried_on_a_bulk_pipe_at_mxps_512() {
+        assert_eq!(
+            pipe_layout(EndpointType::Interrupt, 368),
+            Ok(PipeLayout { first: 1, last: 5, mxps: 512, carry: EndpointType::Bulk })
+        );
+        assert_eq!(
+            pipe_layout(EndpointType::Interrupt, 88),
+            Ok(PipeLayout { first: 1, last: 5, mxps: 512, carry: EndpointType::Bulk })
+        );
+    }
+
+    /// Over 512 bytes (a Digitakt II's 1012-byte IN endpoint) only pipes 1-2 take the size.
+    #[test]
+    fn an_interrupt_endpoint_over_512_bytes_needs_pipe_1_or_2() {
+        assert_eq!(
+            pipe_layout(EndpointType::Interrupt, 1012),
+            Ok(PipeLayout { first: 1, last: 2, mxps: 1012, carry: EndpointType::Bulk })
+        );
+        assert_eq!(
+            pipe_layout(EndpointType::Interrupt, 1024),
+            Ok(PipeLayout { first: 1, last: 2, mxps: 1024, carry: EndpointType::Bulk })
+        );
+    }
+
+    /// MIDI and hub status endpoints keep the interrupt pipes.
+    #[test]
+    fn an_interrupt_endpoint_of_64_bytes_or_less_keeps_an_interrupt_pipe() {
+        for mps in [1, 8, 64] {
+            assert_eq!(
+                pipe_layout(EndpointType::Interrupt, mps),
+                Ok(PipeLayout { first: 6, last: 9, mxps: mps, carry: EndpointType::Interrupt })
+            );
+        }
+    }
+
+    /// A high-bandwidth interrupt endpoint (wMaxPacketSize bits 12:11 = extra transactions per
+    /// microframe) can't ride a bulk pipe, and one over 1024 bytes isn't valid USB.
+    #[test]
+    fn a_high_bandwidth_or_oversized_interrupt_endpoint_is_rejected() {
+        assert!(pipe_layout(EndpointType::Interrupt, (1 << 11) | 368).is_err());
+        assert!(pipe_layout(EndpointType::Interrupt, (2 << 11) | 1024).is_err());
+        assert!(pipe_layout(EndpointType::Interrupt, 1025).is_err());
+    }
+
+    /// Bulk and isochronous endpoints are laid out as before.
+    #[test]
+    fn bulk_and_isochronous_layouts_are_unchanged() {
+        assert_eq!(
+            pipe_layout(EndpointType::Bulk, 512),
+            Ok(PipeLayout { first: 1, last: 5, mxps: 512, carry: EndpointType::Bulk })
+        );
+        assert_eq!(
+            pipe_layout(EndpointType::Bulk, 64),
+            Ok(PipeLayout { first: 1, last: 5, mxps: 64, carry: EndpointType::Bulk })
+        );
+        assert_eq!(
+            pipe_layout(EndpointType::Isochronous, 56),
+            Ok(PipeLayout { first: 1, last: 2, mxps: 56, carry: EndpointType::Isochronous })
+        );
+        assert_eq!(pipe_layout(EndpointType::Control, 64), Err(HostError::OutOfPipes));
+    }
+
+    /// Open one endpoint on device 1 (high speed) of a fresh port-0 allocator, and return the
+    /// pipe with the PIPECFG/PIPEMAXP/PIPEPERI values `edpt_open` wrote.
+    fn open_on_fresh_port(ep: u8, ty: EndpointType, mps: u16, binterval: u8) -> (usize, u16, u16, u16) {
+        use crate::mmio::test;
+        let h = host_with_bus(0b00, DVSTCTR0_RHST_HS | DVSTCTR0_UACT);
+        critical_section::with(|cs| unsafe { *HCD_ALLOC[0].borrow(cs).get() = HcdAlloc::new() });
+        test::poke16(usb(0).devadd(1).addr(), DEVADD_USBSPD_HS);
+        h.edpt_open(1, ep, ty, mps, binterval).unwrap();
+        let pipe = h.ep_to_pipe(1, ep).unwrap();
+        let u = usb(0);
+        (pipe, u.pipecfg().read(), u.pipemaxp().read(), u.pipeperi().read())
+    }
+
+    fn reserved_blocks(pipe: usize) -> u8 {
+        critical_section::with(|cs| unsafe { (*HCD_ALLOC[0].borrow(cs).get()).buf_reserved[pipe] })
+    }
+
+    #[test]
+    fn a_368_byte_interrupt_in_endpoint_opens_as_a_double_buffered_bulk_pipe() {
+        use crate::usb::regs::{PIPECFG_DBLB, PIPECFG_DIR, PIPECFG_SHTNAK, PIPECFG_TYPE_MASK};
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let (pipe, cfg, maxp, peri) = open_on_fresh_port(0x83, EndpointType::Interrupt, 368, 1);
+        assert!((3..=5).contains(&pipe), "pipe {pipe}");
+        assert_eq!(cfg & PIPECFG_TYPE_MASK, PIPECFG_TYPE_BULK);
+        assert_ne!(cfg & PIPECFG_DBLB, 0);
+        assert_ne!(cfg & PIPECFG_SHTNAK, 0);
+        assert_eq!(cfg & PIPECFG_DIR, 0, "IN: host receives");
+        assert_eq!(maxp & PIPEMAXP_MXPS_MASK, 512);
+        assert_eq!(peri & PIPEPERI_IITV_MASK, 0, "IITV must be 0 on pipes 3-5");
+        assert_eq!(reserved_blocks(pipe), 16, "2 banks x 512 bytes");
+    }
+
+    #[test]
+    fn an_88_byte_interrupt_out_endpoint_opens_as_a_bulk_pipe() {
+        use crate::usb::regs::{PIPECFG_DIR, PIPECFG_TYPE_MASK};
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let (pipe, cfg, maxp, _) = open_on_fresh_port(0x03, EndpointType::Interrupt, 88, 1);
+        assert!((3..=5).contains(&pipe), "pipe {pipe}");
+        assert_eq!(cfg & PIPECFG_TYPE_MASK, PIPECFG_TYPE_BULK);
+        assert_ne!(cfg & PIPECFG_DIR, 0, "OUT: host sends");
+        assert_eq!(maxp & PIPEMAXP_MXPS_MASK, 512);
+    }
+
+    #[test]
+    fn a_1012_byte_interrupt_endpoint_opens_on_pipe_1_or_2_at_its_own_size() {
+        use crate::usb::regs::PIPECFG_TYPE_MASK;
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let (pipe, cfg, maxp, _) = open_on_fresh_port(0x83, EndpointType::Interrupt, 1012, 1);
+        assert!((1..=2).contains(&pipe), "pipe {pipe}");
+        assert_eq!(cfg & PIPECFG_TYPE_MASK, PIPECFG_TYPE_BULK);
+        assert_eq!(maxp & PIPEMAXP_MXPS_MASK, 1012);
+        assert_eq!(reserved_blocks(pipe), 32, "2 banks x 16 blocks");
+    }
+
+    #[test]
+    fn a_64_byte_interrupt_endpoint_keeps_pipes_6_to_9() {
+        use crate::usb::regs::PIPECFG_TYPE_MASK;
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let (pipe, cfg, maxp, _) = open_on_fresh_port(0x82, EndpointType::Interrupt, 64, 1);
+        assert!((6..=9).contains(&pipe), "pipe {pipe}");
+        assert_eq!(cfg & PIPECFG_TYPE_MASK, PIPECFG_TYPE_INTR);
+        assert_eq!(maxp & PIPEMAXP_MXPS_MASK, 64);
+    }
+
+    /// A Digitakt opens its two Overbridge endpoints and its two USB-MIDI bulk endpoints: four
+    /// of the five bulk-capable pipes. One isochronous stream (a USB audio interface) still
+    /// fits; a second doesn't, and fails cleanly.
+    #[test]
+    fn a_digitakt_leaves_one_isochronous_pipe() {
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = host_with_bus(0b00, DVSTCTR0_RHST_HS | DVSTCTR0_UACT);
+        critical_section::with(|cs| unsafe { *HCD_ALLOC[0].borrow(cs).get() = HcdAlloc::new() });
+        crate::mmio::test::poke16(usb(0).devadd(1).addr(), DEVADD_USBSPD_HS);
+        h.edpt_open(1, 0x83, EndpointType::Interrupt, 368, 1).unwrap();
+        h.edpt_open(1, 0x03, EndpointType::Interrupt, 88, 1).unwrap();
+        h.edpt_open(1, 0x81, EndpointType::Bulk, 512, 0).unwrap();
+        h.edpt_open(1, 0x01, EndpointType::Bulk, 512, 0).unwrap();
+        let mut pipes: Vec<usize> =
+            [0x83, 0x03, 0x81, 0x01].iter().map(|&ep| h.ep_to_pipe(1, ep).unwrap()).collect();
+        pipes.sort();
+        pipes.dedup();
+        assert_eq!(pipes.len(), 4, "distinct pipes");
+        assert!(pipes.iter().all(|p| (1..=5).contains(p)));
+
+        h.edpt_open(2, 0x84, EndpointType::Isochronous, 196, 1).unwrap();
+        assert_eq!(
+            h.edpt_open(2, 0x05, EndpointType::Isochronous, 196, 1),
+            Err(HostError::OutOfPipes)
+        );
+    }
+
+    /// Characterization: this behaviour exists before the change, and the test pins it.
+    /// When the packet buffer can't hold a pipe, the open fails and the pipe goes back.
+    #[test]
+    fn a_full_packet_buffer_fails_the_open_and_frees_the_pipe() {
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = host_with_bus(0b00, DVSTCTR0_RHST_HS | DVSTCTR0_UACT);
+        critical_section::with(|cs| unsafe {
+            let a = &mut *HCD_ALLOC[0].borrow(cs).get();
+            *a = HcdAlloc::new();
+            // Leave fewer than the 16 blocks a 512-byte double-buffered pipe needs.
+            while a.buf.alloc(1).is_some() {}
+        });
+        assert_eq!(
+            h.edpt_open(1, 0x83, EndpointType::Interrupt, 368, 1),
+            Err(HostError::OutOfPipes)
+        );
+        let used = critical_section::with(|cs| unsafe { (*HCD_ALLOC[0].borrow(cs).get()).pipes_used });
+        assert_eq!(used, 0x0001, "only the DCP stays allocated");
     }
 }
