@@ -172,4 +172,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   probes under `hw-tests/`, the desktop simulator under `crates/`, and examples
   under `examples/baremetal/` and `examples/linux/`. Package names are unchanged.
 
+### Fixed
+
+- `rza1l-hal` USB host: a high-speed device's interrupt endpoint is polled at the period its
+  bInterval asks for (2^(bInterval-1) microframes). It was polled more often: a hub's status
+  endpoint at bInterval 12 every 1 ms instead of 16 ms.
+
 [Unreleased]: https://github.com/FirestormAudio/deluge-sdk

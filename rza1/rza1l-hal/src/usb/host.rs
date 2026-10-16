@@ -254,6 +254,17 @@ fn pipe_layout(ep_type: EndpointType, w_max_packet: u16) -> Result<PipeLayout, H
     }
 }
 
+/// PIPEPERI.IITV for an interrupt pipe. The controller issues the pipe's token once every
+/// 2^IITV frames, counted in microframes for a high-speed device and in 1 ms frames for a
+/// full- or low-speed one, including one behind a high-speed hub (TRM §28.4.8 (1)(c)). At high
+/// speed bInterval is an exponent (period 2^(bInterval-1) microframes); otherwise it is a
+/// period in frames, rounded down here to a power of two. 0 (embassy's hub class) counts as 1.
+fn interrupt_iitv(binterval: u8, high_speed: bool) -> u16 {
+    let b = binterval.max(1);
+    let n = if high_speed { b - 1 } else { (u8::BITS - 1 - b.leading_zeros()) as u8 };
+    n.min(7) as u16
+}
+
 struct HcdAlloc {
     /// True between DeviceAttached and the next bus_reset().
     need_reset: bool,
@@ -989,8 +1000,9 @@ impl<'d> Rusb1HostDriver<'d> {
     ///
     /// `ep_addr` format: bit 7 = direction (1=IN, 0=OUT), bits 3:0 = EP number.
     ///
-    /// `binterval` is the USB descriptor bInterval field (in frames for FS interrupt
-    /// endpoints; ignored for bulk endpoints).  Pass 0 or 1 for no specific interval.
+    /// `binterval` is the endpoint descriptor's bInterval: an exponent for a high-speed
+    /// interrupt endpoint, a period in frames otherwise; ignored for bulk and isochronous pipes.
+    /// Pass 0 or 1 for the shortest period.
     pub fn edpt_open(
         &self,
         dev_addr: u8,
@@ -1073,12 +1085,13 @@ impl<'d> Rusb1HostDriver<'d> {
                         .write_value((buf_start as u16 & PIPEBUF_BUFNMB_MASK) | bufsize);
                 }
 
-                // PIPEPERI: set IITV for interrupt pipes (valid for pipes 6-9).
-                // TRM §28.3.35: IITV = floor(log2(bInterval)).min(7).
-                // Bulk pipes (3-5) and pipes 10-15 must have IITV=0.
+                // PIPEPERI: IITV for interrupt pipes (6-9); bulk pipes (1-5, including
+                // interrupt endpoints carried as bulk) must have IITV=0. The device's speed is
+                // the USBSPD that device_open programmed into DEVADDn.
                 let iitv: u16 = if layout.carry == EndpointType::Interrupt {
-                    let b = binterval.max(1);
-                    (u8::BITS - 1 - b.leading_zeros()) as u16
+                    let high_speed = u.devadd(dev_addr as usize).read() & DEVADD_USBSPD_HS
+                        == DEVADD_USBSPD_HS;
+                    interrupt_iitv(binterval, high_speed)
                 } else {
                     0
                 };
@@ -2914,5 +2927,53 @@ mod tests {
         );
         let used = critical_section::with(|cs| unsafe { (*HCD_ALLOC[0].borrow(cs).get()).pipes_used });
         assert_eq!(used, 0x0001, "only the DCP stays allocated");
+    }
+
+    #[test]
+    fn a_high_speed_device_s_interrupt_pipe_counts_microframes() {
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let (_, _, _, peri) = open_on_fresh_port(0x81, EndpointType::Interrupt, 8, 4);
+        assert_eq!(peri & PIPEPERI_IITV_MASK, 3, "2^3 microframes = 1 ms");
+    }
+
+    #[test]
+    fn a_full_speed_device_s_interrupt_pipe_counts_frames() {
+        use crate::mmio::test;
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = host_with_bus(0b00, DVSTCTR0_RHST_HS | DVSTCTR0_UACT);
+        critical_section::with(|cs| unsafe { *HCD_ALLOC[0].borrow(cs).get() = HcdAlloc::new() });
+        // A full-speed device behind a high-speed hub: DEVADDn says full speed.
+        test::poke16(usb(0).devadd(1).addr(), DEVADD_USBSPD_FS | (1 << DEVADD_HUBPORT_SHIFT));
+        h.edpt_open(1, 0x81, EndpointType::Interrupt, 8, 4).unwrap();
+        assert_eq!(usb(0).pipeperi().read() & PIPEPERI_IITV_MASK, 2, "2^2 frames = 4 ms");
+    }
+
+    /// High speed: bInterval is an exponent, period 2^(bInterval-1) microframes, and the
+    /// controller counts microframes for a high-speed device (TRM §28.4.8 (1)(c)). IITV tops
+    /// out at 7 (16 ms).
+    #[test]
+    fn interrupt_iitv_at_high_speed_is_binterval_minus_one() {
+        assert_eq!(interrupt_iitv(1, true), 0);
+        assert_eq!(interrupt_iitv(4, true), 3);
+        assert_eq!(interrupt_iitv(8, true), 7);
+        assert_eq!(interrupt_iitv(12, true), 7);
+        assert_eq!(interrupt_iitv(16, true), 7);
+    }
+
+    /// Full and low speed (including a full-speed device behind a high-speed hub, which the
+    /// controller counts in 1 ms frames): bInterval is in frames, rounded down to a power of 2.
+    #[test]
+    fn interrupt_iitv_at_full_speed_rounds_binterval_down_to_a_power_of_two() {
+        assert_eq!(interrupt_iitv(1, false), 0);
+        assert_eq!(interrupt_iitv(2, false), 1);
+        assert_eq!(interrupt_iitv(10, false), 3);
+        assert_eq!(interrupt_iitv(255, false), 7);
+    }
+
+    /// embassy-usb-host's hub class opens its status endpoint with interval 0.
+    #[test]
+    fn interrupt_iitv_treats_zero_as_one() {
+        assert_eq!(interrupt_iitv(0, true), 0);
+        assert_eq!(interrupt_iitv(0, false), 0);
     }
 }
