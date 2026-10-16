@@ -535,6 +535,12 @@ static SHARED_OUT_LOCK: [embassy_sync::mutex::Mutex<
     (),
 >; 2] = [const { embassy_sync::mutex::Mutex::new(()) }; 2];
 
+/// The longest a send on the shared pipe may hold the port's send lock. The controller retries
+/// a NAKed OUT for ever without raising NRDY, so a device that stops accepting data (normal
+/// flow control) would otherwise stop every other device's sends, and with them the tasks
+/// that read between sends. A MIDI message is a packet or two: this is ample.
+const SHARED_SEND_TIMEOUT_MS: u64 = 100;
+
 /// Point the shared OUT pipe at `user`: halt it, then set its endpoint, device and size, and
 /// restore the user's data toggle (TRM §28.3: PIPECFG/PIPEMAXP only change at PID=NAK with
 /// PBUSY=0; SQSET/SQCLR likewise).
@@ -1786,7 +1792,8 @@ impl<'d> Rusb1HostDriver<'d> {
     /// OUT transfer: send `buf` to `ep_addr` on `dev_addr`.
     ///
     /// A bulk endpoint's sends go through the port's shared send pipe, one at a time: each
-    /// re-points the pipe at its endpoint if another one last used it.
+    /// re-points the pipe at its endpoint if another one last used it. Each may take at most
+    /// [`SHARED_SEND_TIMEOUT_MS`], or fails with [`PipeError::Timeout`].
     pub async fn xfer_out(&self, dev_addr: u8, ep_addr: u8, buf: &[u8]) -> Result<(), PipeError> {
         let pipe = self
             .ep_to_pipe(dev_addr, ep_addr)
@@ -1827,10 +1834,19 @@ impl<'d> Rusb1HostDriver<'d> {
 
         let port = self.port;
         let guard = OnDrop(Some(move || finish_shared_send(port, pipe, i, true)));
-        let mut result = self.xfer_out_on(pipe, dev_addr, ep_addr, buf).await;
-        if result.is_ok() {
-            result = self.drain_shared(pipe).await;
-        }
+        let send = async {
+            let mut result = self.xfer_out_on(pipe, dev_addr, ep_addr, buf).await;
+            if result.is_ok() {
+                result = self.drain_shared(pipe).await;
+            }
+            result
+        };
+        let timeout = embassy_time::Duration::from_millis(SHARED_SEND_TIMEOUT_MS);
+        let Ok(result) = embassy_time::with_timeout(timeout, send).await else {
+            // Given up on, as a dropped send is: the guard halts the pipe and forgets the owner.
+            drop(guard);
+            return Err(PipeError::Timeout);
+        };
         guard.defuse();
         finish_shared_send(port, pipe, i, false);
         result
@@ -4027,6 +4043,40 @@ mod tests {
         assert!(
             buf.is_null(),
             "the handler no longer sees the dropped buffer"
+        );
+        assert!(
+            SHARED_OUT_LOCK[0].try_lock().is_ok(),
+            "the lock is released"
+        );
+    }
+
+    /// Final review I2: a device NAKing its OUT endpoint (the controller retries without
+    /// raising NRDY) must not hold the port's send lock for ever. The send times out, cleans
+    /// up as a dropped send does, and frees the lock for the other devices.
+    #[test]
+    fn a_send_that_never_completes_times_out_and_frees_the_lock() {
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = host_with_bus(0b00, DVSTCTR0_RHST_HS | DVSTCTR0_UACT);
+        critical_section::with(|cs| unsafe { *HCD_ALLOC[0].borrow(cs).get() = HcdAlloc::new() });
+        h.edpt_open(1, 0x01, EndpointType::Bulk, 512, 0).unwrap();
+        h.edpt_open(2, 0x01, EndpointType::Bulk, 512, 0).unwrap();
+        let pipe = the_shared_pipe();
+        crate::mmio::test::poke16(usb(0).d0fifoctr().addr(), FIFOCTR_FRDY);
+        let data = [1u8; 1024];
+        assert_eq!(
+            drive(h.xfer_out(1, 0x01, &data), 2 * SHARED_SEND_TIMEOUT_MS),
+            Some(Err(PipeError::Timeout))
+        );
+        let owner = critical_section::with(|cs| unsafe {
+            (*HCD_ALLOC[0].borrow(cs).get()).shared_out.unwrap().owner
+        });
+        assert_eq!(owner, None, "the next send re-points");
+        let buf = critical_section::with(|cs| unsafe { (*HCD_XFER[pipe].borrow(cs).get()).buf });
+        assert!(buf.is_null(), "the handler no longer sees the buffer");
+        assert_ne!(
+            pipectr(usb(0), pipe).read() & PIPECTR_PID_MASK,
+            PIPECTR_PID_BUF,
+            "halted"
         );
         assert!(
             SHARED_OUT_LOCK[0].try_lock().is_ok(),

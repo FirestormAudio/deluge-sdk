@@ -109,4 +109,9 @@ often than before.
 - **Pass:** all four enumerate. Every device receives every note sent to it, with no stuck or
   repeated notes (a wrong data toggle shows up as silently dropped or duplicated packets). Notes
   from all four arrive. Unplugging one leaves the others working.
-- **Record:** the devices used, and any device that drops notes.
+- **NAKing device:** make one device stop accepting data while the sequence runs (for example a
+  device whose input buffer fills, or one held in a state where it NAKs its OUT endpoint). Each
+  send to it gives up after 100 ms; the other three keep receiving their notes and keep sending
+  theirs back, with at most a 100 ms hiccup per send to the stuck one. When the device accepts
+  data again, it receives notes again.
+- **Record:** the devices used, any device that drops notes, and how the NAKing case was made.
