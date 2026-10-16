@@ -20,3 +20,7 @@ jobs:
   tests:
     name: Tests
     uses: ./.github/workflows/test.yml
+
+  rza1:
+    name: rza1
+    uses: ./.github/workflows/rza1.yml
