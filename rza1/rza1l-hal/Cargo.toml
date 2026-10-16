@@ -29,6 +29,7 @@ cortex-ar = { workspace = true, features = ["critical-section-single-core"] }
 rza1-pac = { path = "../rza1-pac", version = "0.1.0", features = ["rza1l"] }
 critical-section = { workspace = true }
 embassy-sync = { workspace = true }
+embassy-futures = { workspace = true }
 embassy-hal-internal = { workspace = true }
 embassy-time = { workspace = true }
 embassy-time-driver = { workspace = true }

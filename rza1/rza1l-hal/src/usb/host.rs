@@ -67,14 +67,14 @@ use super::regs::{
     DCPMAXP_MXPS_MASK, DEVADD_HUBPORT_SHIFT, DEVADD_UPPHUB_SHIFT, DEVADD_USBSPD_FS,
     DEVADD_USBSPD_HS, DEVADD_USBSPD_LS, DVSTCTR0_RHST, DVSTCTR0_RHST_FS, DVSTCTR0_RHST_HS,
     DVSTCTR0_RHST_LS, DVSTCTR0_UACT, DVSTCTR0_USBRST, FIFOCTR_BCLR, FIFOCTR_BVAL,
-    FIFOCTR_DTLN_MASK, FIFOCTR_FRDY, FIFOSEL_CURPIPE_MASK, FIFOSEL_ISEL, FIFOSEL_MBW_SHIFT,
-    INTENB0_BEMPE, INTENB0_BRDYE, INTENB0_NRDYE, INTENB1_ATTCHE, INTENB1_DTCHE, INTENB1_EOFERRE,
-    INTENB1_SACKE, INTENB1_SIGNE, INTSTS0_BEMP, INTSTS0_BRDY, INTSTS0_NRDY, INTSTS1_ATTCH,
-    INTSTS1_DTCH, INTSTS1_EOFERR, INTSTS1_SACK, INTSTS1_SIGN, MBW_32, PIPEBUF_BUFNMB_MASK,
-    PIPEBUF_BUFSIZE_MASK, PIPEBUF_BUFSIZE_SHIFT, PIPECFG_DBLB, PIPECFG_EPNUM_MASK, PIPECFG_SHTNAK,
-    PIPECFG_TYPE_BULK, PIPECFG_TYPE_INTR, PIPECFG_TYPE_ISO, PIPECTR_ACLRM, PIPECTR_BSTS,
-    PIPECTR_PBUSY, PIPECTR_PID_BUF, PIPECTR_PID_MASK, PIPECTR_PID_NAK, PIPECTR_SQCLR,
-    PIPECTR_SQSET, PIPEMAXP_DEVSEL_SHIFT, PIPEMAXP_MXPS_MASK, PIPEPERI_IITV_MASK,
+    FIFOCTR_DTLN_MASK, FIFOCTR_FRDY, FIFOSEL_CURPIPE_MASK, FIFOSEL_DCLRM, FIFOSEL_DREQE,
+    FIFOSEL_ISEL, FIFOSEL_MBW_SHIFT, INTENB0_BEMPE, INTENB0_BRDYE, INTENB0_NRDYE, INTENB1_ATTCHE,
+    INTENB1_DTCHE, INTENB1_EOFERRE, INTENB1_SACKE, INTENB1_SIGNE, INTSTS0_BEMP, INTSTS0_BRDY,
+    INTSTS0_NRDY, INTSTS1_ATTCH, INTSTS1_DTCH, INTSTS1_EOFERR, INTSTS1_SACK, INTSTS1_SIGN, MBW_32,
+    PIPEBUF_BUFNMB_MASK, PIPEBUF_BUFSIZE_MASK, PIPEBUF_BUFSIZE_SHIFT, PIPECFG_DBLB,
+    PIPECFG_EPNUM_MASK, PIPECFG_SHTNAK, PIPECFG_TYPE_BULK, PIPECFG_TYPE_INTR, PIPECFG_TYPE_ISO,
+    PIPECTR_ACLRM, PIPECTR_BSTS, PIPECTR_PBUSY, PIPECTR_PID_BUF, PIPECTR_PID_MASK, PIPECTR_PID_NAK,
+    PIPECTR_SQCLR, PIPECTR_SQSET, PIPEMAXP_DEVSEL_SHIFT, PIPEMAXP_MXPS_MASK, PIPEPERI_IITV_MASK,
     PKT_BUF_BLOCK_SIZE, SUSPMODE_SUSPM, SYSCFG_DCFM, SYSCFG_DPRPU, SYSCFG_DRPD, SYSCFG_HSE,
     SYSCFG_UPLLE, SYSCFG_USBE, SYSSTS0_LNST, pipectr, usb,
 };
@@ -162,6 +162,46 @@ static HCD_PIPE_ISO_IN: AtomicU16 = AtomicU16::new(0);
 /// end in a short packet (a 1012-byte endpoint at MXPS 1012), so SHTNAK can't stop the pipe
 /// between reads: the completion sets PID to NAK itself, and the next read re-arms it.
 static HCD_PIPE_INTR_ON_BULK_IN: AtomicU16 = AtomicU16::new(0);
+
+// ---------------------------------------------------------------------------
+// Receive DMA (one interrupt-on-bulk IN pipe per port, on D1FIFO)
+// ---------------------------------------------------------------------------
+//
+// Host mode moves every other pipe's data by CPU through D0FIFO; D1FIFO is free, so one pipe
+// (the first interrupt-on-bulk IN pipe opened once a channel is given: an Overbridge audio
+// stream) is bound to it for the life of the pipe. The interrupt handler only records the
+// packet length (DTLN) and holds the pipe at NAK; the reading task then has the DMAC move
+// exactly that many bytes, in 4-byte cycle-steal transfers, into an uncached bounce buffer,
+// and copies them out. DCLRM clears the FIFO buffer once the DMAC has read it.
+
+/// DMARS for each port's D1FIFO (MID 0b10_0001 / 0b10_0011, RID 0b11).
+const D1FIFO_DMARS: [u32; 2] = [0x87, 0x8F];
+/// Longest wait for the DMAC to drain one block (a few µs at most) before giving up.
+const RX_DMA_TIMEOUT_MS: u64 = 2;
+
+/// Per port: the DMA channel that drains the D1FIFO pipe.
+static RX_DMA: [critical_section::Mutex<core::cell::RefCell<Option<crate::dmac::Dma<'static>>>>;
+    2] = [const { critical_section::Mutex::new(core::cell::RefCell::new(None)) }; 2];
+/// Per port: the pipe bound to D1FIFO for DMA receive, or 0.
+static RX_DMA_PIPE: [AtomicU8; 2] = [const { AtomicU8::new(0) }; 2];
+
+/// A 1 KB, cache-line-aligned block buffer.
+#[repr(align(32))]
+struct Bounce([u32; 256]);
+/// Per port: where the DMAC writes a received block. Only ever touched through its uncached
+/// alias ([`crate::uncached`]), so no cache maintenance is needed.
+static mut RX_BOUNCE: [Bounce; 2] = [const { Bounce([0; 256]) }; 2];
+
+/// The port of USB register block `u`.
+fn port_of(u: Usb) -> usize {
+    (u.syscfg0().addr() != usb(0).syscfg0().addr()) as usize
+}
+
+#[cfg(test)]
+fn reset_rx_dma(port: usize) {
+    critical_section::with(|cs| RX_DMA[port].borrow(cs).replace(None));
+    RX_DMA_PIPE[port].store(0, Ordering::Release);
+}
 
 /// Packets an isochronous IN pipe holds for its reader (1 ms at high speed).
 const ISO_IN_SLOTS: usize = 8;
@@ -1010,6 +1050,84 @@ impl<'d> Rusb1HostDriver<'d> {
     }
 
     // --- Non-control endpoints ---
+    /// Give the driver a DMAC channel to drain one receive pipe: the first interrupt-on-bulk
+    /// IN pipe opened afterwards (an Overbridge audio stream) moves its data by DMA through
+    /// D1FIFO instead of byte-wise CPU reads. Without a channel, every pipe uses the CPU.
+    ///
+    /// The channel's completion interrupt must be bound
+    /// ([`crate::dmac::Dma::new`] with its [`crate::dmac::InterruptHandler`]).
+    pub fn enable_rx_dma(&self, mut dma: crate::dmac::Dma<'static>) {
+        let p = self.port as usize;
+        let chcfg = crate::dmac::CHCFG_SAD
+            | crate::dmac::CHCFG_SDS_32BIT
+            | crate::dmac::CHCFG_DDS_32BIT
+            | crate::dmac::CHCFG_AM_BURST
+            | crate::dmac::CHCFG_LVL
+            | crate::dmac::CHCFG_HIEN
+            | (dma.number() as u32 & 7);
+        let src = usb(self.port).d1fifo().addr() as u32;
+        // SAFETY: the source is this port's D1FIFO data register; the channel is owned.
+        unsafe { dma.init_register_mode_rx(chcfg, src, D1FIFO_DMARS[p]) };
+        critical_section::with(|cs| RX_DMA[p].borrow(cs).replace(Some(dma)));
+    }
+
+    /// Close the pipe for `ep_addr` on device `dev_addr` (what dropping its `Rusb1Pipe` does).
+    #[cfg(test)]
+    pub(crate) fn edpt_close(&self, dev_addr: u8, ep_addr: u8) {
+        if let Some(pipe) = self.ep_to_pipe(dev_addr, ep_addr) {
+            release_pipe(self.port, pipe, dev_addr, ep_addr);
+        }
+    }
+
+    /// Move a received block of `n` bytes (the DTLN the interrupt handler recorded) from
+    /// D1FIFO to `buf` by DMA. A length the 4-byte DMA can't move, or past the bounce buffer,
+    /// is cleared from the FIFO and reported as 0 bytes, which the class counts as a framing
+    /// error.
+    async fn dma_drain(&self, buf: &mut [u8], n: usize) -> Result<usize, PipeError> {
+        let p = self.port as usize;
+        let u = usb(self.port);
+        if n == 0 {
+            return Ok(0);
+        }
+        if n % 4 != 0 || n > 1024 {
+            u.d1fifoctr().write_value(FIFOCTR_BCLR);
+            return Ok(0);
+        }
+        let Some(mut dma) = critical_section::with(|cs| RX_DMA[p].borrow(cs).take()) else {
+            return Err(PipeError::Canceled);
+        };
+        // SAFETY: the bounce buffer is this port's, used only here, one block at a time.
+        let bounce = crate::uncached(unsafe { core::ptr::addr_of_mut!(RX_BOUNCE[p]) });
+        let src = u.d1fifo().addr() as u32;
+        // SAFETY: `bounce` is 1 KB and `n` ≤ 1024; nothing else touches it until this returns.
+        unsafe { dma.rearm_rx(src, bounce as u32, n as u32) };
+        let done = embassy_futures::select::select(
+            dma.wait_transfer_complete(),
+            embassy_time::Timer::after_millis(RX_DMA_TIMEOUT_MS),
+        )
+        .await;
+        let result = match done {
+            embassy_futures::select::Either::First(()) => {
+                let len = n.min(buf.len());
+                // SAFETY: the DMAC has finished writing `n` bytes; read them through the alias.
+                unsafe {
+                    core::ptr::copy_nonoverlapping(bounce as *const u8, buf.as_mut_ptr(), len)
+                };
+                Ok(len)
+            }
+            embassy_futures::select::Either::Second(()) => {
+                dma.halt();
+                u.d1fifoctr().write_value(FIFOCTR_BCLR);
+                log::warn!(
+                    "usb{}: receive DMA did not finish; block dropped",
+                    self.port
+                );
+                Err(PipeError::Timeout)
+            }
+        };
+        critical_section::with(|cs| RX_DMA[p].borrow(cs).replace(Some(dma)));
+        result
+    }
 
     /// Allocate a hardware pipe and configure it for `ep_addr` on `dev_addr`.
     ///
@@ -1131,6 +1249,17 @@ impl<'d> Rusb1HostDriver<'d> {
                     && dir_in
                 {
                     HCD_PIPE_INTR_ON_BULK_IN.fetch_or(1 << pipe, Ordering::Release);
+                    // The first such pipe, once a channel is given, is drained by DMA.
+                    let has_dma = RX_DMA[p].borrow(cs).borrow().is_some();
+                    if has_dma && RX_DMA_PIPE[p].load(Ordering::Acquire) == 0 {
+                        u.d1fbcfg().write_value(0); // cycle steal, no TENDE
+                        u.d1fifosel().write_value(
+                            pipe as u16 | (MBW_32 << FIFOSEL_MBW_SHIFT) | FIFOSEL_DCLRM,
+                        );
+                        while u.d1fifosel().read() & FIFOSEL_CURPIPE_MASK != pipe as u16 {}
+                        u.d1fifosel().modify(|r| *r |= FIFOSEL_DREQE);
+                        RX_DMA_PIPE[p].store(pipe as u8, Ordering::Release);
+                    }
                 } else {
                     HCD_PIPE_INTR_ON_BULK_IN.fetch_and(!(1 << pipe), Ordering::Release);
                 }
@@ -1202,6 +1331,11 @@ impl<'d> Rusb1HostDriver<'d> {
         let ctr = pipectr(u, pipe);
         ctr.write_value((ctr.read() & !PIPECTR_PID_MASK) | PIPECTR_PID_BUF);
 
+        if RX_DMA_PIPE[self.port as usize].load(Ordering::Acquire) as usize == pipe {
+            // The handler recorded the length; the data is still in D1FIFO.
+            let n = poll_pipe(pipe).await?;
+            return self.dma_drain(buf, n).await;
+        }
         poll_pipe(pipe).await
     }
 
@@ -1677,6 +1811,10 @@ unsafe fn pipe0_out_bemp(u: Usb) {
 
 /// BRDY on a non-control IN pipe: read data from D0FIFO.
 unsafe fn pipe_brdy_in(u: Usb, n: usize) {
+    if RX_DMA_PIPE[port_of(u)].load(Ordering::Acquire) as usize == n {
+        unsafe { dma_brdy_in(u, n) };
+        return;
+    }
     if HCD_PIPE_ISO_IN.load(Ordering::Acquire) & (1 << n) != 0 {
         unsafe { iso_in_brdy(u, n) };
         return;
@@ -1740,6 +1878,30 @@ unsafe fn pipe_brdy_in(u: Usb, n: usize) {
             HCD_PIPE_WAKERS[n].wake();
         }
         // Otherwise the hardware keeps issuing IN tokens until PID changes from BUF.
+    }
+}
+
+/// BRDY on the receive-DMA pipe `n`: record the packet's length and complete the transfer,
+/// holding the pipe at NAK; the reading task moves the data by DMA (`dma_drain`).
+unsafe fn dma_brdy_in(u: Usb, n: usize) {
+    unsafe {
+        let cs = critical_section::CriticalSection::new();
+        let xfer = &mut *HCD_XFER[n].borrow(cs).get();
+        let dtln = (u.d1fifoctr().read() & FIFOCTR_DTLN_MASK) as usize;
+        if dtln == 0 {
+            u.d1fifoctr().write_value(FIFOCTR_BCLR);
+        }
+        let ctr = pipectr(u, n);
+        ctr.write_value((ctr.read() & !PIPECTR_PID_MASK) | PIPECTR_PID_NAK);
+        if xfer.buf.is_null() {
+            // No read pending (a cancelled one): the packet stays in the FIFO for the next.
+            return;
+        }
+        let len = dtln.min(xfer.remaining as usize);
+        xfer.remaining -= len as u16;
+        xfer.buf = core::ptr::null_mut();
+        HCD_PIPE_DONE.fetch_or(1u16 << n, Ordering::Release);
+        HCD_PIPE_WAKERS[n].wake();
     }
 }
 
@@ -1893,31 +2055,43 @@ impl<T: pipe::Type, D: pipe::Direction> Drop for Rusb1Pipe<T, D> {
         if self.pipe == 0 {
             return;
         }
-        let pipe = self.pipe as usize;
-        let p = self.port as usize;
-        let ep_addr = u8::from(self.ep_info.addr);
-        let epn = (ep_addr & 0x0F) as usize;
-        let dir_in = ep_addr & 0x80 != 0;
-
-        let u = usb(self.port);
-        pipectr(u, pipe).write_value(0);
-        HCD_PIPE_ISO_OUT.fetch_and(!(1 << pipe), Ordering::Release);
-        HCD_PIPE_ISO_IN.fetch_and(!(1 << pipe), Ordering::Release);
-        HCD_PIPE_INTR_ON_BULK_IN.fetch_and(!(1 << pipe), Ordering::Release);
-        u.nrdyenb().modify(|r| *r &= !(1 << pipe));
-        u.brdyenb().modify(|r| *r &= !(1 << pipe));
-        u.pipesel().write_value(pipe as u16);
-        u.pipecfg().write_value(0);
-        u.pipemaxp().write_value(0);
-        u.pipesel().write_value(0);
-        critical_section::with(|cs| {
-            let alloc = unsafe { &mut *HCD_ALLOC[p].borrow(cs).get() };
-            alloc.free_pipe(pipe);
-            if self.dev_addr > 0 && (self.dev_addr as usize) < HCD_MAX_DEV && epn > 0 && epn <= 15 {
-                alloc.ep_to_pipe[self.dev_addr as usize - 1][dir_in as usize][epn - 1] = 0;
-            }
-        });
+        release_pipe(
+            self.port,
+            self.pipe as usize,
+            self.dev_addr,
+            u8::from(self.ep_info.addr),
+        );
     }
+}
+
+/// Stop and free `pipe`, which carries `ep_addr` of device `dev_addr`.
+fn release_pipe(port: u8, pipe: usize, dev_addr: u8, ep_addr: u8) {
+    let p = port as usize;
+    let epn = (ep_addr & 0x0F) as usize;
+    let dir_in = ep_addr & 0x80 != 0;
+
+    let u = usb(port);
+    pipectr(u, pipe).write_value(0);
+    HCD_PIPE_ISO_OUT.fetch_and(!(1 << pipe), Ordering::Release);
+    HCD_PIPE_ISO_IN.fetch_and(!(1 << pipe), Ordering::Release);
+    HCD_PIPE_INTR_ON_BULK_IN.fetch_and(!(1 << pipe), Ordering::Release);
+    if RX_DMA_PIPE[p].load(Ordering::Acquire) as usize == pipe {
+        u.d1fifosel().write_value(0);
+        RX_DMA_PIPE[p].store(0, Ordering::Release);
+    }
+    u.nrdyenb().modify(|r| *r &= !(1 << pipe));
+    u.brdyenb().modify(|r| *r &= !(1 << pipe));
+    u.pipesel().write_value(pipe as u16);
+    u.pipecfg().write_value(0);
+    u.pipemaxp().write_value(0);
+    u.pipesel().write_value(0);
+    critical_section::with(|cs| {
+        let alloc = unsafe { &mut *HCD_ALLOC[p].borrow(cs).get() };
+        alloc.free_pipe(pipe);
+        if dev_addr > 0 && (dev_addr as usize) < HCD_MAX_DEV && epn > 0 && epn <= 15 {
+            alloc.ep_to_pipe[dev_addr as usize - 1][dir_in as usize][epn - 1] = 0;
+        }
+    });
 }
 
 // UsbHostController ───────────────────────────────────────────────────────────
@@ -2190,6 +2364,7 @@ mod tests {
         test::rcw0(u.intsts(1).addr());
         test::poke16(u.syscfg0().addr(), SYSCFG_UPLLE);
         HCD_EVENTS.store(0, Ordering::Relaxed);
+        reset_rx_dma(0);
         let h = unsafe { Rusb1HostDriver::new(0) };
         // The bus state the hardware would report once the controller runs.
         test::poke16(u.syssts0().addr(), lnst);
@@ -3118,5 +3293,178 @@ mod tests {
                 assert_eq!(pid, PIPECTR_PID_BUF, "an ordinary bulk pipe is unchanged");
             }
         }
+    }
+
+    fn dma_host() -> Rusb1HostDriver<'static> {
+        use crate::mmio::test;
+        let h = host_with_bus(0b00, DVSTCTR0_RHST_HS | DVSTCTR0_UACT);
+        critical_section::with(|cs| unsafe { *HCD_ALLOC[0].borrow(cs).get() = HcdAlloc::new() });
+        reset_rx_dma(0);
+        test::poke16(usb(0).devadd(1).addr(), DEVADD_USBSPD_HS);
+        h.enable_rx_dma(unsafe { crate::dmac::Dma::steal::<crate::peripherals::DMA_CH1>() });
+        h
+    }
+
+    #[test]
+    fn enabling_rx_dma_routes_usb0_d1fifo_to_the_channel() {
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let _h = dma_host();
+        let chcfg = crate::pac::DMAC.ch(1).chcfg().read();
+        let want = crate::dmac::CHCFG_SAD
+            | crate::dmac::CHCFG_SDS_32BIT
+            | crate::dmac::CHCFG_DDS_32BIT
+            | crate::dmac::CHCFG_AM_BURST
+            | crate::dmac::CHCFG_LVL
+            | crate::dmac::CHCFG_HIEN
+            | 1;
+        assert_eq!(chcfg, want);
+        assert_eq!(
+            crate::pac::DMAC.dmars(0).read() >> 16,
+            0x87,
+            "channel 1 is DMARS0's odd half"
+        );
+        assert_eq!(
+            crate::pac::DMAC.ch(1).n0sa().read(),
+            usb(0).d1fifo().addr() as u32
+        );
+    }
+
+    #[test]
+    fn an_interrupt_on_bulk_in_pipe_takes_d1fifo_dma() {
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = dma_host();
+        h.edpt_open(1, 0x83, EndpointType::Interrupt, 368, 1)
+            .unwrap();
+        let pipe = h.ep_to_pipe(1, 0x83).unwrap() as u16;
+        let u = usb(0);
+        assert_eq!(
+            u.d1fifosel().read(),
+            pipe | (MBW_32 << FIFOSEL_MBW_SHIFT) | FIFOSEL_DCLRM | FIFOSEL_DREQE
+        );
+        assert_eq!(u.d1fbcfg().read(), 0, "cycle steal, no TENDE");
+    }
+
+    #[test]
+    fn only_one_pipe_takes_the_dma() {
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = dma_host();
+        h.edpt_open(1, 0x83, EndpointType::Interrupt, 368, 1)
+            .unwrap();
+        h.edpt_open(2, 0x83, EndpointType::Interrupt, 368, 1)
+            .unwrap();
+        h.edpt_open(1, 0x81, EndpointType::Bulk, 512, 0).unwrap();
+        let first = h.ep_to_pipe(1, 0x83).unwrap() as u16;
+        assert_eq!(usb(0).d1fifosel().read() & FIFOSEL_CURPIPE_MASK, first);
+    }
+
+    #[test]
+    fn closing_the_dma_pipe_releases_d1fifo() {
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = dma_host();
+        h.edpt_open(1, 0x83, EndpointType::Interrupt, 368, 1)
+            .unwrap();
+        h.edpt_close(1, 0x83);
+        assert_eq!(usb(0).d1fifosel().read(), 0);
+        h.edpt_open(1, 0x83, EndpointType::Interrupt, 368, 1)
+            .unwrap();
+        assert_ne!(
+            usb(0).d1fifosel().read() & FIFOSEL_DREQE,
+            0,
+            "the next pipe can claim it"
+        );
+    }
+
+    /// BRDY on the DMA pipe reads nothing: it records DTLN, holds the pipe at NAK and completes.
+    #[test]
+    fn brdy_on_the_dma_pipe_records_the_length_without_reading() {
+        use crate::mmio::test;
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = dma_host();
+        h.edpt_open(1, 0x83, EndpointType::Interrupt, 368, 1)
+            .unwrap();
+        let pipe = h.ep_to_pipe(1, 0x83).unwrap();
+        let u = usb(0);
+        let mut buf = [0u8; 368];
+        pipectr(u, pipe).write_value(PIPECTR_PID_BUF);
+        critical_section::with(|cs| unsafe {
+            let x = &mut *HCD_XFER[pipe].borrow(cs).get();
+            x.buf = buf.as_mut_ptr();
+            x.length = 368;
+            x.remaining = 368;
+        });
+        test::poke16(u.d1fifoctr().addr(), FIFOCTR_FRDY | 368);
+        let mark = test::log().len();
+        unsafe { pipe_brdy_in(u, pipe) };
+        let fifos = [u.d1fifo().addr(), u.d0fifo().addr()];
+        assert!(
+            !test::log()[mark..]
+                .iter()
+                .any(|a| fifos.iter().any(|f| (*f..*f + 4).contains(&a.addr))),
+            "the handler must not touch the FIFO data port"
+        );
+        let remaining =
+            critical_section::with(|cs| unsafe { (*HCD_XFER[pipe].borrow(cs).get()).remaining });
+        assert_eq!(remaining, 0);
+        assert_ne!(HCD_PIPE_DONE.load(Ordering::Acquire) & (1 << pipe), 0);
+        assert_eq!(pipectr(u, pipe).read() & PIPECTR_PID_MASK, PIPECTR_PID_NAK);
+    }
+
+    /// The drain DMAs DTLN bytes into the bounce buffer, then copies them out.
+    #[test]
+    fn the_drain_copies_what_the_dma_moved() {
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = dma_host();
+        h.edpt_open(1, 0x83, EndpointType::Interrupt, 368, 1)
+            .unwrap();
+        // The DMA "ran": the bounce buffer holds the block, and CHSTAT.TC is set.
+        unsafe {
+            let b = &mut *core::ptr::addr_of_mut!(RX_BOUNCE[0]);
+            for (i, w) in b.0.iter_mut().enumerate() {
+                *w = i as u32;
+            }
+        }
+        crate::mmio::test::poke32(
+            crate::pac::DMAC.ch(1).chstat().addr(),
+            crate::dmac::CHSTAT_TC,
+        );
+        let mut out = [0u8; 368];
+        let n = drive(h.dma_drain(&mut out, 368), 10).unwrap().unwrap();
+        assert_eq!(n, 368);
+        assert_eq!(&out[..8], &[0, 0, 0, 0, 1, 0, 0, 0]);
+        assert_eq!(crate::pac::DMAC.ch(1).n0tb().read(), 368);
+    }
+
+    #[test]
+    fn a_misaligned_length_is_dropped_not_dmaed() {
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = dma_host();
+        h.edpt_open(1, 0x83, EndpointType::Interrupt, 368, 1)
+            .unwrap();
+        let mut out = [0u8; 368];
+        assert_eq!(drive(h.dma_drain(&mut out, 7), 10).unwrap(), Ok(0));
+        assert_ne!(usb(0).d1fifoctr().read() & FIFOCTR_BCLR, 0);
+    }
+
+    #[test]
+    fn a_zero_length_packet_needs_no_dma() {
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = dma_host();
+        h.edpt_open(1, 0x83, EndpointType::Interrupt, 368, 1)
+            .unwrap();
+        let mut out = [0u8; 368];
+        assert_eq!(drive(h.dma_drain(&mut out, 0), 10).unwrap(), Ok(0));
+    }
+
+    #[test]
+    fn a_dma_that_never_ends_times_out() {
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = dma_host();
+        h.edpt_open(1, 0x83, EndpointType::Interrupt, 368, 1)
+            .unwrap();
+        let mut out = [0u8; 368];
+        assert_eq!(
+            drive(h.dma_drain(&mut out, 368), 50).unwrap(),
+            Err(PipeError::Timeout)
+        );
     }
 }
