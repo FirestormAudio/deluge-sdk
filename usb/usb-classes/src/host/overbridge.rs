@@ -182,8 +182,8 @@ pub struct OverbridgeHost<'d, A: UsbHostAllocator<'d>> {
 }
 
 impl<'d, A: UsbHostAllocator<'d>> OverbridgeHost<'d, A> {
-    /// Match, select alternate setting 3 on both audio interfaces, open the stream pipes, and
-    /// prime the OUT stream.
+    /// Match, select alternate setting 3 on both audio interfaces, and open the stream pipes.
+    /// [`start`](Self::start) primes the OUT stream.
     pub async fn try_register(
         alloc: &A,
         addr: u8,
@@ -222,7 +222,7 @@ impl<'d, A: UsbHostAllocator<'d>> OverbridgeHost<'d, A> {
             m.ch_to,
             m.format
         );
-        let mut host = Self {
+        Ok(Self {
             control,
             rx,
             tx,
@@ -235,9 +235,7 @@ impl<'d, A: UsbHostAllocator<'d>> OverbridgeHost<'d, A> {
             tx_block: [0; MAX_BLOCK],
             frames: [0; FRAMES_PER_BLOCK * MAX_CHANNELS],
             _p: core::marker::PhantomData,
-        };
-        host.prime().await?;
-        Ok(host)
+        })
     }
 
     /// The matched device.
@@ -287,6 +285,13 @@ impl<'d, A: UsbHostAllocator<'d>> OverbridgeHost<'d, A> {
             .map_err(OverbridgeError::Transport)?;
         self.tx_counter = self.tx_counter.wrapping_add(FRAMES_PER_BLOCK as u16);
         Ok(())
+    }
+
+    /// Start the stream: send the silent blocks that prime the OUT direction, so the device
+    /// sees host traffic at once. Run it from the stream task, not where registration happens:
+    /// a device that holds off OUT until it streams IN makes it wait.
+    pub async fn start(&mut self) -> Result<(), OverbridgeError> {
+        self.prime().await
     }
 
     async fn prime(&mut self) -> Result<(), OverbridgeError> {
@@ -433,6 +438,10 @@ mod tests {
             0x0B2C,
             &cfg(&DIGITAKT_CONFIG),
         ))
+        .map(|mut h| {
+            block_on(h.start()).unwrap();
+            h
+        })
         .unwrap()
     }
 
@@ -501,9 +510,23 @@ mod tests {
     }
 
     #[test]
-    fn setup_selects_alt_3_on_both_interfaces_then_opens_pipes_and_primes_out() {
+    fn setup_selects_alt_3_on_both_interfaces_then_opens_pipes_and_start_primes_out() {
         let state = MockState::leak();
-        let _h = digitakt(state);
+        let alloc = MockAlloc::new(state);
+        let mut h = block_on(OverbridgeHost::try_register(
+            &alloc,
+            1,
+            None,
+            0x1935,
+            0x0B2C,
+            &cfg(&DIGITAKT_CONFIG),
+        ))
+        .unwrap();
+        assert!(
+            state.log.borrow().sent.is_empty(),
+            "registering sends nothing, so the supervisor never waits on the device"
+        );
+        block_on(h.start()).unwrap();
         let setups = state.setups.borrow();
         assert_eq!(
             &setups[..],

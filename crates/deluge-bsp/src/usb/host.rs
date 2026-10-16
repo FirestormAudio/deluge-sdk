@@ -369,7 +369,7 @@ mod runtime {
     /// Bind an Elektron device's Overbridge interfaces and spawn its stream task. `false` when
     /// it doesn't match (an Elektron box in Audio/MIDI mode) or setup fails twice.
     #[cfg(feature = "usb-host-overbridge")]
-    fn bind_overbridge(
+    async fn bind_overbridge(
         handle: &HostAlloc,
         spawner: Spawner,
         dev_info: &embassy_usb_host::handler::EnumerationInfo,
@@ -378,21 +378,22 @@ mod runtime {
         use usb_classes::host::overbridge::{OverbridgeError, OverbridgeHost};
         let d = &dev_info.device_desc;
         let register = || {
-            embassy_futures::block_on(OverbridgeHost::try_register(
+            OverbridgeHost::try_register(
                 handle,
                 dev_info.device_address,
                 dev_info.split(),
                 d.vendor_id,
                 d.product_id,
                 cfg,
-            ))
+            )
         };
-        // Spec §5.5: a failed SET_INTERFACE is retried once after 100 ms.
-        let host = match register() {
+        // Spec §5.5: a failed SET_INTERFACE is retried once after 100 ms. Awaited, not
+        // `block_on`, so the rest of the firmware keeps running meanwhile.
+        let host = match register().await {
             Err(OverbridgeError::SetupFailed(e)) => {
                 warn!("usb_host: overbridge setup failed ({:?}); retrying", e);
-                embassy_futures::block_on(embassy_time::Timer::after_millis(100));
-                register()
+                embassy_time::Timer::after_millis(100).await;
+                register().await
             }
             r => r,
         };
@@ -435,10 +436,18 @@ mod runtime {
     async fn overbridge_task(
         mut host: usb_classes::host::overbridge::OverbridgeHost<'static, HostAlloc>,
     ) {
-        use embassy_time::{Duration, Instant};
+        use embassy_time::{Duration, Instant, Timer};
         const WINDOW: Duration = Duration::from_secs(10);
         let mut failures: heapless::Deque<Instant, 3> = heapless::Deque::new();
+        use usb_classes::host::overbridge::OverbridgeError;
         let stems = super::overbridge();
+        // Prime the OUT stream here, not in the supervisor: a device that holds off OUT until
+        // it streams IN would otherwise stall enumeration.
+        if let Err(e) = host.start().await {
+            warn!("usb_host: overbridge stream did not start: {:?}", e);
+            stems.end();
+            return;
+        }
         loop {
             let Err(e) = host.pump_once(stems, Instant::now().as_micros()).await else {
                 continue;
@@ -459,7 +468,18 @@ mod runtime {
                 e,
                 failures.len()
             );
-            if failures.len() >= 3 || host.restart().await.is_err() {
+            if failures.len() >= 3 {
+                break;
+            }
+            // Spec §5.5: re-run setup; a failed SET_INTERFACE is retried once after 100 ms.
+            let restarted = match host.restart().await {
+                Err(OverbridgeError::SetupFailed(_)) => {
+                    Timer::after_millis(100).await;
+                    host.restart().await
+                }
+                r => r,
+            };
+            if restarted.is_err() {
                 break;
             }
         }
@@ -657,7 +677,7 @@ mod runtime {
                         #[cfg(feature = "usb-host-overbridge")]
                         let audio =
                             (super::is_overbridge_candidate(dev_info.device_desc.vendor_id)
-                                && bind_overbridge(&handle, spawner, &dev_info, &cfg))
+                                && bind_overbridge(&handle, spawner, &dev_info, &cfg).await)
                                 || bind_uac(&handle, spawner, &dev_info, &cfg);
                         #[cfg(not(feature = "usb-host-overbridge"))]
                         let audio = bind_uac(&handle, spawner, &dev_info, &cfg);
