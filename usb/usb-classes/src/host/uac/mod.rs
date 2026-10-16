@@ -495,10 +495,13 @@ impl<'d, A: UsbHostAllocator<'d>> Uac<'d, A> {
         let cap = (self.max_packet as usize).min(buf.len());
         let n = match self.iso_in.request_in(&mut buf[..cap]).await {
             Ok(n) => n,
-            Err(PipeError::BadResponse) => {
+            // BadResponse is the HAL's detach; Canceled its stopped port (no transfer
+            // completes until the device is reset). Either ends the stream: absorbing
+            // them spins this task and starves the reset that would restart the port.
+            Err(e @ (PipeError::BadResponse | PipeError::Canceled)) => {
                 // Detach (see doc comment above): propagate so the caller's
                 // loop exits and drops the pipes.
-                return Err(PipeError::BadResponse.into());
+                return Err(e.into());
             }
             Err(e) => {
                 // Lost packet: ring absorbs it. Do not tear down the stream.
@@ -591,10 +594,13 @@ impl<'d, A: UsbHostAllocator<'d>> Uac<'d, A> {
         let cap = (self.max_packet as usize).min(buf.len());
         let n = match self.iso_in.request_in(&mut buf[..cap]).await {
             Ok(n) => n,
-            Err(PipeError::BadResponse) => {
+            // BadResponse is the HAL's detach; Canceled its stopped port (no transfer
+            // completes until the device is reset). Either ends the stream: absorbing
+            // them spins this task and starves the reset that would restart the port.
+            Err(e @ (PipeError::BadResponse | PipeError::Canceled)) => {
                 // Detach: propagate so the capture task exits and drops the
                 // pipes (see `pump_once`'s doc comment).
-                return Err(PipeError::BadResponse.into());
+                return Err(e.into());
             }
             Err(e) => {
                 // Lost packet: the shared ring absorbs it; keep streaming.
@@ -1256,6 +1262,27 @@ mod tests {
 
         let err = block_on(host.pump_once()).expect_err("detach must be propagated, not absorbed");
         assert!(matches!(err, UacError::Transfer(PipeError::BadResponse)));
+    }
+
+    /// `Canceled` is the HAL's "port stopped" (after an EOF error or a detach, until the
+    /// device is reset again): every transfer fails at once, so absorbing it spun the pump
+    /// task forever and starved the reset that would have restarted the port.
+    #[test]
+    fn pump_propagates_a_stopped_port() {
+        let state = MockState::leak();
+        state
+            .control_reads
+            .borrow_mut()
+            .push(heapless::Vec::from_slice(&44_100u32.to_le_bytes()).unwrap())
+            .unwrap();
+        state.script.borrow_mut().read_err = Some(PipeError::Canceled);
+        let alloc = MockAlloc::new(state);
+        let raw = uac2_mic_cfg(3, 1);
+        let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
+        let mut host = block_on(Uac::try_register(&alloc, 1, None, &cfg, 44_100)).unwrap();
+
+        let err = block_on(host.pump_once()).expect_err("a stopped port ends the stream");
+        assert!(matches!(err, UacError::Transfer(PipeError::Canceled)));
     }
 
     #[test]
