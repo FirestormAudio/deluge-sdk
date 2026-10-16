@@ -563,6 +563,10 @@ fn repoint_shared(u: Usb, pipe: usize, user: &OutUser) {
     u.pipesel().write_value(0);
     ctr.write_value(PIPECTR_ACLRM);
     ctr.write_value(0);
+    // As edpt_open: no status the previous user's transfer left may reach the next one.
+    u.brdysts().write_value(!(1u16 << pipe));
+    u.nrdysts().write_value(!(1u16 << pipe));
+    u.bempsts().write_value(!(1u16 << pipe));
     ctr.write_value(if user.toggle {
         PIPECTR_SQSET
     } else {
@@ -3955,25 +3959,84 @@ mod tests {
                 .any(|&(a, v)| a == ctr && v as u16 & PIPECTR_SQSET != 0),
             "DATA1 restored"
         );
-        repoint_shared(
-            u,
-            5,
-            &OutUser {
-                dev_addr: 4,
-                epn: 1,
-                mps: 512,
-                toggle: false,
-                generation: 1,
-            },
+    }
+
+    /// Final review M3: sends from two users through `xfer_out`, end to end. Each send that
+    /// finds the pipe configured for the other user re-points it (halting it before the
+    /// configuration writes, clearing the buffer and the pipe's status bits before restoring
+    /// the toggle); a repeat send by the owner does not.
+    #[test]
+    fn sends_from_two_users_repoint_the_pipe_and_keep_each_toggle() {
+        use crate::mmio::test;
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = host_with_bus(0b00, DVSTCTR0_RHST_HS | DVSTCTR0_UACT);
+        critical_section::with(|cs| unsafe { *HCD_ALLOC[0].borrow(cs).get() = HcdAlloc::new() });
+        h.edpt_open(1, 0x01, EndpointType::Bulk, 64, 0).unwrap(); // A, the pipe's owner
+        h.edpt_open(2, 0x02, EndpointType::Bulk, 512, 0).unwrap(); // B
+        let pipe = the_shared_pipe();
+        let u = usb(0);
+        let ctr = pipectr(u, pipe).addr();
+        test::poke16(u.d0fifoctr().addr(), FIFOCTR_FRDY);
+
+        // One send, completed as the interrupt handler would with SQMON = `data1` after it;
+        // returns the register writes it made.
+        let send = |dev: u8, ep: u8, data1: bool| {
+            use core::future::Future;
+            let mark = test::writes().len();
+            let data = [1u8; 4];
+            let mut f = core::pin::pin!(h.xfer_out(dev, ep, &data));
+            let mut cx = core::task::Context::from_waker(core::task::Waker::noop());
+            assert!(f.as_mut().poll(&mut cx).is_pending());
+            let sqmon = if data1 { PIPECTR_SQMON } else { 0 };
+            test::poke16(ctr, PIPECTR_PID_BUF | sqmon);
+            HCD_PIPE_DONE.fetch_or(1 << pipe, Ordering::Release);
+            assert_eq!(drive(f, 10), Some(Ok(())));
+            test::writes().split_off(mark)
+        };
+        let first = |w: &[(usize, u32)], f: &dyn Fn(usize, u16) -> bool| {
+            w.iter().position(|&(a, v)| f(a, v as u16))
+        };
+        // The re-point a send made: checks its order, and returns the toggle bit it restored
+        // and the PIPEMAXP it wrote.
+        let repoint = |w: &[(usize, u32)]| {
+            let halt = |a, v| a == ctr && v & PIPECTR_PID_MASK == PIPECTR_PID_NAK;
+            let nak = first(w, &halt).expect("halted");
+            let cfg = first(w, &|a, _| a == u.pipecfg().addr()).expect("PIPECFG written");
+            let maxp = first(w, &|a, _| a == u.pipemaxp().addr()).expect("PIPEMAXP written");
+            assert!(nak < cfg && nak < maxp, "NAK before the configuration");
+            let aclrm = first(w, &|a, v| a == ctr && v & PIPECTR_ACLRM != 0).expect("ACLRM");
+            let sq = PIPECTR_SQSET | PIPECTR_SQCLR;
+            let toggle = first(w, &|a, v| a == ctr && v & sq != 0).expect("toggle restored");
+            assert!(aclrm < toggle, "ACLRM before SQSET/SQCLR");
+            for status in [u.brdysts().addr(), u.nrdysts().addr(), u.bempsts().addr()] {
+                let clear = w[aclrm..]
+                    .iter()
+                    .any(|&(a, v)| a == status && v as u16 == !(1u16 << pipe));
+                assert!(clear, "the pipe's status bits cleared after ACLRM");
+            }
+            (w[toggle].1 as u16 & sq, w[maxp].1 as u16)
+        };
+        let repointed = |w: &[(usize, u32)]| {
+            w.iter()
+                .any(|&(a, v)| a == ctr && v as u16 & PIPECTR_ACLRM != 0)
+        };
+
+        let w = send(1, 0x01, true);
+        assert!(!repointed(&w), "A owns the pipe");
+        let w = send(2, 0x02, false);
+        assert_eq!(
+            repoint(&w),
+            (PIPECTR_SQCLR, (2 << PIPEMAXP_DEVSEL_SHIFT) | 512),
+            "B from DATA0"
         );
-        let writes = crate::mmio::test::writes();
-        assert!(
-            writes
-                .iter()
-                .rev()
-                .any(|&(a, v)| a == ctr && v as u16 & PIPECTR_SQCLR != 0),
-            "DATA0 restored"
+        let w = send(1, 0x01, false);
+        assert_eq!(
+            repoint(&w),
+            (PIPECTR_SQSET, (1 << PIPEMAXP_DEVSEL_SHIFT) | 64),
+            "A back at its saved DATA1"
         );
+        let w = send(1, 0x01, false);
+        assert!(!repointed(&w), "a repeat send does not re-point");
     }
 
     #[test]
