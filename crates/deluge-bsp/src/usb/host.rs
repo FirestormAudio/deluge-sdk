@@ -186,11 +186,68 @@ pub fn overbridge() -> &'static OverbridgeStems {
     &OVERBRIDGE
 }
 
-/// Whether a device is offered to the Overbridge class before UAC: Elektron's VID. An
-/// Elektron box in its Audio/MIDI USB mode doesn't match there and falls through to UAC.
-#[cfg(feature = "usb-host-overbridge")]
-pub fn is_overbridge_candidate(vid: u16) -> bool {
-    vid == usb_classes::overbridge::proto::VID_ELEKTRON
+/// Which audio class driver binds a root-port device (spec §5.6). Change it any time; with a
+/// device attached the supervisor re-binds it.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HostAudioMode {
+    /// Overbridge when the device matches it, UAC otherwise.
+    #[default]
+    Auto = 0,
+    /// Only UAC.
+    Uac = 1,
+    /// Only Overbridge.
+    Overbridge = 2,
+    /// No audio driver; MIDI still binds.
+    Off = 3,
+}
+
+/// An audio class driver the supervisor can bind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AudioDriver {
+    Uac,
+    Overbridge,
+}
+
+static HOST_AUDIO_MODE: core::sync::atomic::AtomicU8 =
+    core::sync::atomic::AtomicU8::new(HostAudioMode::Auto as u8);
+
+/// Set the host audio mode. With a device attached, it is re-bound under the new mode.
+pub fn set_host_audio_mode(mode: HostAudioMode) {
+    if HOST_AUDIO_MODE.swap(mode as u8, core::sync::atomic::Ordering::AcqRel) != mode as u8 {
+        #[cfg(target_os = "none")]
+        runtime::MODE_CHANGED.signal(());
+    }
+}
+
+/// The current host audio mode.
+pub fn host_audio_mode() -> HostAudioMode {
+    match HOST_AUDIO_MODE.load(core::sync::atomic::Ordering::Acquire) {
+        1 => HostAudioMode::Uac,
+        2 => HostAudioMode::Overbridge,
+        3 => HostAudioMode::Off,
+        _ => HostAudioMode::Auto,
+    }
+}
+
+/// The audio drivers to try for a device with vendor ID `vid` under `mode`, in order, before
+/// the build's features filter them ([`compiled`]).
+pub fn audio_drivers(mode: HostAudioMode, vid: u16) -> &'static [AudioDriver] {
+    const ELEKTRON: u16 = 0x1935;
+    match mode {
+        HostAudioMode::Auto if vid == ELEKTRON => &[AudioDriver::Overbridge, AudioDriver::Uac],
+        HostAudioMode::Auto | HostAudioMode::Uac => &[AudioDriver::Uac],
+        HostAudioMode::Overbridge => &[AudioDriver::Overbridge],
+        HostAudioMode::Off => &[],
+    }
+}
+
+/// Whether this build includes `d`.
+pub fn compiled(d: AudioDriver) -> bool {
+    match d {
+        AudioDriver::Uac => cfg!(feature = "usb-host-uac"),
+        AudioDriver::Overbridge => cfg!(feature = "usb-host-overbridge"),
+    }
 }
 
 #[cfg(target_os = "none")]
@@ -209,6 +266,23 @@ mod runtime {
 
     use super::{DeviceId, MAX_MIDI_DEVICES, MIDI_RX, MIDI_TX};
     use usb_classes::host::midi::MidiHost;
+
+    /// Raised by [`super::set_host_audio_mode`]; the supervisor re-binds an attached device.
+    pub(super) static MODE_CHANGED: embassy_sync::signal::Signal<
+        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
+        (),
+    > = embassy_sync::signal::Signal::new();
+
+    /// Log, once, that the host audio mode names a driver this build leaves out.
+    fn warn_once_missing(mode: super::HostAudioMode) {
+        static WARNED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+        if !WARNED.swap(true, Ordering::Relaxed) {
+            warn!(
+                "usb_host: host audio mode {:?} needs a driver this build doesn't include",
+                mode
+            );
+        }
+    }
 
     /// The allocator the class drivers are actually parameterised by.
     ///
@@ -678,17 +752,30 @@ mod runtime {
                 match ConfigurationDescriptor::try_from_slice(&config_buf) {
                     Ok(cfg) => {
                         let midi = bind_midi(&handle, spawner, &dev_info, &cfg);
-                        // Overbridge first for Elektron's VID; UAC otherwise, or if it doesn't match.
-                        #[cfg(feature = "usb-host-overbridge")]
-                        let overbridge =
-                            super::is_overbridge_candidate(dev_info.device_desc.vendor_id)
-                                && bind_overbridge(&handle, spawner, &dev_info, &cfg).await;
-                        #[cfg(not(feature = "usb-host-overbridge"))]
-                        let overbridge = false;
-                        #[cfg(feature = "usb-host-uac")]
-                        let audio = overbridge || bind_uac(&handle, spawner, &dev_info, &cfg);
-                        #[cfg(not(feature = "usb-host-uac"))]
-                        let audio = overbridge;
+                        let mode = super::host_audio_mode();
+                        let vid = dev_info.device_desc.vendor_id;
+                        let mut audio = false;
+                        for d in super::audio_drivers(mode, vid) {
+                            if !super::compiled(*d) {
+                                warn_once_missing(mode);
+                                continue;
+                            }
+                            audio = match d {
+                                #[cfg(feature = "usb-host-overbridge")]
+                                super::AudioDriver::Overbridge => {
+                                    bind_overbridge(&handle, spawner, &dev_info, &cfg).await
+                                }
+                                #[cfg(feature = "usb-host-uac")]
+                                super::AudioDriver::Uac => {
+                                    bind_uac(&handle, spawner, &dev_info, &cfg)
+                                }
+                                #[allow(unreachable_patterns)]
+                                _ => false,
+                            };
+                            if audio {
+                                break;
+                            }
+                        }
                         midi || audio
                     }
                     Err(e) => {
@@ -809,13 +896,6 @@ mod tests {
 
     #[cfg(feature = "usb-host-overbridge")]
     #[test]
-    fn only_elektron_devices_are_offered_to_overbridge() {
-        assert!(is_overbridge_candidate(0x1935));
-        assert!(!is_overbridge_candidate(0x1234));
-    }
-
-    #[cfg(feature = "usb-host-overbridge")]
-    #[test]
     fn the_overbridge_handle_holds_a_digitakt_ii() {
         use usb_classes::overbridge::stems::MIN_RING_FRAMES;
         assert!(
@@ -824,5 +904,53 @@ mod tests {
         );
         assert!(OVERBRIDGE_TX_SAMPLES / 8 >= 512);
         assert!(OVERBRIDGE_RX_SAMPLES / 42 >= MIN_RING_FRAMES);
+    }
+
+    #[test]
+    fn auto_offers_elektron_devices_to_overbridge_first() {
+        assert_eq!(
+            audio_drivers(HostAudioMode::Auto, 0x1935),
+            &[AudioDriver::Overbridge, AudioDriver::Uac]
+        );
+        assert_eq!(
+            audio_drivers(HostAudioMode::Auto, 0x1234),
+            &[AudioDriver::Uac]
+        );
+    }
+
+    #[test]
+    fn a_forced_mode_never_tries_the_other_driver() {
+        assert_eq!(
+            audio_drivers(HostAudioMode::Uac, 0x1935),
+            &[AudioDriver::Uac]
+        );
+        assert_eq!(
+            audio_drivers(HostAudioMode::Overbridge, 0x1234),
+            &[AudioDriver::Overbridge]
+        );
+        assert!(audio_drivers(HostAudioMode::Off, 0x1935).is_empty());
+    }
+
+    #[test]
+    fn a_mode_the_build_lacks_binds_no_audio() {
+        let usable: std::vec::Vec<_> = audio_drivers(HostAudioMode::Overbridge, 0x1935)
+            .iter()
+            .filter(|d| compiled(**d))
+            .collect();
+        assert_eq!(usable.is_empty(), !cfg!(feature = "usb-host-overbridge"));
+    }
+
+    #[test]
+    fn the_mode_round_trips_and_defaults_to_auto() {
+        assert_eq!(HostAudioMode::default(), HostAudioMode::Auto);
+        for m in [
+            HostAudioMode::Off,
+            HostAudioMode::Uac,
+            HostAudioMode::Overbridge,
+            HostAudioMode::Auto,
+        ] {
+            set_host_audio_mode(m);
+            assert_eq!(host_audio_mode(), m);
+        }
     }
 }
