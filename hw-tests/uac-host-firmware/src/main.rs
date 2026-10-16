@@ -1,8 +1,9 @@
 //! Deluge UAC host **validation** firmware.
 //!
 //! Brings USB0 up in host mode, runs `usb_host_supervisor` (which auto-binds the
-//! `usb_classes::host::uac` driver on connect), and loops captured audio back
-//! to playback, exercising the host UAC capture + playback stack on hardware.
+//! `usb_classes::host::uac` driver on connect), and plays captured audio on the
+//! Deluge's codec through the SCUX (its 2SRC converting the device's 48 kHz to
+//! the codec's 44.1 kHz), exercising the host UAC capture stack on hardware.
 
 #![no_std]
 #![no_main]
@@ -16,8 +17,8 @@ use core::panic::PanicInfo;
 use embassy_executor::{Executor, Spawner};
 use log::{error, info};
 
-use rza1_alloc as allocator;
 use deluge_bsp::{cv_gate, uart as bsp_uart};
+use rza1_alloc as allocator;
 use rza1l_hal::usb::init_host_mode;
 
 rza1l_hal::bind_interrupts!(struct UsbIrqs {
@@ -65,6 +66,16 @@ pub extern "C" fn main() -> ! {
     deluge_bsp::bus::init(board.shared_spi, board.dma.oled);
     unsafe { cv_gate::init() };
 
+    // The codec through the SCUX, its 2SRC converting the device's 48 kHz to 44.1 kHz; the UAC
+    // host streams at 48 kHz so its resampler only trims clock drift.
+    deluge_bsp::audio::init_with_scux_src(
+        board.audio_ssi,
+        board.dma.ssi_rx,
+        board.dma.scux_ffd0,
+        48_000,
+    );
+    deluge_bsp::usb::host::set_uac_sample_rate(48_000);
+
     let (_port, host_driver) = init_host_mode(board.usb0, UsbIrqs);
     info!("USB: host driver ready (USB0 host mode)");
 
@@ -80,7 +91,7 @@ pub extern "C" fn main() -> ! {
         spawner.spawn(tasks::blink::blink_task().unwrap());
         spawner.spawn(tasks::pic::pic_task().unwrap());
         spawner.spawn(tasks::oled::oled_task().unwrap());
-        spawner.spawn(tasks::loopback::loopback_task().unwrap());
+        spawner.spawn(tasks::speaker::speaker_task().unwrap());
         // The supervisor enumerates + binds the UAC driver, which spawns the
         // capture/playback pump. It needs the spawner to spawn that child task.
         spawner.spawn(

@@ -56,6 +56,26 @@ pub fn init_with_scux(
     rx: Peri<'static, SsiRxDma>,
     ffd0: Peri<'static, ScuxFfd0Dma>,
 ) {
+    bring_up_scux(|| scux_dvu_path::init(ssi, rx, ffd0));
+}
+
+/// As [`init_with_scux`], with the SCUX's 2SRC converting `engine_hz` to the codec's 44.1 kHz:
+/// samples written into the DVU path's ring at `engine_hz` (48 kHz from a USB audio device,
+/// say) play at the codec rate, converted in hardware.
+///
+/// **Call after:** `rza1l_hal::time_driver::init`, before any audio task starts.
+pub fn init_with_scux_src(
+    ssi: Peri<'static, AudioSsi>,
+    rx: Peri<'static, SsiRxDma>,
+    ffd0: Peri<'static, ScuxFfd0Dma>,
+    engine_hz: u32,
+) {
+    bring_up_scux(|| scux_dvu_path::init_with_src(ssi, rx, ffd0, engine_hz));
+}
+
+/// Pin-mux SSI0, hold the codec off, start the SCUX path `path`, wait the codec's power-on
+/// delay, then power the codec.
+fn bring_up_scux(path: impl FnOnce()) {
     log::debug!("audio: pin-mux SSI0 (P7.11, P6.8-11)");
     // SAFETY: SSI0's pins and the codec-power GPIO, which only this module drives.
     unsafe {
@@ -75,8 +95,8 @@ pub fn init_with_scux(
         gpio::write(CODEC_PORT, CODEC_PIN, false);
     }
 
-    // ── Initialise SCUX DVU path: SSI RX DMA + SCUX → SSIF0 TX ──────────────
-    scux_dvu_path::init(ssi, rx, ffd0);
+    // ── SCUX path: SSI RX DMA + SCUX → SSIF0 TX ─────────────────────────────
+    path();
 
     // ── 5 ms clock-stable delay before enabling the codec ────────────────────
     // OSTM0 must already be running in free-running mode.

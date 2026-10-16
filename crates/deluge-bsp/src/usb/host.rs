@@ -122,6 +122,23 @@ pub const fn midi_handle(id: DeviceId) -> MidiHandle {
     MidiHandle { id }
 }
 
+/// The sample rate the UAC host asks hosted audio devices for: the codec's 44.1 kHz unless
+/// [`set_uac_sample_rate`] chose another. A device that cannot take it runs at its own rate
+/// and the class driver's resampler converts.
+static UAC_SAMPLE_RATE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(44_100);
+
+/// Choose the rate the UAC host streams at, for devices bound from now on. Set it to the
+/// device's rate (48 kHz, say) when the SCUX converts to the codec's rate downstream, so the
+/// class driver only trims clock drift.
+pub fn set_uac_sample_rate(hz: u32) {
+    UAC_SAMPLE_RATE.store(hz, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// The rate the UAC host streams at (see [`set_uac_sample_rate`]).
+pub fn uac_sample_rate() -> u32 {
+    UAC_SAMPLE_RATE.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 /// Whether the configuration descriptor `config` (the whole chain, as read from the device)
 /// declares a hub interface (class 0x09).
 pub fn has_hub_interface(config: &[u8]) -> bool {
@@ -250,7 +267,7 @@ mod runtime {
             addr,
             dev_info.split(),
             cfg,
-            crate::audio_block::SAMPLE_RATE_HZ,
+            super::uac_sample_rate(),
         )) {
             Ok(host) => {
                 info!(
@@ -550,6 +567,14 @@ mod tests {
         let total = v.len() as u16;
         v[2..4].copy_from_slice(&total.to_le_bytes());
         v
+    }
+
+    #[test]
+    fn the_uac_rate_defaults_to_the_codec_rate_and_can_be_chosen() {
+        assert_eq!(uac_sample_rate(), 44_100);
+        set_uac_sample_rate(48_000);
+        assert_eq!(uac_sample_rate(), 48_000);
+        set_uac_sample_rate(44_100);
     }
 
     #[test]
