@@ -30,6 +30,12 @@ device-msc = []
 host-midi = ["dep:embassy-usb-host"]
 ## UAC host class driver (capture + playback).
 host-uac = ["dep:embassy-usb-host"]
+## Elektron Overbridge 2 host class driver (`host::overbridge`), with `overbridge::proto` and
+## `overbridge::stems`.
+host-overbridge = ["dep:embassy-usb-host"]
+## Elektron Overbridge 2 device class (`overbridge::device`), with `overbridge::proto` and
+## `overbridge::stems`.
+device-overbridge = []
 
 [dependencies]
 critical-section = { workspace = true }

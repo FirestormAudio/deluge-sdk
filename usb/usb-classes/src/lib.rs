@@ -21,8 +21,15 @@
 #[cfg(feature = "device-midi")]
 pub mod midi_packets;
 
-#[cfg(any(feature = "host-midi", feature = "host-uac"))]
+#[cfg(any(
+    feature = "host-midi",
+    feature = "host-uac",
+    feature = "host-overbridge"
+))]
 pub mod host;
+
+#[cfg(any(feature = "host-overbridge", feature = "device-overbridge"))]
+pub mod overbridge;
 
 #[cfg(all(feature = "device-audio", any(target_os = "none", test)))]
 pub mod audio;
