@@ -367,6 +367,31 @@ fn interrupt_iitv(binterval: u8, high_speed: bool) -> u16 {
     n.min(7) as u16
 }
 
+/// The most bulk OUT endpoints that share a port's one send pipe.
+const SHARED_OUT_USERS: usize = 8;
+
+/// One bulk OUT endpoint on the shared send pipe.
+#[derive(Clone, Copy, Debug)]
+struct OutUser {
+    dev_addr: u8,
+    epn: u8,
+    /// The endpoint's own MaxPacket.
+    mps: u16,
+    /// The endpoint's next DATA PID: false = DATA0.
+    toggle: bool,
+}
+
+/// The one hardware pipe every bulk OUT endpoint on a port shares, so a hub's devices don't
+/// each cost a pipe. Its packet buffer is reserved for 512-byte packets, double-buffered, so
+/// whichever endpoint opens first, any later one fits.
+#[derive(Clone, Copy, Debug)]
+struct SharedOut {
+    pipe: u8,
+    users: [Option<OutUser>; SHARED_OUT_USERS],
+    /// The index in `users` the pipe is currently configured for, if any.
+    owner: Option<u8>,
+}
+
 struct HcdAlloc {
     /// True between DeviceAttached and the next bus_reset().
     need_reset: bool,
@@ -384,6 +409,8 @@ struct HcdAlloc {
     /// `buf_start[n]` = first 64-byte block, `buf_reserved[n]` = block count.
     buf_start: [u8; HCD_PIPE_COUNT],
     buf_reserved: [u8; HCD_PIPE_COUNT],
+    /// The shared bulk OUT pipe, while any bulk OUT endpoint is open.
+    shared_out: Option<SharedOut>,
 }
 
 impl HcdAlloc {
@@ -396,7 +423,17 @@ impl HcdAlloc {
             buf: BufAllocator::new(),
             buf_start: [0u8; HCD_PIPE_COUNT],
             buf_reserved: [0u8; HCD_PIPE_COUNT],
+            shared_out: None,
         }
+    }
+
+    /// The index in the shared pipe's user table of `epn` on `dev_addr`.
+    fn shared_user(&self, dev_addr: u8, epn: u8) -> Option<usize> {
+        self.shared_out
+            .as_ref()?
+            .users
+            .iter()
+            .position(|u| matches!(u, Some(u) if u.dev_addr == dev_addr && u.epn == epn))
     }
 
     /// Allocate a free pipe in `first..=last`, highest first, as TinyUSB's `find_pipe` does.
@@ -1260,9 +1297,34 @@ impl<'d> Rusb1HostDriver<'d> {
         critical_section::with(|cs| {
             let alloc = unsafe { &mut *HCD_ALLOC[p].borrow(cs).get() };
             let layout = pipe_layout(ep_type, mps)?;
-            let pipe = alloc
-                .alloc_pipe(layout.first, layout.last)
-                .ok_or(HostError::OutOfPipes)?;
+            let shares = ep_type == EndpointType::Bulk && !dir_in;
+            if shares {
+                if let Some(shared) = alloc.shared_out.as_mut() {
+                    // A later bulk OUT endpoint joins the pipe that is already open.
+                    let slot = shared
+                        .users
+                        .iter_mut()
+                        .find(|u| u.is_none())
+                        .ok_or(HostError::OutOfPipes)?;
+                    *slot = Some(OutUser {
+                        dev_addr,
+                        epn: epn as u8,
+                        mps: layout.mxps,
+                        toggle: false,
+                    });
+                    let pipe = shared.pipe;
+                    alloc.ep_to_pipe[dev_addr as usize - 1][0][epn - 1] = pipe;
+                    return Ok(());
+                }
+            }
+            let pipe = if shares {
+                // The first bulk OUT endpoint: the highest free bulk pipe, 3-5 before 1-2 so
+                // an isochronous stream keeps the low ones.
+                alloc.alloc_pipe(3, 5).or_else(|| alloc.alloc_pipe(1, 2))
+            } else {
+                alloc.alloc_pipe(layout.first, layout.last)
+            }
+            .ok_or(HostError::OutOfPipes)?;
 
             // Reserve packet-buffer blocks for programmable pipes.  Pipes 6-8
             // have hardware-fixed buffers (blocks 4/5/6, BUFNMB writes ignored),
@@ -1275,7 +1337,9 @@ impl<'d> Rusb1HostDriver<'d> {
             } else {
                 let double_buf =
                     matches!(layout.carry, EndpointType::Bulk | EndpointType::Isochronous);
-                match alloc.alloc_pipe_buf(pipe, layout.mxps, double_buf) {
+                // The shared pipe is sized for the largest packet any later user can send.
+                let buf_mps = if shares { 512 } else { layout.mxps };
+                match alloc.alloc_pipe_buf(pipe, buf_mps, double_buf) {
                     Some(v) => Some(v),
                     None => {
                         alloc.free_pipe(pipe);
@@ -1287,6 +1351,20 @@ impl<'d> Rusb1HostDriver<'d> {
             // Record the EP→pipe mapping.
             // dev_addr is 1-based; array index is 0-based.
             alloc.ep_to_pipe[dev_addr as usize - 1][dir_in as usize][epn - 1] = pipe as u8;
+            if shares {
+                let mut users = [None; SHARED_OUT_USERS];
+                users[0] = Some(OutUser {
+                    dev_addr,
+                    epn: epn as u8,
+                    mps: layout.mxps,
+                    toggle: false,
+                });
+                alloc.shared_out = Some(SharedOut {
+                    pipe: pipe as u8,
+                    users,
+                    owner: Some(0),
+                });
+            }
 
             unsafe {
                 let u = usb(self.port);
@@ -2172,6 +2250,38 @@ fn release_pipe(port: u8, pipe: usize, dev_addr: u8, ep_addr: u8) {
     let p = port as usize;
     let epn = (ep_addr & 0x0F) as usize;
     let dir_in = ep_addr & 0x80 != 0;
+
+    // A bulk OUT endpoint leaves the shared pipe; the hardware pipe goes with the last one.
+    let still_shared = !dir_in
+        && critical_section::with(|cs| {
+            let alloc = unsafe { &mut *HCD_ALLOC[p].borrow(cs).get() };
+            if alloc.shared_out.as_ref().map(|s| s.pipe as usize) != Some(pipe) {
+                return false;
+            }
+            if let Some(i) = alloc.shared_user(dev_addr, epn as u8) {
+                let shared = alloc.shared_out.as_mut().unwrap();
+                shared.users[i] = None;
+                if shared.owner == Some(i as u8) {
+                    shared.owner = None;
+                }
+            }
+            let shared = alloc.shared_out.as_ref().unwrap();
+            if shared.users.iter().any(|u| u.is_some()) {
+                if dev_addr > 0 && (dev_addr as usize) < HCD_MAX_DEV && epn > 0 && epn <= 15 {
+                    let slot = &mut alloc.ep_to_pipe[dev_addr as usize - 1][0][epn - 1];
+                    if *slot as usize == pipe {
+                        *slot = 0;
+                    }
+                }
+                true
+            } else {
+                alloc.shared_out = None;
+                false
+            }
+        });
+    if still_shared {
+        return;
+    }
 
     let u = usb(port);
     pipectr(u, pipe).write_value(0);
@@ -3293,6 +3403,118 @@ mod tests {
             h.edpt_open(2, 0x05, EndpointType::Isochronous, 196, 1),
             Err(HostError::OutOfPipes)
         );
+    }
+
+    fn shared_pipe(port: usize) -> Option<usize> {
+        critical_section::with(|cs| unsafe {
+            (*HCD_ALLOC[port].borrow(cs).get())
+                .shared_out
+                .as_ref()
+                .map(|s| s.pipe as usize)
+        })
+    }
+
+    fn shared_pipe_of(dev: u8, ep: u8, h: &Rusb1HostDriver<'_>) -> usize {
+        h.ep_to_pipe(dev, ep).unwrap()
+    }
+
+    fn the_shared_pipe() -> usize {
+        shared_pipe(0).expect("a shared pipe is open")
+    }
+
+    #[test]
+    fn bulk_out_endpoints_share_one_pipe() {
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = host_with_bus(0b00, DVSTCTR0_RHST_HS | DVSTCTR0_UACT);
+        critical_section::with(|cs| unsafe { *HCD_ALLOC[0].borrow(cs).get() = HcdAlloc::new() });
+        h.edpt_open(1, 0x01, EndpointType::Bulk, 512, 0).unwrap();
+        h.edpt_open(2, 0x02, EndpointType::Bulk, 64, 0).unwrap();
+        assert_eq!(shared_pipe_of(1, 0x01, &h), 5, "the highest free bulk pipe");
+        assert_eq!(shared_pipe_of(2, 0x02, &h), 5);
+        let used =
+            critical_section::with(|cs| unsafe { (*HCD_ALLOC[0].borrow(cs).get()).pipes_used });
+        assert_eq!(used, 0x0001 | (1 << 5), "one pipe for both");
+    }
+
+    #[test]
+    fn four_midi_devices_fit() {
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = host_with_bus(0b00, DVSTCTR0_RHST_HS | DVSTCTR0_UACT);
+        critical_section::with(|cs| unsafe { *HCD_ALLOC[0].borrow(cs).get() = HcdAlloc::new() });
+        h.edpt_open(5, 0x81, EndpointType::Interrupt, 1, 12)
+            .unwrap(); // the hub's status pipe
+        for dev in 1..=4u8 {
+            h.edpt_open(dev, 0x81, EndpointType::Bulk, 64, 0).unwrap();
+            h.edpt_open(dev, 0x01, EndpointType::Bulk, 64, 0).unwrap();
+        }
+        let mut pipes: std::vec::Vec<usize> =
+            (1..=4).map(|d| h.ep_to_pipe(d, 0x81).unwrap()).collect();
+        pipes.push(the_shared_pipe());
+        pipes.sort();
+        assert_eq!(
+            pipes,
+            [1, 2, 3, 4, 5],
+            "4 receive pipes and the shared send pipe"
+        );
+    }
+
+    #[test]
+    fn interrupt_on_bulk_and_iso_out_are_not_shared() {
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = host_with_bus(0b00, DVSTCTR0_RHST_HS | DVSTCTR0_UACT);
+        critical_section::with(|cs| unsafe { *HCD_ALLOC[0].borrow(cs).get() = HcdAlloc::new() });
+        crate::mmio::test::poke16(usb(0).devadd(1).addr(), DEVADD_USBSPD_HS);
+        h.edpt_open(1, 0x01, EndpointType::Bulk, 512, 0).unwrap();
+        h.edpt_open(1, 0x03, EndpointType::Interrupt, 88, 1)
+            .unwrap();
+        h.edpt_open(1, 0x04, EndpointType::Isochronous, 56, 1)
+            .unwrap();
+        assert_ne!(h.ep_to_pipe(1, 0x03).unwrap(), the_shared_pipe());
+        assert_ne!(h.ep_to_pipe(1, 0x04).unwrap(), the_shared_pipe());
+    }
+
+    #[test]
+    fn the_shared_pipe_is_freed_with_its_last_user() {
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = host_with_bus(0b00, DVSTCTR0_RHST_HS | DVSTCTR0_UACT);
+        critical_section::with(|cs| unsafe { *HCD_ALLOC[0].borrow(cs).get() = HcdAlloc::new() });
+        h.edpt_open(1, 0x01, EndpointType::Bulk, 512, 0).unwrap();
+        h.edpt_open(2, 0x01, EndpointType::Bulk, 512, 0).unwrap();
+        let shared = the_shared_pipe();
+        h.edpt_close(1, 0x01);
+        let used =
+            || critical_section::with(|cs| unsafe { (*HCD_ALLOC[0].borrow(cs).get()).pipes_used });
+        assert_ne!(used() & (1 << shared), 0, "device 2 still sends");
+        assert_eq!(h.ep_to_pipe(1, 0x01), None);
+        h.edpt_close(2, 0x01);
+        assert_eq!(used() & (1 << shared), 0);
+        assert_eq!(shared_pipe(0), None);
+    }
+
+    #[test]
+    fn a_reopened_endpoint_starts_at_data0() {
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = host_with_bus(0b00, DVSTCTR0_RHST_HS | DVSTCTR0_UACT);
+        critical_section::with(|cs| unsafe { *HCD_ALLOC[0].borrow(cs).get() = HcdAlloc::new() });
+        h.edpt_open(1, 0x01, EndpointType::Bulk, 512, 0).unwrap();
+        h.edpt_open(2, 0x01, EndpointType::Bulk, 512, 0).unwrap();
+        critical_section::with(|cs| unsafe {
+            let a = &mut *HCD_ALLOC[0].borrow(cs).get();
+            let i = a.shared_user(1, 1).unwrap();
+            a.shared_out.as_mut().unwrap().users[i]
+                .as_mut()
+                .unwrap()
+                .toggle = true;
+        });
+        h.edpt_close(1, 0x01);
+        h.edpt_open(1, 0x01, EndpointType::Bulk, 512, 0).unwrap();
+        let toggle = critical_section::with(|cs| unsafe {
+            let a = &*HCD_ALLOC[0].borrow(cs).get();
+            a.shared_out.as_ref().unwrap().users[a.shared_user(1, 1).unwrap()]
+                .unwrap()
+                .toggle
+        });
+        assert!(!toggle);
     }
 
     /// Characterization: this behaviour exists before the change, and the test pins it.
