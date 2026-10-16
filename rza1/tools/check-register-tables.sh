@@ -10,13 +10,13 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-# Every module under crates/rza1l-hal/src takes its registers from rza1_pac, except these, which
+# Every module under rza1l-hal/src takes its registers from rza1_pac, except these, which
 # describe memory rather than registers.
 EXEMPT=(memmap.rs mmu.rs)
 
 status=0
 while IFS= read -r f; do
-  m="${f#crates/rza1l-hal/src/}"
+  m="${f#rza1l-hal/src/}"
   for e in "${EXEMPT[@]}"; do [ "$m" = "$e" ] && continue 2; done
   # Everything before the first host-test module (a `#[cfg(all(test…` line followed by `mod`; the
   # same cfg on a `use` doesn't end the scan); comment lines skipped.
@@ -27,7 +27,7 @@ while IFS= read -r f; do
     printf '%s\n' "$hits"
     status=1
   fi
-done < <(find crates/rza1l-hal/src -name '*.rs' | sort)
+done < <(find rza1l-hal/src -name '*.rs' | sort)
 if [ "$status" -ne 0 ]; then
   echo "error: an rza1l-hal module still hand-writes register addresses; take them from rza1_pac" >&2
 fi

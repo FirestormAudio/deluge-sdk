@@ -28,8 +28,6 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 tools/check-layering.sh
-tools/check-register-tables.sh
-tools/check-pac.sh
 
 QEMU=armv7-unknown-linux-gnueabihf
 HOST=x86_64-unknown-linux-gnu

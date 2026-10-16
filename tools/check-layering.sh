@@ -39,7 +39,7 @@ fi
 # The chip crates are board-agnostic: no Deluge names in their code or linker scripts (comments
 # may cite the Deluge as an example). Their dependencies are checked against Cargo's graph at the
 # end.
-CHIP_DIRS=(crates/rza1-pac crates/rza1l-hal crates/rza1-rt crates/rza1-alloc)
+CHIP_DIRS=(rza1)
 chip_code_hits="$(grep -rniE --include='*.rs' --include='*.x' 'deluge' "${CHIP_DIRS[@]}" \
   | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)' || true)"
 if [ -n "$chip_code_hits" ]; then
@@ -48,7 +48,7 @@ if [ -n "$chip_code_hits" ]; then
   exit 1
 fi
 # Startup and exception entry are rza1-rt's: the HAL has no global_asm! (spec, Phase 3 exit).
-hal_asm_hits="$(grep -rn --include='*.rs' 'global_asm' crates/rza1l-hal | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)"
+hal_asm_hits="$(grep -rn --include='*.rs' 'global_asm' rza1/rza1l-hal | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)"
 if [ -n "$hal_asm_hits" ]; then
   printf '%s\n' "$hal_asm_hits"
   echo "error: rza1l-hal contains global_asm!; startup and exception entry belong in rza1-rt" >&2
@@ -78,12 +78,15 @@ fi
 
 # Dependencies, from Cargo's resolved graph rather than the manifests' text: that sees renamed and
 # transitive dependencies, and comments or descriptions can't trip it. Every feature is enabled,
-# so an optional dependency counts; dev-dependencies don't ship and are not checked.
-cargo metadata --format-version 1 --all-features --locked | python3 -c '
-import json, sys
+# so an optional dependency counts; dev-dependencies don't ship and are not checked. Both
+# workspaces: the root one and the chip crates' own (rza1/).
+for manifest in Cargo.toml rza1/Cargo.toml; do
+cargo metadata --format-version 1 --all-features --locked --manifest-path "$manifest" | python3 -c '
+import json, os, sys
 
 meta = json.load(sys.stdin)
-root = meta["workspace_root"] + "/"
+# Paths relative to the repository root (the script changes there first), in either workspace.
+root = os.getcwd() + "/"
 pkgs = {p["id"]: p for p in meta["packages"]}
 graph = {
     n["id"]: [d["pkg"] for d in n["deps"] if any(k["kind"] != "dev" for k in d["dep_kinds"])]
@@ -101,14 +104,8 @@ def closure(start):
 
 # (crates under this directory, what they must not depend on, the error)
 RULES = [
-    ("crates/rza1l-hal/", lambda n: n.startswith("deluge-"),
-     "rza1l-hal depends on a deluge-* crate; board facts belong in deluge-bsp"),
-    ("crates/rza1-pac/", lambda n: n.startswith("deluge-"),
-     "rza1-pac depends on a deluge-* crate; board facts belong in deluge-bsp"),
-    ("crates/rza1-rt/", lambda n: n.startswith("deluge-"),
-     "rza1-rt depends on a deluge-* crate; board facts belong in deluge-bsp"),
-    ("crates/rza1-alloc/", lambda n: n.startswith("deluge-"),
-     "rza1-alloc depends on a deluge-* crate; board facts belong in deluge-bsp"),
+    ("rza1/", lambda n: n.startswith("deluge-") or n.startswith("flare"),
+     "an rza1 chip crate depends on a deluge-* or flare crate; board facts belong in deluge-bsp"),
     ("usb/", lambda n: n == "rza1l-hal" or n.startswith("deluge-"),
      "usb/ depends on the chip or the board; it must stay board-agnostic"),
     ("drivers/", lambda n: n == "rza1l-hal" or n.startswith("deluge-"),
@@ -130,5 +127,6 @@ for pid in meta["workspace_members"]:
                 failed = True
 sys.exit(1 if failed else 0)
 '
+done
 
 echo "==> Layering check passed."

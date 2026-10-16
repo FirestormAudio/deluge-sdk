@@ -4,10 +4,12 @@
 [build]
 target = "armv7a-none-eabihf"
 
-# ARM Linux under QEMU, for the host-side tests (the MMIO seam).
+# ARM Linux under QEMU, for the host-side tests (the MMIO seam). The runner is set by
+# tools/test.sh (CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_RUNNER), not here: while this directory
+# sits inside deluge-sdk, Cargo concatenates this file's arrays with the parent .cargo/config.toml's,
+# and a doubled runner array breaks. Add `runner` here when rza1/ becomes its own repository.
 [target.armv7-unknown-linux-gnueabihf]
 linker = "arm-linux-gnueabihf-gcc"
-runner = ["qemu-arm", "-cpu", "cortex-a9", "-L", "/usr/arm-linux-gnueabihf"]
 rustflags = [
   "-C", "target-cpu=cortex-a9",
   "-C", "target-feature=+neon",

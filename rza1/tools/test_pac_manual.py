@@ -11,8 +11,11 @@ MANUAL = os.path.join(os.path.dirname(__file__), '..', 'vendor', 'docs', 'rza1',
                       'rza1l-hw-manual', 'ch46-list-of-registers.md')
 
 
+@unittest.skipUnless(os.path.exists(MANUAL), "the RZ/A1L manual is not in this checkout (vendor material)")
 class TheRealTable(unittest.TestCase):
-    regs = a1l_registers(MANUAL)
+    @classmethod
+    def setUpClass(cls):
+        cls.regs = a1l_registers(MANUAL)
 
     def test_an_indexed_row_names_every_element(self):
         # RSCAN0CmCFG (m = 0, 1) at H'E803A000 + m * H'0010: CAN channel 1 is an RZ/A1L register.

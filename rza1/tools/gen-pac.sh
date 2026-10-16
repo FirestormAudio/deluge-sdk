@@ -21,7 +21,7 @@ fi
 
 SVD=vendor/rza1.svd
 MANUAL=vendor/docs/rza1/rza1l-hw-manual/ch46-list-of-registers.md
-PAC=crates/rza1-pac
+PAC=rza1-pac
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
 
@@ -39,8 +39,17 @@ emit() { # emit <generated file> <checked-in path>
 }
 [ "${1:-}" = --check ] && MODE=check
 
-python3 tools/pac-a1l-absent.py "$SVD" "$MANUAL" "$OUT/absent.yaml" > /dev/null
-emit "$OUT/absent.yaml" "$PAC/transforms/rza1l/absent.yaml"
+# The RZ/A1L manual is vendor material kept out of git, so CI has only the SVD. Without it the
+# absent-register list (generated from the manual) can't be regenerated or checked against the
+# table; the chips are still regenerated from the SVD and the checked-in transforms and compared.
+HAVE_MANUAL=0
+[ -f "$MANUAL" ] && HAVE_MANUAL=1
+if [ "$HAVE_MANUAL" -eq 1 ]; then
+  python3 tools/pac-a1l-absent.py "$SVD" "$MANUAL" "$OUT/absent.yaml" > /dev/null
+  emit "$OUT/absent.yaml" "$PAC/transforms/rza1l/absent.yaml"
+else
+  echo "  (no $MANUAL: skipping the absent-register list and the manual check)"
+fi
 # Generate from the transforms as they are on disk; in --check mode that's the checked-in
 # absent.yaml, which was just compared.
 for chip in rza1l rza1h; do
@@ -52,6 +61,8 @@ for chip in rza1l rza1h; do
   python3 tools/pac-postprocess.py "$OUT/$chip/lib.rs" "$OUT/$chip/chip.rs"
   emit "$OUT/$chip/chip.rs" "$PAC/src/chips/$chip.rs"
 done
-python3 tools/pac-check-a1l.py "$OUT/rza1l/ir.yaml" "$MANUAL"
+if [ "$HAVE_MANUAL" -eq 1 ]; then
+  python3 tools/pac-check-a1l.py "$OUT/rza1l/ir.yaml" "$MANUAL"
+fi
 [ "$stale" -eq 0 ] && [ "${MODE:-}" = check ] && echo "==> rza1-pac is up to date."
 exit "$stale"

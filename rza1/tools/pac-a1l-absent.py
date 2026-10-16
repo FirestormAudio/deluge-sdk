@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write crates/rza1-pac/transforms/rza1l/absent.yaml: delete from the RZ/A1H SVD what the RZ/A1L
+"""Write rza1-pac/transforms/rza1l/absent.yaml: delete from the RZ/A1H SVD what the RZ/A1L
 lacks, as listed by the RZ/A1L manual (R01UH0437EJ0700, Table 46.1, "List of Registers").
 
 A peripheral goes when none of its registers' addresses is an RZ/A1L register. A register goes
