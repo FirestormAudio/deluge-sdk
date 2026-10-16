@@ -230,12 +230,16 @@ pub fn host_audio_mode() -> HostAudioMode {
     }
 }
 
+/// Elektron's USB vendor ID, which Auto offers to Overbridge first. Spelled out here because
+/// the policy is compiled without the Overbridge class too; a test checks it matches
+/// `usb_classes::overbridge::proto::VID_ELEKTRON`.
+pub const ELEKTRON_VID: u16 = 0x1935;
+
 /// The audio drivers to try for a device with vendor ID `vid` under `mode`, in order, before
 /// the build's features filter them ([`compiled`]).
 pub fn audio_drivers(mode: HostAudioMode, vid: u16) -> &'static [AudioDriver] {
-    const ELEKTRON: u16 = 0x1935;
     match mode {
-        HostAudioMode::Auto if vid == ELEKTRON => &[AudioDriver::Overbridge, AudioDriver::Uac],
+        HostAudioMode::Auto if vid == ELEKTRON_VID => &[AudioDriver::Overbridge, AudioDriver::Uac],
         HostAudioMode::Auto | HostAudioMode::Uac => &[AudioDriver::Uac],
         HostAudioMode::Overbridge => &[AudioDriver::Overbridge],
         HostAudioMode::Off => &[],
@@ -291,7 +295,9 @@ pub fn host_audio() -> HostAudio {
         return HostAudio::Overbridge(overbridge());
     }
     #[cfg(feature = "usb-host-uac")]
-    if usb_classes::host::uac::shared::capture_channels() > 0 {
+    if usb_classes::host::uac::shared::capture_channels() > 0
+        || usb_classes::host::uac::shared::playback_channels() > 0
+    {
         return HostAudio::Uac(UacInput);
     }
     HostAudio::None
@@ -334,6 +340,29 @@ mod runtime {
     /// Stops the root-port device's audio task.
     #[cfg(any(feature = "usb-host-uac", feature = "usb-host-overbridge"))]
     static ROOT_AUDIO_STOP: StopSignal = StopSignal::new();
+
+    /// Root-port device tasks (its MIDI and audio tasks) still running.
+    static ROOT_LIVE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+    /// Signalled whenever a root-port device task exits.
+    static ROOT_EXITED: StopSignal = StopSignal::new();
+
+    /// Held by a root-port device task for its lifetime, so the supervisor can wait for it to
+    /// exit (and drop its pipes) before it resets the port and re-binds.
+    struct RootTask;
+
+    impl RootTask {
+        fn enter() -> Self {
+            ROOT_LIVE.fetch_add(1, Ordering::AcqRel);
+            RootTask
+        }
+    }
+
+    impl Drop for RootTask {
+        fn drop(&mut self) {
+            ROOT_LIVE.fetch_sub(1, Ordering::AcqRel);
+            ROOT_EXITED.signal(());
+        }
+    }
 
     /// Resolves once `stop` is signalled; never, for a task nothing stops (a hub's device).
     async fn stopped(stop: Option<&'static StopSignal>) {
@@ -496,6 +525,7 @@ mod runtime {
     #[cfg(feature = "usb-host-uac")]
     #[embassy_executor::task]
     async fn uac_capture_task(mut host: usb_classes::host::uac::Uac<'static, HostAlloc>) {
+        let _live = RootTask::enter();
         // BadResponse is the HAL's detach signal AND a transient iso-fault signal.
         // Absorb transient faults; treat only sustained failure as a real detach.
         // 24 consecutive microframe failures ~= 3 ms of no data, far beyond any
@@ -598,6 +628,7 @@ mod runtime {
         const WINDOW: Duration = Duration::from_secs(10);
         let mut failures: heapless::Deque<Instant, 3> = heapless::Deque::new();
         use usb_classes::host::overbridge::OverbridgeError;
+        let _live = RootTask::enter();
         let stems = super::overbridge();
         // Prime the OUT stream here, not in the supervisor: a device that holds off OUT until
         // it streams IN would otherwise stall enumeration.
@@ -647,15 +678,19 @@ mod runtime {
                 break;
             }
             // Spec §5.5: re-run setup; a failed SET_INTERFACE is retried once after 100 ms.
-            let restarted = match host.restart().await {
-                Err(OverbridgeError::SetupFailed(_)) => {
-                    Timer::after_millis(100).await;
-                    host.restart().await
+            // Raced against a re-bind's stop, so the supervisor never waits on it.
+            let restart = async {
+                match host.restart().await {
+                    Err(OverbridgeError::SetupFailed(_)) => {
+                        Timer::after_millis(100).await;
+                        host.restart().await
+                    }
+                    r => r,
                 }
-                r => r,
             };
-            if restarted.is_err() {
-                break;
+            match select(restart, ROOT_AUDIO_STOP.wait()).await {
+                Either::First(Ok(())) => {}
+                Either::First(Err(_)) | Either::Second(()) => break,
             }
         }
         info!("usb_host: overbridge stream ended");
@@ -746,6 +781,7 @@ mod runtime {
         id: DeviceId,
         stop: Option<&'static StopSignal>,
     ) {
+        let _live = stop.map(|_| RootTask::enter());
         let tx = &MIDI_TX[id.slot() as usize];
         let mut packets = [[0u8; 4]; 16];
 
@@ -755,8 +791,12 @@ mod runtime {
                 let Either::First(p) = select(tx.receive(), stopped(stop)).await else {
                     return;
                 };
-                if let Err(e) = host.write(&[p]).await {
-                    warn!("usb_host: device {:?} write error: {:?}", id, e);
+                match select(host.write(&[p]), stopped(stop)).await {
+                    Either::First(Err(e)) => {
+                        warn!("usb_host: device {:?} write error: {:?}", id, e)
+                    }
+                    Either::First(Ok(())) => {}
+                    Either::Second(()) => return,
                 }
                 continue;
             }
@@ -782,7 +822,11 @@ mod runtime {
                     return;
                 }
                 Either::Second(p) => {
-                    if let Err(e) = host.write(&[p]).await {
+                    let Either::First(written) = select(host.write(&[p]), stopped(stop)).await
+                    else {
+                        return;
+                    };
+                    if let Err(e) = written {
                         // A send error is normal when a device attaches or
                         // detaches from a hub mid-traffic — the C
                         // firmware logs and continues rather than dropping the
@@ -866,9 +910,9 @@ mod runtime {
                 // until detach.
                 match ConfigurationDescriptor::try_from_slice(&config_buf) {
                     Ok(cfg) => {
-                        ROOT_MIDI_STOP.reset();
-                        #[cfg(any(feature = "usb-host-uac", feature = "usb-host-overbridge"))]
-                        ROOT_AUDIO_STOP.reset();
+                        // From here a mode change re-binds this device: one made while it binds is
+                        // caught by the wait below, not lost.
+                        MODE_CHANGED.reset();
                         let midi =
                             bind_midi(&handle, spawner, &dev_info, &cfg, Some(&ROOT_MIDI_STOP));
                         let mode = super::host_audio_mode();
@@ -909,9 +953,6 @@ mod runtime {
                 continue;
             }
 
-            // A mode change made before this device bound has already been applied.
-            MODE_CHANGED.reset();
-
             // Wait for detach before accepting another root-port device (a hub reaches here
             // too, so unplugging one is noticed), or for a host audio mode change, which
             // re-binds a non-hub device through a port reset.
@@ -936,8 +977,28 @@ mod runtime {
                         ROOT_MIDI_STOP.signal(());
                         #[cfg(any(feature = "usb-host-uac", feature = "usb-host-overbridge"))]
                         ROOT_AUDIO_STOP.signal(());
-                        // The tasks drop their pipes on their next poll.
-                        embassy_time::Timer::after_millis(20).await;
+                        // Wait for the tasks to exit and drop their pipes before the port is
+                        // reset and the address reused.
+                        let deadline =
+                            embassy_time::Instant::now() + embassy_time::Duration::from_millis(500);
+                        while ROOT_LIVE.load(Ordering::Acquire) > 0 {
+                            let left =
+                                deadline.saturating_duration_since(embassy_time::Instant::now());
+                            if left == embassy_time::Duration::from_ticks(0) {
+                                error!(
+                                    "usb_host: {} device task(s) didn't stop for the re-bind",
+                                    ROOT_LIVE.load(Ordering::Acquire)
+                                );
+                                break;
+                            }
+                            let _ =
+                                select(ROOT_EXITED.wait(), embassy_time::Timer::after(left)).await;
+                        }
+                        // Stops the exited tasks didn't consume (no MIDI task, say) must not
+                        // stop the next device's.
+                        ROOT_MIDI_STOP.reset();
+                        #[cfg(any(feature = "usb-host-uac", feature = "usb-host-overbridge"))]
+                        ROOT_AUDIO_STOP.reset();
                         handle.free_address(addr);
                         rebind = Rusb1HostDriver::bus_reset(controller.controller()).await;
                         break;
@@ -1074,6 +1135,12 @@ mod tests {
             &[AudioDriver::Overbridge]
         );
         assert!(audio_drivers(HostAudioMode::Off, 0x1935).is_empty());
+    }
+
+    #[cfg(feature = "usb-host-overbridge")]
+    #[test]
+    fn the_policy_s_elektron_vid_is_the_overbridge_class_s() {
+        assert_eq!(ELEKTRON_VID, usb_classes::overbridge::proto::VID_ELEKTRON);
     }
 
     #[test]
