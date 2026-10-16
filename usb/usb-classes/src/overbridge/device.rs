@@ -219,6 +219,10 @@ pub fn new<'d, D: Driver<'d>>(
         proto::block_len(config.format.to_device_frame_bytes(2)),
         proto::block_len(config.format.to_device_frame_bytes(from_host)),
     ];
+    assert!(
+        in_sizes[2] <= MAX_BLOCK && out_sizes[2] <= MAX_BLOCK,
+        "an Overbridge block must fit the 1024-byte high-speed packet limit"
+    );
     let ep_in_addr = EndpointAddress::from_parts(EP_AUDIO, Direction::In);
     let ep_out_addr = EndpointAddress::from_parts(EP_AUDIO, Direction::Out);
 
@@ -668,5 +672,23 @@ mod tests {
             block_on(r.receive_block(&h)),
             Err(EndpointError::Disabled)
         ));
+    }
+
+    #[test]
+    #[should_panic(expected = "1024")]
+    fn a_config_whose_block_exceeds_1024_bytes_is_refused_at_build() {
+        let _ = config_descriptor(|b| {
+            let state = std::boxed::Box::leak(std::boxed::Box::new(State::new()));
+            let _ = new(
+                b,
+                state,
+                OverbridgeConfig {
+                    format: Format::V2,
+                    ch_to_host: 36,
+                    ch_from_host: 2,
+                    name: "x",
+                },
+            );
+        });
     }
 }

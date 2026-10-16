@@ -76,10 +76,18 @@ fn stream_endpoint(
     interface: u8,
     dir: Direction,
 ) -> Option<EndpointDescriptor> {
-    cfg.iter_interface()
-        .filter(|i| i.interface_number == interface && i.alternate_setting == proto::STREAM_ALT)
-        .flat_map(|i| i.iter_endpoints().collect::<heapless::Vec<_, 4>>())
-        .find(|e| e.ep_type() == EndpointType::Interrupt && e.ep_dir() == dir)
+    for i in cfg.iter_interface() {
+        if i.interface_number != interface || i.alternate_setting != proto::STREAM_ALT {
+            continue;
+        }
+        if let Some(e) = i
+            .iter_endpoints()
+            .find(|e| e.ep_type() == EndpointType::Interrupt && e.ep_dir() == dir)
+        {
+            return Some(e);
+        }
+    }
+    None
 }
 
 /// Match an enumerated device. Channel counts come from the endpoint sizes; the device table
@@ -99,6 +107,9 @@ pub fn match_device(
     let listed = proto::lookup(pid);
     let format = listed.map_or(Format::V2, |d| d.format);
     let size = |e: &EndpointDescriptor| (e.max_packet_size & 0x7FF) as usize;
+    if size(&ep_in) > MAX_BLOCK || size(&ep_out) > MAX_BLOCK {
+        return Err(OverbridgeError::BadBlockSize);
+    }
     let ch_from = format
         .channels_from_device(size(&ep_in))
         .ok_or(OverbridgeError::BadBlockSize)?;
@@ -685,12 +696,43 @@ mod tests {
         let h: OverbridgeHandle<4096, 512> = OverbridgeHandle::new();
         h.begin(host.matched().info(), 12, 2).unwrap();
         for c in [0u16, 7, 7 * 2000] {
-            state.script.borrow_mut().reads.push(digitakt_block(c)).unwrap();
+            state
+                .script
+                .borrow_mut()
+                .reads
+                .push(digitakt_block(c))
+                .unwrap();
         }
         for t in 0..3 {
             block_on(host.pump_once(&h, t)).unwrap();
         }
         let s = h.stats();
         assert_eq!((s.counter_gaps, s.counter_resyncs), (0, 1));
+    }
+
+    /// A block over the 1024-byte high-speed limit is refused, not handed to a 1 KB buffer.
+    #[test]
+    fn a_block_over_1024_bytes_is_refused() {
+        let b = stream_config(32 + 7 * 4 * 36, 88);
+        assert!(matches!(
+            match_device(0x1935, 0x0BEE, &cfg(&b)),
+            Err(OverbridgeError::BadBlockSize)
+        ));
+    }
+
+    /// An odd descriptor with many endpoints in alt 3 is searched, not overflowed.
+    #[test]
+    fn many_endpoints_in_alt_3_do_not_panic() {
+        let mut b = std::vec![0x09, 0x02, 0, 0, 2, 1, 0, 0xc0, 0];
+        b.extend_from_slice(&[9, 4, 1, 3, 6, 0xff, 0, 0, 0]);
+        for ep in [0x84u8, 0x85, 0x86, 0x87, 0x88] {
+            b.extend_from_slice(&[7, 5, ep, 0x02, 0, 2, 0]);
+        }
+        b.extend_from_slice(&[7, 5, 0x83, 0x03, 0x70, 0x01, 1]);
+        b.extend_from_slice(&[9, 4, 2, 3, 1, 0xff, 0, 0, 0, 7, 5, 0x03, 0x03, 88, 0, 1]);
+        let len = b.len() as u16;
+        b[2..4].copy_from_slice(&len.to_le_bytes());
+        let m = match_device(0x1935, 0x0B2C, &cfg(&b)).unwrap();
+        assert_eq!(m.ep_in.endpoint_address, 0x83);
     }
 }
