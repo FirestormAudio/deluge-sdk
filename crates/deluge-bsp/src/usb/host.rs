@@ -11,10 +11,9 @@ use embassy_sync::channel::Channel;
 ///
 /// Bounded by the RUSB1 host pipe budget. RX pipes are dedicated per device
 /// (USB is host-polled, so a receive must be armed to catch unsolicited MIDI).
-/// With bulk pipe 1 reserved for a shared TX pipe, bulk RX has pipes 2-5 —
-/// **4 devices**. The HAL does not yet multiplex OUT pipes, so TX currently
-/// takes a dedicated pipe per device too and the practical ceiling is lower
-/// (~2 bidirectional devices).
+/// All bulk OUT endpoints share one send pipe, re-pointed per transfer, so
+/// the budget is four receive pipes plus one shared send pipe among bulk
+/// pipes 1-5 — **4 bidirectional devices**.
 ///
 /// The C firmware reaches 6 by also servicing MIDI devices that use
 /// *interrupt* endpoints on RX pipes 7-8 (`USB_CFG_HMIDI_INT_RECV_MIN/MAX`).

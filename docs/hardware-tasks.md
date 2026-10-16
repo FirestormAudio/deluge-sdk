@@ -100,3 +100,13 @@ often than before.
   least 10 switches.
 - **Record:** the time from disconnect to the new face enumerating, and any enumeration errors
   in `dmesg`.
+
+## Four MIDI devices on a hub (shared send pipe)
+
+- **Setup:** any host build. A high-speed hub with four USB-MIDI devices, mixing full-speed
+  (MaxPacket 64) and high-speed (512) if you have both. A sequence on the Deluge sends to all
+  four while they send notes back.
+- **Pass:** all four enumerate. Every device receives every note sent to it, with no stuck or
+  repeated notes (a wrong data toggle shows up as silently dropped or duplicated packets). Notes
+  from all four arrive. Unplugging one leaves the others working.
+- **Record:** the devices used, and any device that drops notes.

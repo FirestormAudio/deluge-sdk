@@ -57,6 +57,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `rza1l-hal` USB host: every bulk OUT endpoint on a port shares one pipe, re-pointed
+  per transfer with each endpoint's data toggle kept. A hub now carries 4 USB-MIDI devices that
+  send and receive (it was 2). The shared pipe prefers the bulk-only pipes 3–5, keeping 1–2
+  free for isochronous audio where it can.
 - `deluge-bsp`: `usb-host` is split into `usb-host-core` (supervisor, hubs, MIDI),
   `usb-host-uac` and `usb-host-overbridge`. `usb-host` still means `usb-host-uac` for this
   release; it will become `usb-host-core`, so name `usb-host-uac` if you want UAC.
