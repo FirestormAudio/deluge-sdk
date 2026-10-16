@@ -217,6 +217,12 @@ Split when all of these hold:
 - No `rza1l-hal` change in the last ~2 months was forced by a Deluge-specific need.
 - The `rza1/` crates have their own CI job that builds and tests them without `deluge-*` crates.
 
+**Conditions, 2026-10-15:** Phases 1–5 are done. The chip crates are a standalone workspace in
+`rza1/` with their own CI job (`.github/workflows/rza1.yml`), which runs from a checkout with no
+`../flare` and no vendor manual and fails if the workspace resolves any `deluge-*` or `flare`
+crate. The stability condition stays a judgment at split time. `git subtree split -P rza1` now
+takes exactly the chip crates, their tooling and the SVD.
+
 Then `git subtree split -P rza1` into the new repo, publish `rza1-pac`/`rza1-rt`/`rza1l-hal`, and
 switch `deluge-bsp` to crates.io versions (with a `[patch]` for local development). Decide the
 `rza1l-hal` → `rza1-hal` rename here.

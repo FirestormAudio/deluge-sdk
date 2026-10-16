@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The RZ/A1 chip crates (`rza1-pac`, `rza1-rt`, `rza1l-hal`, `rza1-alloc`) moved from `crates/` to
+  `rza1/`, their own Cargo workspace with its own tooling (`rza1/tools/test.sh`) and CI job. A
+  path dependency on them changes from `crates/<crate>` to `rza1/<crate>`; git dependencies are
+  unaffected.
 - Phase 5 is complete: every `rza1l-hal` module takes its registers from `rza1-pac`
   (`tools/check-register-tables.sh` checks the whole crate). DMAC, SSI, SCUX, SDHI, SPIBSC and USB
   moved in 5b; SCUX, SPIBSC and USB used raw volatile pointers and now go through the MMIO seam, so

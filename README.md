@@ -186,9 +186,9 @@ compile-proves all of them on the firmware target).
 | `crates/deluge-sdk` | `deluge-sdk` (imported as `deluge`) | the SDK facade + `#[deluge::app]` runtime |
 | `crates/deluge-sdk-macros` | `deluge-sdk-macros` | the `#[deluge::app]` proc-macro |
 | `crates/deluge-bsp` | `deluge-bsp` | board support: peripherals, PIC, OLED, SD, … |
-| `crates/rza1l-hal` | `rza1l-hal` | RZ/A1L hardware abstraction layer |
-| `crates/rza1-rt` | `rza1-rt` | Runtime for the RZ/A1L: reset vector, exception entry, linker script |
-| `crates/rza1-alloc` | `rza1-alloc` | SRAM / SDRAM heap allocators |
+| `rza1/rza1l-hal` | `rza1l-hal` | RZ/A1L hardware abstraction layer |
+| `rza1/rza1-rt` | `rza1-rt` | Runtime for the RZ/A1L: reset vector, exception entry, linker script |
+| `rza1/rza1-alloc` | `rza1-alloc` | SRAM / SDRAM heap allocators |
 | `usb/usb-classes` | `usb-classes` | board-agnostic Embassy USB classes: UAC2, USB-MIDI, MSC + Bulk-Only Transport, host MIDI/UAC |
 | `drivers/max5136` | `max5136` | board-agnostic embedded-hal driver for the MAX5136 CV DAC |
 | `crates/deluge-image` | `deluge-image` | firmware-image format logic shared by the app-loader and `cargo deluge` |
