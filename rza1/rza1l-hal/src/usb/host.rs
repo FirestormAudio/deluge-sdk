@@ -191,6 +191,24 @@ const NO_DTLN: u16 = u16::MAX;
 /// in the FIFO until the next read drains it (the controller raises no second BRDY for it).
 static RX_DMA_DTLN: [AtomicU16; 2] = [const { AtomicU16::new(NO_DTLN) }; 2];
 
+/// Runs its closure when dropped unless [`defuse`](Self::defuse)d: undoes a step a cancelled
+/// future left half done.
+struct OnDrop<F: FnMut()>(Option<F>);
+
+impl<F: FnMut()> OnDrop<F> {
+    fn defuse(mut self) {
+        self.0 = None;
+    }
+}
+
+impl<F: FnMut()> Drop for OnDrop<F> {
+    fn drop(&mut self) {
+        if let Some(f) = self.0.as_mut() {
+            f();
+        }
+    }
+}
+
 /// Owns the receive channel while a drain runs, and hands it back however the drain ends.
 /// Dropped mid-transfer (the reading future was cancelled), it halts the DMA and clears the
 /// half-read block from the FIFO, so the channel and the FIFO are ready for the next read.
@@ -625,6 +643,15 @@ impl<'d> Rusb1HostDriver<'d> {
         usb(self.port)
             .intenb(1)
             .modify(|r| *r &= !(INTENB1_ATTCHE | INTENB1_DTCHE));
+        // Cancelled mid-reset (its caller raced it against something else), end the reset and
+        // re-arm detection, or the port never reports an attach or a detach again.
+        let port = self.port;
+        let unwind = OnDrop(Some(move || {
+            let u = usb(port);
+            u.dvstctr0().modify(|r| *r &= !DVSTCTR0_USBRST);
+            u.intsts(1).write_value(!(INTSTS1_ATTCH | INTSTS1_DTCH));
+            u.intenb(1).modify(|r| *r |= detection);
+        }));
         unsafe {
             let u = usb(self.port);
 
@@ -709,6 +736,7 @@ impl<'d> Rusb1HostDriver<'d> {
         }
         u.intsts(1).write_value(!(INTSTS1_ATTCH | INTSTS1_DTCH));
         u.intenb(1).modify(|r| *r |= detection);
+        unwind.defuse();
 
         let rhst = u.dvstctr0().read() & DVSTCTR0_RHST;
         if matches!(rhst, DVSTCTR0_RHST_LS | DVSTCTR0_RHST_FS | DVSTCTR0_RHST_HS) {
@@ -2190,11 +2218,18 @@ impl<'d> UsbHostController<'d> for Rusb1HostDriver<'d> {
         loop {
             // Probe for a device already on the bus (host start, or after a detach or
             // EOF error), but only once any pending detach has been reported.
+            // Either step consumes its trigger before it awaits a bus reset; cancelled during
+            // the reset, it restores the trigger so the next wait handles it.
+            let port = self.port as usize;
             if HCD_EVENTS.load(Ordering::Acquire) & EVT_DETACH == 0
-                && PROBE_PENDING[self.port as usize].swap(false, Ordering::AcqRel)
-                && let Some(speed) = self.probe_present().await
+                && PROBE_PENDING[port].swap(false, Ordering::AcqRel)
             {
-                return DeviceEvent::Connected(speed);
+                let rearm = OnDrop(Some(|| PROBE_PENDING[port].store(true, Ordering::Release)));
+                let speed = self.probe_present().await;
+                rearm.defuse();
+                if let Some(speed) = speed {
+                    return DeviceEvent::Connected(speed);
+                }
             }
 
             // Wait for either attach or detach.
@@ -2214,7 +2249,12 @@ impl<'d> UsbHostController<'d> for Rusb1HostDriver<'d> {
 
             if ev & EVT_ATTACH != 0 {
                 // RHST only reports the device speed after a bus reset.
-                match Rusb1HostDriver::bus_reset(&*self).await {
+                let rearm = OnDrop(Some(|| {
+                    HCD_EVENTS.fetch_or(EVT_ATTACH, Ordering::AcqRel);
+                }));
+                let speed = Rusb1HostDriver::bus_reset(&*self).await;
+                rearm.defuse();
+                match speed {
                     Some(speed) => return DeviceEvent::Connected(speed),
                     None => {
                         log::error!(
@@ -3618,5 +3658,49 @@ mod tests {
         drive(h.dma_drain(&mut out, 368), 10).unwrap().unwrap();
         let bounce = crate::uncached(unsafe { core::ptr::addr_of_mut!(RX_BOUNCE[0]) }) as u32;
         assert_eq!(crate::pac::DMAC.ch(1).n0da().read(), bounce);
+    }
+
+    /// Review I2: a bus reset whose future is dropped mid-reset (the supervisor raced it
+    /// against a host-audio mode change) still ends USBRST and re-arms attach/detach
+    /// detection, or the port would never report an unplug again.
+    #[test]
+    fn a_cancelled_bus_reset_ends_the_reset_and_rearms_detection() {
+        use core::future::Future;
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = host_with_bus(0b01, DVSTCTR0_RHST_HS | DVSTCTR0_UACT);
+        let u = usb(0);
+        u.intenb(1).write_value(INTENB1_ATTCHE | INTENB1_DTCHE);
+        {
+            let mut reset = core::pin::pin!(h.bus_reset());
+            let mut cx = core::task::Context::from_waker(core::task::Waker::noop());
+            assert!(
+                reset.as_mut().poll(&mut cx).is_pending(),
+                "inside the 20 ms reset"
+            );
+            assert_ne!(u.dvstctr0().read() & DVSTCTR0_USBRST, 0);
+        }
+        assert_eq!(u.dvstctr0().read() & DVSTCTR0_USBRST, 0, "USBRST released");
+        assert_eq!(
+            u.intenb(1).read() & (INTENB1_ATTCHE | INTENB1_DTCHE),
+            INTENB1_ATTCHE | INTENB1_DTCHE,
+            "detection re-armed"
+        );
+    }
+
+    /// Review I2: an event wait cancelled while it resets an attached device leaves the attach
+    /// pending, so the next wait handles it.
+    #[test]
+    fn a_cancelled_attach_wait_leaves_the_attach_pending() {
+        use core::future::Future;
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut h = host_with_bus(0b01, DVSTCTR0_RHST_HS | DVSTCTR0_UACT);
+        PROBE_PENDING[0].store(false, Ordering::Release);
+        HCD_EVENTS.store(EVT_ATTACH, Ordering::Release);
+        {
+            let mut wait = core::pin::pin!(UsbHostController::wait_for_device_event(&mut h));
+            let mut cx = core::task::Context::from_waker(core::task::Waker::noop());
+            assert!(wait.as_mut().poll(&mut cx).is_pending(), "inside the reset");
+        }
+        assert_ne!(HCD_EVENTS.load(Ordering::Acquire) & EVT_ATTACH, 0);
     }
 }

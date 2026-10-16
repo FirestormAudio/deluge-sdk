@@ -233,6 +233,13 @@ impl<'d> Rusb1Driver<'d> {
                 let alloc = &mut *PORT_ALLOC[port as usize].borrow(cs).get();
                 *alloc = PortAlloc::new();
             });
+            // A re-attach after `disconnect` (switching device faces) starts from a clean
+            // slate: no bus event or control stage left from the previous session.
+            let p = port as usize;
+            BUS_EVENTS[p].store(0, Ordering::Release);
+            CTRL_STAGE[p].store(CTRL_STAGE_NONE, Ordering::Release);
+            CTRL_ABORT[p].store(false, Ordering::Release);
+            PIPE0_BRDY[p].store(0, Ordering::Release);
             // Set BUSWAIT early so register accesses after USBE=1 are safe.
             let u = usb(port);
             u.buswait().write_value(BUSWAIT_VALUE);
@@ -2025,5 +2032,21 @@ mod tests {
             (pipe_cfg(b.pipe).xfer_type, pipe_cfg(b.pipe).mps),
             (XferType::Bulk, 512)
         );
+    }
+
+    /// A fresh device-mode bring-up (a face switch after `disconnect`) drops bus events and
+    /// control state the previous session left behind.
+    #[test]
+    fn a_new_driver_clears_the_previous_sessions_state() {
+        let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        BUS_EVENTS[1].store(0x0F, Ordering::Release);
+        CTRL_STAGE[1].store(2, Ordering::Release);
+        CTRL_ABORT[1].store(true, Ordering::Release);
+        PIPE0_BRDY[1].store(1, Ordering::Release);
+        let _d = fresh_port1();
+        assert_eq!(BUS_EVENTS[1].load(Ordering::Acquire), 0);
+        assert_eq!(CTRL_STAGE[1].load(Ordering::Acquire), CTRL_STAGE_NONE);
+        assert!(!CTRL_ABORT[1].load(Ordering::Acquire));
+        assert_eq!(PIPE0_BRDY[1].load(Ordering::Acquire), 0);
     }
 }
