@@ -4125,6 +4125,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "overbridge-host-firmware"
+version = "0.1.0"
+dependencies = [
+ "cortex-ar",
+ "deluge-bsp",
+ "embassy-executor",
+ "embassy-time",
+ "log",
+ "rtt-target",
+ "rza1-alloc",
+ "rza1l-hal",
+ "usb-classes",
+]
+
+[[package]]
 name = "owned_ttf_parser"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,27 @@
+[package]
+publish = false
+name = "overbridge-host-firmware"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[[bin]]
+name = "overbridge-host-firmware"
+test = false
+
+[dependencies]
+usb-classes = { workspace = true, features = ["host-overbridge"] }
+rza1l-hal = { path = "../../rza1/rza1l-hal" }
+deluge-bsp = { path = "../../crates/deluge-bsp", features = ["usb-host-overbridge"] }
+rza1-alloc = { path = "../../rza1/rza1-alloc" }
+cortex-ar = { workspace = true }
+embassy-executor = { workspace = true, features = ["nightly", "platform-cortex-ar", "executor-thread"] }
+embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
+log = { workspace = true }
+rtt-target = { workspace = true, optional = true }
+
+[features]
+# Opt-in for the same reason as uac-host-firmware's: a default-on `rtt` would turn on
+# `deluge-bsp/rtt` in the runtime rlib every firmware shares and break their links.
+default = []
+rtt = ["dep:rtt-target", "deluge-bsp/rtt"]

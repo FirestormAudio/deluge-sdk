@@ -37,6 +37,8 @@ build-msc-bin        = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-b
 # unify into the shared rza1l-hal build and break every other firmware's link.
 build-uac            = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem -p uac-host-firmware --features rtt"
 build-uac-bin        = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p uac-host-firmware -- -O binary target/armv7a-none-eabihf/release/uac-host-firmware.bin"
+build-overbridge      = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem -p overbridge-host-firmware --features rtt"
+build-overbridge-bin  = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p overbridge-host-firmware -- -O binary target/armv7a-none-eabihf/release/overbridge-host-firmware.bin"
 build-app-loader     = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem -p app-loader"
 build-app-loader-bin = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p app-loader -- -O binary target/armv7a-none-eabihf/release/app-loader.bin"
 # Wren debug harness tests (`--target` overrides the device default).
