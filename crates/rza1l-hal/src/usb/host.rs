@@ -51,7 +51,7 @@
 //!
 //! TinyUSB `src/portable/renesas/rusb1/hcd_rusb1.c`.
 
-use core::sync::atomic::{AtomicU8, AtomicU16, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, Ordering};
 use embassy_sync::waitqueue::AtomicWaker;
 use embassy_time::Timer;
 use embassy_usb_driver::host::{
@@ -165,6 +165,10 @@ static HCD_PIPE_WAKERS: [AtomicWaker; HCD_PIPE_COUNT] = {
 
 static HCD_EVENTS: AtomicU8 = AtomicU8::new(0);
 static HCD_EVENT_WAKER: AtomicWaker = AtomicWaker::new();
+
+/// Per port: the host has started and not yet checked for a device that was already on the bus.
+/// Such a device makes no attach edge, so the first event wait probes for it.
+static PROBE_PENDING: [AtomicBool; 2] = [const { AtomicBool::new(false) }; 2];
 
 // ---------------------------------------------------------------------------
 // Pipe-allocation + EP→pipe mapping, per port
@@ -351,8 +355,12 @@ impl<'d> Rusb1HostDriver<'d> {
             // Global interrupt enables.
             u.intenb(0)
                 .write_value(INTENB0_BRDYE | INTENB0_NRDYE | INTENB0_BEMPE);
-            // Start watching for device attach (ATTCH); DTCH is enabled by the ISR
-            // after a device is connected.
+            // Drop attach/detach/bus-change status a previous program left latched
+            // (RC-W0: writing 0 clears every bit), so the first one the ISR sees is
+            // real. Then start watching for device attach (ATTCH); DTCH is enabled
+            // once a device is connected.
+            u.intsts(1).write_value(0);
+            PROBE_PENDING[port as usize].store(true, Ordering::Release);
             u.intenb(1)
                 .write_value(INTENB1_SACKE | INTENB1_SIGNE | INTENB1_ATTCHE);
 
@@ -432,7 +440,10 @@ impl<'d> Rusb1HostDriver<'d> {
     ///
     /// Must be called after every [`DeviceEvent::Connected`] before
     /// enumeration.
-    pub async fn bus_reset(&self) {
+    ///
+    /// Returns the speed the reset handshake resolved to, or `None` if RHST never
+    /// resolved (no device answered); SOF is then left off.
+    pub async fn bus_reset(&self) -> Option<Speed> {
         unsafe {
             let u = usb(self.port);
 
@@ -515,6 +526,48 @@ impl<'d> Rusb1HostDriver<'d> {
                 (&mut *HCD_ALLOC[p].borrow(cs).get()).need_reset = false;
             });
         }
+
+        let rhst = u.dvstctr0().read() & DVSTCTR0_RHST;
+        if matches!(rhst, DVSTCTR0_RHST_LS | DVSTCTR0_RHST_FS | DVSTCTR0_RHST_HS) {
+            Some(self.port_speed())
+        } else {
+            u.dvstctr0().modify(|r| *r &= !DVSTCTR0_UACT);
+            None
+        }
+    }
+
+    /// Watch for detach instead of attach: a device is on the port.
+    fn watch_for_detach(&self) {
+        let u = usb(self.port);
+        u.intenb(1)
+            .modify(|r| *r = (*r & !INTENB1_ATTCHE) | INTENB1_DTCHE);
+    }
+
+    /// Watch for attach instead of detach: the port is empty.
+    fn watch_for_attach(&self) {
+        let u = usb(self.port);
+        u.intenb(1)
+            .modify(|r| *r = (*r & !INTENB1_DTCHE) | INTENB1_ATTCHE);
+    }
+
+    /// Look for a device already on the bus at host start. A device left by the
+    /// previous program, or plugged in before boot, makes no attach edge: a
+    /// full- or low-speed one holds J or K on the line, and an idle high-speed
+    /// one holds no pull-up (SE0) but answers a reset with the high-speed
+    /// handshake. So reset the bus and see whether RHST resolves a speed.
+    async fn probe_present(&self) -> Option<Speed> {
+        let lnst = usb(self.port).syssts0().read() & SYSSTS0_LNST;
+        let speed = self.bus_reset().await;
+        log::info!(
+            "usb{}: host start: line {:02b}, probing reset → {:?}",
+            self.port,
+            lnst,
+            speed
+        );
+        if speed.is_some() {
+            self.watch_for_detach();
+        }
+        speed
     }
 
     /// Return the speed of the connected device.
@@ -1544,6 +1597,11 @@ impl<'d> UsbHostController<'d> for Rusb1HostDriver<'d> {
     }
 
     async fn wait_for_device_event(&mut self) -> DeviceEvent {
+        if PROBE_PENDING[self.port as usize].swap(false, Ordering::AcqRel)
+            && let Some(speed) = self.probe_present().await
+        {
+            return DeviceEvent::Connected(speed);
+        }
         loop {
             // Wait for either attach or detach.
             let ev = core::future::poll_fn(|cx| {
@@ -1562,15 +1620,22 @@ impl<'d> UsbHostController<'d> for Rusb1HostDriver<'d> {
 
             if ev & EVT_ATTACH != 0 {
                 // RHST only reports the device speed after a bus reset.
-                Rusb1HostDriver::bus_reset(&*self).await;
-                let speed = self.port_speed();
-                return DeviceEvent::Connected(speed);
+                match Rusb1HostDriver::bus_reset(&*self).await {
+                    Some(speed) => return DeviceEvent::Connected(speed),
+                    None => {
+                        log::error!(
+                            "usb{}: attach, but the bus reset resolved no speed; waiting for the next attach",
+                            self.port
+                        );
+                        self.watch_for_attach();
+                    }
+                }
             }
         }
     }
 
     async fn bus_reset(&mut self) {
-        Rusb1HostDriver::bus_reset(&*self).await;
+        let _ = Rusb1HostDriver::bus_reset(&*self).await;
     }
 }
 
@@ -1761,6 +1826,115 @@ impl<T: pipe::Type, D: pipe::Direction> UsbPipe<T, D> for Rusb1Pipe<T, D> {
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
     use super::*;
+
+    /// The attach tests share the module's event statics; run them one at a time.
+    static ATTACH_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Poll `f` to completion, advancing the mock clock 1 ms per pending poll, for at most
+    /// `max_ms`. `None` if it is still pending then.
+    fn drive<F: core::future::Future>(f: F, max_ms: u64) -> Option<F::Output> {
+        let mut f = core::pin::pin!(f);
+        let mut cx = core::task::Context::from_waker(core::task::Waker::noop());
+        for _ in 0..max_ms {
+            if let core::task::Poll::Ready(v) = f.as_mut().poll(&mut cx) {
+                return Some(v);
+            }
+            embassy_time::MockDriver::get().advance(embassy_time::Duration::from_millis(1));
+        }
+        None
+    }
+
+    /// Host port 0 brought up with the PLL already running, `lnst` on the lines and `rhst` as
+    /// the speed a bus reset resolves to.
+    fn host_with_bus(lnst: u16, rhst: u16) -> Rusb1HostDriver<'static> {
+        use crate::mmio::test;
+        let u = usb(0);
+        test::reset();
+        test::rcw0(u.intsts(1).addr());
+        test::poke16(u.syscfg0().addr(), SYSCFG_UPLLE);
+        test::poke16(u.syssts0().addr(), lnst);
+        test::poke16(u.dvstctr0().addr(), rhst);
+        HCD_EVENTS.store(0, Ordering::Relaxed);
+        unsafe { Rusb1HostDriver::new(0) }
+    }
+
+    /// A previous program's latched ATTCH/DTCH must not survive host start: the first real
+    /// attach or detach is then the only one the ISR sees.
+    #[test]
+    fn host_start_clears_stale_attach_and_detach_status() {
+        use crate::mmio::test;
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let u = usb(0);
+        test::reset();
+        test::rcw0(u.intsts(1).addr());
+        test::poke16(u.syscfg0().addr(), SYSCFG_UPLLE);
+        test::poke16(u.intsts(1).addr(), INTSTS1_ATTCH | INTSTS1_DTCH | 0x4000);
+        let _ = unsafe { Rusb1HostDriver::new(0) };
+        assert_eq!(test::peek16(u.intsts(1).addr()), 0);
+    }
+
+    /// A device already on the bus when the host starts (plugged in before boot, or left there
+    /// by the firmware that ran before) makes no attach edge. The line already reads J, and the
+    /// first event wait reports it.
+    #[test]
+    fn a_device_already_on_the_bus_is_reported_without_an_attach_interrupt() {
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut h = host_with_bus(0b01, DVSTCTR0_RHST_FS);
+        let ev = drive(h.wait_for_device_event(), 200);
+        assert_eq!(ev, Some(DeviceEvent::Connected(Speed::Full)));
+        let enb = usb(0).intenb(1).read();
+        assert_eq!(
+            enb & (INTENB1_ATTCHE | INTENB1_DTCHE),
+            INTENB1_DTCHE,
+            "now watching for detach"
+        );
+    }
+
+    /// A high-speed device a previous host left idle holds no pull-up, so the line reads SE0.
+    /// A probing reset finds it: the handshake resolves to high speed.
+    #[test]
+    fn an_idle_high_speed_device_is_found_by_a_probing_reset() {
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut h = host_with_bus(0b00, DVSTCTR0_RHST_HS);
+        let ev = drive(h.wait_for_device_event(), 200);
+        assert_eq!(ev, Some(DeviceEvent::Connected(Speed::High)));
+    }
+
+    /// Nothing on the bus: the probing reset resolves no speed, so there is no event, SOF is
+    /// off, and attach detection stays armed.
+    #[test]
+    fn an_empty_bus_keeps_waiting_for_an_attach() {
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut h = host_with_bus(0b00, 0);
+        assert_eq!(drive(h.wait_for_device_event(), 200), None);
+        let u = usb(0);
+        assert_eq!(
+            u.dvstctr0().read() & DVSTCTR0_UACT,
+            0,
+            "no SOF on an empty bus"
+        );
+        assert_ne!(
+            u.intenb(1).read() & INTENB1_ATTCHE,
+            0,
+            "attach detection armed"
+        );
+    }
+
+    /// An attach whose bus reset never resolves a speed is not a full-speed device: the host
+    /// reports nothing, and watches for the next attach.
+    #[test]
+    fn an_attach_whose_reset_resolves_no_speed_is_not_reported() {
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut h = host_with_bus(0b00, 0);
+        HCD_EVENTS.store(EVT_ATTACH, Ordering::Relaxed);
+        assert_eq!(drive(h.wait_for_device_event(), 300), None);
+        let u = usb(0);
+        assert_eq!(
+            u.intenb(1).read() & (INTENB1_ATTCHE | INTENB1_DTCHE),
+            INTENB1_ATTCHE,
+            "attach detection re-armed"
+        );
+    }
 
     /// Host bring-up on port 1 with the PLL off: both channels' SUSPM drop before UPLLE (in
     /// USB0's SYSCFG0) rises, and port 1's DCFM rises while DRPD, DPRPU and HSE are 0 (TRM §28.3.1),
