@@ -18,6 +18,17 @@ often than before.
   through the hub is noticed.
 - **Record:** the hub model, and any device that stopped working.
 
+## Host audio mode switching (Overbridge sub-project 7)
+
+- **Setup:** a host build with `usb-host-uac,usb-host-overbridge` and a way to call
+  `set_host_audio_mode` (a button handler or a debugger write). An Elektron box in Overbridge
+  mode; then a class-compliant audio interface.
+- **Pass:** with the Elektron box in Auto, Overbridge binds. Switching to Uac only re-binds
+  within about a second, with no audio (its alt 3 isn't UAC); back to Auto re-binds Overbridge.
+  Off drops audio but keeps MIDI. With the audio interface, Uac and Auto bind it and Overbridge
+  only and Off don't. Switching while a hub is attached changes nothing.
+- **Record:** the re-bind time, and anything that needed a replug.
+
 ## 1. Digitakt descriptors (spec §8.4 step 1)
 
 - **Setup:** `cargo build-overbridge`, flash, Digitakt in Overbridge USB mode on the back

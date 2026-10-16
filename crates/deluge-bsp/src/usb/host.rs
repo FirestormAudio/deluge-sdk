@@ -273,6 +273,24 @@ mod runtime {
         (),
     > = embassy_sync::signal::Signal::new();
 
+    type StopSignal = embassy_sync::signal::Signal<
+        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
+        (),
+    >;
+    /// Stops the root-port device's MIDI task, so the device can be re-bound.
+    static ROOT_MIDI_STOP: StopSignal = StopSignal::new();
+    /// Stops the root-port device's audio task.
+    #[cfg(any(feature = "usb-host-uac", feature = "usb-host-overbridge"))]
+    static ROOT_AUDIO_STOP: StopSignal = StopSignal::new();
+
+    /// Resolves once `stop` is signalled; never, for a task nothing stops (a hub's device).
+    async fn stopped(stop: Option<&'static StopSignal>) {
+        match stop {
+            Some(s) => s.wait().await,
+            None => core::future::pending().await,
+        }
+    }
+
     /// Log, once, that the host audio mode names a driver this build leaves out.
     fn warn_once_missing(mode: super::HostAudioMode) {
         static WARNED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
@@ -321,6 +339,7 @@ mod runtime {
         spawner: Spawner,
         dev_info: &embassy_usb_host::handler::EnumerationInfo,
         cfg: &ConfigurationDescriptor<'_>,
+        stop: Option<&'static StopSignal>,
     ) -> bool {
         let addr = dev_info.device_address;
         let id = DeviceId::new(addr, next_generation());
@@ -334,7 +353,7 @@ mod runtime {
                 // In embassy-executor 0.10 the task fn returns the token as a
                 // Result (pool exhaustion), while `Spawner::spawn` returns ().
                 // Reaching the Err arm means more devices than MAX_MIDI_DEVICES.
-                match midi_device_task(host, id) {
+                match midi_device_task(host, id, stop) {
                     Ok(token) => {
                         spawner.spawn(token);
                         true
@@ -430,7 +449,12 @@ mod runtime {
         const DETACH_THRESHOLD: u32 = 24;
         let mut consecutive_errs: u32 = 0;
         loop {
-            match host.pump_once_shared().await {
+            let Either::First(result) =
+                select(host.pump_once_shared(), ROOT_AUDIO_STOP.wait()).await
+            else {
+                break;
+            };
+            match result {
                 Ok(()) => consecutive_errs = 0,
                 Err(_) => {
                     consecutive_errs += 1;
@@ -522,13 +546,30 @@ mod runtime {
         let stems = super::overbridge();
         // Prime the OUT stream here, not in the supervisor: a device that holds off OUT until
         // it streams IN would otherwise stall enumeration.
-        if let Err(e) = host.start().await {
-            warn!("usb_host: overbridge stream did not start: {:?}", e);
-            stems.end();
-            return;
+        match select(host.start(), ROOT_AUDIO_STOP.wait()).await {
+            Either::First(Ok(())) => {}
+            Either::First(Err(e)) => {
+                warn!("usb_host: overbridge stream did not start: {:?}", e);
+                stems.end();
+                return;
+            }
+            // Stopped for a re-bind before the stream started.
+            Either::Second(()) => {
+                stems.end();
+                return;
+            }
         }
         loop {
-            let Err(e) = host.pump_once(stems, Instant::now().as_micros()).await else {
+            let result = match select(
+                host.pump_once(stems, Instant::now().as_micros()),
+                ROOT_AUDIO_STOP.wait(),
+            )
+            .await
+            {
+                Either::First(r) => r,
+                Either::Second(()) => break,
+            };
+            let Err(e) = result else {
                 continue;
             };
             let now = Instant::now();
@@ -614,7 +655,7 @@ mod runtime {
                     let addr = dev_info.device_address;
 
                     let bound = match ConfigurationDescriptor::try_from_slice(&config_buf) {
-                        Ok(cfg) => bind_midi(&handle, spawner, &dev_info, &cfg),
+                        Ok(cfg) => bind_midi(&handle, spawner, &dev_info, &cfg, None),
                         Err(e) => {
                             error!("usb_host: hub port {} bad descriptor: {:?}", port, e);
                             false
@@ -645,21 +686,35 @@ mod runtime {
     /// channel is the only route to its OUT endpoint, since `MidiHost` lives
     /// here and cannot be shared.
     #[embassy_executor::task(pool_size = MAX_MIDI_DEVICES)]
-    async fn midi_device_task(mut host: MidiHost<'static, HostAlloc>, id: DeviceId) {
+    async fn midi_device_task(
+        mut host: MidiHost<'static, HostAlloc>,
+        id: DeviceId,
+        stop: Option<&'static StopSignal>,
+    ) {
         let tx = &MIDI_TX[id.slot() as usize];
         let mut packets = [[0u8; 4]; 16];
 
         loop {
             if !host.can_receive() {
                 // Sink-only device (a synth): only ever send.
-                let p = tx.receive().await;
+                let Either::First(p) = select(tx.receive(), stopped(stop)).await else {
+                    return;
+                };
                 if let Err(e) = host.write(&[p]).await {
                     warn!("usb_host: device {:?} write error: {:?}", id, e);
                 }
                 continue;
             }
 
-            match select(host.read(&mut packets), tx.receive()).await {
+            let event =
+                match select(select(host.read(&mut packets), tx.receive()), stopped(stop)).await {
+                    Either::First(event) => event,
+                    Either::Second(()) => {
+                        info!("usb_host: device {:?} stopped for a re-bind", id);
+                        return;
+                    }
+                };
+            match event {
                 Either::First(Ok(n)) => {
                     for p in &packets[..n] {
                         // Drop rather than block: a stalled consumer must not
@@ -695,8 +750,12 @@ mod runtime {
         let (mut controller, handle) = bus(driver, &BUS_STATE);
         let mut config_buf = [0u8; CONFIG_DESC_BUF];
 
+        let mut rebind: Option<embassy_usb_driver::Speed> = None;
         loop {
-            let speed = controller.wait_for_connection().await;
+            let speed = match rebind.take() {
+                Some(s) => s,
+                None => controller.wait_for_connection().await,
+            };
             info!("usb_host: device connected ({:?})", speed);
 
             let (dev_info, _) = match handle
@@ -720,7 +779,8 @@ mod runtime {
             // before it checks the class, so a device with a long configuration
             // (an audio interface's, 554 bytes on hardware) fails there with
             // InsufficientMemory instead of reaching the class matchers.
-            let bound = if super::has_hub_interface(&config_buf) {
+            let is_hub = super::has_hub_interface(&config_buf);
+            let bound = if is_hub {
                 match HubHandler::<Rusb1Allocator, MAX_HUB_PORTS>::try_register(&handle, &dev_info)
                     .await
                 {
@@ -751,7 +811,11 @@ mod runtime {
                 // until detach.
                 match ConfigurationDescriptor::try_from_slice(&config_buf) {
                     Ok(cfg) => {
-                        let midi = bind_midi(&handle, spawner, &dev_info, &cfg);
+                        ROOT_MIDI_STOP.reset();
+                        #[cfg(any(feature = "usb-host-uac", feature = "usb-host-overbridge"))]
+                        ROOT_AUDIO_STOP.reset();
+                        let midi =
+                            bind_midi(&handle, spawner, &dev_info, &cfg, Some(&ROOT_MIDI_STOP));
                         let mode = super::host_audio_mode();
                         let vid = dev_info.device_desc.vendor_id;
                         let mut audio = false;
@@ -790,13 +854,39 @@ mod runtime {
                 continue;
             }
 
-            // Wait for detach before accepting another root-port device. A hub
-            // reaches here too, so unplugging one is noticed.
+            // A mode change made before this device bound has already been applied.
+            MODE_CHANGED.reset();
+
+            // Wait for detach before accepting another root-port device (a hub reaches here
+            // too, so unplugging one is noticed), or for a host audio mode change, which
+            // re-binds a non-hub device through a port reset.
             loop {
-                if controller.wait_for_device_event().await == DeviceEvent::Disconnected {
-                    info!("usb_host: device disconnected");
-                    handle.free_address(addr);
-                    break;
+                match select(controller.wait_for_device_event(), MODE_CHANGED.wait()).await {
+                    Either::First(DeviceEvent::Disconnected) => {
+                        info!("usb_host: device disconnected");
+                        handle.free_address(addr);
+                        break;
+                    }
+                    Either::First(_) => {}
+                    Either::Second(()) if is_hub => {
+                        info!(
+                            "usb_host: host audio mode changed; a hub is attached, nothing to re-bind"
+                        );
+                    }
+                    Either::Second(()) => {
+                        info!(
+                            "usb_host: host audio mode now {:?}; re-binding",
+                            super::host_audio_mode()
+                        );
+                        ROOT_MIDI_STOP.signal(());
+                        #[cfg(any(feature = "usb-host-uac", feature = "usb-host-overbridge"))]
+                        ROOT_AUDIO_STOP.signal(());
+                        // The tasks drop their pipes on their next poll.
+                        embassy_time::Timer::after_millis(20).await;
+                        handle.free_address(addr);
+                        rebind = Rusb1HostDriver::bus_reset(controller.controller()).await;
+                        break;
+                    }
                 }
             }
         }
