@@ -331,6 +331,12 @@ impl<'d> Rusb1HostDriver<'d> {
             // (along with DPRPU/HSE) *while* setting DCFM — otherwise the cold-boot
             // DCFM 0→1 transition violates the precondition.  The second write
             // then raises DRPD (host pull-downs).
+            // Start from a stopped controller. A debugger reload is not a chip reset: the
+            // previous program may have left SOF running and a SETUP stuck in the sequencer
+            // (on hardware every later SETUP then sat pending, never sent). Stop SOF and
+            // any reset, then clear USBE, which re-initialises the SIE (TRM Tables 28.3, 28.4).
+            u.dvstctr0().write_value(0);
+            u.syscfg0().modify(|r| *r &= !SYSCFG_USBE);
             u.syscfg0().modify(|r| {
                 *r = (*r & !(SYSCFG_DCFM | SYSCFG_DRPD | SYSCFG_DPRPU | SYSCFG_HSE)) | SYSCFG_DCFM
             });
@@ -447,6 +453,13 @@ impl<'d> Rusb1HostDriver<'d> {
     /// Returns the speed the reset handshake resolved to, or `None` if RHST never
     /// resolved (no device answered); SOF is then left off.
     pub async fn bus_reset(&self) -> Option<Speed> {
+        // The reset's SE0 and the line's return to J are a detach and an attach to the
+        // controller: mask that detection while the reset runs, and drop what it latched
+        // after (left armed, the attach it raised made the supervisor reset a bound device).
+        let detection = usb(self.port).intenb(1).read() & (INTENB1_ATTCHE | INTENB1_DTCHE);
+        usb(self.port)
+            .intenb(1)
+            .modify(|r| *r &= !(INTENB1_ATTCHE | INTENB1_DTCHE));
         unsafe {
             let u = usb(self.port);
 
@@ -459,7 +472,7 @@ impl<'d> Rusb1HostDriver<'d> {
             u.dvstctr0().modify(|r| *r &= !DVSTCTR0_UACT);
             let dcpctr = pipectr(u, 0).read();
             if dcpctr & DCPCTR_SUREQ != 0 {
-                pipectr(u, 0).write_value(dcpctr | DCPCTR_SUREQCLR);
+                pipectr(u, 0).write_value((dcpctr & !DCPCTR_SUREQ) | DCPCTR_SUREQCLR)
             }
             crate::usb::int_enable(self.port);
 
@@ -529,6 +542,8 @@ impl<'d> Rusb1HostDriver<'d> {
                 (&mut *HCD_ALLOC[p].borrow(cs).get()).need_reset = false;
             });
         }
+        u.intsts(1).write_value(!(INTSTS1_ATTCH | INTSTS1_DTCH));
+        u.intenb(1).modify(|r| *r |= detection);
 
         let rhst = u.dvstctr0().read() & DVSTCTR0_RHST;
         if matches!(rhst, DVSTCTR0_RHST_LS | DVSTCTR0_RHST_FS | DVSTCTR0_RHST_HS) {
@@ -579,6 +594,8 @@ impl<'d> Rusb1HostDriver<'d> {
         );
         if speed.is_some() {
             self.watch_for_detach();
+            // An attach the device raised as the line came up is this same device.
+            HCD_EVENTS.fetch_and(!EVT_ATTACH, Ordering::AcqRel);
         }
         speed
     }
@@ -1036,7 +1053,15 @@ impl<'d> Rusb1HostDriver<'d> {
             .ok_or(PipeError::Canceled)?;
         self.port_active()?;
 
+        // Clear the pipe's flags, then publish the transfer, in one critical section: the
+        // interrupt handler completes a transfer as soon as its buffer is published, and a
+        // completion cleared afterwards was lost (on hardware the capture stream stalled
+        // within seconds: the read never completed, every later packet was dropped).
+        let mask = 1u16 << pipe;
         critical_section::with(|cs| unsafe {
+            HCD_PIPE_DONE.fetch_and(!mask, Ordering::Release);
+            HCD_PIPE_NRDY.fetch_and(!mask, Ordering::Release);
+            HCD_PIPE_STALL.fetch_and(!mask, Ordering::Release);
             let xfer = &mut *HCD_XFER[pipe].borrow(cs).get();
             xfer.buf = buf.as_mut_ptr();
             xfer.length = buf.len() as u16;
@@ -1044,11 +1069,6 @@ impl<'d> Rusb1HostDriver<'d> {
             xfer.ep_addr = ep_addr;
             xfer.dev_addr = dev_addr;
         });
-
-        let mask = 1u16 << pipe;
-        HCD_PIPE_DONE.fetch_and(!mask, Ordering::Release);
-        HCD_PIPE_NRDY.fetch_and(!mask, Ordering::Release);
-        HCD_PIPE_STALL.fetch_and(!mask, Ordering::Release);
 
         let u = usb(self.port);
         // Arm pipe to issue IN tokens.
@@ -1065,7 +1085,12 @@ impl<'d> Rusb1HostDriver<'d> {
             .ok_or(PipeError::Canceled)?;
         self.port_active()?;
 
+        // Flags cleared before the transfer is published, as in xfer_in.
+        let mask = 1u16 << pipe;
         critical_section::with(|cs| unsafe {
+            HCD_PIPE_DONE.fetch_and(!mask, Ordering::Release);
+            HCD_PIPE_NRDY.fetch_and(!mask, Ordering::Release);
+            HCD_PIPE_STALL.fetch_and(!mask, Ordering::Release);
             let xfer = &mut *HCD_XFER[pipe].borrow(cs).get();
             xfer.buf = buf.as_ptr() as *mut u8;
             xfer.length = buf.len() as u16;
@@ -1074,12 +1099,11 @@ impl<'d> Rusb1HostDriver<'d> {
             xfer.dev_addr = dev_addr;
         });
 
-        let mask = 1u16 << pipe;
-        HCD_PIPE_DONE.fetch_and(!mask, Ordering::Release);
-        HCD_PIPE_NRDY.fetch_and(!mask, Ordering::Release);
-        HCD_PIPE_STALL.fetch_and(!mask, Ordering::Release);
-
-        unsafe {
+        // D0FIFO is shared with the interrupt handler, which selects it for other pipes
+        // (pipe_brdy_in, pipe_brdy_out). An interrupt between selecting the port and
+        // deselecting it re-pointed it mid-write: on hardware the playback write landed in
+        // the capture pipe and the stream stopped. Hold interrupts off across the port use.
+        critical_section::with(|_| unsafe {
             let u = usb(self.port);
 
             if buf.is_empty() {
@@ -1089,7 +1113,7 @@ impl<'d> Rusb1HostDriver<'d> {
                 u.d0fifosel()
                     .write_value(pipe as u16 | (MBW_32 << FIFOSEL_MBW_SHIFT));
                 while u.d0fifosel().read() & FIFOSEL_CURPIPE_MASK != pipe as u16 {}
-                while u.d0fifoctr().read() & FIFOCTR_FRDY == 0 {}
+                wait_frdy(u);
                 u.d0fifoctr().write_value(FIFOCTR_BCLR);
                 u.d0fifoctr().write_value(FIFOCTR_BVAL);
                 u.d0fifosel().write_value(0);
@@ -1099,7 +1123,7 @@ impl<'d> Rusb1HostDriver<'d> {
                 u.d0fifosel()
                     .write_value(pipe as u16 | (MBW_32 << FIFOSEL_MBW_SHIFT));
                 while u.d0fifosel().read() & FIFOSEL_CURPIPE_MASK != pipe as u16 {}
-                while u.d0fifoctr().read() & FIFOCTR_FRDY == 0 {}
+                wait_frdy(u);
 
                 // Read MPS from PIPEMAXP.
                 u.pipesel().write_value(pipe as u16);
@@ -1126,6 +1150,22 @@ impl<'d> Rusb1HostDriver<'d> {
             // Arm the pipe.
             let ctr = pipectr(u, pipe);
             ctr.write_value((ctr.read() & !PIPECTR_PID_MASK) | PIPECTR_PID_BUF);
+        });
+
+        // An isochronous packet has no handshake: once it is in the FIFO with the pipe
+        // armed it is done. Waiting for BRDY hangs: a transmitting pipe's BRDY needs one
+        // bank emptied *and* the other written (TRM §28.4.2 (1)), so after an underrun
+        // drained both banks, the next single packet never raises one.
+        let all_written = critical_section::with(|cs| unsafe {
+            let xfer = &mut *HCD_XFER[pipe].borrow(cs).get();
+            let done = xfer.remaining == 0;
+            if done {
+                xfer.buf = core::ptr::null_mut();
+            }
+            done
+        });
+        if HCD_PIPE_ISO_OUT.load(Ordering::Acquire) & mask != 0 && all_written {
+            return Ok(());
         }
 
         poll_pipe(pipe).await.map(|_| ())
@@ -1198,6 +1238,17 @@ impl<'d> Rusb1HostDriver<'d> {
 // ---------------------------------------------------------------------------
 // Async poll helper
 // ---------------------------------------------------------------------------
+
+/// Wait, bounded, for D0FIFO to be ready (FRDY). A buffer bank frees within a
+/// (micro)frame; the bound keeps a stopped port from hanging the CPU with interrupts
+/// masked.
+fn wait_frdy(u: Usb) {
+    for _ in 0..100_000u32 {
+        if u.d0fifoctr().read() & FIFOCTR_FRDY != 0 {
+            return;
+        }
+    }
+}
 
 /// Future that resolves when pipe `n`'s transfer completes or errors.
 /// Returns `Ok(bytes_transferred)` or the appropriate `PipeError`.
@@ -1298,7 +1349,7 @@ pub unsafe fn hcd_int_handler(port: u8) {
             // Cancel any pending SETUP.
             let dcpctr = pipectr(u, 0).read();
             if dcpctr & DCPCTR_SUREQ != 0 {
-                pipectr(u, 0).write_value(dcpctr | DCPCTR_SUREQCLR);
+                pipectr(u, 0).write_value((dcpctr & !DCPCTR_SUREQ) | DCPCTR_SUREQCLR)
             }
             // Switch back to detecting attach.
             let enb = u.intenb(1).read();
@@ -1894,10 +1945,12 @@ mod tests {
         test::reset();
         test::rcw0(u.intsts(1).addr());
         test::poke16(u.syscfg0().addr(), SYSCFG_UPLLE);
+        HCD_EVENTS.store(0, Ordering::Relaxed);
+        let h = unsafe { Rusb1HostDriver::new(0) };
+        // The bus state the hardware would report once the controller runs.
         test::poke16(u.syssts0().addr(), lnst);
         test::poke16(u.dvstctr0().addr(), rhst);
-        HCD_EVENTS.store(0, Ordering::Relaxed);
-        unsafe { Rusb1HostDriver::new(0) }
+        h
     }
 
     /// An EOF error (activity past the end of a (micro)frame) stops the port: the controller
@@ -1938,6 +1991,142 @@ mod tests {
             test::peek16(u.intsts(1).addr()) & INTSTS1_EOFERR,
             0,
             "status cleared"
+        );
+    }
+
+    /// A debugger reload is not a chip reset: host start stops SOF and any reset the previous
+    /// program left running, then clears USBE to re-initialise the sequencer, before setting
+    /// host mode.
+    #[test]
+    fn host_start_stops_the_controller_first() {
+        use crate::mmio::test;
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let u = usb(0);
+        test::reset();
+        test::poke16(u.syscfg0().addr(), SYSCFG_UPLLE | SYSCFG_USBE | SYSCFG_DCFM);
+        test::poke16(u.dvstctr0().addr(), DVSTCTR0_UACT | DVSTCTR0_RHST_HS);
+        let _ = unsafe { Rusb1HostDriver::new(0) };
+        let w = test::writes();
+        let dv = w
+            .iter()
+            .position(|&(a, v)| a == u.dvstctr0().addr() && v == 0)
+            .expect("SOF stopped");
+        let off = w
+            .iter()
+            .position(|&(a, v)| a == u.syscfg0().addr() && v as u16 & SYSCFG_USBE == 0)
+            .expect("USBE cleared");
+        let on = w
+            .iter()
+            .rposition(|&(a, v)| a == u.syscfg0().addr() && v as u16 & SYSCFG_USBE != 0)
+            .expect("USBE set again");
+        assert!(
+            dv < off && off < on,
+            "SOF stopped, then USBE cleared, then host mode enabled"
+        );
+    }
+
+    /// Cancelling a pending SETUP writes SUREQCLR without SUREQ: writing SUREQ=1 requests a
+    /// SETUP (TRM §28.3.21), so echoing the read-back value re-requested the one being cancelled.
+    #[test]
+    fn cancelling_a_pending_setup_does_not_request_another() {
+        use crate::mmio::test;
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = host_with_bus(0b01, DVSTCTR0_RHST_FS | DVSTCTR0_UACT);
+        let u = usb(0);
+        h.watch_for_detach();
+        test::poke16(pipectr(u, 0).addr(), DCPCTR_SUREQ);
+        test::poke16(u.intsts(1).addr(), INTSTS1_DTCH);
+        let start = test::log().len();
+        unsafe { hcd_int_handler(0) };
+        let clr = test::log()[start..]
+            .iter()
+            .find(|a| {
+                a.write && a.addr == pipectr(u, 0).addr() && a.val as u16 & DCPCTR_SUREQCLR != 0
+            })
+            .copied()
+            .expect("the detach cancels the pending SETUP");
+        assert_eq!(
+            clr.val as u16 & DCPCTR_SUREQ,
+            0,
+            "SUREQ not written with SUREQCLR"
+        );
+    }
+
+    /// The device the probe finds may also have raised ATTCH (the line came up at J while
+    /// attach detection was armed). That attach is the same device: once the probe reports it,
+    /// the next event wait must not report it again (it would reset the bound device).
+    #[test]
+    fn the_attach_a_probe_answers_is_not_reported_again() {
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut h = host_with_bus(0b01, DVSTCTR0_RHST_FS);
+        HCD_EVENTS.store(EVT_ATTACH, Ordering::Relaxed);
+        assert_eq!(
+            drive(h.wait_for_device_event(), 200),
+            Some(DeviceEvent::Connected(Speed::Full))
+        );
+        assert_eq!(
+            drive(h.wait_for_device_event(), 200),
+            None,
+            "no second Connected"
+        );
+    }
+
+    /// An isochronous OUT packet is done once it is in the FIFO with the pipe armed: there is no
+    /// handshake to wait for. Waiting for a BRDY hung the stream: a transmitting pipe's BRDY
+    /// needs one bank emptied *and* the other written (TRM §28.4.2 (1)), so after an underrun
+    /// had drained both banks the next single packet never raised one.
+    #[test]
+    fn an_isochronous_out_packet_completes_without_an_interrupt() {
+        use crate::mmio::test;
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = host_with_bus(0b00, DVSTCTR0_RHST_HS | DVSTCTR0_UACT);
+        let u = usb(0);
+        critical_section::with(|cs| unsafe { *HCD_ALLOC[0].borrow(cs).get() = HcdAlloc::new() });
+        h.edpt_open(1, 0x03, EndpointType::Isochronous, 56, 1)
+            .unwrap();
+        test::poke16(u.d0fifoctr().addr(), FIFOCTR_FRDY);
+        assert_eq!(drive(h.xfer_out(1, 0x03, &[0u8; 48]), 3), Some(Ok(())));
+    }
+
+    /// A bus reset ends with the line returning from SE0 to J: the attach condition, so ATTCH
+    /// latches. Left armed, that raised a phantom attach after the device was bound, and the
+    /// supervisor reset the device out from under its drivers. The reset masks attach/detach
+    /// detection, clears what it latched, and restores detection after.
+    #[test]
+    fn a_bus_reset_does_not_raise_an_attach() {
+        use crate::mmio::test;
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = host_with_bus(0b01, DVSTCTR0_RHST_FS);
+        let u = usb(0);
+        let armed = u.intenb(1).read();
+        assert_ne!(armed & INTENB1_ATTCHE, 0);
+        let mut f = core::pin::pin!(h.bus_reset());
+        let mut cx = core::task::Context::from_waker(core::task::Waker::noop());
+        assert!(f.as_mut().poll(&mut cx).is_pending(), "reset under way");
+        assert_eq!(
+            u.intenb(1).read() & (INTENB1_ATTCHE | INTENB1_DTCHE),
+            0,
+            "attach/detach detection masked during the reset"
+        );
+        test::poke16(u.intsts(1).addr(), INTSTS1_ATTCH); // latched as the line returns to J
+        HCD_EVENTS.store(0, Ordering::Relaxed);
+        let speed = loop {
+            if let core::task::Poll::Ready(v) = f.as_mut().poll(&mut cx) {
+                break v;
+            }
+            embassy_time::MockDriver::get().advance(embassy_time::Duration::from_millis(1));
+        };
+        assert_eq!(speed, Some(Speed::Full));
+        assert_eq!(
+            test::peek16(u.intsts(1).addr()) & INTSTS1_ATTCH,
+            0,
+            "latch cleared"
+        );
+        assert_eq!(u.intenb(1).read(), armed, "detection restored");
+        assert_eq!(
+            HCD_EVENTS.load(Ordering::Acquire) & EVT_ATTACH,
+            0,
+            "no attach event"
         );
     }
 
@@ -2134,6 +2323,8 @@ mod tests {
                 (SUSPMODE_0, 0),
                 (SYSCFG0_0, SYSCFG_UPLLE as u32),
                 (SUSPMODE_1, SUSPMODE_SUSPM as u32),
+                // USBE cleared first: the controller starts stopped.
+                (SYSCFG0_1, (SYSCFG_DRPD | SYSCFG_DPRPU | SYSCFG_HSE) as u32),
                 (SYSCFG0_1, SYSCFG_DCFM as u32),
                 (SYSCFG0_1, (SYSCFG_DCFM | SYSCFG_DRPD) as u32),
                 (SYSCFG0_1, (SYSCFG_DCFM | SYSCFG_DRPD | SYSCFG_USBE) as u32),
