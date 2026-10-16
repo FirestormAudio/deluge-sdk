@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `usb-classes` `AudioClass`: up to 48 capture channels. Above 1024 bytes the capture endpoint
+  is sized per high-speed microframe (7 frames), so `AudioClass<8>` (168-byte packets) builds,
+  for example for an Elektron Outbox 8. `AudioClass::CAPTURE_MAX_PACKET` gives the size.
 - `rza1l-hal` USB host: an interrupt endpoint over 64 bytes (such as Overbridge's 368-byte
   audio blocks) opens on a bulk pipe (MXPS 512 on pipes 3-5, or its own size up to 1024 on
   pipes 1-2) instead of failing for lack of a large interrupt pipe.
