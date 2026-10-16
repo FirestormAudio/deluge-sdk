@@ -7,5 +7,7 @@
 pub mod midi;
 #[cfg(all(test, not(target_os = "none")))]
 pub(crate) mod mock;
+#[cfg(feature = "host-overbridge")]
+pub mod overbridge;
 #[cfg(feature = "host-uac")]
 pub mod uac;

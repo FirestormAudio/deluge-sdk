@@ -20,7 +20,7 @@ use heapless::Vec;
 #[derive(Clone, Default)]
 pub struct Script {
     /// Bytes returned by successive `request_in` calls, in order.
-    pub reads: Vec<Vec<u8, 64>, 8>,
+    pub reads: Vec<Vec<u8, 1024>, 80>,
     /// Error returned instead of the next read, if set.
     pub read_err: Option<PipeError>,
 }
@@ -29,7 +29,7 @@ pub struct Script {
 #[derive(Default)]
 pub struct PipeLog {
     /// Bytes passed to `request_out`, concatenated.
-    pub sent: Vec<u8, 256>,
+    pub sent: Vec<u8, 16384>,
     /// Number of `request_in` calls.
     pub reads_issued: usize,
     /// Number of `reset_data_toggle` calls.

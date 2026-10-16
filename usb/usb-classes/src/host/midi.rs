@@ -444,7 +444,7 @@ mod tests {
     #[test]
     fn read_yields_scripted_packets() {
         let state = MockState::leak();
-        let mut data = heapless::Vec::<u8, 64>::new();
+        let mut data = heapless::Vec::<u8, 1024>::new();
         data.extend_from_slice(&[0x09, 0x90, 60, 100, 0x08, 0x80, 60, 0])
             .unwrap();
         state.script.borrow_mut().reads.push(data).unwrap();
