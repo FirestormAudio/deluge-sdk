@@ -15,11 +15,14 @@ use core::sync::atomic::{AtomicU8, Ordering};
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_usb::control::{InResponse, OutResponse, Recipient, Request, RequestType};
-use embassy_usb::driver::{Direction, Driver, EndpointAddress};
+use embassy_usb::driver::{
+    Direction, Driver, EndpointAddress, EndpointError, EndpointIn, EndpointOut,
+};
 use embassy_usb::types::InterfaceNumber;
 use embassy_usb::{Builder, Handler};
 
 use super::proto::{self, CounterTracker, FRAMES_PER_BLOCK, Format, MAX_BLOCK, MAX_CHANNELS};
+use super::stems::OverbridgeHandle;
 
 const VENDOR_CLASS: u8 = 0xFF;
 /// Audio endpoints' number: Overwitch addresses 0x83 and 0x03 directly.
@@ -281,6 +284,68 @@ pub fn new<'d, D: Driver<'d>>(
     };
     (sender, receiver, shared)
 }
+impl<E: EndpointIn> OverbridgeSender<E> {
+    /// Wait until the host has enabled the endpoint (selected alt 1-3 on interface 1).
+    pub async fn wait_enabled(&mut self) {
+        self.ep.wait_enabled().await;
+    }
+
+    /// Send the next 7 frames the app has written to `h` as one block. Waits until there are 7,
+    /// so the app's audio clock paces the stream (the device is the clock).
+    pub async fn send_block<const RX: usize, const TX: usize>(
+        &mut self,
+        h: &OverbridgeHandle<RX, TX>,
+    ) -> Result<(), EndpointError> {
+        h.wait_tx_frames(FRAMES_PER_BLOCK).await;
+        let n = FRAMES_PER_BLOCK * self.ch;
+        h.pull_tx(&mut self.frames[..n]);
+        let len = proto::encode_from_device(
+            self.format,
+            self.ch,
+            self.counter,
+            &self.frames[..n],
+            &mut self.block,
+        );
+        self.ep.write(&self.block[..len]).await?;
+        self.counter = self.counter.wrapping_add(FRAMES_PER_BLOCK as u16);
+        h.update_stats(|s| s.blocks_out = s.blocks_out.wrapping_add(1));
+        Ok(())
+    }
+}
+
+impl<E: EndpointOut> OverbridgeReceiver<E> {
+    /// Wait until the host has enabled the endpoint (selected alt 1-3 on interface 2).
+    pub async fn wait_enabled(&mut self) {
+        self.ep.wait_enabled().await;
+    }
+
+    /// Receive one block from the host into `h`. A malformed block is counted, not pushed.
+    pub async fn receive_block<const RX: usize, const TX: usize>(
+        &mut self,
+        h: &OverbridgeHandle<RX, TX>,
+    ) -> Result<(), EndpointError> {
+        let got = self.ep.read(&mut self.block).await?;
+        let n = FRAMES_PER_BLOCK * self.ch;
+        match proto::decode_to_device(
+            self.format,
+            self.ch,
+            &self.block[..got],
+            &mut self.frames[..n],
+        ) {
+            Ok(counter) => {
+                let gaps = self.counter.observe(counter);
+                h.push_rx(&self.frames[..n]);
+                h.update_stats(|s| {
+                    s.blocks_in = s.blocks_in.wrapping_add(1);
+                    s.counter_gaps = s.counter_gaps.saturating_add(gaps);
+                });
+            }
+            Err(_) => h.update_stats(|s| s.framing_errors = s.framing_errors.saturating_add(1)),
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -449,5 +514,152 @@ mod tests {
         c.set_alternate_setting(InterfaceNumber(1), 3);
         c.reset();
         assert!(!shared.streaming(), "a bus reset drops the alternates");
+    }
+
+    use crate::overbridge::stems::{OverbridgeHandle, OverbridgeInfo};
+    use core::cell::RefCell as Cell;
+    use embassy_futures::block_on;
+    use embassy_usb::driver::{
+        Endpoint, EndpointError, EndpointIn, EndpointInfo, EndpointOut, EndpointType,
+    };
+
+    /// An endpoint that records writes and replays scripted reads.
+    struct Scripted {
+        info: EndpointInfo,
+        written: Cell<Vec<Vec<u8>>>,
+        reads: Cell<Vec<Vec<u8>>>,
+    }
+
+    impl Scripted {
+        fn new(addr: u8) -> Self {
+            Self {
+                info: EndpointInfo {
+                    addr: addr.into(),
+                    ep_type: EndpointType::Interrupt,
+                    max_packet_size: 368,
+                    interval_ms: 1,
+                },
+                written: Cell::new(Vec::new()),
+                reads: Cell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl Endpoint for Scripted {
+        fn info(&self) -> &EndpointInfo {
+            &self.info
+        }
+        async fn wait_enabled(&mut self) {}
+    }
+
+    impl EndpointIn for Scripted {
+        async fn write(&mut self, buf: &[u8]) -> Result<(), EndpointError> {
+            self.written.borrow_mut().push(buf.to_vec());
+            Ok(())
+        }
+    }
+
+    impl EndpointOut for Scripted {
+        async fn read(&mut self, buf: &mut [u8]) -> Result<usize, EndpointError> {
+            let mut reads = self.reads.borrow_mut();
+            if reads.is_empty() {
+                return Err(EndpointError::Disabled);
+            }
+            let r = reads.remove(0);
+            buf[..r.len()].copy_from_slice(&r);
+            Ok(r.len())
+        }
+    }
+
+    fn device_handle() -> OverbridgeHandle<1024, 1024> {
+        let h = OverbridgeHandle::new();
+        // The device receives `ch_from_host` (2) and sends `ch_to_host` (12).
+        h.begin(
+            OverbridgeInfo {
+                pid: 0,
+                name: "Digitakt",
+                ch_from: 12,
+                ch_to: 2,
+                format: Format::V2,
+            },
+            2,
+            12,
+        )
+        .unwrap();
+        h
+    }
+
+    #[test]
+    fn a_block_goes_to_the_host_once_seven_frames_are_written() {
+        let h = device_handle();
+        let mut s = OverbridgeSender {
+            ep: Scripted::new(0x83),
+            format: Format::V2,
+            ch: 12,
+            counter: 0,
+            block: [0; MAX_BLOCK],
+            frames: [0; FRAMES_PER_BLOCK * MAX_CHANNELS],
+        };
+        let frames: Vec<i32> = (0..7 * 12).map(|i| (i as i32) << 12).collect();
+        assert_eq!(h.write(&frames), 7);
+        block_on(s.send_block(&h)).unwrap();
+        {
+            use core::future::Future;
+            let mut second = core::pin::pin!(s.send_block(&h));
+            let mut cx = core::task::Context::from_waker(core::task::Waker::noop());
+            assert!(second.as_mut().poll(&mut cx).is_pending());
+        }
+        let written = s.ep.written.borrow();
+        assert_eq!(written.len(), 1, "the second waits for 7 more frames");
+        let mut back = [0i32; 7 * 12];
+        assert_eq!(
+            proto::decode_from_device(Format::V2, 12, &written[0], &mut back),
+            Ok(0)
+        );
+        assert_eq!(&back[..], &frames[..]);
+        assert_eq!(h.stats().blocks_out, 1);
+    }
+
+    #[test]
+    fn blocks_from_the_host_reach_the_handle() {
+        let h = device_handle();
+        let mut r = OverbridgeReceiver {
+            ep: Scripted::new(0x03),
+            format: Format::V2,
+            ch: 2,
+            counter: CounterTracker::default(),
+            block: [0; MAX_BLOCK],
+            frames: [0; FRAMES_PER_BLOCK * MAX_CHANNELS],
+        };
+        let frames: Vec<i32> = (0..14).map(|i| i << 20).collect();
+        let mut block = [0u8; 88];
+        proto::encode_to_device(Format::V2, 2, 7, &frames, &mut block);
+        r.ep.reads.borrow_mut().push(block.to_vec());
+        block_on(r.receive_block(&h)).unwrap();
+        let mut out = [0i32; 14];
+        assert_eq!(h.read(&mut out), 7);
+        assert_eq!(&out[..], &frames[..]);
+        assert_eq!(h.stats().blocks_in, 1);
+    }
+
+    #[test]
+    fn a_bad_block_from_the_host_is_counted_not_pushed() {
+        let h = device_handle();
+        let mut r = OverbridgeReceiver {
+            ep: Scripted::new(0x03),
+            format: Format::V2,
+            ch: 2,
+            counter: CounterTracker::default(),
+            block: [0; MAX_BLOCK],
+            frames: [0; FRAMES_PER_BLOCK * MAX_CHANNELS],
+        };
+        r.ep.reads.borrow_mut().push(std::vec![0x07, 0x00, 0, 0]); // short, and a device-to-host header
+        block_on(r.receive_block(&h)).unwrap();
+        assert_eq!(h.stats().framing_errors, 1);
+        assert_eq!(h.read(&mut [0; 2]), 0);
+        assert!(matches!(
+            block_on(r.receive_block(&h)),
+            Err(EndpointError::Disabled)
+        ));
     }
 }
