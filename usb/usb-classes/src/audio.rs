@@ -486,3 +486,29 @@ impl<const CAPTURE_CH: usize> Handler for AudioClass<CAPTURE_CH> {
         self.capture_active = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use super::*;
+    use crate::test_usb::{config_descriptor, endpoints};
+    use std::vec::Vec;
+
+    /// The capture (ISO IN) endpoint's wMaxPacketSize in each alternate setting.
+    fn capture_max_packets<const CH: usize>() -> Vec<u16> {
+        let desc = config_descriptor(|b| {
+            let _ = AudioClass::<CH>::new(b, 288);
+        });
+        endpoints(&desc)
+            .into_iter()
+            .filter(|e| e.addr & 0x80 != 0 && e.attributes & 0x03 == 0x01)
+            .map(|e| e.max_packet)
+            .collect()
+    }
+
+    /// Existing 2-channel builds keep their descriptor: 49 frames × 2 ch × 3 bytes in both alts.
+    #[test]
+    fn two_channel_capture_keeps_the_49_frame_packet() {
+        assert_eq!(capture_max_packets::<2>(), [294, 294]);
+    }
+}

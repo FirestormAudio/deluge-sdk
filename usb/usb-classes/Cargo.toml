@@ -48,3 +48,4 @@ embassy-usb = { workspace = true }
 critical-section = { workspace = true, features = ["std"] }
 embassy-futures = { workspace = true }
 embassy-time = { workspace = true, features = ["mock-driver", "generic-queue-8"] }
+embassy-usb = { workspace = true }
