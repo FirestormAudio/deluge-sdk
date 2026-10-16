@@ -937,7 +937,7 @@ mod tests {
             .push(Vec::from_slice(&44_100u32.to_le_bytes()).unwrap())
             .unwrap();
         // One capture packet: two mono 24-bit frames (so 2 playback frames sent).
-        let mut pkt = Vec::<u8, 64>::new();
+        let mut pkt = Vec::<u8, 1024>::new();
         pkt.extend_from_slice(&[0, 0, 0x40, 0, 0, 0x40]).unwrap(); // +0.5, +0.5
         state.script.borrow_mut().reads.push(pkt).unwrap();
 
@@ -966,7 +966,7 @@ mod tests {
             .borrow_mut()
             .push(Vec::from_slice(&44_100u32.to_le_bytes()).unwrap())
             .unwrap();
-        let mut pkt = Vec::<u8, 64>::new();
+        let mut pkt = Vec::<u8, 1024>::new();
         pkt.extend_from_slice(&[0, 0, 0x40]).unwrap();
         state.script.borrow_mut().reads.push(pkt).unwrap();
         let alloc = MockAlloc::new(state);
@@ -1172,7 +1172,7 @@ mod tests {
             .push(heapless::Vec::from_slice(&44_100u32.to_le_bytes()).unwrap())
             .unwrap();
         // One iso IN packet: two mono 24-bit frames, values +0.5 and -1.0.
-        let mut pkt = heapless::Vec::<u8, 64>::new();
+        let mut pkt = heapless::Vec::<u8, 1024>::new();
         pkt.extend_from_slice(&[0, 0, 0x40, 0, 0, 0x80]).unwrap();
         state.script.borrow_mut().reads.push(pkt).unwrap();
 
@@ -1296,7 +1296,7 @@ mod tests {
         // Mono (channels=1) -> frame_bytes == 3. 7 bytes = two whole frames
         // (+0.5, -1.0) plus one torn trailing byte that `chunks_exact` must
         // silently drop rather than panic on.
-        let mut pkt = heapless::Vec::<u8, 64>::new();
+        let mut pkt = heapless::Vec::<u8, 1024>::new();
         pkt.extend_from_slice(&[0, 0, 0x40, 0, 0, 0x80, 0xAA])
             .unwrap();
         state.script.borrow_mut().reads.push(pkt).unwrap();
@@ -1488,7 +1488,7 @@ mod tests {
             .push(Vec::from_slice(&48_000u32.to_le_bytes()).unwrap())
             .unwrap();
         // Six stereo 32-bit frames: left +0.5, right -0.5.
-        let mut pkt = Vec::<u8, 64>::new();
+        let mut pkt = Vec::<u8, 1024>::new();
         for _ in 0..6 {
             pkt.extend_from_slice(&[0, 0, 0, 0x40, 0, 0, 0, 0xC0])
                 .unwrap();

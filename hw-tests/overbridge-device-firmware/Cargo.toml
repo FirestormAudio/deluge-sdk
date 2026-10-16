@@ -1,0 +1,35 @@
+[package]
+publish = false
+name = "overbridge-device-firmware"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[[bin]]
+name = "overbridge-device-firmware"
+test = false
+
+[dependencies]
+usb-classes = { workspace = true, features = ["device-overbridge", "device-audio"] }
+rza1l-hal = { path = "../../rza1/rza1l-hal" }
+deluge-bsp = { path = "../../crates/deluge-bsp" }
+rza1-alloc = { path = "../../rza1/rza1-alloc" }
+cortex-ar = { workspace = true }
+embassy-executor = { workspace = true, features = ["nightly", "platform-cortex-ar", "executor-thread"] }
+embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
+embassy-usb = { workspace = true }
+embassy-futures = { workspace = true }
+log = { workspace = true }
+rtt-target = { workspace = true, optional = true }
+
+[features]
+# Opt-in for the same reason as uac-host-firmware's: a default-on `rtt` would turn on
+# `deluge-bsp/rtt` in the runtime rlib every firmware shares and break their links.
+default = []
+rtt = ["dep:rtt-target", "deluge-bsp/rtt"]
+## Present Elektron's VID (0x1935) with a PID no device table lists (0x0BF0), so the Deluge
+## host class and Overwitch (with a local `devices.json` entry) bind it. For the developer's
+## own bench only: never enable it in anything distributed (spec §7.2).
+elektron-id = []
+## Alternate every 30 s between the Overbridge face and a UAC2 face (runtime face switching).
+face-switch = []

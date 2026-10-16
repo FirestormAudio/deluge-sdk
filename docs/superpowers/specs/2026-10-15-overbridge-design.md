@@ -17,10 +17,26 @@ Under both sits RZ/A1L USB controller work:
 A separate goal is more analog outputs for the Deluge through an Outbox 8. That
 uses the existing UAC2 device class at 8 channels, not Overbridge (§7).
 
-> **Status:** design proposal, awaiting review before planning.
+> **Status:** implemented on `feat/overbridge` (sub-projects 1–5, 7, 8; 6 belongs to the
+> digitakt repo). Hardware checks are in `docs/hardware-tasks.md`. Deviations from this design,
+> decided during implementation:
+> - §4.3–4.5: receive DMA only, on D1FIFO, 4-byte cycle steal, per transfer under the existing
+>   pipe trait (no `StreamIn`/`StreamOut` ring); transmit stays on the CPU. See the sub-project 2
+>   plan's Rulings.
+> - §4.1: the host stops an interrupt-on-bulk IN pipe at NAK after every block (a full-size
+>   block gets no short packet for SHTNAK to act on).
+> - §5.3: `StreamStats` also counts `counter_resyncs` (a counter jump past ~150 ms of gap).
+> - §5.6: the shared `HostAudioArena` isn't built (it would save ≤ 32 KB). The UAC rings and
+>   the Overbridge rings stay separate statics.
+> - §6: the device sender waits for the app's frames (it never drops a block); the device face
+>   switch is a pattern in `hw-tests/overbridge-device-firmware`, not an SDK API.
 > **Evidence:** the protocol comes from Overwitch (GPL-3; read for the format
-> only, no code copied). The digitakt repo's Outbox 8 firmware analysis,
+> only, no code copied; last checked at commit 40018bb, `src/engine.c`,
+> `src/engine.h`, `res/devices.json`). The digitakt repo's Outbox 8 firmware analysis,
 > `re/notes/outbox8.md` (commits b994da5 and abf93cc), independently matches it.
+> The Digitakt's own descriptors come from its OS 1.54 image (`re/notes/io.md`,
+> config descriptor at 0x40252286 in `section_3.bin`), decoded in §2.1 and
+> Appendix A.
 > **Builds on:** the UAC host stack (`2026-07-16-usb-uac-host-design.md` and
 > successors), `rza1l-hal::usb::host`, and `rza1l-hal::dmac`.
 
@@ -53,8 +69,9 @@ uses the existing UAC2 device class at 8 channels, not Overbridge (§7).
   Overwitch and isn't needed for audio.
 - **A default build that presents Elektron's VID from non-Elektron hardware**
   (§7.2).
-- **Hubs with several Overbridge devices.** It should work, since the host stack
-  supports hubs, but it isn't tested or tuned for in this spec.
+- **Overbridge through a hub.** The supervisor binds only USB-MIDI on hub ports
+  (`hub_task` calls `bind_midi` alone), so an Overbridge or UAC device on a hub
+  gets its MIDI and no audio. Extending the hub path is separate work.
 
 ## 2. The protocol (as implemented here)
 
@@ -64,9 +81,55 @@ uses the existing UAC2 device class at 8 channels, not Overbridge (§7).
 2. `SET_INTERFACE` interface 1 alt 3: audio from the device, endpoint `0x83`.
 3. `SET_INTERFACE` interface 2 alt 3: audio to the device, endpoint `0x03`.
 
-Overwitch also clears halts and reads the device name through vendor requests 1
-and 2. The Outbox does neither. The host class does what the Outbox does and
-treats the name as optional.
+Overwitch does more, and the Outbox does none of it:
+- **Halts.** After selecting the alternates, it clears halts on `0x83` and `0x03`.
+- **Name.** It issues two vendor device-to-host requests, `bRequest` 1 and 2, with
+  wValue 0, wIndex 0 and 32 bytes each. Request 1 returns the name the device
+  shows for the host.
+  - It then sleeps 100 ms. Its source says that is "required to not send the
+    next packet immediately, which can make devices crash".
+- **Setting the name.** A vendor host-to-device `bRequest` 1 with a 32-byte
+  payload sets that name.
+- **Kernel drivers.** It detaches the kernel drivers from interfaces 4 and 5 and
+  reattaches them afterwards. Those are the USB-MIDI function's AudioControl and
+  MIDIStreaming interfaces (§2.1), not an Overbridge channel.
+- **Transfer size.** It queues interrupt transfers of 6–24 blocks (default 24,
+  8832 bytes IN for a Digitakt). Each block is one full `wMaxPacketSize` packet,
+  so the wire traffic is the same as one block per transfer.
+- **Size check.** It refuses a device whose alt-3 `wMaxPacketSize` isn't exactly
+  `32 + 7 × frame_bytes` for its `devices.json` entry.
+
+The host class does what the Outbox does and treats the name as optional. If it
+does read the name, it waits 100 ms afterwards before opening the streams.
+
+### 2.1 The Digitakt's descriptors (OS 1.54)
+
+Decoded from the firmware image (Appendix A has the bytes). Hardware test 1
+(§8.4) confirms them on a running unit.
+
+- **Device:** VID 0x1935, PID 0x0B2C, bcdUSB 2.00, class EF/02/01 (IAD
+  composite), EP0 max packet 64, bcdDevice 0x0001, strings 1/2/3. High speed
+  only.
+- **Configuration 1:** 6 interfaces, self-powered (bmAttributes 0xC0),
+  bMaxPower 0, wTotalLength 263 (patched at runtime; the image holds 0).
+- **IAD 0–3, vendor class 0xFF:**
+
+  | Interface | Alt | Endpoint | Type | MaxPacket | bInterval |
+  |---|---|---|---|---|---|
+  | 0 | 0 | none | | | |
+  | 1 | 0 | none | | | |
+  | 1 | 1 / 2 / 3 | 0x83 IN | interrupt | 32 / 88 / 368 | 1 |
+  | 2 | 0 | none | | | |
+  | 2 | 1 / 2 / 3 | 0x03 OUT | interrupt | 32 / 88 / 88 | 1 |
+  | 3 | 0 | 0x02 OUT, 0x82 IN | bulk 512, interrupt 64 | | 1 (0x82) |
+
+- **IAD 4–5:** USB-MIDI 1.0 (AudioControl, then MIDIStreaming with bulk 0x01 OUT
+  and 0x81 IN, 512 bytes).
+
+By the block formula, alts 1, 2 and 3 carry 0, 2 and 12 channels from the
+device, and 0, 2 and 2 to it. What alts 1–2 are for isn't known; hosts select
+alt 3. Interface 3 is likely the parameter channel (a non-goal) and isn't
+opened.
 
 **Endpoints.** High-speed **interrupt** endpoints with `bInterval` 1, meaning one
 transaction per 125 µs microframe. One *block* is one USB packet, and its length
@@ -83,10 +146,21 @@ is that endpoint's `wMaxPacketSize` in alt 3.
 
 **Sample formats**
 
-- **v2:** every sample is a big-endian `i32`.
-- **v2.1** (Digitakt II and Digitone II, 42 channels from the device): within
-  each frame, the first 14 channels are 4-byte samples and the remaining 28 are
-  3-byte samples. To the device it stays `i32`.
+- **v2:** every sample is a big-endian `i32` at full scale.
+- **v2.1** (Digitakt II and Digitone II, 42 channels from the device; Overwitch's
+  `engine.c` sample loops):
+  - Within each frame, the first 14 channels from the device are 4-byte samples
+    and the remaining 28 are 3-byte samples. All 8 channels to the device are
+    4-byte.
+  - A **3-byte** sample is a packed big-endian 24-bit value. It decodes to
+    `i32::from_be_bytes([b0, b1, b2, 0])`.
+  - A **4-byte** sample in v2.1 is *not* full scale. It is a 24-bit value
+    sign-extended into a big-endian `i32`, so it decodes as
+    `i32::from_be_bytes(b) << 8` and encodes as `(x >> 8).to_be_bytes()`. That
+    applies both ways, to the device's 14 wide channels and to all 8 channels
+    sent to it.
+  - Every v2.1 sample is therefore 24-bit audio. `proto` normalises all of them
+    to full-scale `i32`.
 - Block size is `32 + 7 × frame_bytes`:
 
   | Device | From device | To device |
@@ -157,11 +231,33 @@ The host's `alloc_pipe` changes:
 - **Interrupt endpoints of 64 bytes or less** keep pipes 6–9, as today. That
   covers MIDI and hubs.
 - **Interrupt endpoints over 64 bytes** are allocated as bulk pipes:
-  - pipes 3–5 when MaxPacket ≤ 512, at MXPS 512;
-  - pipes 1–2 otherwise, at MXPS = the endpoint's MaxPacket, up to 1024.
+  - MaxPacket ≤ 512: the bulk range, searched 5 down to 1 as bulk is today (so
+    pipes 3–5 first), at MXPS 512;
+  - MaxPacket over 512: pipes 1–2 only, at MXPS = the endpoint's MaxPacket, up
+    to 1024.
 - Configuration is `PIPECFG_TYPE_BULK | SHTNAK | DBLB` with IITV 0.
-- The pipe remembers that it carries an interrupt endpoint (`PipeKind::IntrOnBulk`)
-  so that statistics and teardown stay correct. Nothing else differs.
+- A high-bandwidth endpoint (wMaxPacketSize bits 12:11 non-zero) is rejected at
+  open. No Overbridge device uses one, and a bulk pipe can't carry it.
+- Sub-project 1 keeps no marker for these pipes, since nothing it does differs
+  from a bulk pipe. Sub-project 2 adds one if the stream path needs it.
+
+**Why MXPS 512 (TRM §28.3.34, PIPEMAXP).**
+- Pipes 3–5 accept only 8, 16, 32, 64 or 512, so a 368-byte endpoint must be
+  programmed at 512. Its packets are then always short, which is the framing
+  §4.1 "Short packets" relies on.
+- Pipes 1–2 accept 1–1024 at any type. A bulk pipe above 512 is outside the USB
+  specification, though, so the Digitakt II's 1012-byte IN path is unverified
+  until hardware test 4 (§8.4) runs. Sub-project 1 implements the rule and tests
+  the register writes only.
+
+**Pipe budget.** Host mode has five bulk-capable pipes (1–5), and pipes 1–2 are
+also the only isochronous pipes.
+- **A Digitakt** opens its two Overbridge pipes and its two USB-MIDI pipes:
+  four of the five. One isochronous UAC stream can still have pipe 1 or 2.
+- **A Digitakt II** needs pipe 1 or 2 for its 1012-byte IN stream. A
+  class-compliant audio interface that streams both ways uses both, so the two
+  can't run at once. The second one to open gets `OutOfPipes`, and the
+  supervisor reports it rather than retrying.
 
 Packet-buffer budget (8 KB, 64-byte blocks):
 
@@ -179,17 +275,33 @@ open, never a silent fallback to a smaller MXPS.
   device sending exactly MXPS-sized blocks would need a zero-length packet.
   That doesn't happen with the sizes above, and a test asserts it.
 - *OUT:* writing 88 bytes and setting BVAL sends one 88-byte packet.
+- *Batching.* Overwitch's multi-block transfers (§2) rely on each block being a
+  full `wMaxPacketSize` packet. On a pipe at MXPS 512 every block is short, so
+  each host transfer here is one block. The device sees the same tokens either
+  way.
 
 ### 4.2 IITV at high speed
 
 For interrupt pipes 6–9 the host computes `IITV = floor(log2(bInterval))`. That
 is right at full speed. At high speed `bInterval` is an exponent (period
-2^(bInterval−1) microframes), so the code should use `IITV = bInterval − 1`
-(TRM §28.3.35; confirm against its table that IITV counts microframes on a
-high-speed connection before landing the fix).
+2^(bInterval−1) microframes), so the code should use `IITV = bInterval − 1`,
+capped at 7.
 
-This is fixed independently of Overbridge. Today a high-speed MIDI or hub
-interrupt endpoint is polled less often than it asks.
+- **TRM.** §28.4.8 (1)(c): the host issues a token once every 2^IITV
+  (micro)frames, and counts 1 ms frames only "for the pipes used for
+  communications with the full-speed or low-speed peripheral devices connected
+  to a high-speed HUB". A pipe to a high-speed device therefore counts
+  microframes.
+- **Speed.** `edpt_open` reads the device's speed back from DEVADDn.USBSPD,
+  which `device_open` programs before any endpoint opens. High speed gets
+  `bInterval − 1`; full and low speed keep `floor(log2(bInterval))`. The public
+  signature doesn't change.
+- **Effect today.** `floor(log2(b)) ≤ b − 1`, so a high-speed interrupt endpoint
+  is polled *more* often than it asks. For example, a hub status endpoint at
+  bInterval 12 is polled every 1 ms instead of the 16 ms cap. That costs bus
+  time and NAKs, not correctness.
+
+This is fixed independently of Overbridge.
 
 ### 4.3 FIFO routing
 
@@ -214,6 +326,17 @@ interrupt endpoint is polled less often than it asks.
 are `USB0_DMA0` (D0FIFO, DMARS 0b010_0000) and `USB0_DMA1` (D1FIFO,
 0b010_0001). The BSP reserves two DMAC channels for them and hands them to the
 USB host the way SSI's are handed over today (typed DMA roles).
+
+**Which channels.** `deluge_bsp::Board` hands out all 16 channels by role, but
+nothing takes three of them: SCUX FFU0 (`DMA_CH1`), FFU3 (`DMA_CH9`) and FFD3
+(`DMA_CH15`). That holds for every firmware in this repo and for
+DelugeFirmware's Rust BSP. Sub-project 2 renames two of those roles:
+- `DMA_CH1` becomes `Usb0D0FifoDma` (receive). Under fixed priority a lower
+  channel number wins, which suits the receive side.
+- `DMA_CH15` becomes `Usb0D1FifoDma` (transmit).
+
+The C++ firmware doesn't conflict. Its USB stack builds with `USB_CFG_DMA`
+disabled, and its own channels are 2–4, 6–7 and 10–14.
 
 **Access width.**
 - Set D*n*FIFOSEL.MBW to 32-bit.
@@ -312,8 +435,9 @@ impl StreamOut {
   - Shared by the host and device classes.
 - `host::overbridge`:
   - The driver: matching, setup, the stream task, the stem ring.
-  - Bound by the BSP's USB host supervisor next to `host::uac` and `host::midi`.
-    Overbridge is tried first for VID 0x1935, since some Elektron devices also
+  - Bound by the BSP's USB host supervisor next to `host::uac` and `host::midi`,
+    under the runtime mode in §5.6. Overbridge is tried first for VID 0x1935,
+    since some Elektron devices also
     expose class-compliant UAC in other USB modes.
 
 ### 5.2 Setup sequence
@@ -324,7 +448,8 @@ impl StreamOut {
    `Format`. Reject the device when the arithmetic doesn't give a whole number
    of channels.
 3. **Select alternates.** `SET_INTERFACE`(1, 3), then `SET_INTERFACE`(2, 3).
-4. **Name.** Optionally issue vendor requests 1/2 for the device name (32 bytes).
+4. **Name.** Optionally issue vendor request 1 for the device name (32 bytes), then wait
+   100 ms (§2).
    A failure here isn't fatal.
 5. **Open streams.** Open `StreamIn` and `StreamOut` (§4.5), and prime the OUT
    stream with 2 silent blocks so the device sees host traffic immediately.
@@ -381,9 +506,107 @@ pub struct StreamStats {
 - `host::uac::MAX_CHANNELS = 8` is unchanged. Overbridge has its own ring sized
   by `ch_from`, so a 42-channel device costs 42 × 4 × 1024 = 168 KB of ring only
   when it's connected and only for the board that enabled the feature.
-- The ring memory is a `static` sized by the app: `OverbridgeRing<CH, FRAMES>`.
-  A device with more channels than `CH` reports `TooManyChannels` instead of
-  truncating, so stem indices never silently shift.
+- The ring memory comes from the host-audio arena (§5.6), which the board sizes
+  as `HostAudioArena<BYTES>`. The arena is shared with the UAC ring, since only
+  one audio device is bound at a time. A device whose ring wouldn't fit reports
+  `TooManyChannels` instead of truncating, so stem indices never silently shift.
+
+### 5.6 Host audio composition: features, binding and runtime mode
+
+The goal is for a single firmware image to switch between UAC and Overbridge at
+runtime.
+
+**Build-time features**
+
+| Crate | Feature | Contents |
+|---|---|---|
+| `usb-classes` | `host-midi` | USB-MIDI host driver (exists) |
+| `usb-classes` | `host-uac` | UAC host driver (exists) |
+| `usb-classes` | `host-overbridge` | §5 |
+| `deluge-bsp` | `usb-host` | supervisor, hubs, MIDI (today it also pulls in UAC) |
+| `deluge-bsp` | `usb-host-uac` | `usb-host` + `host-uac` |
+| `deluge-bsp` | `usb-host-overbridge` | `usb-host` + `host-overbridge` |
+
+- Splitting `usb-host` changes behaviour for existing users, so `usb-host` keeps
+  enabling UAC for one release, with a CHANGELOG note.
+- Features decide what can be bound. The runtime mode decides what is bound.
+
+**Pipe and resource budget.** Host mode has five bulk-capable pipes (1–5), and
+pipes 1–2 are also the only isochronous ones. Every case below fits, because the
+supervisor binds one root-port device at a time:
+
+| Root-port device | Pipes |
+|---|---|
+| Audio interface with MIDI | MIDI 5, 4; UAC 2, 1 |
+| Digitakt, Overbridge mode | MIDI 5, 4; Overbridge 3, 2 |
+| Digitakt II, Overbridge mode | MIDI 5, 4; Overbridge IN 2 (over 512 B), OUT 3 |
+
+The two DMAC roles (§4.4) and the arena are likewise held by whichever audio
+driver is bound.
+
+**Runtime mode.** A `HostAudioMode` stored in an atomic:
+- **Auto** (default): bind Overbridge when §5.2's match succeeds, otherwise UAC.
+  Elektron boxes present Overbridge (PID 0x0Bxx) or class-compliant audio
+  (0x10xx) according to their own USB-mode setting. Changing that setting makes
+  the box re-enumerate, so under Auto the switch needs nothing from the Deluge.
+- **Uac only** and **Overbridge only**: the other driver is never tried.
+- **Off:** no audio driver. MIDI still binds.
+
+A mode a build can't honour (Overbridge only, without `host-overbridge`)
+behaves as Off and logs it once.
+
+**Binding order on the root port**
+1. MIDI, as today.
+2. Overbridge, if the mode allows it and §5.2 matches.
+3. Otherwise UAC, if the mode allows it.
+
+**Changing the mode while a device is attached**
+1. The supervisor's post-bind wait (today it waits only for a detach) also waits
+   on a mode-change signal.
+2. On a change, it signals the bound audio task to stop. The task's exit drops
+   its pipes, DMA channels and arena claim, exactly as on a detach. MIDI tasks
+   stop as well.
+3. It calls `Rusb1HostDriver::bus_reset`, so the device re-enumerates through the
+   normal attach path and is bound under the new mode.
+
+A reset, not re-binding in place, gives the device a clean configuration and
+alternate settings, and reuses the tested detach path. A switch costs about
+one enumeration (~1 s), and MIDI on the same device drops and returns with it.
+
+**Shared arena.** Because only one audio device is bound at a time,
+- the UAC ring and the Overbridge stem ring are carved from one board-sized
+  static, `HostAudioArena<BYTES>`;
+- the bound driver claims it at bind time and releases it when its task exits;
+- the board sizes it for the largest case it supports (≈168 KB for a 42-channel
+  Digitakt II at 1024 frames). A UAC-only board keeps today's small ring.
+
+**The app-facing handle.** One handle follows whichever driver is bound, so an
+app doesn't need rebuilding and can follow a mode change live:
+
+```rust
+pub enum HostAudio<'a> {
+    None,
+    Uac(UacInput<'a>),              // today's capture/playback API, ≤ 8 channels
+    Overbridge(&'a OverbridgeHandle), // §5.3
+}
+pub fn host_audio() -> HostAudio<'static>;
+pub fn set_host_audio_mode(mode: HostAudioMode);
+pub fn host_audio_mode() -> HostAudioMode;
+```
+
+- The two read paths stay distinct. UAC is an N-channel input, and Overbridge is
+  named stems.
+- A connection counter lets an app notice that the device or driver changed
+  between two reads.
+
+**Device side (later).** The Deluge as a USB device could switch between its
+UAC2 face and an Overbridge face the same way:
+1. drop the `UsbDevice`;
+2. disconnect from the bus (D+ pull-up off);
+3. rebuild with the other configuration;
+4. reconnect.
+
+The host sees an unplug and a new device. This is sub-project 8, after 4.
 
 ### 5.5 Errors
 
@@ -402,20 +625,26 @@ pub struct StreamStats {
   presents the real Digitakt identity and channel counts.
 - A Deluge in a two-Deluge loopback test. It presents a test identity (below).
 
-**Descriptor layout** (matching what hosts look for, §2):
-- One configuration.
-- Interface 0: as on the real device, copied from the descriptors captured in
-  §8.4 step 1. Until then, a vendor-specific interface with no endpoints. Its
-  contents are not needed for audio.
-- Interfaces 1 and 2, each with alts 0–3. Only alt 3 has an endpoint: interrupt,
-  high speed, `bInterval` 1, MaxPacket = block size. Alts 1–2 exist as zero-bandwidth
-  placeholders so that alt 3 has the number hosts select.
-- Interface 3: optional USB-MIDI, composed by the board with `device-midi`.
+**Descriptor layout** (the Digitakt's, §2.1):
+- One configuration, IAD composite (device class EF/02/01).
+- Interface 0: vendor-specific, no endpoints.
+- Interfaces 1 and 2, each with alts 0–3. Alts 1–3 each have one interrupt
+  endpoint, high speed, `bInterval` 1.
+  - Alt 3's MaxPacket is the block size for the board's channel counts.
+  - Alts 1 and 2 copy the Digitakt's sizes: 32 bytes, then the 2-channel block
+    (88 bytes). Hosts select only alt 3, but matching the real layout costs
+    nothing.
+- Interface 3: vendor-specific, with bulk OUT and interrupt IN, as on the
+  Digitakt. It accepts nothing yet (the parameter channel is a non-goal), and
+  it is only present so that interface numbers match.
+- Interfaces 4–5: optional USB-MIDI, composed by the board with `device-midi`.
 - The board supplies an `OverbridgeConfig { ch_to_host, ch_from_host, format,
   name: &'static str }` along with the VID/PID passed to the embassy-usb builder.
 
 **Behaviour**
-- **Name.** Vendor requests 1/2 return `name`, padded to 32 bytes.
+- **Name.** Vendor IN request 1 returns `name`, padded to 32 bytes.
+  - IN request 2's meaning is unknown; it returns the same 32 bytes.
+  - Vendor OUT request 1 stores a host-supplied name, which the board may show.
 - **Clock.** The device is the clock. A task driven by the board's audio clock
   produces one 7-frame block per 7 frames of its audio and writes it to the IN
   endpoint. When the host isn't reading, a full endpoint makes the task drop
@@ -439,6 +668,14 @@ board whose controller can't meet them fails at build time through embassy-usb's
 **Testing against Overwitch.** Overwitch recognises devices by VID 0x1935 and
 its `devices.json`. A Deluge test build uses VID 0x1935 with an unassigned PID,
 and a local `devices.json` entry, only on the developer's machine.
+- Overwitch rejects the device unless alt 3's `wMaxPacketSize` equals
+  `32 + 7 × frame_bytes` from that entry exactly.
+- It expects interface 2 alt 3 and interface 1 alt 3 to exist, it clears halts
+  on both endpoints, and it issues vendor requests 1 and 2 (§2). The device class
+  answers all of these.
+- It detaches kernel drivers on interfaces 4 and 5, so the optional USB-MIDI
+  function should sit at those numbers, as on the Digitakt.
+- `bRequest` 1 host-to-device (set name) is accepted, and the name is stored.
 
 ## 7. Deluge → Outbox 8: more analog outputs
 
@@ -501,6 +738,10 @@ comes from the board.
   - Digitakt II 42-channel v2.1 (1012 B), to-device (256 B).
   The bytes follow Overwitch's documented layout and the Outbox's encoder
   (0x60047E66).
+- **v2.1 sample widths.** A 4-byte wide-channel sample `00 12 34 56` decodes to
+  `0x1234_5600`. A 3-byte sample `12 34 56` decodes to the same value. A
+  to-device value `0x1234_5678` encodes as `00 12 34 56`. Negative values
+  sign-extend: `-0x100` encodes as `ff ff ff ff`.
 - **Counter.** Wrap at 0xFFFF, and gap counting.
 - **Sizing.** Channel derivation from MaxPacket, and rejection of non-integral
   sizes.
@@ -515,7 +756,7 @@ comes from the board.
 
 **`device-overbridge`**, with embassy-usb's descriptor builder in a test harness
 - The descriptor bytes, with alts 0–3 and endpoint sizes.
-- Vendor requests 1/2.
+- Vendor IN requests 1/2 and OUT request 1.
 
 ### 8.2 HAL tests (QEMU bucket, poked MMIO)
 
@@ -542,9 +783,11 @@ speed (49-frame figure). The existing 2-channel tests are unchanged.
 
 ### 8.4 Hardware (manual, logged in `docs/hardware-tasks.md` style)
 
-1. **Capture descriptors.** With the Digitakt in Overbridge mode, dump its
+1. **Confirm descriptors.** With the Digitakt in Overbridge mode, dump its
    configuration descriptor through the current host supervisor's enumeration
-   log. That checks the alt-3 sizes against §2 and feeds §8.1.
+   log. Compare it byte for byte with Appendix A, which came from OS 1.54's
+   image. A unit on a newer OS may differ; if it does, the log replaces the
+   appendix as §8.1's fixture.
 2. **Digitakt stems.** A harness firmware shows the per-track level of all 12
    stems on the OLED and logs `StreamStats` over RTT every second.
    - Pass: 10 minutes with `counter_gaps == 0`, `framing_errors == 0`, and a CPU
@@ -570,8 +813,11 @@ speed (49-frame figure). The existing 2-channel tests are unchanged.
 | 4 | `device-overbridge`, plus RUSB1 device-mode interrupt-on-bulk | proto from 3 | deluge-sdk |
 | 5 | `AudioClass` high-speed capture sizing; Outbox hardware test | — | deluge-sdk |
 | 6 | Digitakt firmware binds `device-overbridge` | 4 | digitakt |
+| 7 | Host audio composition (§5.6): feature split, `HostAudioMode`, re-bind by port reset, shared arena, `HostAudio` handle | 3 | deluge-sdk |
+| 8 | Device-side runtime switch between UAC2 and Overbridge faces (§5.6) | 4 | deluge-sdk |
 
-Sub-projects 1, 3 and 5 can proceed in parallel. 3 can stream a Digitakt over
+Sub-projects 1, 3 and 5 can proceed in parallel. Sub-project 7's feature split
+and mode policy can start before 3, with only UAC behind the mode. 3 can stream a Digitakt over
 the CFIFO fallback before 2 lands, which gives an early end-to-end check. 6 is
 listed for completeness: it is planned in the digitakt repo once the ColdFire
 USB device driver supports it.
@@ -579,9 +825,45 @@ USB device driver supports it.
 ## 10. Open questions
 
 - **IN header check.** Does a real Digitakt ever send a header other than
-  `0x0700`? The Outbox firmware's IN header check wasn't traced. The host
-  class counts framing errors rather than failing, so this only affects stats.
+  `0x0700`? Neither source settles it. The Outbox firmware's IN header check
+  wasn't traced, and Overwitch never checks the IN header (it only prints it at
+  debug level 3). The host class counts framing errors rather than failing, so
+  this only affects stats.
 - **Does the device need Overwitch's clear-halt or name requests?** The Outbox
   sends neither and works, so the host class doesn't depend on them.
 - **The Outbox generic UAC path:** the channel limit and accepted sync mode
   (§7.1). Settled by hardware test 5.
+- **Bulk above 512 bytes on pipes 1–2.** The TRM allows MXPS up to 1024 on
+  pipes 1–2 at any type, but a 1012-byte bulk-typed pipe is non-standard. It
+  needs hardware test 4 (Digitakt II) before sub-project 3 relies on it. If it
+  fails, the fallback is an isochronous-typed pipe 1–2 with software data
+  toggles, which is unattractive and to be designed then.
+- **What interfaces 1 and 2's alts 1–2 select.** They are 0- and 2-channel
+  layouts (§2.1); nothing known uses them.
+
+## Appendix A. Digitakt (OS 1.54) Overbridge configuration descriptor
+
+263 bytes, from `section_3.bin` at 0x40252286, with wTotalLength (bytes 2–3)
+set to the value the firmware patches in at runtime:
+
+```
+09 02 07 01 06 01 00 c0 00 08 0b 00 04 ff 00 00
+00 09 04 00 00 00 ff 00 00 00 09 04 01 00 00 ff
+00 00 00 09 04 01 01 01 ff 00 00 00 07 05 83 03
+20 00 01 09 04 01 02 01 ff 00 00 00 07 05 83 03
+58 00 01 09 04 01 03 01 ff 00 00 00 07 05 83 03
+70 01 01 09 04 02 00 00 ff 00 00 00 09 04 02 01
+01 ff 00 00 00 07 05 03 03 20 00 01 09 04 02 02
+01 ff 00 00 00 07 05 03 03 58 00 01 09 04 02 03
+01 ff 00 00 00 07 05 03 03 58 00 01 09 04 03 00
+02 ff 00 00 00 07 05 02 02 00 02 00 07 05 82 03
+40 00 01 08 0b 04 02 01 01 00 00 09 04 04 00 00
+01 01 00 00 09 24 01 00 01 09 00 01 05 09 04 05
+00 02 01 03 00 00 07 24 01 00 01 41 00 06 24 02
+01 01 00 06 24 02 02 02 00 09 24 03 01 03 01 02
+01 00 09 24 03 02 04 01 01 01 00 09 05 01 02 00
+02 00 00 00 05 25 01 01 01 09 05 81 02 00 02 00
+00 00 05 25 01 01 03
+```
+
+Device descriptor (0x4025238D): `12 01 00 02 ef 02 01 40 35 19 2c 0b 01 00 01 02 03 01`.

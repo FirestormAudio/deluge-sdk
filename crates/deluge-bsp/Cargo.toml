@@ -43,9 +43,17 @@ flash = []
 ## into it directly (host or device) without the async `deluge::Oled` wrapper,
 ## then read it back with `FrameBuffer::as_bytes`.
 embedded-graphics = ["dep:embedded-graphics-core"]
-## The USB host stack (`usb::host`: class drivers, UAC and MIDI). Opt-in; only
-## host-role firmware needs it.
-usb-host = ["dep:embassy-usb-host", "usb-classes/host-midi", "usb-classes/host-uac"]
+## The USB host stack's core (`usb::host`): the supervisor, hubs and the USB-MIDI class.
+usb-host-core = ["dep:embassy-usb-host", "usb-classes/host-midi"]
+## The UAC host class on top of `usb-host-core`: a class-compliant audio interface streams to
+## and from the Deluge.
+usb-host-uac = ["usb-host-core", "usb-classes/host-uac"]
+## The Elektron Overbridge 2 host class on top of `usb-host-core` (`usb::host::overbridge()`):
+## a Digitakt or another Overbridge device streams its stems to the Deluge.
+usb-host-overbridge = ["usb-host-core", "usb-classes/host-overbridge"]
+## The host stack with UAC, as before `usb-host-core` existed. Kept for one release; it will
+## become `usb-host-core`'s meaning, so name `usb-host-uac` if you want UAC.
+usb-host = ["usb-host-uac"]
 ## `usb::sd_block`: the SD card as a USB Mass Storage medium for
 ## `usb_classes::bot`. Opt-in; only firmware that exposes the card over USB
 ## needs it.

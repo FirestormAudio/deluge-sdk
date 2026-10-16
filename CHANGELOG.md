@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `hw-tests/overbridge-device-firmware`: runtime switching between USB device faces. One task
+  owns USB0 and presents either the Overbridge class or a UAC2 device, disconnecting
+  (`rza1l_hal::usb::disconnect`) and re-initialising device mode between them; the
+  `face-switch` feature alternates every 30 s. It is the pattern for a firmware that offers both.
+- `rza1l-hal` USB host: `Rusb1HostDriver::enable_rx_dma` gives the driver a DMAC channel. The
+  first interrupt-on-bulk IN pipe opened afterwards (an Overbridge audio stream) is drained by
+  DMA through D1FIFO instead of byte-wise CPU reads. Without it, transfers use the CPU as before.
+  `deluge_bsp::board::Usb0RxDma` names the channel for it (DMA_CH1).
+- `deluge-bsp` `usb::host`: `HostAudioMode` (Auto / Uac / Overbridge / Off), set at runtime with
+  `set_host_audio_mode`; changing it re-binds an attached device. `host_audio()` returns
+  whichever audio driver is bound, and `host_audio_connection()` counts binds.
+- Elektron Overbridge 2 device class (`usb-classes` feature `device-overbridge`,
+  `overbridge::device`). It has the Digitakt's interface layout and name requests; the board
+  supplies the identity and channel counts. The RZ/A1L device driver carries interrupt
+  endpoints over 64 bytes on bulk pipes.
+- Elektron Overbridge 2 host support (`usb-classes` feature `host-overbridge`; `deluge-bsp`
+  feature `usb-host-overbridge`). A Digitakt, Digitone, Syntakt, Analog Four/Rytm/Heat MKII,
+  Digitakt II or Digitone II in Overbridge mode streams every track to the Deluge as 48 kHz
+  stems, read through `deluge_bsp::usb::host::overbridge()`, with a stream back to the
+  device. Elektron devices are offered to Overbridge before UAC.
+- `usb-classes` `AudioClass`: up to 48 capture channels. Above 1024 bytes the capture endpoint
+  is sized per high-speed microframe (7 frames), so `AudioClass<8>` (168-byte packets) builds,
+  for example for an Elektron Outbox 8. `AudioClass::CAPTURE_MAX_PACKET` gives the size.
+- `rza1l-hal` USB host: an interrupt endpoint over 64 bytes (such as Overbridge's 368-byte
+  audio blocks) opens on a bulk pipe (MXPS 512 on pipes 3-5, or its own size up to 1024 on
+  pipes 1-2) instead of failing for lack of a large interrupt pipe.
 - Initial public release of the Deluge SDK: write apps for the Synthstrom
   Deluge in async Rust via the `#[deluge::app]` attribute and the `Deluge`
   capability handle.
@@ -31,6 +57,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `rza1l-hal` USB host: every bulk OUT endpoint on a port shares one pipe, re-pointed
+  per transfer with each endpoint's data toggle kept. A hub now carries 4 USB-MIDI devices that
+  send and receive (it was 2). The shared pipe prefers the bulk-only pipes 3–5, keeping 1–2
+  free for isochronous audio where it can.
+- `deluge-bsp`: `usb-host` is split into `usb-host-core` (supervisor, hubs, MIDI),
+  `usb-host-uac` and `usb-host-overbridge`. `usb-host` still means `usb-host-uac` for this
+  release; it will become `usb-host-core`, so name `usb-host-uac` if you want UAC.
 - The RZ/A1 chip crates (`rza1-pac`, `rza1-rt`, `rza1l-hal`, `rza1-alloc`) moved from `crates/` to
   `rza1/`, their own Cargo workspace with its own tooling (`rza1/tools/test.sh`) and CI job. A
   path dependency on them changes from `crates/<crate>` to `rza1/<crate>`; git dependencies are
@@ -168,5 +201,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backend crates under `linux/`, the app-loader under `firmwares/`, hardware
   probes under `hw-tests/`, the desktop simulator under `crates/`, and examples
   under `examples/baremetal/` and `examples/linux/`. Package names are unchanged.
+
+### Fixed
+
+- `rza1l-hal` USB host: a high-speed device's interrupt endpoint is polled at the period its
+  bInterval asks for (2^(bInterval-1) microframes). It was polled more often: a hub's status
+  endpoint at bInterval 12 every 1 ms instead of 16 ms.
 
 [Unreleased]: https://github.com/FirestormAudio/deluge-sdk

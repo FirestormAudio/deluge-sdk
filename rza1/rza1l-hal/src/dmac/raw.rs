@@ -296,6 +296,23 @@ pub(super) unsafe fn start_transfer(ch: u8, src: u32, count: u32) {
     chctrl.write_value(CHCTRL_CLRTC | CHCTRL_SETEN);
 }
 
+/// Re-arm a register-mode receive channel for `count` bytes from `src` to `dst`, keeping its
+/// CHCFG and DMARS: stop it, reset its status, reload the addresses and count, start it.
+pub(super) unsafe fn rearm_rx(ch: u8, src: u32, dst: u32, count: u32) {
+    let chctrl = DMAC.ch(ch as usize).chctrl();
+    chctrl.write_value(CHCTRL_CLREN);
+    chctrl.write_value(CHCTRL_SWRST | CHCTRL_CLRTC);
+    DMAC.ch(ch as usize).n0sa().write_value(src);
+    DMAC.ch(ch as usize).n0da().write_value(dst);
+    DMAC.ch(ch as usize).n0tb().write_value(count);
+    chctrl.write_value(CHCTRL_SETEN);
+}
+
+/// Stop a channel's transfer, keeping its configuration and DMARS route.
+pub(super) unsafe fn halt(ch: u8) {
+    DMAC.ch(ch as usize).chctrl().write_value(CHCTRL_CLREN);
+}
+
 /// Suspend until the DMA transfer on channel `ch` completes.
 ///
 /// Completion is signalled by the DMAINT GIC interrupt (bound by `Dma::new`).  This function must be called **after**

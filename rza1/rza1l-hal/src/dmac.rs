@@ -256,6 +256,21 @@ impl<'d> Dma<'d> {
         unsafe { raw::start_transfer_rx(self.ch, dst, count) }
     }
 
+    /// Re-arm a channel set up by [`init_register_mode_rx`](Self::init_register_mode_rx) for
+    /// `count` bytes from `src` to `dst`, keeping its configuration and request route.
+    ///
+    /// # Safety
+    /// `dst..dst + count` must stay valid and unaliased until the transfer completes.
+    pub(crate) unsafe fn rearm_rx(&mut self, src: u32, dst: u32, count: u32) {
+        unsafe { raw::rearm_rx(self.ch, src, dst, count) }
+    }
+
+    /// Stop the transfer in flight, keeping the channel's configuration and request route.
+    pub(crate) fn halt(&mut self) {
+        // SAFETY: this channel is owned, so no other code drives it.
+        unsafe { raw::halt(self.ch) }
+    }
+
     /// Wait for the transfer in flight to complete.
     pub async fn wait_transfer_complete(&mut self) {
         raw::wait_transfer_complete(self.ch).await

@@ -88,6 +88,30 @@ impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
         (req.index as u8) == u8::from(self.ac_iface)
     }
 
+    /// The capture (ISO IN) endpoint's wMaxPacketSize, in both alternate settings.
+    ///
+    /// 49 frames × `CAPTURE_CH` × 3 bytes while that fits in 1024 bytes, which covers a 1 ms
+    /// packet with a stuffing frame at full speed and over-provisions at high speed. Above that
+    /// the endpoint is sized per high-speed microframe: (ceil(48000 / 8000) + 1) = 7 frames,
+    /// which also covers 44.1 kHz (6 frames plus 1). The RUSB1 device always runs at high speed
+    /// (SYSCFG.HSE), so an 8-channel build depends on it.
+    ///
+    /// Writers must cap each packet at this size (or at the endpoint's
+    /// `info().max_packet_size`): a writer that sends the whole SSI backlog would overrun it.
+    pub const CAPTURE_MAX_PACKET: u16 = {
+        let full_speed = 49 * CAPTURE_CH * 3;
+        let high_speed = (48_000usize.div_ceil(8_000) + 1) * CAPTURE_CH * 3;
+        assert!(
+            high_speed <= 1024,
+            "capture ISO IN max packet exceeds the 1024-byte high-speed limit"
+        );
+        (if full_speed <= 1024 {
+            full_speed
+        } else {
+            high_speed
+        }) as u16
+    };
+
     /// Allocate USB interfaces and ISO OUT (speaker) + ISO IN (mic) endpoints
     /// for the UAC2 device.
     ///
@@ -98,8 +122,8 @@ impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
     ///
     /// `iso_packet_size` — max bytes per isochronous packet for the speaker ISO
     /// OUT endpoint.  288 covers both 44.1 kHz (264 B) and 48 kHz (288 B) at
-    /// stereo 24-bit.  The capture ISO IN MPS is derived from `CAPTURE_CH`:
-    /// `49 * CAPTURE_CH * 3` bytes (49-frame stuffing headroom, 24-bit samples).
+    /// stereo 24-bit.  The capture ISO IN MPS is
+    /// [`Self::CAPTURE_MAX_PACKET`].
     ///
     /// Returns `(handler, ep_out, ep_in)`.
     pub fn new<'d, D: Driver<'d>>(
@@ -109,12 +133,7 @@ impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
     where
         D::EndpointIn: Endpoint,
     {
-        const {
-            assert!(
-                49 * CAPTURE_CH * 3 <= 1024,
-                "capture ISO IN max packet exceeds the 1024-byte high-speed limit"
-            )
-        };
+        let _ = Self::CAPTURE_MAX_PACKET; // evaluates the size check at compile time
         let mut func = builder.function(USB_CLASS_AUDIO, 0x00, USB_PROTOCOL_IP_02_00);
 
         // ── AudioControl interface ──────────────────────────────────────────
@@ -251,7 +270,7 @@ impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
         as_cap_alt1.descriptor(CS_INTERFACE, &[AS_FORMAT_TYPE, 0x01, 0x02, 0x10]); // subslot=2, 16-bit
         let ep_in = as_cap_alt1.endpoint_isochronous_in(
             None,
-            (49 * CAPTURE_CH * 3) as u16, // 49-frame stuffing × CAPTURE_CH ch × 3 bytes
+            Self::CAPTURE_MAX_PACKET, // see CAPTURE_MAX_PACKET
             1,
             SynchronizationType::Asynchronous,
             UsageType::ImplicitFeedbackDataEndpoint,
@@ -287,7 +306,7 @@ impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
         as_cap_alt2.descriptor(CS_INTERFACE, &[AS_FORMAT_TYPE, 0x01, 0x03, 0x18]); // subslot=3, 24-bit
         let _ep_in_24 = as_cap_alt2.endpoint_isochronous_in(
             Some(ep_in.info().addr), // reuses the same pipe as alt 1
-            (49 * CAPTURE_CH * 3) as u16,
+            Self::CAPTURE_MAX_PACKET,
             1,
             SynchronizationType::Asynchronous,
             UsageType::ImplicitFeedbackDataEndpoint,
@@ -484,5 +503,45 @@ impl<const CAPTURE_CH: usize> Handler for AudioClass<CAPTURE_CH> {
     fn reset(&mut self) {
         self.streaming_active = false;
         self.capture_active = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use super::*;
+    use crate::test_usb::{config_descriptor, endpoints};
+    use std::vec::Vec;
+
+    /// The capture (ISO IN) endpoint's wMaxPacketSize in each alternate setting.
+    fn capture_max_packets<const CH: usize>() -> Vec<u16> {
+        let desc = config_descriptor(|b| {
+            let _ = AudioClass::<CH>::new(b, 288);
+        });
+        endpoints(&desc)
+            .into_iter()
+            .filter(|e| e.addr & 0x80 != 0 && e.attributes & 0x03 == 0x01)
+            .map(|e| e.max_packet)
+            .collect()
+    }
+
+    /// Existing 2-channel builds keep their descriptor: 49 frames × 2 ch × 3 bytes in both alts.
+    #[test]
+    fn two_channel_capture_keeps_the_49_frame_packet() {
+        assert_eq!(capture_max_packets::<2>(), [294, 294]);
+    }
+
+    /// 8 channels × 49 frames × 3 bytes = 1176 bytes is over the 1024-byte high-speed limit, so
+    /// the endpoint is sized per microframe: (ceil(48000/8000) + 1) = 7 frames × 8 × 3 = 168.
+    #[test]
+    fn eight_channel_capture_is_sized_per_microframe() {
+        assert_eq!(capture_max_packets::<8>(), [168, 168]);
+    }
+
+    #[test]
+    fn the_capture_max_packet_constant_matches_the_descriptor() {
+        assert_eq!(AudioClass::<2>::CAPTURE_MAX_PACKET, 294);
+        assert_eq!(AudioClass::<6>::CAPTURE_MAX_PACKET, 882);
+        assert_eq!(AudioClass::<8>::CAPTURE_MAX_PACKET, 168);
     }
 }

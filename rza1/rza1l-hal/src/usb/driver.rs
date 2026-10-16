@@ -154,7 +154,16 @@ impl PortAlloc {
         }
     }
 
-    fn alloc_pipe(&mut self, xfer_type: XferType, _is_in: bool) -> Option<usize> {
+    /// Free `pipe`, its packet-buffer reservation and its configuration.
+    fn release(&mut self, pipe: usize) {
+        if let Some(c) = self.pipe_cfg[pipe].take() {
+            let banks = if c.double_buf { 2 } else { 1 };
+            self.buf.free(c.buf_start, c.buf_blocks as usize * banks);
+        }
+        self.pipes_used &= !(1u16 << pipe);
+    }
+
+    fn alloc_pipe(&mut self, xfer_type: XferType, wide: bool) -> Option<usize> {
         // RZ/A1 RUSB pipe transfer-type constraints are fixed in hardware
         // (TRM §28.4.7/§28.4.8; TinyUSB dcd_rusb1.c allocates the same way):
         //   PIPE1-2  : isochronous or bulk — reserved here for ISO audio.
@@ -167,9 +176,10 @@ impl PortAlloc {
         // bulk pipes too.
         let (start, end) = match xfer_type {
             XferType::Control => return Some(0),
-            XferType::Isochronous => (1, 3), // pipes 1-2
-            XferType::Bulk => (3, 16),       // pipes 3-5, 9-15 (6-8 skipped below)
-            XferType::Interrupt => (6, 9),   // pipes 6-8
+            XferType::Isochronous => (1, 3),  // pipes 1-2
+            XferType::Bulk if wide => (1, 3), // over 512 bytes: only pipes 1-2 take it
+            XferType::Bulk => (3, 16),        // pipes 3-5, 9-15 (6-8 skipped below)
+            XferType::Interrupt => (6, 9),    // pipes 6-8
         };
         for n in start..end {
             // Pipes 6-8 are interrupt-only; never allocate them for bulk.
@@ -223,6 +233,13 @@ impl<'d> Rusb1Driver<'d> {
                 let alloc = &mut *PORT_ALLOC[port as usize].borrow(cs).get();
                 *alloc = PortAlloc::new();
             });
+            // A re-attach after `disconnect` (switching device faces) starts from a clean
+            // slate: no bus event or control stage left from the previous session.
+            let p = port as usize;
+            BUS_EVENTS[p].store(0, Ordering::Release);
+            CTRL_STAGE[p].store(CTRL_STAGE_NONE, Ordering::Release);
+            CTRL_ABORT[p].store(false, Ordering::Release);
+            PIPE0_BRDY[p].store(0, Ordering::Release);
             // Set BUSWAIT early so register accesses after USBE=1 are safe.
             let u = usb(port);
             u.buswait().write_value(BUSWAIT_VALUE);
@@ -247,7 +264,7 @@ impl<'d> Driver<'d> for Rusb1Driver<'d> {
         max_packet_size: u16,
         _interval_ms: u8,
     ) -> Result<Self::EndpointOut, EndpointAllocError> {
-        let xfer_type = endpoint_type_to_xfer(ep_type);
+        let (xfer_type, mxps, wide) = device_layout(ep_type, max_packet_size);
         critical_section::with(|cs| {
             let alloc = unsafe { &mut *PORT_ALLOC[self.port as usize].borrow(cs).get() };
 
@@ -258,7 +275,20 @@ impl<'d> Driver<'d> for Rusb1Driver<'d> {
             if let Some(addr) = ep_addr {
                 let ep_num = addr.index() as u8;
                 let existing_pipe = alloc.ep_to_pipe[0][ep_num as usize] as usize;
-                if existing_pipe != 0 {
+                // A shared endpoint whose larger alt setting needs another kind of pipe
+                // (Overbridge's 32-byte alt 1 on an interrupt pipe, then 88 bytes) moves:
+                // release the old pipe and allocate afresh below. Earlier alts' endpoint
+                // handles keep the old pipe number; a class streams through the handle from
+                // its largest alt setting.
+                let fits = existing_pipe != 0
+                    && alloc.pipe_cfg[existing_pipe]
+                        .as_ref()
+                        .is_some_and(|c| c.xfer_type == xfer_type && (!wide || existing_pipe <= 2));
+                if existing_pipe != 0 && !fits {
+                    alloc.release(existing_pipe);
+                    alloc.ep_to_pipe[0][ep_num as usize] = 0;
+                }
+                if fits {
                     // Keep the larger MPS so the hardware buffer covers both alt
                     // settings.  Growing in place would overrun the next pipe's
                     // blocks, so free the old reservation and reserve the larger
@@ -268,17 +298,17 @@ impl<'d> Driver<'d> for Rusb1Driver<'d> {
                         .as_ref()
                         .map(|c| (c.mps, c.double_buf, c.buf_start, c.buf_blocks));
                     if let Some((cur_mps, dbl, cur_start, cur_blocks)) = cur
-                        && max_packet_size > cur_mps
+                        && mxps > cur_mps
                     {
                         let mult = if dbl { 2 } else { 1 };
-                        let new_blocks = mps_to_blocks(max_packet_size);
+                        let new_blocks = mps_to_blocks(mxps);
                         alloc.buf.free(cur_start, cur_blocks as usize * mult);
                         let new_start = alloc
                             .buf
                             .alloc(new_blocks * mult)
                             .ok_or(EndpointAllocError)?;
                         if let Some(c) = alloc.pipe_cfg[existing_pipe].as_mut() {
-                            c.mps = max_packet_size;
+                            c.mps = mxps;
                             c.buf_blocks = new_blocks as u8;
                             c.buf_start = new_start;
                         }
@@ -298,9 +328,9 @@ impl<'d> Driver<'d> for Rusb1Driver<'d> {
             }
 
             let pipe = alloc
-                .alloc_pipe(xfer_type, false)
+                .alloc_pipe(xfer_type, wide)
                 .ok_or(EndpointAllocError)?;
-            let buf_blocks = mps_to_blocks(max_packet_size);
+            let buf_blocks = mps_to_blocks(mxps);
             // ISO pipes are hardware double-buffered (PIPECFG.DBLB), so the SIE
             // uses TWO consecutive banks of `buf_blocks` each.  Reserve both, or
             // the second bank silently overlaps the next pipe's buffer — and a
@@ -324,7 +354,7 @@ impl<'d> Driver<'d> for Rusb1Driver<'d> {
                 ep_num,
                 is_in: false,
                 xfer_type,
-                mps: max_packet_size,
+                mps: mxps,
                 buf_start,
                 buf_blocks: buf_blocks as u8,
                 double_buf,
@@ -352,7 +382,7 @@ impl<'d> Driver<'d> for Rusb1Driver<'d> {
         max_packet_size: u16,
         _interval_ms: u8,
     ) -> Result<Self::EndpointIn, EndpointAllocError> {
-        let xfer_type = endpoint_type_to_xfer(ep_type);
+        let (xfer_type, mxps, wide) = device_layout(ep_type, max_packet_size);
         critical_section::with(|cs| {
             let alloc = unsafe { &mut *PORT_ALLOC[self.port as usize].borrow(cs).get() };
 
@@ -360,7 +390,20 @@ impl<'d> Driver<'d> for Rusb1Driver<'d> {
             if let Some(addr) = ep_addr {
                 let ep_num = addr.index() as u8;
                 let existing_pipe = alloc.ep_to_pipe[1][ep_num as usize] as usize;
-                if existing_pipe != 0 {
+                // A shared endpoint whose larger alt setting needs another kind of pipe
+                // (Overbridge's 32-byte alt 1 on an interrupt pipe, then 88 bytes) moves:
+                // release the old pipe and allocate afresh below. Earlier alts' endpoint
+                // handles keep the old pipe number; a class streams through the handle from
+                // its largest alt setting.
+                let fits = existing_pipe != 0
+                    && alloc.pipe_cfg[existing_pipe]
+                        .as_ref()
+                        .is_some_and(|c| c.xfer_type == xfer_type && (!wide || existing_pipe <= 2));
+                if existing_pipe != 0 && !fits {
+                    alloc.release(existing_pipe);
+                    alloc.ep_to_pipe[1][ep_num as usize] = 0;
+                }
+                if fits {
                     // Grow the shared buffer to cover the larger alt setting by
                     // re-reserving (see alloc_endpoint_out for the rationale — an
                     // in-place grow would overrun the next pipe's blocks).
@@ -368,17 +411,17 @@ impl<'d> Driver<'d> for Rusb1Driver<'d> {
                         .as_ref()
                         .map(|c| (c.mps, c.double_buf, c.buf_start, c.buf_blocks));
                     if let Some((cur_mps, dbl, cur_start, cur_blocks)) = cur
-                        && max_packet_size > cur_mps
+                        && mxps > cur_mps
                     {
                         let mult = if dbl { 2 } else { 1 };
-                        let new_blocks = mps_to_blocks(max_packet_size);
+                        let new_blocks = mps_to_blocks(mxps);
                         alloc.buf.free(cur_start, cur_blocks as usize * mult);
                         let new_start = alloc
                             .buf
                             .alloc(new_blocks * mult)
                             .ok_or(EndpointAllocError)?;
                         if let Some(c) = alloc.pipe_cfg[existing_pipe].as_mut() {
-                            c.mps = max_packet_size;
+                            c.mps = mxps;
                             c.buf_blocks = new_blocks as u8;
                             c.buf_start = new_start;
                         }
@@ -399,10 +442,11 @@ impl<'d> Driver<'d> for Rusb1Driver<'d> {
             }
 
             let pipe = alloc
-                .alloc_pipe(xfer_type, true)
+                .alloc_pipe(xfer_type, wide)
                 .ok_or(EndpointAllocError)?;
-            let mps_blocks = mps_to_blocks(max_packet_size);
-            let double_buf = xfer_type == XferType::Isochronous;
+            let mps_blocks = mps_to_blocks(mxps);
+            let double_buf = xfer_type == XferType::Isochronous
+                || (xfer_type == XferType::Bulk && ep_type == EndpointType::Interrupt);
 
             // For a bulk IN pipe on a buffer-capable pipe (1-5), try to grab a
             // multi-packet buffer and run it in continuous transfer mode (CNTMD)
@@ -413,7 +457,7 @@ impl<'d> Driver<'d> for Rusb1Driver<'d> {
             let mut continuous = false;
             let mut buf_blocks = mps_blocks;
             let mut buf_start_opt = None;
-            if xfer_type == XferType::Bulk && (1..=5).contains(&pipe) {
+            if ep_type == EndpointType::Bulk && (1..=5).contains(&pipe) {
                 for mult in [CONT_BULK_PACKETS, 2] {
                     let want = mps_blocks * mult;
                     // Only grab a large buffer if it leaves headroom for the
@@ -460,7 +504,7 @@ impl<'d> Driver<'d> for Rusb1Driver<'d> {
                 ep_num,
                 is_in: true,
                 xfer_type,
-                mps: max_packet_size,
+                mps: mxps,
                 buf_start,
                 buf_blocks: buf_blocks as u8,
                 double_buf,
@@ -1586,6 +1630,22 @@ pub unsafe fn dcd_int_handler(port: u8) {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// How a device-mode endpoint is carried: the pipe type, the MXPS to programme, and whether
+/// it needs pipes 1-2.
+///
+/// Interrupt pipes (6-8) stop at 64 bytes, so a larger interrupt endpoint (Overbridge's
+/// 368-byte audio blocks) rides a bulk pipe; on the wire the host's interrupt transactions
+/// look the same. Pipes 3-5 and 9-15 take only MXPS 8/16/32/64/512 (TRM §28.3.34), so up to
+/// 512 bytes it is programmed at 512 (every packet short); above that only pipes 1-2 take the
+/// size.
+fn device_layout(ep_type: EndpointType, max_packet_size: u16) -> (XferType, u16, bool) {
+    match ep_type {
+        EndpointType::Interrupt if max_packet_size > 512 => (XferType::Bulk, max_packet_size, true),
+        EndpointType::Interrupt if max_packet_size > 64 => (XferType::Bulk, 512, false),
+        t => (endpoint_type_to_xfer(t), max_packet_size, false),
+    }
+}
+
 fn endpoint_type_to_xfer(t: EndpointType) -> XferType {
     match t {
         EndpointType::Control => XferType::Control,
@@ -1806,5 +1866,187 @@ mod tests {
             0,
             "BEMP left enabled"
         );
+    }
+
+    /// The allocation tests share port 1's allocator; run them one at a time.
+    static ALLOC_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn fresh_port1() -> Rusb1Driver<'static> {
+        test::reset();
+        unsafe { Rusb1Driver::new(1) }
+    }
+
+    fn pipe_cfg(pipe: u8) -> PipeConfig {
+        critical_section::with(|cs| unsafe {
+            (*PORT_ALLOC[1].borrow(cs).get()).pipe_cfg[pipe as usize].unwrap()
+        })
+    }
+
+    fn pipes_used() -> u16 {
+        critical_section::with(|cs| unsafe { (*PORT_ALLOC[1].borrow(cs).get()).pipes_used })
+    }
+
+    #[test]
+    fn device_layout_carries_large_interrupt_endpoints_as_bulk() {
+        assert_eq!(
+            device_layout(EndpointType::Interrupt, 64),
+            (XferType::Interrupt, 64, false)
+        );
+        assert_eq!(
+            device_layout(EndpointType::Interrupt, 368),
+            (XferType::Bulk, 512, false)
+        );
+        assert_eq!(
+            device_layout(EndpointType::Interrupt, 1012),
+            (XferType::Bulk, 1012, true)
+        );
+        assert_eq!(
+            device_layout(EndpointType::Bulk, 512),
+            (XferType::Bulk, 512, false)
+        );
+        assert_eq!(
+            device_layout(EndpointType::Isochronous, 294),
+            (XferType::Isochronous, 294, false)
+        );
+    }
+
+    #[test]
+    fn a_368_byte_interrupt_in_endpoint_rides_a_double_buffered_bulk_pipe() {
+        let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut d = fresh_port1();
+        let ep = d
+            .alloc_endpoint_in(
+                EndpointType::Interrupt,
+                Some(EndpointAddress::from(0x83)),
+                368,
+                1,
+            )
+            .unwrap();
+        assert!(matches!(ep.pipe, 3..=5 | 9..=15), "pipe {}", ep.pipe);
+        assert_eq!(
+            (ep.info.ep_type, ep.info.max_packet_size),
+            (EndpointType::Interrupt, 368),
+            "the descriptor keeps what the class asked"
+        );
+        let c = pipe_cfg(ep.pipe);
+        assert_eq!(
+            (c.xfer_type, c.mps, c.double_buf, c.continuous),
+            (XferType::Bulk, 512, true, false)
+        );
+        assert_eq!(ep.buf_bytes, 368, "one block per write");
+    }
+
+    #[test]
+    fn an_88_byte_interrupt_out_endpoint_rides_a_bulk_pipe() {
+        let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut d = fresh_port1();
+        let ep = d
+            .alloc_endpoint_out(
+                EndpointType::Interrupt,
+                Some(EndpointAddress::from(0x03)),
+                88,
+                1,
+            )
+            .unwrap();
+        assert!(matches!(ep.pipe, 3..=5 | 9..=15), "pipe {}", ep.pipe);
+        let c = pipe_cfg(ep.pipe);
+        assert_eq!((c.xfer_type, c.mps), (XferType::Bulk, 512));
+    }
+
+    #[test]
+    fn a_1012_byte_interrupt_endpoint_takes_pipe_1_or_2() {
+        let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut d = fresh_port1();
+        let ep = d
+            .alloc_endpoint_in(EndpointType::Interrupt, None, 1012, 1)
+            .unwrap();
+        assert!(matches!(ep.pipe, 1..=2), "pipe {}", ep.pipe);
+        assert_eq!(pipe_cfg(ep.pipe).mps, 1012);
+    }
+
+    #[test]
+    fn a_shared_interrupt_endpoint_that_outgrows_its_pipe_moves() {
+        let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut d = fresh_port1();
+        let addr = Some(EndpointAddress::from(0x83));
+        let alt1 = d
+            .alloc_endpoint_in(EndpointType::Interrupt, addr, 32, 1)
+            .unwrap();
+        assert!(
+            matches!(alt1.pipe, 6..=8),
+            "a 32-byte interrupt endpoint starts on an interrupt pipe"
+        );
+        let free_blocks = || {
+            critical_section::with(|cs| unsafe {
+                (*PORT_ALLOC[1].borrow(cs).get()).buf.free_blocks()
+            })
+        };
+        let before = free_blocks();
+        let alt2 = d
+            .alloc_endpoint_in(EndpointType::Interrupt, addr, 88, 1)
+            .unwrap();
+        assert!(
+            matches!(alt2.pipe, 3..=5 | 9..=15),
+            "88 bytes needs a bulk pipe: pipe {}",
+            alt2.pipe
+        );
+        assert_eq!(
+            pipes_used() & (1 << alt1.pipe),
+            0,
+            "the interrupt pipe is released"
+        );
+        // The 32-byte pipe's one block comes back; the bulk pipe takes 2 banks of 8.
+        assert_eq!(
+            free_blocks(),
+            before + 1 - 16,
+            "the old packet buffer is freed"
+        );
+        let alt3 = d
+            .alloc_endpoint_in(EndpointType::Interrupt, addr, 368, 1)
+            .unwrap();
+        assert_eq!(
+            alt3.pipe, alt2.pipe,
+            "368 bytes fits the same MXPS-512 pipe"
+        );
+        assert_eq!(alt3.buf_bytes, 368);
+        let map = critical_section::with(|cs| unsafe {
+            (*PORT_ALLOC[1].borrow(cs).get()).ep_to_pipe[1][3]
+        });
+        assert_eq!(map, alt3.pipe);
+    }
+
+    #[test]
+    fn small_interrupt_and_bulk_endpoints_are_unchanged() {
+        let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut d = fresh_port1();
+        let i = d
+            .alloc_endpoint_in(EndpointType::Interrupt, None, 64, 1)
+            .unwrap();
+        assert!(matches!(i.pipe, 6..=8));
+        assert_eq!(pipe_cfg(i.pipe).xfer_type, XferType::Interrupt);
+        let b = d
+            .alloc_endpoint_out(EndpointType::Bulk, None, 512, 0)
+            .unwrap();
+        assert!(matches!(b.pipe, 3..=5 | 9..=15));
+        assert_eq!(
+            (pipe_cfg(b.pipe).xfer_type, pipe_cfg(b.pipe).mps),
+            (XferType::Bulk, 512)
+        );
+    }
+
+    /// A fresh device-mode bring-up (a face switch after `disconnect`) drops bus events and
+    /// control state the previous session left behind.
+    #[test]
+    fn a_new_driver_clears_the_previous_sessions_state() {
+        let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        BUS_EVENTS[1].store(0x0F, Ordering::Release);
+        CTRL_STAGE[1].store(2, Ordering::Release);
+        CTRL_ABORT[1].store(true, Ordering::Release);
+        PIPE0_BRDY[1].store(1, Ordering::Release);
+        let _d = fresh_port1();
+        assert_eq!(BUS_EVENTS[1].load(Ordering::Acquire), 0);
+        assert_eq!(CTRL_STAGE[1].load(Ordering::Acquire), CTRL_STAGE_NONE);
+        assert!(!CTRL_ABORT[1].load(Ordering::Acquire));
+        assert_eq!(PIPE0_BRDY[1].load(Ordering::Acquire), 0);
     }
 }

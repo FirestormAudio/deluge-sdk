@@ -61,6 +61,7 @@ pub const DVSTCTR0_RHST_HS: u16 = 0b011;
 pub const FIFOSEL_CURPIPE_MASK: u16 = 0x000F;
 pub const FIFOSEL_ISEL: u16 = 0x0020; // CFIFOSEL only
 pub const FIFOSEL_DREQE: u16 = 0x1000; // DnFIFOSEL only: DMA request enable
+pub const FIFOSEL_DCLRM: u16 = 0x2000; // DnFIFOSEL only: clear the buffer once its data is read
 pub const FIFOSEL_BIGEND: u16 = 0x0100;
 pub const FIFOSEL_MBW_MASK: u16 = 0x0C00;
 pub const FIFOSEL_MBW_SHIFT: u32 = 10;
@@ -227,8 +228,9 @@ pub const PIPEMAXP_DEVSEL_SHIFT: u32 = 12;
 // IITV is only meaningful for interrupt/isochronous pipes (6-9 in host mode).
 // For bulk pipes (3-5) and pipes 10-15, the TRM requires IITV=0b000.
 //
-// Conversion from USB bInterval (FS device, 1-255 frames) to IITV:
-//   IITV = floor(log2(bInterval)).min(7)   (so bInterval=1 → 0, =2 → 1, =4 → 2, ...)
+// Conversion from USB bInterval to IITV (see host::interrupt_iitv):
+//   high-speed device:  IITV = (bInterval - 1).min(7)         (microframes)
+//   full/low speed:     IITV = floor(log2(bInterval)).min(7)  (1 ms frames, also behind a HS hub)
 pub const PIPEPERI_IFIS: u16 = 1 << 12; // isochronous IN buffer flush enable
 pub const PIPEPERI_IITV_MASK: u16 = 0x0007;
 

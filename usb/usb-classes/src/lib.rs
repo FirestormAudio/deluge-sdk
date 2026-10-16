@@ -21,10 +21,17 @@
 #[cfg(feature = "device-midi")]
 pub mod midi_packets;
 
-#[cfg(any(feature = "host-midi", feature = "host-uac"))]
+#[cfg(any(
+    feature = "host-midi",
+    feature = "host-uac",
+    feature = "host-overbridge"
+))]
 pub mod host;
 
-#[cfg(all(target_os = "none", feature = "device-audio"))]
+#[cfg(any(feature = "host-overbridge", feature = "device-overbridge"))]
+pub mod overbridge;
+
+#[cfg(all(feature = "device-audio", any(target_os = "none", test)))]
 pub mod audio;
 #[cfg(all(target_os = "none", feature = "device-msc"))]
 pub mod bot;
@@ -32,3 +39,6 @@ pub mod bot;
 pub mod midi;
 #[cfg(all(target_os = "none", feature = "device-msc"))]
 pub mod msc;
+
+#[cfg(test)]
+mod test_usb;

@@ -4125,6 +4125,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "overbridge-device-firmware"
+version = "0.1.0"
+dependencies = [
+ "cortex-ar",
+ "deluge-bsp",
+ "embassy-executor",
+ "embassy-futures",
+ "embassy-time",
+ "embassy-usb",
+ "log",
+ "rtt-target",
+ "rza1-alloc",
+ "rza1l-hal",
+ "usb-classes",
+]
+
+[[package]]
+name = "overbridge-host-firmware"
+version = "0.1.0"
+dependencies = [
+ "cortex-ar",
+ "deluge-bsp",
+ "embassy-executor",
+ "embassy-time",
+ "log",
+ "rtt-target",
+ "rza1-alloc",
+ "rza1l-hal",
+ "usb-classes",
+]
+
+[[package]]
 name = "owned_ttf_parser"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4890,6 +4922,7 @@ version = "0.1.0"
 dependencies = [
  "cortex-ar",
  "critical-section",
+ "embassy-futures",
  "embassy-hal-internal",
  "embassy-sync",
  "embassy-time",
