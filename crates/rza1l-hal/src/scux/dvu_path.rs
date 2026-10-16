@@ -266,7 +266,11 @@ pub unsafe fn init_with_src(
             audio: AudioInfo::STEREO_24,
             bypass: true,
         });
-        scux::set_fdtsel(SRC_UNIT, TSEL_SSIF0_WS);
+        // Input paced at `engine_hz` (USB_X1 divided down for 48 kHz), output at the codec's
+        // word clock. The divider is programmed with DIVEN off, then enabled (TRM §37.3.68).
+        let input = scux::input_timing(engine_hz);
+        scux::set_fdtsel(SRC_UNIT, input);
+        scux::set_fdtsel(SRC_UNIT, input | FDTSEL_DIVEN);
         scux::set_futsel(SRC_UNIT, TSEL_SSIF0_WS);
         scux::set_ssictrl(SSICTRL_SSI0TX);
 

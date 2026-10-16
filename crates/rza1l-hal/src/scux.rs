@@ -747,6 +747,29 @@ pub unsafe fn set_fdtsel(src_unit: u8, val: u32) {
     SCUX.fdtsel(src_unit.min(3) as usize).write_value(val);
 }
 
+/// FDTSEL/FUTSEL SCKSEL: the USB_X1 clock (TRM §37.3.68).
+pub const FDTSEL_SCKSEL_USB_X1: u32 = 0b0011;
+/// USB_X1: the USB module's clock, 48 MHz (UCKSEL=0, as the Deluge runs it, requires it).
+pub const USB_X1_HZ: u32 = 48_000_000;
+
+/// The FDTSEL value (without DIVEN) that paces an asynchronous SRC's input at `input_hz`:
+/// USB_X1 divided down when it divides evenly by an even ratio SCKDIV holds (48 kHz is
+/// USB_X1 / 1000), else the SSIF0 word clock (the codec's rate, which is right only when the
+/// input runs at it). Pacing a 48 kHz input by SSIF0's 44.1 kHz word clock consumed it at
+/// 44.1 kHz: the conversion ran at 1:1.
+pub fn input_timing(input_hz: u32) -> u32 {
+    // SCKDIV (bits 26:16) is the division ratio itself; bit 16 must be 0, so the ratio is
+    // even, and at most 0x7FE.
+    match USB_X1_HZ.checked_div(input_hz) {
+        Some(ratio)
+            if USB_X1_HZ % input_hz == 0 && ratio % 2 == 0 && (2..=0x7FE).contains(&ratio) =>
+        {
+            (ratio << 16) | FDTSEL_SCKSEL_USB_X1
+        }
+        _ => FDTSEL_SCKSEL_SSIF0_WS,
+    }
+}
+
 /// Configure the FUTSELn_CIM output-timing-signal selector for one SRC unit.
 ///
 /// Writes FUTSELn_CIM (TRM §37.3.69).  Required when async mode is used and
@@ -1217,6 +1240,32 @@ pub fn ffd_dma_ch(ffd_ch: u8) -> u8 {
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_input_rate_usb_x1_divides_is_paced_by_usb_x1() {
+        assert_eq!(input_timing(48_000), (1000 << 16) | FDTSEL_SCKSEL_USB_X1);
+        assert_eq!(input_timing(96_000), (500 << 16) | FDTSEL_SCKSEL_USB_X1);
+        assert_eq!(input_timing(32_000), (1500 << 16) | FDTSEL_SCKSEL_USB_X1);
+    }
+
+    #[test]
+    fn other_input_rates_are_paced_by_the_ssif0_word_clock() {
+        assert_eq!(
+            input_timing(44_100),
+            FDTSEL_SCKSEL_SSIF0_WS,
+            "not a divisor of 48 MHz"
+        );
+        assert_eq!(
+            input_timing(16_000),
+            FDTSEL_SCKSEL_SSIF0_WS,
+            "ratio 3000 past SCKDIV"
+        );
+        assert_eq!(
+            input_timing(16_000_000),
+            FDTSEL_SCKSEL_SSIF0_WS,
+            "odd ratio 3"
+        );
+    }
 
     #[test]
     fn audio_info_encodes_channels_and_otbl() {

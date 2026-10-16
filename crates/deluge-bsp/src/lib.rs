@@ -48,6 +48,8 @@ pub mod oled;
 pub mod pads;
 pub mod pic;
 pub mod rgb;
+/// Write-ahead planning for a sample ring a DMA reads; non-gated so it unit-tests on the host.
+pub mod ring_follow;
 /// Pure audio sample-format conversion + dither used by the bare-metal
 /// `audio_block` ring driver; non-gated so it unit-tests on the host.
 pub mod sample_fmt;

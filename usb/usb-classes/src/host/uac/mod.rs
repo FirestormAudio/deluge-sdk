@@ -5,7 +5,9 @@
 //! primitives in [`out`]). Mirrors [`super::midi`]: generic over the allocator
 //! so it unit-tests against [`super::mock`].
 
+pub mod desc;
 pub mod out;
+pub mod pcm;
 pub mod resample;
 pub mod ring;
 
@@ -17,13 +19,12 @@ use embassy_usb_driver::Direction;
 use embassy_usb_driver::EndpointType;
 use embassy_usb_driver::host::{HostError, PipeError, SplitInfo, UsbHostAllocator, UsbPipe, pipe};
 use embassy_usb_host::class::uac::codes;
-use embassy_usb_host::class::uac::descriptors::{
-    AudioInterfaceCollection, FormatTypeDescriptor, TerminalDescriptor,
-};
 use embassy_usb_host::control::{ControlType, Recipient, RequestType, SetupPacket};
 use embassy_usb_host::descriptor::{ConfigurationDescriptor, EndpointDescriptor};
 
-use self::out::{PlaybackResampler, encode_s24le};
+use self::desc::{AudioFunction, ClockEntity};
+use self::out::PlaybackResampler;
+use self::pcm::SampleFormat;
 use self::resample::{PiController, Resampler};
 use self::ring::SampleRing;
 
@@ -32,7 +33,8 @@ use self::ring::SampleRing;
 pub enum UacError {
     /// No UAC2 audio-streaming interface with an input (capture) endpoint.
     NoInputInterface,
-    /// Found capture, but not Type-I 24-bit PCM (our only supported format).
+    /// Found capture, but no alternate setting this driver can stream: Type-I PCM in a 2-,
+    /// 3- or 4-byte subslot, 1..=MAX_CHANNELS channels, packets of at most 1024 bytes.
     UnsupportedFormat,
     /// The device cannot run the requested sample rate.
     UnsupportedRate,
@@ -71,77 +73,44 @@ pub struct UacCaptureMatch {
     pub endpoint: EndpointDescriptor,
     /// Channels the device declares (app-visible; no stereo assumption).
     pub num_channels: u8,
-    /// Clock-source entity ID (target of the sampling-frequency control).
-    pub clock_source_id: u8,
+    /// Sample encoding on the wire.
+    pub format: SampleFormat,
+    /// Clock entity feeding the stream's terminal: a clock source, or a selector or
+    /// multiplier that registration follows to one.
+    pub clock_id: u8,
 }
 
-/// Find the first usable UAC2 capture interface in `cfg`.
-///
-/// Requires Type-I PCM with `subslot_size == 3` (24-bit). Returns
-/// [`UacError::NoInputInterface`] / [`UacError::UnsupportedFormat`] otherwise.
-pub fn find_uac_capture(cfg: &ConfigurationDescriptor<'_>) -> Result<UacCaptureMatch, UacError> {
-    let coll = AudioInterfaceCollection::try_from_configuration(cfg)
-        .map_err(|_| UacError::BadDescriptors)?;
-    let ac_interface = coll
-        .control_interface
-        .interface_descriptors
-        .first()
-        .ok_or(UacError::BadDescriptors)?
-        .interface_number;
-
-    for asi in coll.audio_streaming_interfaces.iter() {
-        let ep = match asi.endpoint_descriptor {
-            Some(ep) if ep.ep_dir() == Direction::In => ep,
-            _ => continue,
-        };
-        // 24-bit Type-I PCM only. Match by reference: `FormatTypeDescriptor` is
-        // not `Copy`, so matching by value would move out of the borrowed `asi`.
-        match &asi.format_type_descriptor {
-            Some(FormatTypeDescriptor::I(f)) if f.subslot_size == 3 => {}
-            _ => return Err(UacError::UnsupportedFormat),
-        }
-        // The streaming alt setting carrying the endpoints (max endpoint count).
-        let alt = asi
-            .interface_descriptors
-            .iter()
-            .max_by_key(|i| i.num_endpoints)
-            .ok_or(UacError::BadDescriptors)?;
-        // Clock source feeding the input terminal linked to this stream.
-        let clock_source_id = coll
-            .control_interface
-            .terminal_descriptors
-            .values()
-            .find_map(|t| match t {
-                TerminalDescriptor::Input(_) => Some(t.clock_source_id()),
-                _ => None,
-            })
-            .ok_or(UacError::BadDescriptors)?;
-
-        let num_channels = asi.class_descriptor.num_channels;
-        // Reject at the source: `pump_once` uses `num_channels` to
-        // `chunks_exact(num_channels * 3)` and to index a fixed-size
-        // `[f32; MAX_CHANNELS]` frame buffer. 0 panics on `chunks_exact`;
-        // > MAX_CHANNELS panics on out-of-bounds indexing.
-        if num_channels == 0 || num_channels as usize > MAX_CHANNELS {
-            return Err(UacError::UnsupportedFormat);
-        }
-        // Reject at the source: both pumps do `buf[..cap]` against a fixed
-        // `[0u8; 1024]` scratch buffer sized for any real HS iso mps. A
-        // descriptor declaring a larger `wMaxPacketSize` would slice-panic.
-        if ep.max_packet_size as usize > 1024 {
-            return Err(UacError::UnsupportedFormat);
-        }
-
-        return Ok(UacCaptureMatch {
-            ac_interface,
-            streaming_interface: alt.interface_number,
-            alternate_setting: alt.alternate_setting,
-            endpoint: ep,
-            num_channels,
-            clock_source_id,
+fn capture_match(f: &AudioFunction) -> Result<UacCaptureMatch, UacError> {
+    let Some(s) = f.best_stream(Direction::In) else {
+        return Err(if f.has_stream(Direction::In) {
+            UacError::UnsupportedFormat
+        } else {
+            UacError::NoInputInterface
         });
-    }
-    Err(UacError::NoInputInterface)
+    };
+    // `best_stream` only returns settings with an endpoint and a format.
+    let (Some(endpoint), Some(format)) = (s.endpoint, s.format) else {
+        return Err(UacError::BadDescriptors);
+    };
+    Ok(UacCaptureMatch {
+        ac_interface: f.ac_interface,
+        streaming_interface: s.interface,
+        alternate_setting: s.alternate_setting,
+        endpoint,
+        num_channels: s.channels,
+        format,
+        clock_id: f
+            .terminal_clock(s.terminal_link)
+            .ok_or(UacError::BadDescriptors)?,
+    })
+}
+
+/// Find the best usable UAC2 capture alternate setting in `cfg` (see
+/// [`AudioFunction::best_stream`]). Returns [`UacError::NoInputInterface`] when the device
+/// streams nothing in, [`UacError::UnsupportedFormat`] when it does but in no setting this
+/// driver can stream.
+pub fn find_uac_capture(cfg: &ConfigurationDescriptor<'_>) -> Result<UacCaptureMatch, UacError> {
+    capture_match(&desc::parse_audio_function(cfg)?)
 }
 
 /// A matched UAC2 playback (host->device) streaming interface.
@@ -155,38 +124,25 @@ pub struct UacPlaybackMatch {
     pub endpoint: EndpointDescriptor,
     /// Channels the device declares for playback (independent of capture).
     pub num_channels: u8,
+    /// Sample encoding on the wire.
+    pub format: SampleFormat,
 }
 
-/// Find the first usable UAC2 playback interface (Direction::Out, Type-I
-/// 24-bit) in `cfg`. Returns `None` if the device has no playback interface
-/// (capture-only devices are valid) or it isn't 24-bit Type-I within bounds.
+fn playback_match(f: &AudioFunction) -> Option<UacPlaybackMatch> {
+    let s = f.best_stream(Direction::Out)?;
+    Some(UacPlaybackMatch {
+        streaming_interface: s.interface,
+        alternate_setting: s.alternate_setting,
+        endpoint: s.endpoint?,
+        num_channels: s.channels,
+        format: s.format?,
+    })
+}
+
+/// Find the best usable UAC2 playback alternate setting in `cfg`. `None` if the device has
+/// no playback (capture-only devices are valid) or none this driver can stream.
 pub fn find_uac_playback(cfg: &ConfigurationDescriptor<'_>) -> Option<UacPlaybackMatch> {
-    let coll = AudioInterfaceCollection::try_from_configuration(cfg).ok()?;
-    for asi in coll.audio_streaming_interfaces.iter() {
-        let ep = match asi.endpoint_descriptor {
-            Some(ep) if ep.ep_dir() == Direction::Out => ep,
-            _ => continue,
-        };
-        match &asi.format_type_descriptor {
-            Some(FormatTypeDescriptor::I(f)) if f.subslot_size == 3 => {}
-            _ => continue,
-        }
-        let channels = asi.class_descriptor.num_channels;
-        if channels == 0 || channels as usize > MAX_CHANNELS || ep.max_packet_size as usize > 1024 {
-            continue;
-        }
-        let alt = asi
-            .interface_descriptors
-            .iter()
-            .max_by_key(|i| i.num_endpoints)?;
-        return Some(UacPlaybackMatch {
-            streaming_interface: alt.interface_number,
-            alternate_setting: alt.alternate_setting,
-            endpoint: ep,
-            num_channels: channels,
-        });
-    }
-    None
+    playback_match(&desc::parse_audio_function(cfg).ok()?)
 }
 
 /// USB standard SET_INTERFACE request code (USB 2.0 §9.4).
@@ -195,6 +151,12 @@ const REQ_SET_INTERFACE: u8 = 11;
 /// Sampling-frequency SET_CUR/GET_CUR wValue: SAMPLING_FREQ_CONTROL in the high
 /// byte (the `codes` constant is pre-shifted), channel number 0 (master).
 const SAMPLING_FREQ_WVALUE: u16 = codes::control_selector::clock_source::SAMPLING_FREQ_CONTROL;
+
+/// Clock selector CUR wValue: CX_CLOCK_SELECTOR_CONTROL (1) in the high byte.
+const CLOCK_SELECTOR_WVALUE: u16 = 0x01 << 8;
+
+/// Device sample rates the pumps and resamplers handle.
+const DEVICE_RATES: core::ops::RangeInclusive<u32> = 8_000..=192_000;
 
 /// A hosted UAC2 capture device.
 ///
@@ -206,6 +168,7 @@ struct PlaybackState<'d, A: UsbHostAllocator<'d>> {
     ring: SampleRing,
     resampler: PlaybackResampler,
     channels: u8,
+    format: SampleFormat,
     max_packet: u16,
     _p: core::marker::PhantomData<&'d ()>,
 }
@@ -214,6 +177,9 @@ pub struct Uac<'d, A: UsbHostAllocator<'d>> {
     control: A::Pipe<pipe::Control, pipe::InOut>,
     iso_in: A::Pipe<pipe::Isochronous, pipe::In>,
     num_channels: u8,
+    format: SampleFormat,
+    /// The device's sample rate (the stream's clock source).
+    rate: u32,
     max_packet: u16,
     ring: SampleRing,
     resampler: Resampler,
@@ -221,6 +187,8 @@ pub struct Uac<'d, A: UsbHostAllocator<'d>> {
     r: f32,
     /// Playback path; `None` on a capture-only device.
     playback: Option<PlaybackState<'d, A>>,
+    /// Isochronous transfers lost, both directions.
+    transfer_errors: u32,
     _p: core::marker::PhantomData<&'d ()>,
 }
 
@@ -229,6 +197,30 @@ impl<'d, A: UsbHostAllocator<'d>> Uac<'d, A> {
     /// multiple of this.
     pub fn channels(&self) -> u8 {
         self.num_channels
+    }
+
+    /// Isochronous transfers lost so far, capture and playback together.
+    pub fn transfer_errors(&self) -> u32 {
+        self.transfer_errors
+    }
+
+    /// Count a lost isochronous transfer, warning on the 1st, 2nd, 4th, 8th... so a
+    /// persistent fault (a packet per microframe) cannot flood the log.
+    fn lost(&mut self, dir: &str, e: PipeError) {
+        self.transfer_errors = self.transfer_errors.saturating_add(1);
+        if self.transfer_errors.is_power_of_two() {
+            log::warn!(
+                "uac: iso {} transfer failed ({:?}); {} lost so far",
+                dir,
+                e,
+                self.transfer_errors
+            );
+        }
+    }
+
+    /// The device's sample rate. When it differs from the engine's, the resamplers convert.
+    pub fn sample_rate(&self) -> u32 {
+        self.rate
     }
 
     /// Playback channels the device declared, or 0 if capture-only.
@@ -245,7 +237,8 @@ impl<'d, A: UsbHostAllocator<'d>> Uac<'d, A> {
         cfg: &ConfigurationDescriptor<'_>,
         sample_rate_hz: u32,
     ) -> Result<Self, UacError> {
-        let m = find_uac_capture(cfg)?;
+        let f = desc::parse_audio_function(cfg)?;
+        let m = capture_match(&f)?;
 
         // Control pipe (EP0) + the iso IN data pipe.
         let mut control = alloc
@@ -264,35 +257,63 @@ impl<'d, A: UsbHostAllocator<'d>> Uac<'d, A> {
             .alloc_pipe::<pipe::Isochronous, pipe::In>(addr, &m.endpoint.into(), split)
             .map_err(UacError::NoPipe)?;
 
-        // Negotiate `sample_rate_hz` on the clock-source entity.
-        let cur = Self::get_sampling_freq(&mut control, m.ac_interface, m.clock_source_id).await?;
-        if cur != sample_rate_hz {
-            Self::set_sampling_freq(
-                &mut control,
-                m.ac_interface,
-                m.clock_source_id,
-                sample_rate_hz,
-            )
-            .await?;
-            let now =
-                Self::get_sampling_freq(&mut control, m.ac_interface, m.clock_source_id).await?;
-            if now != sample_rate_hz {
-                return Err(UacError::UnsupportedRate);
+        // Ask the clock source for `sample_rate_hz` when the host may set it; a fixed clock,
+        // or one without that rate, runs at its own rate and the resamplers convert.
+        log::debug!(
+            "uac: capture IF{} alt {} {:?} {} ch, EP {:#04x} mps {}; clock entity {}",
+            m.streaming_interface,
+            m.alternate_setting,
+            m.format,
+            m.num_channels,
+            m.endpoint.endpoint_address,
+            m.endpoint.max_packet_size,
+            m.clock_id
+        );
+        let (clock, programmable) = Self::resolve_clock(&mut control, &f, m.clock_id)
+            .await
+            .inspect_err(|e| log::debug!("uac: clock {} unresolved: {:?}", m.clock_id, e))?;
+        let mut rate = Self::get_sampling_freq(&mut control, m.ac_interface, clock)
+            .await
+            .inspect_err(|e| log::debug!("uac: GET CUR rate on clock {} failed: {:?}", clock, e))?;
+        log::debug!(
+            "uac: clock source {} at {} Hz (programmable: {})",
+            clock,
+            rate,
+            programmable
+        );
+        if rate != sample_rate_hz && programmable {
+            if let Err(e) =
+                Self::set_sampling_freq(&mut control, m.ac_interface, clock, sample_rate_hz).await
+            {
+                log::warn!("uac: SET CUR {} Hz failed ({:?})", sample_rate_hz, e);
             }
+            rate = Self::get_sampling_freq(&mut control, m.ac_interface, clock).await?;
         }
-
-        // Activate the stream (alt 0 is zero-bandwidth; the real stream is 1+).
-        Self::set_interface(&mut control, m.streaming_interface, m.alternate_setting).await?;
+        if !DEVICE_RATES.contains(&rate) {
+            return Err(UacError::UnsupportedRate);
+        }
 
         // Optional playback (full-duplex). Absent on capture-only devices; the
         // clock is shared across directions, so no additional SET_CUR is needed.
-        let playback = match find_uac_playback(cfg) {
+        let playback = match playback_match(&f) {
             Some(p) => {
+                log::debug!(
+                    "uac: playback IF{} alt {} {:?} {} ch, EP {:#04x} mps {}",
+                    p.streaming_interface,
+                    p.alternate_setting,
+                    p.format,
+                    p.num_channels,
+                    p.endpoint.endpoint_address,
+                    p.endpoint.max_packet_size
+                );
+                Self::set_interface(&mut control, p.streaming_interface, p.alternate_setting)
+                    .await
+                    .inspect_err(|e| log::debug!("uac: SET_INTERFACE playback failed: {:?}", e))?;
+                // Claim the pipe only now: the HAL arms an isochronous OUT pipe as it opens it,
+                // and the device must not get packets for an endpoint it has not enabled.
                 let iso_out = alloc
                     .alloc_pipe::<pipe::Isochronous, pipe::Out>(addr, &p.endpoint.into(), split)
                     .map_err(UacError::NoPipe)?;
-                Self::set_interface(&mut control, p.streaming_interface, p.alternate_setting)
-                    .await?;
                 let mut pring = SampleRing::new();
                 pring.reset(p.num_channels as usize);
                 let mut presampler = PlaybackResampler::new();
@@ -302,6 +323,7 @@ impl<'d, A: UsbHostAllocator<'d>> Uac<'d, A> {
                     ring: pring,
                     resampler: presampler,
                     channels: p.num_channels,
+                    format: p.format,
                     max_packet: p.endpoint.max_packet_size,
                     _p: core::marker::PhantomData,
                 })
@@ -309,23 +331,83 @@ impl<'d, A: UsbHostAllocator<'d>> Uac<'d, A> {
             None => None,
         };
 
+        // Activate capture last (alt 0 is zero-bandwidth; the real stream is 1+): the pump
+        // starts polling it next, and no control request comes between.
+        Self::set_interface(&mut control, m.streaming_interface, m.alternate_setting)
+            .await
+            .inspect_err(|e| log::debug!("uac: SET_INTERFACE capture failed: {:?}", e))?;
+
         let mut ring = SampleRing::new();
         ring.reset(m.num_channels as usize);
         let mut resampler = Resampler::new();
         resampler.reset(m.num_channels as usize);
         let setpoint = (ring.capacity_frames() / 2) as f32;
+        let nominal = rate as f32 / sample_rate_hz as f32;
         Ok(Self {
             control,
             iso_in,
             num_channels: m.num_channels,
+            format: m.format,
+            rate,
             max_packet: m.endpoint.max_packet_size,
             ring,
             resampler,
-            pi: PiController::new(setpoint),
-            r: 1.0,
+            pi: PiController::with_nominal(setpoint, nominal),
+            r: nominal,
             playback,
+            transfer_errors: 0,
             _p: core::marker::PhantomData,
         })
+    }
+
+    /// Follow clock entity `id` through selectors (at their current input; the first when
+    /// the selector does not say) and multipliers to a clock source. Returns the source's id
+    /// and whether the host may set its frequency.
+    async fn resolve_clock(
+        control: &mut A::Pipe<pipe::Control, pipe::InOut>,
+        f: &AudioFunction,
+        mut id: u8,
+    ) -> Result<(u8, bool), UacError> {
+        for _ in 0..desc::MAX_CLOCKS {
+            match f.clock(id) {
+                Some(ClockEntity::Source { programmable, .. }) => return Ok((id, *programmable)),
+                Some(ClockEntity::Selector { inputs, .. }) => {
+                    let pin = Self::get_selector(control, f.ac_interface, id)
+                        .await
+                        .unwrap_or(0);
+                    let input = (pin as usize).checked_sub(1).and_then(|i| inputs.get(i));
+                    id = *input.or(inputs.first()).ok_or(UacError::BadDescriptors)?;
+                }
+                Some(ClockEntity::Multiplier { source, .. }) => id = *source,
+                None => return Err(UacError::BadDescriptors),
+            }
+        }
+        // A cycle, or a chain longer than the entities parsed.
+        Err(UacError::BadDescriptors)
+    }
+
+    /// GET CUR on clock selector `id`: its current input pin (1-based).
+    async fn get_selector(
+        control: &mut A::Pipe<pipe::Control, pipe::InOut>,
+        ac_interface: u8,
+        id: u8,
+    ) -> Result<u8, UacError> {
+        let setup = SetupPacket {
+            request_type: RequestType {
+                direction: Direction::In,
+                control_type: ControlType::Class,
+                recipient: Recipient::Interface,
+            },
+            request: codes::request_code::CUR,
+            value: CLOCK_SELECTOR_WVALUE,
+            index: (id as u16) << 8 | ac_interface as u16,
+            length: 1,
+        };
+        let mut buf = [0u8; 1];
+        match control.control_in(&setup.to_bytes(), &mut buf).await? {
+            0 => Err(UacError::Transfer(PipeError::BadResponse)),
+            _ => Ok(buf[0]),
+        }
     }
 
     async fn get_sampling_freq(
@@ -413,23 +495,27 @@ impl<'d, A: UsbHostAllocator<'d>> Uac<'d, A> {
         let cap = (self.max_packet as usize).min(buf.len());
         let n = match self.iso_in.request_in(&mut buf[..cap]).await {
             Ok(n) => n,
-            Err(PipeError::BadResponse) => {
+            // BadResponse is the HAL's detach; Canceled its stopped port (no transfer
+            // completes until the device is reset). Either ends the stream: absorbing
+            // them spins this task and starves the reset that would restart the port.
+            Err(e @ (PipeError::BadResponse | PipeError::Canceled)) => {
                 // Detach (see doc comment above): propagate so the caller's
                 // loop exits and drops the pipes.
-                return Err(PipeError::BadResponse.into());
+                return Err(e.into());
             }
             Err(e) => {
                 // Lost packet: ring absorbs it. Do not tear down the stream.
-                log::warn!("uac: iso IN transfer failed ({:?}), absorbing gap", e);
+                self.lost("IN", e);
                 self.r = self.pi.update(self.ring.fill_frames() as f32);
                 return Ok(());
             }
         };
-        let frame_bytes = ch * 3;
+        let b = self.format.bytes();
+        let frame_bytes = ch * b;
         let mut frame = [0.0f32; MAX_CHANNELS];
         for chunk in buf[..n].chunks_exact(frame_bytes) {
             for c in 0..ch {
-                frame[c] = decode_s24le(&chunk[c * 3..c * 3 + 3]);
+                frame[c] = self.format.decode(&chunk[c * b..c * b + b]);
             }
             let ring = &mut self.ring;
             self.resampler
@@ -445,7 +531,7 @@ impl<'d, A: UsbHostAllocator<'d>> Uac<'d, A> {
 
     /// Emit `frames` device-rate playback frames on the iso OUT endpoint,
     /// resampled engine->device at `step = 1.0/self.r` (one shared device
-    /// clock) and encoded to 24-bit LE. No-op on a capture-only device.
+    /// clock) and encoded in the playback format. No-op on a capture-only device.
     /// Underrun is silence (handled in `PlaybackResampler`); a failed OUT
     /// transfer is logged + absorbed (detach is governed by the capture side).
     async fn send_playback(&mut self, frames: usize) {
@@ -455,7 +541,8 @@ impl<'d, A: UsbHostAllocator<'d>> Uac<'d, A> {
         let step = if self.r > 0.0 { 1.0 / self.r } else { 1.0 };
         let pb = self.playback.as_mut().unwrap();
         let ch = pb.channels as usize;
-        let frame_bytes = ch * 3;
+        let b = pb.format.bytes();
+        let frame_bytes = ch * b;
         let mut buf = [0u8; 1024];
         let max_by_buf = buf.len() / frame_bytes;
         let max_by_pkt = (pb.max_packet as usize) / frame_bytes;
@@ -465,20 +552,19 @@ impl<'d, A: UsbHostAllocator<'d>> Uac<'d, A> {
         // backpressure (short write) — it never overflows.
         let to_send = frames.min(max_by_buf).min(max_by_pkt);
         let mut w = 0usize;
+        let format = pb.format;
         pb.resampler.produce(&mut pb.ring, step, to_send, |frame| {
             for c in 0..ch {
-                encode_s24le(frame[c], &mut buf[w..w + 3]);
-                w += 3;
+                format.encode(frame[c], &mut buf[w..w + b]);
+                w += b;
             }
         });
         if w == 0 {
             return;
         }
-        if let Err(e) = pb.iso_out.request_out(&buf[..w], false).await {
-            log::warn!(
-                "uac: iso OUT transfer failed ({:?}), dropping playback packet",
-                e
-            );
+        let sent = pb.iso_out.request_out(&buf[..w], false).await;
+        if let Err(e) = sent {
+            self.lost("OUT", e);
         }
     }
 
@@ -508,24 +594,28 @@ impl<'d, A: UsbHostAllocator<'d>> Uac<'d, A> {
         let cap = (self.max_packet as usize).min(buf.len());
         let n = match self.iso_in.request_in(&mut buf[..cap]).await {
             Ok(n) => n,
-            Err(PipeError::BadResponse) => {
+            // BadResponse is the HAL's detach; Canceled its stopped port (no transfer
+            // completes until the device is reset). Either ends the stream: absorbing
+            // them spins this task and starves the reset that would restart the port.
+            Err(e @ (PipeError::BadResponse | PipeError::Canceled)) => {
                 // Detach: propagate so the capture task exits and drops the
                 // pipes (see `pump_once`'s doc comment).
-                return Err(PipeError::BadResponse.into());
+                return Err(e.into());
             }
             Err(e) => {
                 // Lost packet: the shared ring absorbs it; keep streaming.
-                log::warn!("uac: iso IN transfer failed ({:?}), absorbing gap", e);
+                self.lost("IN", e);
                 self.r = self.pi.update(shared::fill_frames() as f32);
                 return Ok(());
             }
         };
-        let frame_bytes = ch * 3;
+        let b = self.format.bytes();
+        let frame_bytes = ch * b;
         let mut frame = [0.0f32; MAX_CHANNELS];
         let mut out = [0.0f32; MAX_CHANNELS];
         for chunk in buf[..n].chunks_exact(frame_bytes) {
             for c in 0..ch {
-                frame[c] = decode_s24le(&chunk[c * 3..c * 3 + 3]);
+                frame[c] = self.format.decode(&chunk[c * b..c * b + b]);
             }
             let mut emit = |o: &[f32]| {
                 out[..o.len()].copy_from_slice(o);
@@ -950,15 +1040,20 @@ mod tests {
         assert_eq!(m.streaming_interface, 1);
         assert_eq!(m.alternate_setting, 1);
         assert_eq!(m.num_channels, 2);
-        assert_eq!(m.clock_source_id, 0x09);
+        assert_eq!(m.clock_id, 0x09);
+        assert_eq!(m.format, pcm::SampleFormat::S24);
         assert_eq!(m.ac_interface, 0);
         assert_eq!(m.endpoint.endpoint_address, 0x81);
         assert_eq!(m.endpoint.ep_dir(), Direction::In);
     }
 
     #[test]
-    fn rejects_non_24bit_format() {
-        let raw = uac2_mic_cfg(2, 2); // 16-bit
+    fn accepts_16_bit_and_rejects_an_unhandled_subslot() {
+        let raw = uac2_mic_cfg(2, 2);
+        let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
+        let m = find_uac_capture(&cfg).expect("16-bit capture matches");
+        assert_eq!(m.format, pcm::SampleFormat::S16);
+        let raw = uac2_mic_cfg(1, 2); // 1-byte subslot: no codec
         let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
         assert!(matches!(
             find_uac_capture(&cfg),
@@ -1116,6 +1211,33 @@ mod tests {
         block_on(host.pump_once()).expect("iso error is absorbed, not fatal");
     }
 
+    /// Lost isochronous packets are counted, not just logged: at a packet per microframe a
+    /// warning each would fill the debug log and stall the firmware.
+    #[test]
+    fn lost_packets_are_counted() {
+        let state = MockState::leak();
+        state
+            .control_reads
+            .borrow_mut()
+            .push(heapless::Vec::from_slice(&44_100u32.to_le_bytes()).unwrap())
+            .unwrap();
+        *state.script.borrow_mut() = crate::host::mock::Script {
+            reads: Default::default(),
+            read_err: Some(embassy_usb_driver::host::PipeError::Timeout),
+        };
+        let alloc = MockAlloc::new(state);
+        let raw = uac2_mic_cfg(3, 1);
+        let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
+        let mut host = block_on(Uac::try_register(&alloc, 1, None, &cfg, 44_100)).unwrap();
+        assert_eq!(host.transfer_errors(), 0);
+        for _ in 0..3 {
+            // The mock's scripted error is one-shot; re-arm it for every transfer.
+            state.script.borrow_mut().read_err = Some(PipeError::Timeout);
+            block_on(host.pump_once()).expect("absorbed");
+        }
+        assert_eq!(host.transfer_errors(), 3);
+    }
+
     #[test]
     fn pump_propagates_on_detach() {
         // `PipeError::BadResponse` is what the RUSB1 HAL's DTCH handler
@@ -1140,6 +1262,27 @@ mod tests {
 
         let err = block_on(host.pump_once()).expect_err("detach must be propagated, not absorbed");
         assert!(matches!(err, UacError::Transfer(PipeError::BadResponse)));
+    }
+
+    /// `Canceled` is the HAL's "port stopped" (after an EOF error or a detach, until the
+    /// device is reset again): every transfer fails at once, so absorbing it spun the pump
+    /// task forever and starved the reset that would have restarted the port.
+    #[test]
+    fn pump_propagates_a_stopped_port() {
+        let state = MockState::leak();
+        state
+            .control_reads
+            .borrow_mut()
+            .push(heapless::Vec::from_slice(&44_100u32.to_le_bytes()).unwrap())
+            .unwrap();
+        state.script.borrow_mut().read_err = Some(PipeError::Canceled);
+        let alloc = MockAlloc::new(state);
+        let raw = uac2_mic_cfg(3, 1);
+        let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
+        let mut host = block_on(Uac::try_register(&alloc, 1, None, &cfg, 44_100)).unwrap();
+
+        let err = block_on(host.pump_once()).expect_err("a stopped port ends the stream");
+        assert!(matches!(err, UacError::Transfer(PipeError::Canceled)));
     }
 
     #[test]
@@ -1191,9 +1334,10 @@ mod tests {
         );
     }
 
+    /// A device asked for 44.1 kHz that stays at 48 kHz (a programmable clock without the rate)
+    /// runs at 48 kHz: the resampler converts, centred on 48000 / 44100.
     #[test]
-    fn register_rejects_a_device_that_will_not_switch() {
-        // Asked for 44.1 kHz, the device reports 48 kHz before and after SET CUR.
+    fn a_device_that_will_not_switch_runs_at_its_own_rate() {
         let state = MockState::leak();
         for _ in 0..2 {
             state
@@ -1206,10 +1350,167 @@ mod tests {
         let raw = uac2_mic_cfg(3, 2);
         let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
 
-        let err = block_on(Uac::try_register(&alloc, 1, None, &cfg, 44_100)).err();
+        let host = block_on(Uac::try_register(&alloc, 1, None, &cfg, 44_100)).expect("register");
+        assert_eq!(host.sample_rate(), 48_000);
+        assert_eq!(host.r, 48_000.0 / 44_100.0);
+    }
+
+    use super::desc::fixtures::{INTERFACE_2B5A, digitakt};
+
+    /// UAC2 `CUR` request (class, interface recipient) to `entity`, control selector `cs`.
+    fn is_cur(setup: &[u8], dir_in: bool, entity: u8, cs: u8) -> bool {
+        setup[0] == if dir_in { 0xA1 } else { 0x21 }
+            && setup[1] == 0x01
+            && setup[3] == cs
+            && setup[5] == entity
+    }
+
+    #[test]
+    fn registration_follows_a_clock_selector_to_its_source() {
+        let state = MockState::leak();
+        {
+            let mut r = state.control_reads.borrow_mut();
+            r.push(Vec::from_slice(&[1]).unwrap()).unwrap(); // selector 40: pin 1 (source 41)
+            r.push(Vec::from_slice(&48_000u32.to_le_bytes()).unwrap())
+                .unwrap();
+            r.push(Vec::from_slice(&44_100u32.to_le_bytes()).unwrap())
+                .unwrap();
+        }
+        let alloc = MockAlloc::new(state);
+        let cfg = ConfigurationDescriptor::try_from_slice(INTERFACE_2B5A).unwrap();
+
+        let host = block_on(Uac::try_register(&alloc, 1, None, &cfg, 44_100)).expect("register");
+        assert_eq!(host.channels(), 4);
+        assert_eq!(host.playback_channels(), 4);
+        assert_eq!(host.sample_rate(), 44_100);
+        let setups = state.setups.borrow();
+        assert!(is_cur(&setups[0], true, 40, 0x01), "GET CUR on selector 40");
         assert!(
-            matches!(err, Some(UacError::UnsupportedRate)),
-            "got {err:?}"
+            setups.iter().any(|s| is_cur(s, false, 41, 0x01)),
+            "SET CUR on source 41"
         );
+        assert!(
+            !setups.iter().any(|s| is_cur(s, false, 40, 0x01)),
+            "never SET CUR the selector"
+        );
+    }
+
+    /// A selector that answers nothing is taken at its first input.
+    #[test]
+    fn a_silent_selector_is_taken_at_its_first_input() {
+        let state = MockState::leak();
+        {
+            let mut r = state.control_reads.borrow_mut();
+            r.push(Vec::new()).unwrap(); // selector GET CUR: no data
+            r.push(Vec::from_slice(&44_100u32.to_le_bytes()).unwrap())
+                .unwrap();
+        }
+        let alloc = MockAlloc::new(state);
+        let cfg = ConfigurationDescriptor::try_from_slice(INTERFACE_2B5A).unwrap();
+
+        block_on(Uac::try_register(&alloc, 1, None, &cfg, 44_100)).expect("register");
+        assert!(
+            is_cur(&state.setups.borrow()[1], true, 41, 0x01),
+            "frequency read on source 41"
+        );
+    }
+
+    /// The Digitakt's clock is fixed at 48 kHz: no SET CUR, the stream runs at 48 kHz.
+    #[test]
+    fn a_fixed_clock_runs_at_its_own_rate_without_set_cur() {
+        let state = MockState::leak();
+        state
+            .control_reads
+            .borrow_mut()
+            .push(Vec::from_slice(&48_000u32.to_le_bytes()).unwrap())
+            .unwrap();
+        let alloc = MockAlloc::new(state);
+        let raw = digitakt();
+        let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
+
+        let host = block_on(Uac::try_register(&alloc, 1, None, &cfg, 44_100)).expect("register");
+        assert_eq!(host.sample_rate(), 48_000);
+        assert_eq!((host.channels(), host.playback_channels()), (2, 2));
+        assert!(
+            !state.setups.borrow().iter().any(|s| is_set_cur(s)),
+            "no SET CUR"
+        );
+        // control + capture IN 0x83 + playback OUT 0x03; never the feedback endpoint 0x82.
+        let allocs = state.allocs.borrow();
+        assert_eq!(allocs.len(), 3);
+        assert!(
+            allocs.iter().all(|a| a.ep_addr != 0x82),
+            "feedback endpoint not claimed"
+        );
+    }
+
+    /// The playback endpoint is claimed only once SET_INTERFACE has enabled it: the HAL arms
+    /// an isochronous OUT pipe when it opens it, and the device must not be sent packets for an
+    /// endpoint its interface has not selected yet (on hardware the next control transfer then
+    /// failed).
+    #[test]
+    fn the_playback_pipe_opens_after_its_interface_is_selected() {
+        let state = MockState::leak();
+        state
+            .control_reads
+            .borrow_mut()
+            .push(Vec::from_slice(&48_000u32.to_le_bytes()).unwrap())
+            .unwrap();
+        let alloc = MockAlloc::new(state);
+        let raw = digitakt();
+        let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
+        block_on(Uac::try_register(&alloc, 1, None, &cfg, 44_100)).expect("register");
+
+        let setups = state.setups.borrow();
+        let select = setups
+            .iter()
+            .position(|s| s[1] == 11 && s[4] == 1)
+            .expect("SET_INTERFACE on playback interface 1");
+        let out = state
+            .allocs
+            .borrow()
+            .iter()
+            .find(|a| a.ep_addr == 0x03)
+            .copied()
+            .unwrap();
+        assert!(
+            out.setups_before > select,
+            "pipe opened after SET_INTERFACE"
+        );
+    }
+
+    #[test]
+    fn the_pump_decodes_and_encodes_4_byte_subslots() {
+        let state = MockState::leak();
+        state
+            .control_reads
+            .borrow_mut()
+            .push(Vec::from_slice(&48_000u32.to_le_bytes()).unwrap())
+            .unwrap();
+        // Six stereo 32-bit frames: left +0.5, right -0.5.
+        let mut pkt = Vec::<u8, 64>::new();
+        for _ in 0..6 {
+            pkt.extend_from_slice(&[0, 0, 0, 0x40, 0, 0, 0, 0xC0])
+                .unwrap();
+        }
+        state.script.borrow_mut().reads.push(pkt).unwrap();
+        let alloc = MockAlloc::new(state);
+        let raw = digitakt();
+        let cfg = ConfigurationDescriptor::try_from_slice(&raw).unwrap();
+        let mut host = block_on(Uac::try_register(&alloc, 1, None, &cfg, 44_100)).unwrap();
+        for _ in 0..4 {
+            host.push_playback_frame(&[0.5, -0.5]);
+        }
+
+        block_on(host.pump_once()).expect("pump");
+        let mut out = [0.0f32; 16];
+        let got = host.read(&mut out);
+        assert!(got >= 2 && got % 2 == 0, "whole stereo frames, got {got}");
+        for f in out[..got].chunks(2) {
+            assert_eq!(f, [0.5, -0.5]);
+        }
+        let sent = state.log.borrow().sent.clone();
+        assert_eq!(sent.len() % 8, 0, "whole 4-byte stereo frames sent");
+        assert_eq!(&sent[0..8], &[0, 0, 0, 0x40, 0, 0, 0, 0xC0]);
     }
 }

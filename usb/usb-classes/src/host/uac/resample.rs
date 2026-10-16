@@ -70,27 +70,35 @@ impl Default for Resampler {
 ///
 /// Ring fill is the clock error: too full (device fast) raises `r` so the
 /// resampler emits fewer frames per input frame and the ring drains back to
-/// `setpoint`. Output `r` is clamped to a narrow band around 1.0 — with the
-/// 44.1/24-only policy true drift stays within a few hundred ppm.
+/// `setpoint`. `r` is centred on a nominal ratio — device rate / engine rate,
+/// 1.0 when the device runs at the engine's rate — and clamped to a narrow
+/// band around it: true drift stays within a few hundred ppm.
 pub struct PiController {
     setpoint: f32,
+    nominal: f32,
     kp: f32,
     ki: f32,
     integ: f32,
-    r_min: f32,
-    r_max: f32,
 }
 
+/// Relative half-width of the drift band around the nominal ratio.
+const DRIFT_BAND: f32 = 0.02;
+
 impl PiController {
-    /// `setpoint_frames` is the target ring fill (aim for half the ring).
+    /// `setpoint_frames` is the target ring fill (aim for half the ring); the
+    /// device runs at the engine's rate.
     pub fn new(setpoint_frames: f32) -> Self {
+        Self::with_nominal(setpoint_frames, 1.0)
+    }
+
+    /// As [`Self::new`], for a device whose rate is `nominal` × the engine's.
+    pub fn with_nominal(setpoint_frames: f32, nominal: f32) -> Self {
         Self {
             setpoint: setpoint_frames,
+            nominal,
             kp: 2.0e-6,
             ki: 2.0e-8,
             integ: 0.0,
-            r_min: 0.98,
-            r_max: 1.02,
         }
     }
 
@@ -98,10 +106,11 @@ impl PiController {
     pub fn update(&mut self, fill_frames: f32) -> f32 {
         let err = fill_frames - self.setpoint;
         self.integ += err;
-        // Anti-windup: clamp the integral term's contribution to the r-band.
-        let i_limit = (self.r_max - 1.0) / self.ki;
+        // Anti-windup: clamp the integral term's contribution to the band.
+        let i_limit = DRIFT_BAND / self.ki;
         self.integ = self.integ.clamp(-i_limit, i_limit);
-        (1.0 + self.kp * err + self.ki * self.integ).clamp(self.r_min, self.r_max)
+        let rel = (self.kp * err + self.ki * self.integ).clamp(-DRIFT_BAND, DRIFT_BAND);
+        self.nominal * (1.0 + rel)
     }
 }
 
@@ -158,6 +167,20 @@ mod tests {
     }
 
     // --- PI controller ---
+
+    /// A device clocked away from the engine (48 kHz into a 44.1 kHz engine) centres the ratio
+    /// on device / engine, and the drift band is relative to it.
+    #[test]
+    fn pi_centres_on_its_nominal_ratio() {
+        let nominal = 48_000.0 / 44_100.0;
+        let mut pi = PiController::with_nominal(256.0, nominal);
+        assert_eq!(pi.update(256.0), nominal);
+        let hi = pi.update(1.0e9);
+        assert!(hi > nominal && hi <= nominal * 1.02 + 1e-6, "{hi}");
+        let mut pi = PiController::with_nominal(256.0, nominal);
+        let lo = pi.update(-1.0e9);
+        assert!(lo < nominal && lo >= nominal * 0.98 - 1e-6, "{lo}");
+    }
 
     #[test]
     fn pi_raises_r_when_ring_too_full() {
