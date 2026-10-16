@@ -548,47 +548,44 @@ fn save_shared_toggle(u: Usb, pipe: usize) -> bool {
     pipectr(u, pipe).read() & PIPECTR_SQMON != 0
 }
 
-/// After a send on the shared pipe: store the pipe's toggle into `epn` on `dev_addr`, if that
-/// endpoint is still a user (it may have closed mid-send), and with `forget_owner` mark the
-/// pipe as configured for no one, so the next send re-points it.
-fn store_shared_toggle(port: u8, pipe: usize, dev_addr: u8, epn: u8, forget_owner: bool) {
-    let toggle = save_shared_toggle(usb(port), pipe);
+/// End a send on the shared pipe that user `i` started: store the pipe's toggle into the user.
+/// With `abandon` (the send was dropped mid-transfer), first halt the pipe so it sends nothing
+/// more from the caller's buffer and detach the buffer from the interrupt handler, then forget
+/// the owner so the next send re-points.
+///
+/// Only while the pipe is still the shared one and still configured for `i`. If the user
+/// left mid-send (endpoint closed, device gone), `leave_shared_out` cleared the owner and may
+/// have freed the pipe, whose number can now carry another endpoint's transfer: touch nothing.
+/// Owner is only ever set by a send holding the port's lock, which this send still holds, so
+/// a pipe that still names `i` as owner has had no other transfer since.
+fn finish_shared_send(port: u8, pipe: usize, i: u8, abandon: bool) {
+    let u = usb(port);
     critical_section::with(|cs| {
         let alloc = unsafe { &mut *HCD_ALLOC[port as usize].borrow(cs).get() };
-        let i = alloc.shared_user(dev_addr, epn);
         let Some(shared) = alloc
             .shared_out
             .as_mut()
-            .filter(|s| s.pipe as usize == pipe)
+            .filter(|s| s.pipe as usize == pipe && s.owner == Some(i))
         else {
             return;
         };
-        if let Some(user) = i.and_then(|i| shared.users[i].as_mut()) {
-            user.toggle = toggle;
-        }
-        if forget_owner {
+        if abandon {
+            let ctr = pipectr(u, pipe);
+            if ctr.read() & PIPECTR_PID_MASK == PIPECTR_PID_BUF {
+                ctr.write_value((ctr.read() & !PIPECTR_PID_MASK) | PIPECTR_PID_NAK);
+            }
+            while ctr.read() & PIPECTR_PBUSY != 0 {}
+            // The interrupt handler must not read the dropped buffer.
+            let xfer = unsafe { &mut *HCD_XFER[pipe].borrow(cs).get() };
+            xfer.buf = core::ptr::null_mut();
+            xfer.remaining = 0;
             shared.owner = None;
         }
-    });
-}
-
-/// A send on the shared pipe was dropped mid-transfer: halt the pipe so it sends nothing more
-/// from the caller's buffer, then save the toggle the device has acknowledged up to and forget
-/// the owner.
-fn abandon_shared_send(port: u8, pipe: usize, dev_addr: u8, epn: u8) {
-    let u = usb(port);
-    let ctr = pipectr(u, pipe);
-    critical_section::with(|cs| unsafe {
-        if ctr.read() & PIPECTR_PID_MASK == PIPECTR_PID_BUF {
-            ctr.write_value((ctr.read() & !PIPECTR_PID_MASK) | PIPECTR_PID_NAK);
+        // Read after the halt, so it is the toggle the device last acknowledged.
+        if let Some(user) = shared.users[i as usize].as_mut() {
+            user.toggle = save_shared_toggle(u, pipe);
         }
-        while ctr.read() & PIPECTR_PBUSY != 0 {}
-        // The interrupt handler must not read the dropped buffer.
-        let xfer = &mut *HCD_XFER[pipe].borrow(cs).get();
-        xfer.buf = core::ptr::null_mut();
-        xfer.remaining = 0;
     });
-    store_shared_toggle(port, pipe, dev_addr, epn, true);
 }
 
 /// Reset the saved data toggle of `epn` on `dev_addr` if `pipe` is the port's shared send
@@ -1718,7 +1715,7 @@ impl<'d> Rusb1HostDriver<'d> {
         // Read under the lock: the endpoint may have closed, or another send re-pointed the
         // pipe, while this one waited.
         let u = usb(self.port);
-        critical_section::with(|cs| {
+        let i = critical_section::with(|cs| {
             let alloc = unsafe { &mut *HCD_ALLOC[p].borrow(cs).get() };
             let i = alloc
                 .shared_user(dev_addr, epn)
@@ -1733,17 +1730,17 @@ impl<'d> Rusb1HostDriver<'d> {
                 repoint_shared(u, pipe, &user);
                 shared.owner = Some(i as u8);
             }
-            Ok(())
+            Ok(i as u8)
         })?;
 
         let port = self.port;
-        let guard = OnDrop(Some(move || abandon_shared_send(port, pipe, dev_addr, epn)));
+        let guard = OnDrop(Some(move || finish_shared_send(port, pipe, i, true)));
         let mut result = self.xfer_out_on(pipe, dev_addr, ep_addr, buf).await;
         if result.is_ok() {
             result = self.drain_shared(pipe).await;
         }
         guard.defuse();
-        store_shared_toggle(port, pipe, dev_addr, epn, false);
+        finish_shared_send(port, pipe, i, false);
         result
     }
 
@@ -3861,10 +3858,66 @@ mod tests {
             (*HCD_ALLOC[0].borrow(cs).get()).shared_out.unwrap().owner
         });
         assert_eq!(owner, None);
+        let pipe = the_shared_pipe();
+        let buf = critical_section::with(|cs| unsafe { (*HCD_XFER[pipe].borrow(cs).get()).buf });
+        assert!(
+            buf.is_null(),
+            "the handler no longer sees the dropped buffer"
+        );
         assert!(
             SHARED_OUT_LOCK[0].try_lock().is_ok(),
             "the lock is released"
         );
+    }
+
+    /// Review (Task 2) I1: the last user closes mid-send, the freed pipe goes to another
+    /// endpoint, then the stale send is dropped: it must not touch that endpoint's pipe.
+    #[test]
+    fn a_cancelled_send_leaves_a_reallocated_pipe_alone() {
+        use core::future::Future;
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = host_with_bus(0b00, DVSTCTR0_RHST_HS | DVSTCTR0_UACT);
+        critical_section::with(|cs| unsafe { *HCD_ALLOC[0].borrow(cs).get() = HcdAlloc::new() });
+        h.edpt_open(1, 0x01, EndpointType::Bulk, 512, 0).unwrap();
+        let pipe = the_shared_pipe();
+        crate::mmio::test::poke16(usb(0).d0fifoctr().addr(), FIFOCTR_FRDY);
+        let mut sentinel = [0u8; 8];
+        {
+            let data = [1u8; 4];
+            let mut send = core::pin::pin!(h.xfer_out(1, 0x01, &data));
+            let mut cx = core::task::Context::from_waker(core::task::Waker::noop());
+            assert!(send.as_mut().poll(&mut cx).is_pending());
+            h.edpt_close(1, 0x01);
+            assert_eq!(shared_pipe(0), None);
+            h.edpt_open(1, 0x81, EndpointType::Bulk, 512, 0).unwrap();
+            assert_eq!(
+                h.ep_to_pipe(1, 0x81),
+                Some(pipe),
+                "the freed pipe is reused"
+            );
+            // The new endpoint's transfer is in flight.
+            critical_section::with(|cs| unsafe {
+                let x = &mut *HCD_XFER[pipe].borrow(cs).get();
+                x.buf = sentinel.as_mut_ptr();
+                x.remaining = 7;
+            });
+            crate::mmio::test::poke16(pipectr(usb(0), pipe).addr(), PIPECTR_PID_BUF);
+        }
+        let (buf, remaining) = critical_section::with(|cs| unsafe {
+            let x = &*HCD_XFER[pipe].borrow(cs).get();
+            (x.buf, x.remaining)
+        });
+        assert_eq!(buf, sentinel.as_mut_ptr());
+        assert_eq!(remaining, 7);
+        assert_eq!(
+            pipectr(usb(0), pipe).read() & PIPECTR_PID_MASK,
+            PIPECTR_PID_BUF,
+            "still armed"
+        );
+        assert!(SHARED_OUT_LOCK[0].try_lock().is_ok());
+        critical_section::with(|cs| unsafe {
+            (*HCD_XFER[pipe].borrow(cs).get()).buf = core::ptr::null_mut();
+        });
     }
 
     /// Characterization: this behaviour exists before the change, and the test pins it.
