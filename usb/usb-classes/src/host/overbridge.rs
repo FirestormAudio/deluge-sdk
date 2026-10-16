@@ -307,12 +307,19 @@ impl<'d, A: UsbHostAllocator<'d>> OverbridgeHost<'d, A> {
         ) {
             Ok(counter) => {
                 self.framing_run = 0;
-                let gaps = self.rx_counter.observe(counter);
+                let seen = self.rx_counter.observe(counter);
                 h.push_rx(&self.frames[..n]);
                 let ppm = self.rate.add(FRAMES_PER_BLOCK as u64, now_us);
                 h.update_stats(|s| {
                     s.blocks_in = s.blocks_in.wrapping_add(1);
-                    s.counter_gaps = s.counter_gaps.saturating_add(gaps);
+                    match seen {
+                        proto::Counted::Missing(n) => {
+                            s.counter_gaps = s.counter_gaps.saturating_add(n)
+                        }
+                        proto::Counted::Resync => {
+                            s.counter_resyncs = s.counter_resyncs.saturating_add(1)
+                        }
+                    }
                     if let Some(ppm) = ppm {
                         s.rate_ratio_ppm = ppm;
                     }
@@ -668,5 +675,22 @@ mod tests {
         assert_eq!(state.setups.borrow().len(), 4);
         assert_eq!(state.log.borrow().sent.len(), 4 * 88);
         assert_eq!(state.log.borrow().toggle_resets, 2);
+    }
+
+    /// An outage longer than gap counting can follow is still visible.
+    #[test]
+    fn a_long_outage_counts_as_a_resync() {
+        let state = MockState::leak();
+        let mut host = digitakt(state);
+        let h: OverbridgeHandle<4096, 512> = OverbridgeHandle::new();
+        h.begin(host.matched().info(), 12, 2).unwrap();
+        for c in [0u16, 7, 7 * 2000] {
+            state.script.borrow_mut().reads.push(digitakt_block(c)).unwrap();
+        }
+        for t in 0..3 {
+            block_on(host.pump_once(&h, t)).unwrap();
+        }
+        let s = h.stats();
+        assert_eq!((s.counter_gaps, s.counter_resyncs), (0, 1));
     }
 }

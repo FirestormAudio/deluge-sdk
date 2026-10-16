@@ -333,11 +333,18 @@ impl<E: EndpointOut> OverbridgeReceiver<E> {
             &mut self.frames[..n],
         ) {
             Ok(counter) => {
-                let gaps = self.counter.observe(counter);
+                let seen = self.counter.observe(counter);
                 h.push_rx(&self.frames[..n]);
                 h.update_stats(|s| {
                     s.blocks_in = s.blocks_in.wrapping_add(1);
-                    s.counter_gaps = s.counter_gaps.saturating_add(gaps);
+                    match seen {
+                        proto::Counted::Missing(n) => {
+                            s.counter_gaps = s.counter_gaps.saturating_add(n)
+                        }
+                        proto::Counted::Resync => {
+                            s.counter_resyncs = s.counter_resyncs.saturating_add(1)
+                        }
+                    }
                 });
             }
             Err(_) => h.update_stats(|s| s.framing_errors = s.framing_errors.saturating_add(1)),

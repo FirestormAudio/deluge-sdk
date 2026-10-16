@@ -30,7 +30,8 @@ often than before.
 
 - **Setup:** as in 1. Play a pattern that uses every track. The harness logs `StreamStats` and
   each stem's peak every second.
-- **Pass:** 10 minutes with `counter_gaps == 0` and `framing_errors == 0`. Each track's peak
+- **Pass:** 10 minutes with `counter_gaps == 0`, `counter_resyncs == 0` and
+  `framing_errors == 0`. Each track's peak
   moves with its own audio, with no crosstalk between stems.
 - **Record:** `rate_ratio_ppm`, the `overruns`/`underruns` totals, and the CPU load. The CPU
   path reads the FIFO a byte at a time, so the load matters here. Repeat once FIFO DMA lands
@@ -66,6 +67,6 @@ often than before.
   Overwitch on Linux, with a local `devices.json` entry for PID `0x0BF0` (12 tracks out, 2 in,
   version 2).
 - **Pass:** the host Deluge logs stems 0–11 at the device's DC levels ((k + 1) << 24, about
-  −42 dBFS for stem 0 rising 6 dB per doubling), with no counter gaps. The device's `blocks_in`
+  −42 dBFS for stem 0 rising 6 dB per doubling), with no counter gaps or resyncs. The device's `blocks_in`
   climbs by about 6857 a second (the host harness's tone). Overwitch streams the same stems.
 - **Record:** the Overwitch version, and anything it logs about the device.

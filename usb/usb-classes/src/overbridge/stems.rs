@@ -37,6 +37,9 @@ pub struct StreamStats {
     pub blocks_out: u32,
     /// Blocks missing by the +7 frame counter.
     pub counter_gaps: u32,
+    /// Times the frame counter jumped somewhere gap counting can't follow: a restarted device,
+    /// or an outage longer than about 150 ms. Each is a dropout of unknown length.
+    pub counter_resyncs: u32,
     /// Blocks dropped for a wrong header or length.
     pub framing_errors: u32,
     /// Received frames dropped because the app didn't read them in time.
@@ -159,6 +162,7 @@ impl<const RX: usize, const TX: usize> OverbridgeHandle<RX, TX> {
                     blocks_in: 0,
                     blocks_out: 0,
                     counter_gaps: 0,
+                    counter_resyncs: 0,
                     framing_errors: 0,
                     overruns: 0,
                     underruns: 0,

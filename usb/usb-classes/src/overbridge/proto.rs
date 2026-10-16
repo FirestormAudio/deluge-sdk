@@ -267,6 +267,17 @@ pub fn decode_to_device(
     decode(format, ch, false, block, frames)
 }
 
+/// What a block's frame counter says about the stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Counted {
+    /// On the expected grid: this many blocks were missing before it.
+    Missing(u32),
+    /// Off the 7-frame grid, or a jump past [`CounterTracker::MAX_GAP`] blocks: the device
+    /// restarted its counter or the stream stalled for longer than gap counting can follow.
+    /// Count it; it is an outage of unknown length.
+    Resync,
+}
+
 /// Follows a stream's frame counter (+7 per block, 16-bit wrapping) and counts missing blocks.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CounterTracker {
@@ -274,26 +285,25 @@ pub struct CounterTracker {
 }
 
 impl CounterTracker {
-    /// A jump of more blocks than this (≈150 ms) is a restarted counter, not a gap.
-    const MAX_GAP: u32 = 1024;
+    /// The longest gap counted block by block (≈150 ms); a longer jump is a [`Counted::Resync`].
+    pub const MAX_GAP: u32 = 1024;
 
-    /// Record a block's counter. Returns how many blocks were missing before it. A counter
-    /// that isn't on the expected 7-frame grid, or jumps implausibly far, resyncs and counts 0.
-    pub fn observe(&mut self, counter: u16) -> u32 {
-        let missing = match self.next {
+    /// Record a block's counter.
+    pub fn observe(&mut self, counter: u16) -> Counted {
+        let seen = match self.next {
             Some(n) => {
                 let d = counter.wrapping_sub(n) as u32;
                 let blocks = d / FRAMES_PER_BLOCK as u32;
                 if d % FRAMES_PER_BLOCK as u32 == 0 && blocks <= Self::MAX_GAP {
-                    blocks
+                    Counted::Missing(blocks)
                 } else {
-                    0
+                    Counted::Resync
                 }
             }
-            None => 0,
+            None => Counted::Missing(0),
         };
         self.next = Some(counter.wrapping_add(FRAMES_PER_BLOCK as u16));
-        missing
+        seen
     }
 
     /// Forget the stream, so the next block sets the expectation.
@@ -493,29 +503,48 @@ mod tests {
     #[test]
     fn counter_gaps_count_missing_blocks() {
         let mut t = CounterTracker::default();
-        assert_eq!(t.observe(100), 0, "the first block sets the expectation");
-        assert_eq!(t.observe(107), 0);
-        assert_eq!(t.observe(128), 2, "114 and 121 missing");
-        assert_eq!(t.observe(135), 0);
+        assert_eq!(
+            t.observe(100),
+            Counted::Missing(0),
+            "the first block sets the expectation"
+        );
+        assert_eq!(t.observe(107), Counted::Missing(0));
+        assert_eq!(t.observe(128), Counted::Missing(2), "114 and 121 missing");
+        assert_eq!(t.observe(135), Counted::Missing(0));
     }
 
     #[test]
     fn counter_wraps_without_a_gap() {
         let mut t = CounterTracker::default();
         t.observe(0xFFFA);
-        assert_eq!(t.observe(0x0001), 0);
+        assert_eq!(t.observe(0x0001), Counted::Missing(0));
+        let mut t = CounterTracker::default();
+        t.observe(0xFFFA);
+        assert_eq!(
+            t.observe(0x0008),
+            Counted::Missing(1),
+            "a gap across the wrap still counts"
+        );
     }
 
     #[test]
-    fn a_misaligned_counter_resyncs_without_counting() {
+    fn a_misaligned_or_implausible_counter_is_a_resync() {
         let mut t = CounterTracker::default();
         t.observe(700);
-        assert_eq!(t.observe(3), 0, "device restarted its counter");
-        assert_eq!(t.observe(10), 0, "and the new sequence is tracked");
+        assert_eq!(
+            t.observe(3),
+            Counted::Resync,
+            "device restarted its counter"
+        );
+        assert_eq!(
+            t.observe(10),
+            Counted::Missing(0),
+            "and the new sequence is tracked"
+        );
         assert_eq!(
             t.observe(17 + 7 * 5000),
-            0,
-            "an implausible jump resyncs too"
+            Counted::Resync,
+            "an outage longer than the gap limit"
         );
     }
 }
