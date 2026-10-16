@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `deluge-bsp` `usb::host`: `HostAudioMode` (Auto / Uac / Overbridge / Off), set at runtime with
+  `set_host_audio_mode`; changing it re-binds an attached device. `host_audio()` returns
+  whichever audio driver is bound, and `host_audio_connection()` counts binds.
 - Elektron Overbridge 2 device class (`usb-classes` feature `device-overbridge`,
   `overbridge::device`). It has the Digitakt's interface layout and name requests; the board
   supplies the identity and channel counts. The RZ/A1L device driver carries interrupt
@@ -46,6 +49,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `deluge-bsp`: `usb-host` is split into `usb-host-core` (supervisor, hubs, MIDI),
+  `usb-host-uac` and `usb-host-overbridge`. `usb-host` still means `usb-host-uac` for this
+  release; it will become `usb-host-core`, so name `usb-host-uac` if you want UAC.
 - The RZ/A1 chip crates (`rza1-pac`, `rza1-rt`, `rza1l-hal`, `rza1-alloc`) moved from `crates/` to
   `rza1/`, their own Cargo workspace with its own tooling (`rza1/tools/test.sh`) and CI job. A
   path dependency on them changes from `crates/<crate>` to `rza1/<crate>`; git dependencies are

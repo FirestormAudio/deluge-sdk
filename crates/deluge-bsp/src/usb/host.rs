@@ -250,6 +250,58 @@ pub fn compiled(d: AudioDriver) -> bool {
     }
 }
 
+/// Counts audio binds, so an app can tell the device or driver changed between two reads.
+static HOST_AUDIO_CONNECTION: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// The bound audio driver's input, for an app built once to follow a mode change live.
+#[cfg(target_os = "none")]
+pub enum HostAudio {
+    None,
+    #[cfg(feature = "usb-host-uac")]
+    Uac(UacInput),
+    #[cfg(feature = "usb-host-overbridge")]
+    Overbridge(&'static OverbridgeStems),
+}
+
+/// A bound UAC device: interleaved `f32` at the engine rate (its resamplers convert).
+#[cfg(all(target_os = "none", feature = "usb-host-uac"))]
+pub struct UacInput;
+
+#[cfg(all(target_os = "none", feature = "usb-host-uac"))]
+impl UacInput {
+    pub fn channels(&self) -> u8 {
+        usb_classes::host::uac::shared::capture_channels()
+    }
+    pub fn read(&self, out: &mut [f32]) -> usize {
+        usb_classes::host::uac::shared::capture_read(out)
+    }
+    pub fn playback_channels(&self) -> u8 {
+        usb_classes::host::uac::shared::playback_channels()
+    }
+    pub fn write(&self, samples: &[f32]) -> usize {
+        usb_classes::host::uac::shared::playback_write(samples)
+    }
+}
+
+/// Whichever audio driver is bound now.
+#[cfg(target_os = "none")]
+pub fn host_audio() -> HostAudio {
+    #[cfg(feature = "usb-host-overbridge")]
+    if overbridge().info().is_some() {
+        return HostAudio::Overbridge(overbridge());
+    }
+    #[cfg(feature = "usb-host-uac")]
+    if usb_classes::host::uac::shared::capture_channels() > 0 {
+        return HostAudio::Uac(UacInput);
+    }
+    HostAudio::None
+}
+
+/// Bumped on every audio bind.
+pub fn host_audio_connection() -> u32 {
+    HOST_AUDIO_CONNECTION.load(core::sync::atomic::Ordering::Acquire)
+}
+
 #[cfg(target_os = "none")]
 mod runtime {
     use core::sync::atomic::{AtomicU16, Ordering};
@@ -416,6 +468,8 @@ mod runtime {
                     Ok(token) => {
                         spawner.spawn(token);
                         usb_classes::host::uac::shared::begin(ch);
+                        super::HOST_AUDIO_CONNECTION
+                            .fetch_add(1, core::sync::atomic::Ordering::Release);
                         if play_ch > 0 {
                             usb_classes::host::uac::shared::playback_begin(play_ch);
                         }
@@ -522,6 +576,7 @@ mod runtime {
         match overbridge_task(host) {
             Ok(token) => {
                 spawner.spawn(token);
+                super::HOST_AUDIO_CONNECTION.fetch_add(1, core::sync::atomic::Ordering::Release);
                 true
             }
             Err(_) => {
