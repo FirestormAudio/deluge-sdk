@@ -380,6 +380,9 @@ struct OutUser {
     mps: u16,
     /// The endpoint's next DATA PID: false = DATA0.
     toggle: bool,
+    /// Which open of the endpoint this is (never 0), kept by its [`Rusb1Pipe`] so a stale
+    /// pipe's drop can't remove a later open of the same endpoint.
+    generation: u16,
 }
 
 /// The one hardware pipe every bulk OUT endpoint on a port shares, so a hub's devices don't
@@ -412,6 +415,8 @@ struct HcdAlloc {
     buf_reserved: [u8; HCD_PIPE_COUNT],
     /// The shared bulk OUT pipe, while any bulk OUT endpoint is open.
     shared_out: Option<SharedOut>,
+    /// The last [`OutUser::generation`] handed out.
+    out_generation: u16,
 }
 
 impl HcdAlloc {
@@ -425,17 +430,18 @@ impl HcdAlloc {
             buf_start: [0u8; HCD_PIPE_COUNT],
             buf_reserved: [0u8; HCD_PIPE_COUNT],
             shared_out: None,
+            out_generation: 0,
         }
     }
 
-    /// Drop `epn` on `dev_addr` from the shared send pipe, if `pipe` is it. Returns true while
+    /// Drop user `i` (if any) from the shared send pipe, if `pipe` is it. Returns true while
     /// other endpoints still use the pipe, which must then stay configured; when the last one
     /// leaves, the shared state is cleared and the caller frees the hardware pipe.
-    fn leave_shared_out(&mut self, pipe: usize, dev_addr: u8, epn: u8) -> bool {
+    fn leave_shared_out(&mut self, pipe: usize, i: Option<usize>) -> bool {
         if self.shared_out.as_ref().map(|s| s.pipe as usize) != Some(pipe) {
             return false;
         }
-        if let Some(i) = self.shared_user(dev_addr, epn) {
+        if let Some(i) = i {
             let shared = self.shared_out.as_mut().unwrap();
             shared.users[i] = None;
             if shared.owner == Some(i as u8) {
@@ -457,6 +463,21 @@ impl HcdAlloc {
             .users
             .iter()
             .position(|u| matches!(u, Some(u) if u.dev_addr == dev_addr && u.epn == epn))
+    }
+
+    /// The index in the shared pipe's user table of the open with `generation`.
+    fn shared_user_of(&self, generation: u16) -> Option<usize> {
+        self.shared_out
+            .as_ref()?
+            .users
+            .iter()
+            .position(|u| matches!(u, Some(u) if u.generation == generation))
+    }
+
+    /// A generation for a new open of a shared-pipe endpoint.
+    fn next_out_generation(&mut self) -> u16 {
+        self.out_generation = self.out_generation.wrapping_add(1).max(1);
+        self.out_generation
     }
 
     /// Allocate a free pipe in `first..=last`, highest first, as TinyUSB's `find_pipe` does.
@@ -548,39 +569,41 @@ fn save_shared_toggle(u: Usb, pipe: usize) -> bool {
     pipectr(u, pipe).read() & PIPECTR_SQMON != 0
 }
 
-/// Endpoint `epn` on `dev_addr` leaves `pipe` (see [`HcdAlloc::leave_shared_out`], whose
-/// result this returns). If the pipe was configured for it, a send of its may be in flight
-/// that its own future can no longer clean up (it no longer owns the pipe): halt the pipe so
-/// it sends no more of the caller's buffer to the departed endpoint, detach the buffer from
-/// the interrupt handler, and fail the transfer so the send returns and releases the port's
-/// send lock.
+/// User `me` leaves `pipe` (see [`HcdAlloc::leave_shared_out`], whose result this returns).
+/// If the pipe was configured for it, a send of its may be in flight that its own future can
+/// no longer clean up (it no longer owns the pipe): see [`fail_shared_send`].
 fn leave_shared(
     u: Usb,
     cs: critical_section::CriticalSection<'_>,
     alloc: &mut HcdAlloc,
     pipe: usize,
-    dev_addr: u8,
-    epn: u8,
+    me: Option<usize>,
 ) -> bool {
-    let me = alloc.shared_user(dev_addr, epn);
     let was_owner = alloc.shared_out.is_some_and(|s| {
         s.pipe as usize == pipe && s.owner.is_some() && s.owner.map(usize::from) == me
     });
-    let still_shared = alloc.leave_shared_out(pipe, dev_addr, epn);
+    let still_shared = alloc.leave_shared_out(pipe, me);
     if was_owner {
-        let ctr = pipectr(u, pipe);
-        if ctr.read() & PIPECTR_PID_MASK == PIPECTR_PID_BUF {
-            ctr.write_value((ctr.read() & !PIPECTR_PID_MASK) | PIPECTR_PID_NAK);
-        }
-        while ctr.read() & PIPECTR_PBUSY != 0 {}
-        let xfer = unsafe { &mut *HCD_XFER[pipe].borrow(cs).get() };
-        xfer.buf = core::ptr::null_mut();
-        xfer.remaining = 0;
-        // As the detach sweep does; the next transfer clears the flag when it arms.
-        HCD_PIPE_NRDY.fetch_or(1u16 << pipe, Ordering::Release);
-        HCD_PIPE_WAKERS[pipe].wake();
+        fail_shared_send(u, cs, pipe);
     }
     still_shared
+}
+
+/// The shared pipe's owner is gone: halt the pipe so it sends no more of the caller's buffer
+/// to the departed endpoint, detach the buffer from the interrupt handler, and fail the
+/// transfer so the send returns and releases the port's send lock.
+fn fail_shared_send(u: Usb, cs: critical_section::CriticalSection<'_>, pipe: usize) {
+    let ctr = pipectr(u, pipe);
+    if ctr.read() & PIPECTR_PID_MASK == PIPECTR_PID_BUF {
+        ctr.write_value((ctr.read() & !PIPECTR_PID_MASK) | PIPECTR_PID_NAK);
+    }
+    while ctr.read() & PIPECTR_PBUSY != 0 {}
+    let xfer = unsafe { &mut *HCD_XFER[pipe].borrow(cs).get() };
+    xfer.buf = core::ptr::null_mut();
+    xfer.remaining = 0;
+    // As the detach sweep does; the next transfer clears the flag when it arms.
+    HCD_PIPE_NRDY.fetch_or(1u16 << pipe, Ordering::Release);
+    HCD_PIPE_WAKERS[pipe].wake();
 }
 
 /// End a send on the shared pipe that user `i` started: store the pipe's toggle into the user.
@@ -1093,7 +1116,8 @@ impl<'d> Rusb1HostDriver<'d> {
                             continue;
                         }
                         // The shared send pipe stays configured while other devices use it.
-                        if dir == 0 && leave_shared(u, cs, alloc, pipe, dev_addr, epn as u8 + 1) {
+                        let me = alloc.shared_user(dev_addr, epn as u8 + 1);
+                        if dir == 0 && leave_shared(u, cs, alloc, pipe, me) {
                             alloc.ep_to_pipe[dev_addr as usize - 1][dir][epn] = 0;
                             continue;
                         }
@@ -1335,7 +1359,12 @@ impl<'d> Rusb1HostDriver<'d> {
     #[cfg(test)]
     pub(crate) fn edpt_close(&self, dev_addr: u8, ep_addr: u8) {
         if let Some(pipe) = self.ep_to_pipe(dev_addr, ep_addr) {
-            release_pipe(self.port, pipe, dev_addr, ep_addr);
+            let generation = critical_section::with(|cs| unsafe {
+                let alloc = &*HCD_ALLOC[self.port as usize].borrow(cs).get();
+                let i = alloc.shared_user(dev_addr, ep_addr & 0x0F)?;
+                alloc.shared_out?.users[i].map(|u| u.generation)
+            });
+            release_pipe(self.port, pipe, dev_addr, ep_addr, generation.unwrap_or(0));
         }
     }
 
@@ -1455,6 +1484,20 @@ impl<'d> Rusb1HostDriver<'d> {
         mps: u16,
         binterval: u8,
     ) -> Result<(), HostError> {
+        self.open_endpoint(dev_addr, ep_addr, ep_type, mps, binterval)
+            .map(|_| ())
+    }
+
+    /// [`edpt_open`](Self::edpt_open), returning the open's [`OutUser::generation`] for a
+    /// shared-pipe endpoint, 0 for any other.
+    fn open_endpoint(
+        &self,
+        dev_addr: u8,
+        ep_addr: u8,
+        ep_type: EndpointType,
+        mps: u16,
+        binterval: u8,
+    ) -> Result<u16, HostError> {
         debug_assert!(dev_addr > 0 && (dev_addr as usize) < HCD_MAX_DEV);
         let p = self.port as usize;
         let epn = (ep_addr & 0x0F) as usize;
@@ -1464,24 +1507,32 @@ impl<'d> Rusb1HostDriver<'d> {
             let alloc = unsafe { &mut *HCD_ALLOC[p].borrow(cs).get() };
             let layout = pipe_layout(ep_type, mps)?;
             let shares = ep_type == EndpointType::Bulk && !dir_in;
-            if shares {
-                if let Some(shared) = alloc.shared_out.as_mut() {
-                    // A later bulk OUT endpoint joins the pipe that is already open.
-                    let slot = shared
-                        .users
-                        .iter_mut()
-                        .find(|u| u.is_none())
-                        .ok_or(HostError::OutOfPipes)?;
-                    *slot = Some(OutUser {
-                        dev_addr,
-                        epn: epn as u8,
-                        mps: layout.mxps,
-                        toggle: false,
-                    });
-                    let pipe = shared.pipe;
-                    alloc.ep_to_pipe[dev_addr as usize - 1][0][epn - 1] = pipe;
-                    return Ok(());
+            if shares && alloc.shared_out.is_some() {
+                // A later bulk OUT endpoint joins the pipe that is already open. An endpoint
+                // already in the table is one whose device went away with its pipe still held
+                // and came back at the same address: the new open takes over its slot, from
+                // DATA0, and the old open's pipe no longer owns it. A send of the old open's
+                // still in flight is failed, as when its owner leaves.
+                let generation = alloc.next_out_generation();
+                let again = alloc.shared_user(dev_addr, epn as u8);
+                let shared = alloc.shared_out.as_mut().unwrap();
+                let i = again
+                    .or_else(|| shared.users.iter().position(|u| u.is_none()))
+                    .ok_or(HostError::OutOfPipes)?;
+                shared.users[i] = Some(OutUser {
+                    dev_addr,
+                    epn: epn as u8,
+                    mps: layout.mxps,
+                    toggle: false,
+                    generation,
+                });
+                let pipe = shared.pipe;
+                if shared.owner == Some(i as u8) {
+                    shared.owner = None;
+                    fail_shared_send(usb(self.port), cs, pipe as usize);
                 }
+                alloc.ep_to_pipe[dev_addr as usize - 1][0][epn - 1] = pipe;
+                return Ok(generation);
             }
             let pipe = if shares {
                 // The first bulk OUT endpoint: the highest free bulk pipe, 3-5 before 1-2 so
@@ -1517,6 +1568,11 @@ impl<'d> Rusb1HostDriver<'d> {
             // Record the EP→pipe mapping.
             // dev_addr is 1-based; array index is 0-based.
             alloc.ep_to_pipe[dev_addr as usize - 1][dir_in as usize][epn - 1] = pipe as u8;
+            let generation = if shares {
+                alloc.next_out_generation()
+            } else {
+                0
+            };
             if shares {
                 let mut users = [None; SHARED_OUT_USERS];
                 users[0] = Some(OutUser {
@@ -1524,6 +1580,7 @@ impl<'d> Rusb1HostDriver<'d> {
                     epn: epn as u8,
                     mps: layout.mxps,
                     toggle: false,
+                    generation,
                 });
                 alloc.shared_out = Some(SharedOut {
                     pipe: pipe as u8,
@@ -1642,7 +1699,7 @@ impl<'d> Rusb1HostDriver<'d> {
                 xfer.buf = core::ptr::null_mut();
             }
 
-            Ok(())
+            Ok(generation)
         })
     }
 
@@ -2473,6 +2530,8 @@ pub struct Rusb1Pipe<T: pipe::Type, D: pipe::Direction> {
     dev_addr: u8,
     /// Endpoint info (for Drop).
     ep_info: EndpointInfo,
+    /// The open's [`OutUser::generation`] on the shared send pipe; 0 for any other pipe.
+    out_generation: u16,
     _phantom: core::marker::PhantomData<(T, D)>,
 }
 
@@ -2488,21 +2547,28 @@ impl<T: pipe::Type, D: pipe::Direction> Drop for Rusb1Pipe<T, D> {
             self.pipe as usize,
             self.dev_addr,
             u8::from(self.ep_info.addr),
+            self.out_generation,
         );
     }
 }
 
-/// Stop and free `pipe`, which carries `ep_addr` of device `dev_addr`.
-fn release_pipe(port: u8, pipe: usize, dev_addr: u8, ep_addr: u8) {
+/// Stop and free `pipe`, which carries `ep_addr` of device `dev_addr`; `out_generation` is
+/// its open's [`OutUser::generation`] if it is on the shared send pipe, else 0.
+fn release_pipe(port: u8, pipe: usize, dev_addr: u8, ep_addr: u8, out_generation: u16) {
     let p = port as usize;
     let epn = (ep_addr & 0x0F) as usize;
     let dir_in = ep_addr & 0x80 != 0;
 
     // A bulk OUT endpoint leaves the shared pipe; the hardware pipe goes with the last one.
-    let still_shared = !dir_in
+    // An open no longer in the table (its device closed, or a later open of the endpoint took
+    // its slot) has nothing left to release.
+    let still_shared = out_generation != 0
         && critical_section::with(|cs| {
             let alloc = unsafe { &mut *HCD_ALLOC[p].borrow(cs).get() };
-            if !leave_shared(usb(port), cs, alloc, pipe, dev_addr, epn as u8) {
+            let Some(me) = alloc.shared_user_of(out_generation) else {
+                return true;
+            };
+            if !leave_shared(usb(port), cs, alloc, pipe, Some(me)) {
                 return false;
             }
             if dev_addr > 0 && (dev_addr as usize) < HCD_MAX_DEV && epn > 0 && epn <= 15 {
@@ -2667,6 +2733,7 @@ impl<'d> UsbHostAllocator<'d> for Rusb1Allocator {
                     pipe: 0,
                     dev_addr: addr,
                     ep_info: *endpoint,
+                    out_generation: 0,
                     _phantom: core::marker::PhantomData,
                 })
             }
@@ -2675,7 +2742,7 @@ impl<'d> UsbHostAllocator<'d> for Rusb1Allocator {
                 // control pipe for this address was allocated; only the pipe's
                 // PIPEMAXP/PIPECFG need configuring here.
                 let ep_addr = u8::from(endpoint.addr);
-                drv.edpt_open(
+                let out_generation = drv.open_endpoint(
                     addr,
                     ep_addr,
                     other,
@@ -2688,6 +2755,7 @@ impl<'d> UsbHostAllocator<'d> for Rusb1Allocator {
                     pipe,
                     dev_addr: addr,
                     ep_info: *endpoint,
+                    out_generation,
                     _phantom: core::marker::PhantomData,
                 })
             }
@@ -3784,6 +3852,65 @@ mod tests {
         assert!(!toggle);
     }
 
+    /// Final review I1: a device re-enumerated at the address of one whose pipes are still
+    /// held opens the same endpoint again. It starts at DATA0, and the stale pipe's late drop
+    /// leaves the new one's send mapping and user alone.
+    #[test]
+    fn a_device_reopened_at_a_held_address_starts_fresh_and_survives_the_stale_drop() {
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = host_with_bus(0b00, DVSTCTR0_RHST_HS | DVSTCTR0_UACT);
+        critical_section::with(|cs| unsafe { *HCD_ALLOC[0].borrow(cs).get() = HcdAlloc::new() });
+        let alloc = Rusb1Allocator { port: 0 };
+        let ep = EndpointInfo {
+            addr: 0x01.into(),
+            ep_type: EndpointType::Bulk,
+            max_packet_size: 64,
+            interval_ms: 0,
+        };
+        h.edpt_open(1, 0x01, EndpointType::Bulk, 64, 0).unwrap(); // keeps the pipe shared
+        let stale = alloc
+            .alloc_pipe::<pipe::Bulk, pipe::Out>(2, &ep, None)
+            .unwrap();
+        critical_section::with(|cs| unsafe {
+            let a = &mut *HCD_ALLOC[0].borrow(cs).get();
+            let i = a.shared_user(2, 1).unwrap();
+            let s = a.shared_out.as_mut().unwrap();
+            s.users[i].as_mut().unwrap().toggle = true;
+            s.owner = Some(i as u8);
+        });
+        let fresh = alloc
+            .alloc_pipe::<pipe::Bulk, pipe::Out>(2, &ep, None)
+            .unwrap();
+        let (n, toggle, owner) = critical_section::with(|cs| unsafe {
+            let a = &*HCD_ALLOC[0].borrow(cs).get();
+            let s = a.shared_out.unwrap();
+            let mine = s
+                .users
+                .iter()
+                .flatten()
+                .filter(|u| u.dev_addr == 2 && u.epn == 1)
+                .count();
+            let user = s.users[a.shared_user(2, 1).unwrap()].unwrap();
+            (mine, user.toggle, s.owner)
+        });
+        assert_eq!(n, 1, "one user per endpoint");
+        assert!(!toggle, "DATA0");
+        assert_eq!(owner, None, "the next send re-points");
+        drop(stale);
+        assert_eq!(h.ep_to_pipe(2, 0x01), Some(the_shared_pipe()));
+        assert!(
+            critical_section::with(|cs| unsafe {
+                (*HCD_ALLOC[0].borrow(cs).get()).shared_user(2, 1)
+            })
+            .is_some(),
+            "the new device's user remains"
+        );
+        drop(fresh);
+        assert_eq!(h.ep_to_pipe(2, 0x01), None);
+        h.edpt_close(1, 0x01);
+        assert_eq!(shared_pipe(0), None);
+    }
+
     #[test]
     fn repointing_sets_each_user_s_device_endpoint_and_size() {
         let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
@@ -3797,6 +3924,7 @@ mod tests {
                 epn: 2,
                 mps: 64,
                 toggle: true,
+                generation: 1,
             },
         );
         u.pipesel().write_value(5 as u16);
@@ -3819,6 +3947,7 @@ mod tests {
                 epn: 1,
                 mps: 512,
                 toggle: false,
+                generation: 1,
             },
         );
         let writes = crate::mmio::test::writes();
