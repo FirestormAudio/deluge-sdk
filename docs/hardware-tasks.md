@@ -44,9 +44,10 @@ often than before.
 - **Pass:** 10 minutes with `counter_gaps == 0`, `counter_resyncs == 0` and
   `framing_errors == 0`. Each track's peak
   moves with its own audio, with no crosstalk between stems.
-- **Record:** `rate_ratio_ppm`, the `overruns`/`underruns` totals, and the CPU load. The CPU
-  path reads the FIFO a byte at a time, so the load matters here. Repeat once FIFO DMA lands
-  (sub-project 2) and record the difference.
+- **Record:** `rate_ratio_ppm`, the `overruns`/`underruns` totals, and the CPU load, for the
+  default build (receive DMA) and for `--features cpu-rx` (byte-wise CPU reads). If the DMA
+  build logs "receive DMA did not finish" or shows `framing_errors`, record how often; the
+  CPU build is the fallback.
 
 ## 3. Overbridge OUT path (spec §8.4 step 3)
 

@@ -25,3 +25,5 @@ rtt-target = { workspace = true, optional = true }
 # `deluge-bsp/rtt` in the runtime rlib every firmware shares and break their links.
 default = []
 rtt = ["dep:rtt-target", "deluge-bsp/rtt"]
+## Receive the Overbridge stream with the CPU instead of DMA, to compare CPU load.
+cpu-rx = []

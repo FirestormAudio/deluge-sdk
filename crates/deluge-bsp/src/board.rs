@@ -6,8 +6,11 @@ use rza1l_hal::peripherals::*;
 
 /// DMA channel 0: SCUX FFD0 (DVU playback path).
 pub type ScuxFfd0Dma = DMA_CH0;
-/// DMA channel 1: SCUX FFU0.
+/// DMA channel 1: SCUX FFU0, or USB0 receive DMA ([`Usb0RxDma`]); a firmware uses it for one.
 pub type ScuxFfu0Dma = DMA_CH1;
+/// DMA channel 1 as USB0's receive DMA (`Rusb1HostDriver::enable_rx_dma`): nothing in the SDK
+/// uses SCUX FFU0, so the channel serves the Overbridge stream. Take it from `BoardDma::scux_ffu0`.
+pub type Usb0RxDma = ScuxFfu0Dma;
 /// DMA channel 2: SCUX FFD2 (USB TX SRC path).
 pub type ScuxFfd2Dma = DMA_CH2;
 /// DMA channel 3: SCUX FFD1 (USB RX SRC path).

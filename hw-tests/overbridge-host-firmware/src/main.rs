@@ -24,6 +24,11 @@ rza1l_hal::bind_interrupts!(struct UsbIrqs {
     USB0 => rza1l_hal::usb::HostInterruptHandler<rza1l_hal::peripherals::USB0>;
 });
 
+#[cfg(not(feature = "cpu-rx"))]
+rza1l_hal::bind_interrupts!(struct RxDmaIrqs {
+    DMAINT1 => rza1l_hal::dmac::InterruptHandler<deluge_bsp::board::Usb0RxDma>;
+});
+
 unsafe extern "C" {
     static __sram_heap_start: u8;
     static __sram_heap_end: u8;
@@ -64,6 +69,10 @@ pub extern "C" fn main() -> ! {
     bsp_uart::init_pic(board.pic_uart, board.dma.pic_rx, board.dma.pic_tx, 31_250);
 
     let (_port, host_driver) = init_host_mode(board.usb0, UsbIrqs);
+    // The Overbridge stream's receive pipe is drained by DMA; `cpu-rx` keeps the byte-wise CPU
+    // path, for comparing the two (docs/hardware-tasks.md, task 2).
+    #[cfg(not(feature = "cpu-rx"))]
+    host_driver.enable_rx_dma(rza1l_hal::dmac::Dma::new(board.dma.scux_ffu0, RxDmaIrqs));
     info!("USB: host driver ready (USB0 host mode)");
 
     unsafe { cortex_ar::interrupt::enable() };

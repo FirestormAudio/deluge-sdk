@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `rza1l-hal` USB host: `Rusb1HostDriver::enable_rx_dma` gives the driver a DMAC channel. The
+  first interrupt-on-bulk IN pipe opened afterwards (an Overbridge audio stream) is drained by
+  DMA through D1FIFO instead of byte-wise CPU reads. Without it, transfers use the CPU as before.
+  `deluge_bsp::board::Usb0RxDma` names the channel for it (DMA_CH1).
 - `deluge-bsp` `usb::host`: `HostAudioMode` (Auto / Uac / Overbridge / Off), set at runtime with
   `set_host_audio_mode`; changing it re-binds an attached device. `host_audio()` returns
   whichever audio driver is bound, and `host_audio_connection()` counts binds.
