@@ -66,6 +66,6 @@ often than before.
   Overwitch on Linux, with a local `devices.json` entry for PID `0x0BF0` (12 tracks out, 2 in,
   version 2).
 - **Pass:** the host Deluge logs stems 0–11 at the device's DC levels ((k + 1) << 24, about
-  −42 dBFS for stem 0 rising 6 dB per doubling), with no counter gaps. The device logs the host's
-  1 kHz tone arriving. Overwitch streams the same stems.
+  −42 dBFS for stem 0 rising 6 dB per doubling), with no counter gaps. The device's `blocks_in`
+  climbs by about 6857 a second (the host harness's tone). Overwitch streams the same stems.
 - **Record:** the Overwitch version, and anything it logs about the device.
