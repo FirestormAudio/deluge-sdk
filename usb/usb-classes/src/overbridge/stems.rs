@@ -10,6 +10,7 @@ use core::cell::RefCell;
 
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::waitqueue::AtomicWaker;
 
 use super::proto::Format;
 
@@ -142,6 +143,7 @@ struct Inner<const RX: usize, const TX: usize> {
 /// sizes in samples; a ring holds `RX / channels` frames.
 pub struct OverbridgeHandle<const RX: usize, const TX: usize> {
     inner: Mutex<CriticalSectionRawMutex, RefCell<Inner<RX, TX>>>,
+    tx_waker: AtomicWaker,
 }
 
 impl<const RX: usize, const TX: usize> OverbridgeHandle<RX, TX> {
@@ -164,6 +166,7 @@ impl<const RX: usize, const TX: usize> OverbridgeHandle<RX, TX> {
                 },
                 connection: 0,
             })),
+            tx_waker: AtomicWaker::new(),
         }
     }
 
@@ -184,13 +187,31 @@ impl<const RX: usize, const TX: usize> OverbridgeHandle<RX, TX> {
     /// Queue frames to send (interleaved, `ch_to` wide). Returns frames taken; the rest didn't
     /// fit, or nothing is connected.
     pub fn write(&self, inp: &[i32]) -> usize {
-        self.with(|i| {
+        let taken = self.with(|i| {
             if i.info.is_some() {
                 i.tx.push_some(inp)
             } else {
                 0
             }
+        });
+        if taken > 0 {
+            self.tx_waker.wake();
+        }
+        taken
+    }
+
+    /// Wait until the send ring holds at least `frames` frames. A device's sender uses it to
+    /// pace blocks by the app's audio clock.
+    pub async fn wait_tx_frames(&self, frames: usize) {
+        core::future::poll_fn(|cx| {
+            self.tx_waker.register(cx.waker());
+            if self.with(|i| i.tx.frames) >= frames {
+                core::task::Poll::Ready(())
+            } else {
+                core::task::Poll::Pending
+            }
         })
+        .await
     }
 
     /// The stream's counters, with current fill levels.
@@ -359,5 +380,20 @@ mod tests {
         assert_eq!(h.stats(), StreamStats::default());
         assert_eq!(h.read(&mut [0; 2]), 0);
         assert_eq!(h.connection(), 2);
+    }
+
+    #[test]
+    fn wait_tx_frames_resolves_once_the_app_has_written_enough() {
+        use core::future::Future;
+        use core::task::{Context, Poll};
+        let h: OverbridgeHandle<1024, 256> = OverbridgeHandle::new();
+        h.begin(info(12, 2), 12, 2).unwrap();
+        let mut wait = core::pin::pin!(h.wait_tx_frames(7));
+        let mut cx = Context::from_waker(core::task::Waker::noop());
+        assert!(wait.as_mut().poll(&mut cx).is_pending());
+        h.write(&[0; 12]); // 6 frames
+        assert!(wait.as_mut().poll(&mut cx).is_pending());
+        h.write(&[0; 2]); // the 7th
+        assert_eq!(wait.as_mut().poll(&mut cx), Poll::Ready(()));
     }
 }
