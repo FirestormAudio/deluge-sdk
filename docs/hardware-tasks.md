@@ -88,3 +88,15 @@ often than before.
   receives the interrupt OUT endpoint on a single-buffered bulk pipe, which may answer NYET, a
   handshake an interrupt OUT doesn't define. Record any xHCI/EHCI transfer errors Linux logs
   (`dmesg`) for endpoint 0x03.
+
+## Device face switching (Overbridge sub-project 8)
+
+- **Setup:** `overbridge-device-firmware` built with `--features face-switch` (and
+  `elektron-id` to have the Deluge host class or Overwitch bind the Overbridge face), connected
+  to a Linux host.
+- **Pass:** every 30 s, `dmesg` shows a disconnect followed by a new device. It alternates
+  between the Overbridge face (`1209:0001`, or `1935:0BF0`) and the UAC2 face (`1209:0002`,
+  which ALSA lists as a sound card). Neither face fails to enumerate after a switch, over at
+  least 10 switches.
+- **Record:** the time from disconnect to the new face enumerating, and any enumeration errors
+  in `dmesg`.

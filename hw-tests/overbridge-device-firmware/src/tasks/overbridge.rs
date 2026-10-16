@@ -1,7 +1,6 @@
 use embassy_time::{Duration, Instant, Timer};
 use log::{info, warn};
-use rza1l_hal::usb::{Rusb1Driver, Rusb1EndpointIn, Rusb1EndpointOut};
-use usb_classes::overbridge::device::{OverbridgeReceiver, OverbridgeSender, Shared};
+use usb_classes::overbridge::device::{OverbridgeReceiver, OverbridgeSender};
 use usb_classes::overbridge::stems::OverbridgeHandle;
 
 /// Channels this device sends (to the host) and receives (from it): a Digitakt's.
@@ -12,14 +11,9 @@ pub(crate) const CH_FROM_HOST: usize = 2;
 pub(crate) static STEMS: OverbridgeHandle<{ CH_FROM_HOST * 1024 }, { CH_TO_HOST * 1024 }> =
     OverbridgeHandle::new();
 
-#[embassy_executor::task]
-pub(crate) async fn usb_task(mut device: embassy_usb::UsbDevice<'static, Rusb1Driver<'static>>) {
-    device.run().await;
-}
-
-/// Sends a block whenever the stems task has written 7 frames.
-#[embassy_executor::task]
-pub(crate) async fn sender_task(mut s: OverbridgeSender<Rusb1EndpointIn>) {
+/// Send a block whenever the stems task has written 7 frames, re-waiting while the host has
+/// the endpoint disabled.
+pub(crate) async fn send_forever<E: embassy_usb::driver::EndpointIn>(mut s: OverbridgeSender<E>) {
     loop {
         s.wait_enabled().await;
         info!("overbridge: host enabled the IN endpoint");
@@ -28,8 +22,10 @@ pub(crate) async fn sender_task(mut s: OverbridgeSender<Rusb1EndpointIn>) {
     }
 }
 
-#[embassy_executor::task]
-pub(crate) async fn receiver_task(mut r: OverbridgeReceiver<Rusb1EndpointOut>) {
+/// Receive blocks from the host, re-waiting while it has the endpoint disabled.
+pub(crate) async fn receive_forever<E: embassy_usb::driver::EndpointOut>(
+    mut r: OverbridgeReceiver<E>,
+) {
     loop {
         r.wait_enabled().await;
         info!("overbridge: host enabled the OUT endpoint");
@@ -67,15 +63,12 @@ pub(crate) async fn stems_task() {
 }
 
 #[embassy_executor::task]
-pub(crate) async fn report_task(shared: &'static Shared) {
+pub(crate) async fn report_task() {
     loop {
         Timer::after_millis(1000).await;
-        let name = shared.host_name();
-        let len = name.iter().position(|&b| b == 0).unwrap_or(name.len());
         info!(
-            "overbridge: streaming={} host={:?} {:?}",
-            shared.streaming(),
-            core::str::from_utf8(&name[..len]).unwrap_or("?"),
+            "usb face {:?}: {:?}",
+            crate::tasks::faces::current(),
             STEMS.stats()
         );
     }

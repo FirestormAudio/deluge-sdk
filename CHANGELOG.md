@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `hw-tests/overbridge-device-firmware`: runtime switching between USB device faces. One task
+  owns USB0 and presents either the Overbridge class or a UAC2 device, disconnecting
+  (`rza1l_hal::usb::disconnect`) and re-initialising device mode between them; the
+  `face-switch` feature alternates every 30 s. It is the pattern for a firmware that offers both.
 - `rza1l-hal` USB host: `Rusb1HostDriver::enable_rx_dma` gives the driver a DMAC channel. The
   first interrupt-on-bulk IN pipe opened afterwards (an Overbridge audio stream) is drained by
   DMA through D1FIFO instead of byte-wise CPU reads. Without it, transfers use the CPU as before.
