@@ -14,13 +14,21 @@ QEMU=armv7-unknown-linux-gnueabihf
 # the configured value instead of merging with it.
 export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_RUNNER="qemu-arm -cpu cortex-a9 -L /usr/arm-linux-gnueabihf"
 
-echo "==> rza1: no deluge-* crate in the dependency graph"
+echo "==> rza1: nothing outside rza1/ in the dependency graph"
+# Every crate either comes from a registry/git source or lives in this workspace: a path dependency
+# reaching back into deluge-sdk (whatever it is named) would build here and break at the split.
 cargo metadata --format-version 1 --all-features | python3 -c '
 import json, sys
-names = sorted({p["name"] for p in json.load(sys.stdin)["packages"]})
-bad = [n for n in names if n.startswith("deluge") or n.startswith("flare")]
-if bad:
-    sys.exit("error: the rza1 workspace resolves " + ", ".join(bad))
+meta = json.load(sys.stdin)
+root = meta["workspace_root"] + "/"
+bad = sorted(
+    p["name"] + " (" + p["manifest_path"] + ")"
+    for p in meta["packages"]
+    if p["source"] is None and not p["manifest_path"].startswith(root)
+)
+named = sorted({p["name"] for p in meta["packages"] if p["name"].startswith(("deluge", "flare"))})
+if bad or named:
+    sys.exit("error: the rza1 workspace reaches outside rza1/: " + ", ".join(bad + named))
 '
 
 tools/check-register-tables.sh

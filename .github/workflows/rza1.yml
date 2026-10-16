@@ -14,7 +14,11 @@ jobs:
       run:
         working-directory: rza1
     steps:
+      # Only rza1/ (plus root-level files): what the split repository will hold, so nothing from
+      # the rest of deluge-sdk (crates/, usb/, its .cargo/config.toml) can be reached.
       - uses: actions/checkout@v7
+        with:
+          sparse-checkout: rza1
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
