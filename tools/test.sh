@@ -45,7 +45,7 @@ cargo test --target "$QEMU" -p deluge-fixedpoint
 # The chip crates are their own workspace; their suite (tests, PAC checks, register-table check)
 # runs from rza1/tools/test.sh, which CI also runs on its own.
 rza1/tools/test.sh
-cargo test --target "$QEMU" -p deluge-bsp --features usb-host --lib
+cargo test --target "$QEMU" -p deluge-bsp --features usb-host,usb-host-overbridge --lib
 cargo test --target "$QEMU" -p usb-classes --features device-audio,device-midi,host-midi,host-uac,host-overbridge,device-overbridge --lib
 cargo test --target "$QEMU" -p deluge-fonts --lib
 # The audio engine (flare-kernels, flare-graph, flare-fft) lives in its own

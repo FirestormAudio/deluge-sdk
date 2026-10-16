@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Elektron Overbridge 2 host support (`usb-classes` feature `host-overbridge`; `deluge-bsp`
+  feature `usb-host-overbridge`). A Digitakt, Digitone, Syntakt, Analog Four/Rytm/Heat MKII,
+  Digitakt II or Digitone II in Overbridge mode streams every track to the Deluge as 48 kHz
+  stems, read through `deluge_bsp::usb::host::overbridge()`, with a stream back to the
+  device. Elektron devices are offered to Overbridge before UAC.
 - `usb-classes` `AudioClass`: up to 48 capture channels. Above 1024 bytes the capture endpoint
   is sized per high-speed microframe (7 frames), so `AudioClass<8>` (168-byte packets) builds,
   for example for an Elektron Outbox 8. `AudioClass::CAPTURE_MAX_PACKET` gives the size.

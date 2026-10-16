@@ -46,6 +46,9 @@ embedded-graphics = ["dep:embedded-graphics-core"]
 ## The USB host stack (`usb::host`: class drivers, UAC and MIDI). Opt-in; only
 ## host-role firmware needs it.
 usb-host = ["dep:embassy-usb-host", "usb-classes/host-midi", "usb-classes/host-uac"]
+## The Elektron Overbridge 2 host class on top of `usb-host` (`usb::host::overbridge`): a
+## Digitakt or another Overbridge device streams its stems to the Deluge.
+usb-host-overbridge = ["usb-host", "usb-classes/host-overbridge"]
 ## `usb::sd_block`: the SD card as a USB Mass Storage medium for
 ## `usb_classes::bot`. Opt-in; only firmware that exposes the card over USB
 ## needs it.

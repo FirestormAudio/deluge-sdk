@@ -160,6 +160,36 @@ pub fn has_hub_interface(config: &[u8]) -> bool {
     false
 }
 
+/// Samples in the Overbridge receive ring: 512 frames at 42 channels (a Digitakt II), more
+/// at fewer (2730 at a Digitakt's 12). 84 KB.
+#[cfg(feature = "usb-host-overbridge")]
+pub const OVERBRIDGE_RX_SAMPLES: usize = 42 * 512;
+/// Samples in the Overbridge send ring: 512 frames at 8 channels. 16 KB.
+#[cfg(feature = "usb-host-overbridge")]
+pub const OVERBRIDGE_TX_SAMPLES: usize = 8 * 512;
+
+/// The app's view of a hosted Overbridge device.
+#[cfg(feature = "usb-host-overbridge")]
+pub type OverbridgeStems =
+    usb_classes::overbridge::stems::OverbridgeHandle<OVERBRIDGE_RX_SAMPLES, OVERBRIDGE_TX_SAMPLES>;
+
+#[cfg(feature = "usb-host-overbridge")]
+static OVERBRIDGE: OverbridgeStems = OverbridgeStems::new();
+
+/// The hosted Overbridge device's stems: [`info`](OverbridgeStems::info) is `None` until one
+/// is connected.
+#[cfg(feature = "usb-host-overbridge")]
+pub fn overbridge() -> &'static OverbridgeStems {
+    &OVERBRIDGE
+}
+
+/// Whether a device is offered to the Overbridge class before UAC: Elektron's VID. An
+/// Elektron box in its Audio/MIDI USB mode doesn't match there and falls through to UAC.
+#[cfg(feature = "usb-host-overbridge")]
+pub fn is_overbridge_candidate(vid: u16) -> bool {
+    vid == usb_classes::overbridge::proto::VID_ELEKTRON
+}
+
 #[cfg(target_os = "none")]
 mod runtime {
     use core::sync::atomic::{AtomicU16, Ordering};
@@ -334,6 +364,107 @@ mod runtime {
         usb_classes::host::uac::shared::end();
         usb_classes::host::uac::shared::playback_end();
         // `host` drops here → pipes drop → address reclaimed.
+    }
+
+    /// Bind an Elektron device's Overbridge interfaces and spawn its stream task. `false` when
+    /// it doesn't match (an Elektron box in Audio/MIDI mode) or setup fails twice.
+    #[cfg(feature = "usb-host-overbridge")]
+    fn bind_overbridge(
+        handle: &HostAlloc,
+        spawner: Spawner,
+        dev_info: &embassy_usb_host::handler::EnumerationInfo,
+        cfg: &ConfigurationDescriptor<'_>,
+    ) -> bool {
+        use usb_classes::host::overbridge::{OverbridgeError, OverbridgeHost};
+        let d = &dev_info.device_desc;
+        let register = || {
+            embassy_futures::block_on(OverbridgeHost::try_register(
+                handle,
+                dev_info.device_address,
+                dev_info.split(),
+                d.vendor_id,
+                d.product_id,
+                cfg,
+            ))
+        };
+        // Spec §5.5: a failed SET_INTERFACE is retried once after 100 ms.
+        let host = match register() {
+            Err(OverbridgeError::SetupFailed(e)) => {
+                warn!("usb_host: overbridge setup failed ({:?}); retrying", e);
+                embassy_futures::block_on(embassy_time::Timer::after_millis(100));
+                register()
+            }
+            r => r,
+        };
+        let host = match host {
+            Ok(h) => h,
+            Err(OverbridgeError::NotOverbridge) => return false,
+            Err(e) => {
+                warn!("usb_host: overbridge device not bound: {:?}", e);
+                return false;
+            }
+        };
+        let m = *host.matched();
+        if super::overbridge()
+            .begin(m.info(), m.ch_from, m.ch_to)
+            .is_err()
+        {
+            warn!(
+                "usb_host: overbridge {} has more channels than the handle holds",
+                m.name
+            );
+            return false;
+        }
+        match overbridge_task(host) {
+            Ok(token) => {
+                spawner.spawn(token);
+                true
+            }
+            Err(_) => {
+                super::overbridge().end();
+                error!("usb_host: could not spawn the overbridge task");
+                false
+            }
+        }
+    }
+
+    /// Streams one Overbridge device until it detaches or keeps failing: a transport error
+    /// restarts the stream (spec §5.5), and the third within 10 s ends it.
+    #[cfg(feature = "usb-host-overbridge")]
+    #[embassy_executor::task]
+    async fn overbridge_task(
+        mut host: usb_classes::host::overbridge::OverbridgeHost<'static, HostAlloc>,
+    ) {
+        use embassy_time::{Duration, Instant};
+        const WINDOW: Duration = Duration::from_secs(10);
+        let mut failures: heapless::Deque<Instant, 3> = heapless::Deque::new();
+        let stems = super::overbridge();
+        loop {
+            let Err(e) = host.pump_once(stems, Instant::now().as_micros()).await else {
+                continue;
+            };
+            let now = Instant::now();
+            while failures
+                .front()
+                .is_some_and(|t| now.duration_since(*t) > WINDOW)
+            {
+                failures.pop_front();
+            }
+            if failures.is_full() {
+                failures.pop_front();
+            }
+            let _ = failures.push_back(now);
+            warn!(
+                "usb_host: overbridge stream error {:?} ({} in 10 s)",
+                e,
+                failures.len()
+            );
+            if failures.len() >= 3 || host.restart().await.is_err() {
+                break;
+            }
+        }
+        info!("usb_host: overbridge stream ended");
+        stems.end();
     }
 
     /// Bytes read of a device's whole configuration descriptor. Audio interfaces carry long
@@ -522,8 +653,15 @@ mod runtime {
                 match ConfigurationDescriptor::try_from_slice(&config_buf) {
                     Ok(cfg) => {
                         let midi = bind_midi(&handle, spawner, &dev_info, &cfg);
-                        let uac = bind_uac(&handle, spawner, &dev_info, &cfg);
-                        midi || uac
+                        // Overbridge first for Elektron's VID; UAC otherwise, or if it doesn't match.
+                        #[cfg(feature = "usb-host-overbridge")]
+                        let audio =
+                            (super::is_overbridge_candidate(dev_info.device_desc.vendor_id)
+                                && bind_overbridge(&handle, spawner, &dev_info, &cfg))
+                                || bind_uac(&handle, spawner, &dev_info, &cfg);
+                        #[cfg(not(feature = "usb-host-overbridge"))]
+                        let audio = bind_uac(&handle, spawner, &dev_info, &cfg);
+                        midi || audio
                     }
                     Err(e) => {
                         error!("usb_host: bad config descriptor: {:?}", e);
@@ -638,5 +776,24 @@ mod tests {
         }
         // The audio path must never block on USB backpressure.
         assert_eq!(h.try_send([0x0F, 0xF8, 0, 0]), Err([0x0F, 0xF8, 0, 0]));
+    }
+
+    #[cfg(feature = "usb-host-overbridge")]
+    #[test]
+    fn only_elektron_devices_are_offered_to_overbridge() {
+        assert!(is_overbridge_candidate(0x1935));
+        assert!(!is_overbridge_candidate(0x1234));
+    }
+
+    #[cfg(feature = "usb-host-overbridge")]
+    #[test]
+    fn the_overbridge_handle_holds_a_digitakt_ii() {
+        use usb_classes::overbridge::stems::MIN_RING_FRAMES;
+        assert!(
+            OVERBRIDGE_RX_SAMPLES / 42 >= 512,
+            "≥ 512 frames (10.7 ms) at 42 channels"
+        );
+        assert!(OVERBRIDGE_TX_SAMPLES / 8 >= 512);
+        assert!(OVERBRIDGE_RX_SAMPLES / 42 >= MIN_RING_FRAMES);
     }
 }
