@@ -17,7 +17,19 @@ Under both sits RZ/A1L USB controller work:
 A separate goal is more analog outputs for the Deluge through an Outbox 8. That
 uses the existing UAC2 device class at 8 channels, not Overbridge (§7).
 
-> **Status:** design proposal, awaiting review before planning.
+> **Status:** implemented on `feat/overbridge` (sub-projects 1–5, 7, 8; 6 belongs to the
+> digitakt repo). Hardware checks are in `docs/hardware-tasks.md`. Deviations from this design,
+> decided during implementation:
+> - §4.3–4.5: receive DMA only, on D1FIFO, 4-byte cycle steal, per transfer under the existing
+>   pipe trait (no `StreamIn`/`StreamOut` ring); transmit stays on the CPU. See the sub-project 2
+>   plan's Rulings.
+> - §4.1: the host stops an interrupt-on-bulk IN pipe at NAK after every block (a full-size
+>   block gets no short packet for SHTNAK to act on).
+> - §5.3: `StreamStats` also counts `counter_resyncs` (a counter jump past ~150 ms of gap).
+> - §5.6: the shared `HostAudioArena` isn't built (it would save ≤ 32 KB). The UAC rings and
+>   the Overbridge rings stay separate statics.
+> - §6: the device sender waits for the app's frames (it never drops a block); the device face
+>   switch is a pattern in `hw-tests/overbridge-device-firmware`, not an SDK API.
 > **Evidence:** the protocol comes from Overwitch (GPL-3; read for the format
 > only, no code copied; last checked at commit 40018bb, `src/engine.c`,
 > `src/engine.h`, `res/devices.json`). The digitakt repo's Outbox 8 firmware analysis,
