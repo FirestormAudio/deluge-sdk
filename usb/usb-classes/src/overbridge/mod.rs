@@ -3,3 +3,5 @@
 
 pub mod proto;
 pub mod stems;
+#[cfg(all(feature = "device-overbridge", any(target_os = "none", test)))]
+pub mod device;
