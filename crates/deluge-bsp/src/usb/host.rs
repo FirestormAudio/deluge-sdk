@@ -125,16 +125,19 @@ pub const fn midi_handle(id: DeviceId) -> MidiHandle {
 /// The sample rate the UAC host asks hosted audio devices for: the codec's 44.1 kHz unless
 /// [`set_uac_sample_rate`] chose another. A device that cannot take it runs at its own rate
 /// and the class driver's resampler converts.
+#[cfg(feature = "usb-host-uac")]
 static UAC_SAMPLE_RATE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(44_100);
 
 /// Choose the rate the UAC host streams at, for devices bound from now on. Set it to the
 /// device's rate (48 kHz, say) when the SCUX converts to the codec's rate downstream, so the
 /// class driver only trims clock drift.
+#[cfg(feature = "usb-host-uac")]
 pub fn set_uac_sample_rate(hz: u32) {
     UAC_SAMPLE_RATE.store(hz, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// The rate the UAC host streams at (see [`set_uac_sample_rate`]).
+#[cfg(feature = "usb-host-uac")]
 pub fn uac_sample_rate() -> u32 {
     UAC_SAMPLE_RATE.load(core::sync::atomic::Ordering::Relaxed)
 }
@@ -283,6 +286,7 @@ mod runtime {
     /// freeing the address. Mirrors [`bind_midi`]: registration is synchronous
     /// (via `block_on`) because `try_register`'s control transfers are short
     /// and the supervisor is already the enumeration owner.
+    #[cfg(feature = "usb-host-uac")]
     fn bind_uac(
         handle: &HostAlloc,
         spawner: Spawner,
@@ -342,6 +346,7 @@ mod runtime {
     /// Owns the pipes, so they drop — and the hardware pipes free — the moment
     /// this exits. Publishes decoded frames into [`usb_classes::host::uac::shared`], the
     /// cross-task bridge the engine drains via `capture_read`.
+    #[cfg(feature = "usb-host-uac")]
     #[embassy_executor::task]
     async fn uac_capture_task(mut host: usb_classes::host::uac::Uac<'static, HostAlloc>) {
         // BadResponse is the HAL's detach signal AND a transient iso-fault signal.
@@ -675,12 +680,15 @@ mod runtime {
                         let midi = bind_midi(&handle, spawner, &dev_info, &cfg);
                         // Overbridge first for Elektron's VID; UAC otherwise, or if it doesn't match.
                         #[cfg(feature = "usb-host-overbridge")]
-                        let audio =
-                            (super::is_overbridge_candidate(dev_info.device_desc.vendor_id)
-                                && bind_overbridge(&handle, spawner, &dev_info, &cfg).await)
-                                || bind_uac(&handle, spawner, &dev_info, &cfg);
+                        let overbridge =
+                            super::is_overbridge_candidate(dev_info.device_desc.vendor_id)
+                                && bind_overbridge(&handle, spawner, &dev_info, &cfg).await;
                         #[cfg(not(feature = "usb-host-overbridge"))]
-                        let audio = bind_uac(&handle, spawner, &dev_info, &cfg);
+                        let overbridge = false;
+                        #[cfg(feature = "usb-host-uac")]
+                        let audio = overbridge || bind_uac(&handle, spawner, &dev_info, &cfg);
+                        #[cfg(not(feature = "usb-host-uac"))]
+                        let audio = overbridge;
                         midi || audio
                     }
                     Err(e) => {
@@ -727,6 +735,7 @@ mod tests {
         v
     }
 
+    #[cfg(feature = "usb-host-uac")]
     #[test]
     fn the_uac_rate_defaults_to_the_codec_rate_and_can_be_chosen() {
         assert_eq!(uac_sample_rate(), 44_100);
