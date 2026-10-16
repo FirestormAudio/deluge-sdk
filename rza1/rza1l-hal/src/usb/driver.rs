@@ -1969,6 +1969,12 @@ mod tests {
             matches!(alt1.pipe, 6..=8),
             "a 32-byte interrupt endpoint starts on an interrupt pipe"
         );
+        let free_blocks = || {
+            critical_section::with(|cs| unsafe {
+                (*PORT_ALLOC[1].borrow(cs).get()).buf.free_blocks()
+            })
+        };
+        let before = free_blocks();
         let alt2 = d
             .alloc_endpoint_in(EndpointType::Interrupt, addr, 88, 1)
             .unwrap();
@@ -1981,6 +1987,12 @@ mod tests {
             pipes_used() & (1 << alt1.pipe),
             0,
             "the interrupt pipe is released"
+        );
+        // The 32-byte pipe's one block comes back; the bulk pipe takes 2 banks of 8.
+        assert_eq!(
+            free_blocks(),
+            before + 1 - 16,
+            "the old packet buffer is freed"
         );
         let alt3 = d
             .alloc_endpoint_in(EndpointType::Interrupt, addr, 368, 1)

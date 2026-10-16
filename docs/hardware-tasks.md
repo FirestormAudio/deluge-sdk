@@ -42,7 +42,10 @@ often than before.
 - **Setup:** as in 2. The harness sends a 1 kHz tone at −12 dBFS on both channels to the
   Digitakt. On the Digitakt, route its Overbridge input to its main output.
 - **Pass:** the tone is audible and clean (no clicks) for a minute.
-- **Record:** anything the Digitakt shows about the host connection.
+- **Record:** anything the Digitakt shows about the host connection. Also whether the stream
+  survives the Digitakt NAKing an OUT block: the RZ/A1L host sends bulk OUT, and after a NAK
+  it sends a PING, which an interrupt endpoint doesn't define. If the Digitakt stalls or drops
+  the OUT stream after its first NAK, that is the cause.
 
 ## 4. Digitakt II (spec §8.4 step 4, when one is available)
 
@@ -61,12 +64,15 @@ often than before.
 ## 6. Overbridge device class (spec §8.4 step 6)
 
 - **Setup:** two Deluges. One runs `overbridge-host-firmware`; the other runs
-  `overbridge-device-firmware` built with `--features elektron-vid` (`cargo build-overbridge-device
-  --features elektron-vid`), which presents `0x1935:0x0BF0`. The default build's pid.codes test
+  `overbridge-device-firmware` built with `--features elektron-id` (`cargo build-overbridge-device
+  --features elektron-id`), which presents `0x1935:0x0BF0`. The default build's pid.codes test
   identity binds to neither the host class nor Overwitch. Then connect the device Deluge to
   Overwitch on Linux, with a local `devices.json` entry for PID `0x0BF0` (12 tracks out, 2 in,
   version 2).
 - **Pass:** the host Deluge logs stems 0–11 at the device's DC levels ((k + 1) << 24, about
   −42 dBFS for stem 0 rising 6 dB per doubling), with no counter gaps or resyncs. The device's `blocks_in`
   climbs by about 6857 a second (the host harness's tone). Overwitch streams the same stems.
-- **Record:** the Overwitch version, and anything it logs about the device.
+- **Record:** the Overwitch version, and anything it logs about the device. The device side
+  receives the interrupt OUT endpoint on a single-buffered bulk pipe, which may answer NYET, a
+  handshake an interrupt OUT doesn't define. Record any xHCI/EHCI transfer errors Linux logs
+  (`dmesg`) for endpoint 0x03.

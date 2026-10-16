@@ -3,7 +3,7 @@
 //! Presents the Overbridge 2 device class with a Digitakt's channel counts (12 to the host, 2
 //! from it) and USB-MIDI, sends a DC level per stem, and logs the stream and the host's name
 //! once a second. By default it uses a development identity, which neither the Deluge host
-//! class nor Overwitch binds; build with `--features elektron-vid` on your own bench to test
+//! class nor Overwitch binds; build with `--features elektron-id` on your own bench to test
 //! against them.
 
 #![no_std]
@@ -32,10 +32,10 @@ rza1l_hal::bind_interrupts!(struct UsbIrqs {
 });
 
 /// pid.codes' test VID/PID: for development only, never distributed.
-#[cfg(not(feature = "elektron-vid"))]
+#[cfg(not(feature = "elektron-id"))]
 const USB_ID: (u16, u16) = (0x1209, 0x0001);
 /// Elektron's VID with a PID no device table lists (spec §7.2; bench only).
-#[cfg(feature = "elektron-vid")]
+#[cfg(feature = "elektron-id")]
 const USB_ID: (u16, u16) = (0x1935, 0x0BF0);
 
 unsafe extern "C" {

@@ -4,10 +4,11 @@ use log::info;
 use deluge_bsp::usb::host::overbridge;
 use usb_classes::overbridge::proto::MAX_CHANNELS;
 
-/// Peak level as whole decibels below full scale, at 6 dB resolution (one per bit), so no
-/// floating-point log is needed. `None` for silence.
+/// Peak level in whole decibels below full scale, at 6 dB resolution (one per bit), so no
+/// floating-point log is needed: the bottom of the 6 dB band the peak falls in, so 1 << 24
+/// reads −42 dBFS and full scale (2^31, a full negative sample) reads 0. `None` for silence.
 fn peak_db(peak: u32) -> Option<i32> {
-    (peak != 0).then(|| -6 * (31 - (32 - peak.leading_zeros()) as i32))
+    (peak != 0).then(|| -6 * (32 - (32 - peak.leading_zeros()) as i32))
 }
 
 /// Once a second: the device, its stream counters, and each stem's peak since the last report.

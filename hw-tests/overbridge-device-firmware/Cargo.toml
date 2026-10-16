@@ -29,4 +29,4 @@ rtt = ["dep:rtt-target", "deluge-bsp/rtt"]
 ## Present Elektron's VID (0x1935) with a PID no device table lists (0x0BF0), so the Deluge
 ## host class and Overwitch (with a local `devices.json` entry) bind it. For the developer's
 ## own bench only: never enable it in anything distributed (spec §7.2).
-elektron-vid = []
+elektron-id = []
