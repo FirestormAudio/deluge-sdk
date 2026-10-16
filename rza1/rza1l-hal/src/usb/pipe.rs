@@ -280,7 +280,7 @@ pub static PIPE_XFER: [critical_section::Mutex<core::cell::UnsafeCell<PipeXferSt
 // ---------------------------------------------------------------------------
 
 /// Transfer type tag for a pipe.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum XferType {
     Control,
     Bulk,
