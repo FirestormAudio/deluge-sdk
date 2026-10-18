@@ -57,7 +57,8 @@ pub struct Config {
 }
 
 /// Bring up the chip and hand out its peripherals: record the clock tree, program the CPG,
-/// start the module clocks, and initialise the GIC, in that order.
+/// start the module clocks, put back what a warm start left running (the `warm_start` module), and
+/// initialise the GIC, in that order.
 ///
 /// Device-only: the GIC bring-up writes real registers, which a host build doesn't have.
 ///
@@ -71,6 +72,7 @@ pub fn init(config: Config) -> Peripherals {
     unsafe {
         clocks::init(config.clocks);
         cpg_then_stb(config.frqcr, &config.stb);
+        warm_start::quiesce();
         gic::init();
     }
     peripherals
@@ -123,6 +125,7 @@ pub mod time_driver;
 pub mod time_math;
 pub mod uart;
 pub mod usb;
+mod warm_start;
 
 pub mod gpio;
 
