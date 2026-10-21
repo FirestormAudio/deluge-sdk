@@ -11,7 +11,7 @@
 //!        where Argon transparently falls back to SIMDe.
 //!
 //!    Argon is header-only; it is located via the `ARGON_SRC` env var, defaulting
-//!    to the sibling `../../../../argon` checkout (mirrors `wren-sys`'s `WREN_SRC`).
+//!    to the sibling `../../../../argon` checkout (mirrors deluge-wren's `wren-sys` `WREN_SRC`).
 //!    The C++ is built libm-free and without exceptions/RTTI so it links against
 //!    the firmware's newlib-libc-only runtime (see `csrc/additive.cpp`).
 //!
@@ -73,7 +73,7 @@ fn build_dsp_core(manifest_dir: &Path, embedded: bool, arm: bool) {
 
     if embedded {
         // Bare-metal cortex-a9 hard-float NEON, matching the Rust target ABI
-        // (same toolchain/flags recipe as `wren-sys`, g++ instead of gcc). Argon
+        // (same toolchain/flags recipe as deluge-wren's `wren-sys`, g++ instead of gcc). Argon
         // selects its NEON backend automatically from `__ARM_NEON`.
         build
             .compiler("arm-none-eabi-g++")

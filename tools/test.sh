@@ -50,11 +50,7 @@ cargo test --target "$QEMU" -p usb-classes --features device-audio,device-midi,h
 cargo test --target "$QEMU" -p deluge-fonts --lib
 # The audio engine (flare-kernels, flare-graph, flare-fft) lives in its own
 # repo and is tested by that repo's tools/test.sh, which runs its own
-# two-bucket, two-config matrix. deluge-wren-core is this repo's integration
-# check against it: on 32-bit ARM specifically, because the deploy target is
-# 32-bit (`usize == u32`) and the binding layer is full of offset arithmetic
-# that a 64-bit host cannot exercise the same way.
-cargo test --target "$QEMU" -p deluge-wren-core
+# two-bucket, two-config matrix.
 
 echo "==> Host bucket ($HOST)"
 # Portable-fallback / non-NEON paths of the fixed-point crates (the QEMU bucket
@@ -64,7 +60,6 @@ cargo test --target "$HOST" -p deluge-fixedpoint
 cargo test --target "$HOST" -p deluge-image
 cargo test --target "$HOST" -p deluge-ui-toolkit
 cargo test --target "$HOST" -p deluge-sdk-macros
-cargo test --target "$HOST" -p deluge-wren-core
 # The SDK facade: `adapt_block` (the linux backend's frame adaptation) is pure
 # logic and testable here. Needs an explicit backend feature — `sim` is the only
 # one that builds on the host (`linux` requires the musl libdeluge sysroot).
@@ -72,16 +67,5 @@ cargo test --target "$HOST" -p deluge-wren-core
 # does not cross-compile to the QEMU ARM bucket's target.
 cargo test --target "$HOST" -p deluge-sdk --features sim
 cargo test --target "$HOST" --manifest-path tools/cargo-deluge/Cargo.toml
-cargo test --target "$HOST" --manifest-path wren/wren-web-debug/Cargo.toml
-
-# `wren/wren-web` is the web simulator's wasm core. It is excluded from the
-# workspace and only builds for wasm, so nothing else here compiles it. Its
-# logic (the `Cmd` wire codec) lives in deluge-wren-core so it is unit-tested
-# above; this is the build guard that catches API drift.
-if rustup target list --installed | grep -q '^wasm32-wasip1$'; then
-  cargo check --manifest-path wren/wren-web/Cargo.toml --target wasm32-wasip1
-else
-  echo "  (skipped: wasm32-wasip1 target not installed)"
-fi
 
 echo "==> All tests passed."

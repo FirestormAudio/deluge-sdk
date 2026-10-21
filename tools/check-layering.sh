@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
 # Layering check:
-#   - The Wren subsystem and the bare-metal examples consume the SDK only through
-#     the `deluge` facade, never the BSP/HAL crates beneath it, so SDK-internal
-#     changes can't silently break them (and Wren can later move to its own repo).
+#   - The bare-metal examples consume the SDK only through the `deluge` facade, never
+#     the BSP or chip crates beneath it, so SDK-internal changes can't silently break
+#     them. (deluge-wren holds its own Wren code to the same rule.)
 #   - The chip crates (rza1l-hal, rza1-rt, rza1-alloc) never name the Deluge, and the HAL has no
 #     global_asm! (startup is rza1-rt's).
 #   - usb/ and drivers/ are board-agnostic: they never name the chip HAL or any deluge-* crate.
@@ -16,7 +16,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # Consumers that must reach the platform only through the `deluge` facade.
-FACADE_ONLY_DIRS=(wren examples/baremetal)
+FACADE_ONLY_DIRS=(examples/baremetal)
 
 # Code lines only: a `//` comment naming a BSP item for reference is fine. The chip crates
 # (`rza1l_hal`, `rza1_alloc`, `rza1_rt`, …) are all off limits; the facade re-exports what an
@@ -35,7 +35,7 @@ dep_hits="$(grep -rnE --include='Cargo.toml' --exclude-dir=target --exclude-dir=
 
 if [ -n "$code_hits$dep_hits" ]; then
   printf '%s\n' "$code_hits" "$dep_hits" | sed '/^$/d'
-  echo "error: facade-only code (wren/, examples/baremetal/) reaches past \`deluge\` into deluge-bsp or the rza1 chip crates" >&2
+  echo "error: facade-only code (examples/baremetal/) reaches past \`deluge\` into deluge-bsp or the rza1 chip crates" >&2
   exit 1
 fi
 # The chip crates are board-agnostic: no Deluge names in their code or linker scripts (comments

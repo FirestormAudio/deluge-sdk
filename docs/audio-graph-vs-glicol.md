@@ -116,7 +116,7 @@ Deluge is — the second is worth more than the first.
 *recovering* node identity from source text — that is what the AST
 structural-equality diff and the `index_info` name table exist for. We don't
 have that problem: `NodeId`s are author-assigned, and the Wren layer hands them
-out from a deterministic bump allocator (`deluge-wren-core/src/audio.rs:35-47`),
+out from a deterministic bump allocator (deluge-wren's `crates/deluge-wren-core/src/audio.rs:35-47`),
 so re-running the same script gives the same logical node the same id. Identity
 is *given*, not reconstructed. We need no parser and no AST: **the script re-run
 is the diff.**
@@ -138,7 +138,7 @@ Benign for a filter's delay line; wrong for a `StreamPlayer` inheriting another
 voice's cursor. So `(id, kind)` alone is not a sound key, and mid-script edits
 need the stable names of GL6 — which cost the engine nothing (see there).
 
-**This is not speculative.** `wren/wren-web/app/src/sim.ts:103,116` — the web
+**This is not speculative.** deluge-wren's `crates/wren-web/app/src/sim.ts:103,116` — the web
 editor's Run calls `sim_reset()` and rebuilds the project from scratch, so every
 ⌘↵ tears down the graph and drops audio. M3/M4 of the web-editor plan are done
 and shipping. That is glicol's exact workflow, live in this repo, with the
@@ -239,7 +239,7 @@ We have numeric `NodeId` and nothing else. Fine for a compiler; painful for a
 control plane that wants to say "replace the filter in the bass voice."
 
 Two things follow. First, it belongs on the **Wren side, not in the engine**: a
-name→id map inside `Alloc` (`deluge-wren-core/src/audio.rs`), with the engine
+name→id map inside `Alloc` (deluge-wren's `crates/deluge-wren-core/src/audio.rs`), with the engine
 still seeing only `NodeId`s. It is not an engine feature at all, and it is
 cheap. Second, it stops being cosmetic the moment GL2 lands — stable keys are
 what make an insertion in the middle of a script survive an incremental update

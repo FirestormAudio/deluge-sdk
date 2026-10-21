@@ -22,7 +22,6 @@ members = [
   "crates/deluge-protocol",
   "drivers/max5136",
   "usb/usb-classes",
-  "wren/deluge-wren-core",
   "examples/baremetal/blinky",
   "examples/baremetal/oled_hello",
   "examples/baremetal/oled_menu",
@@ -38,20 +37,15 @@ members = [
   "examples/baremetal/additive_osc",
   "examples/baremetal/button_leds",
   "examples/baremetal/usb_log",
-  "wren/wren-sys",
-  "wren/wren-firmware",
 ]
-# Crates that never build for the device: host tools and the simulator, the
-# wasm web-simulator core, and the Linux backend and examples. Each builds for
+# Crates that never build for the device: host tools and the simulator, and
+# the Linux backend and examples. Each builds for
 # its own target from its own directory.
 exclude = [
   # The chip crates are their own workspace (rza1/Cargo.toml); path dependencies below reach them.
   "rza1",
   "tools/cargo-deluge",
   "crates/deluge-simulator",
-  "wren/wren-web",
-  "wren/wren-web-debug",
-  "wren/wren-analyzer-wasm",
   "crates/deluge-sim-link",
   "linux/deluge-sys",
   "linux/deluge-hal-linux",

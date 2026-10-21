@@ -1448,18 +1448,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "deluge-wren-core"
-version = "0.1.0"
-dependencies = [
- "deluge-wren-core",
- "flare-graph",
- "flare-kernels",
- "flare-mipgen",
- "libm",
- "wren-sys",
-]
-
-[[package]]
 name = "demo-firmware"
 version = "0.1.0"
 dependencies = [
@@ -1994,30 +1982,6 @@ checksum = "26b73573e6edcd2af0cdf47bd6cb58f0b3839491263c314eaad1ccf24430e1de"
 [[package]]
 name = "flare-fft"
 version = "0.1.0"
-
-[[package]]
-name = "flare-graph"
-version = "0.1.0"
-dependencies = [
- "flare-kernels",
- "libm",
-]
-
-[[package]]
-name = "flare-kernels"
-version = "0.1.0"
-dependencies = [
- "libm",
-]
-
-[[package]]
-name = "flare-mipgen"
-version = "0.1.0"
-dependencies = [
- "flare-fft",
- "flare-kernels",
- "libm",
-]
 
 [[package]]
 name = "flate2"
@@ -6870,32 +6834,6 @@ dependencies = [
  "rtt-target",
  "rza1-alloc",
  "rza1l-hal",
-]
-
-[[package]]
-name = "wren-firmware"
-version = "0.1.0"
-dependencies = [
- "cortex-ar",
- "deluge-sdk",
- "deluge-wren-core",
- "embassy-executor",
- "embassy-futures",
- "embassy-sync",
- "embassy-time",
- "embassy-usb",
- "flare-graph",
- "flare-kernels",
- "log",
- "wren-sys",
-]
-
-[[package]]
-name = "wren-sys"
-version = "0.1.0"
-dependencies = [
- "cc",
- "deluge-sdk",
 ]
 
 [[package]]

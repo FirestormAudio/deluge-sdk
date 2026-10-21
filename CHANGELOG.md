@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- The Wren scripting subsystem (`wren-sys`, `deluge-wren-core`, `wren-firmware`, the web
+  editor/simulator and debugger) moved to its own repo, deluge-wren; it consumes this SDK
+  through the `deluge` facade.
+
 ### Added
 
 - `hw-tests/overbridge-device-firmware`: runtime switching between USB device faces. One task

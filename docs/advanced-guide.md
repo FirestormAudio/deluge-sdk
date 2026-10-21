@@ -344,7 +344,7 @@ With the `rtt` feature, `deluge-bsp` uses `memory_rtt.x` instead, which also res
 buffer, and `rza1-rt` publishes the RTT form of `link.x`. An app's `build.rs` only selects the
 script (`-Tlink.x`); to change a stack size, override the `PROVIDE`d symbol with
 `cargo:rustc-link-arg-bins=--defsym=PROGRAM_STACK_SIZE=<bytes>` printed before `-Tlink.x`, as
-`wren-firmware` does. The
+deluge-wren's `wren-firmware` does. The
 runtime reads `__sram_heap_start` / `__sram_heap_end` from the script.
 
 The MMU maps a **non-cached mirror** of every region at `+0x4000_0000`
@@ -597,7 +597,7 @@ pass the right `-Zbuild-std` flags:
 | `cargo build-fw-rel -p <crate>` | release ELF, default features off |
 | `cargo build-fw-bin` | demo-firmware release `.bin` via `objcopy` (needs `cargo-binutils`) |
 | `cargo build-app-loader` / `build-app-loader-bin` | the app-loader ELF / flashable `.bin` |
-| `cargo build-controller-bin`, `build-msc` / `build-msc-bin`, `build-wren` / `build-wren-bin`, `build-uac` / `build-uac-bin` | the other firmware images |
+| `cargo build-controller-bin`, `build-msc` / `build-msc-bin`, `build-uac` / `build-uac-bin` | the other firmware images |
 
 `tools/build-examples.sh` compile-proves all examples. Apps are deployed as ELF to
 `/APPS/`; a `.bin` is only for flashing *firmware* (e.g. the app-loader).

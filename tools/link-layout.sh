@@ -16,9 +16,9 @@ BASELINE=tools/link-layout.baseline
 SYMS='(ABT|FIQ|IRQ|SVC|PROGRAM)_STACK_SIZE|(abt|fiq|irq|svc|program)_stack_(start|end)|__sram_heap_end|ttb_mmu1_base|__bss_start__|_SEGGER_RTT|INTERNAL_RAM_END|__rza1_status_led_(p|pm|pmc|pipc|mask)'
 PLAIN=(blinky oled_hello oled_menu oled_hmenu input_demo pad_paint midi_cv clock_jacks sd_demo
        audio_passthru audio_passthru_irq test_osc additive_osc button_leds usb_log
-       demo-firmware deluge-controller msc-firmware app-loader wren-firmware
+       demo-firmware deluge-controller msc-firmware app-loader
        uac-host-firmware sd-bench vbus-probe wp-probe)
-RTT=(blinky demo-firmware app-loader wren-firmware uac-host-firmware)
+RTT=(blinky demo-firmware app-loader uac-host-firmware)
 
 # Build one package and print the path of the executable it produced.
 build_elf() {

@@ -43,10 +43,6 @@ build-overbridge-device     = "build -Zbuild-std=core -Zbuild-std-features=compi
 build-overbridge-device-bin = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p overbridge-device-firmware -- -O binary target/armv7a-none-eabihf/release/overbridge-device-firmware.bin"
 build-app-loader     = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem -p app-loader"
 build-app-loader-bin = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p app-loader -- -O binary target/armv7a-none-eabihf/release/app-loader.bin"
-# Wren debug harness tests (`--target` overrides the device default).
-test-wren-debug       = "test --manifest-path wren/wren-web-debug/Cargo.toml --target x86_64-unknown-linux-gnu"
-build-wren           = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem -p wren-firmware"
-build-wren-bin       = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p wren-firmware -- -O binary target/armv7a-none-eabihf/release/wren-firmware.bin"
 
 # The Deluge's Linux userland, selected by `cargo deluge linux` (which puts the
 # bundle toolchain's `arm-linux-gcc` on PATH). Apps are statically linked

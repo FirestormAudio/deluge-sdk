@@ -172,8 +172,8 @@ compile-proves all of them on the firmware target).
   hardware: the panel, audio/MIDI/SD bridges, and headless golden-frame testing.
 - **[Advanced developer guide](docs/advanced-guide.md)** — Embassy tasks,
   interrupts, the HAL/BSP layers, and Cortex-A9 trace tooling.
-- **[Wren scripting](docs/wren-scripting.md)** — live-code the Deluge in
-  [Wren](https://wren.io) with `wren-firmware`.
+- **Wren scripting** — live-code the Deluge in [Wren](https://wren.io): see the
+  [deluge-wren](https://github.com/FirestormAudio/deluge-wren) repo.
 - **[Linux examples](examples/linux/README.md)** — apps for the Deluge's Linux
   userland.
 
@@ -197,7 +197,6 @@ compile-proves all of them on the firmware target).
 | `crates/deluge-ui-toolkit`, `crates/deluge-grid-toolkit` | | OLED menu/text and pad-grid UI toolkits (GPL) |
 | `crates/deluge-fonts` | `deluge-fonts` | bitmap fonts for the toolkit (GPL) |
 | `linux/` | | the native Linux backend: `deluge-sys` (libdeluge FFI), `deluge-hal-linux`, `deluge-linux-ui` |
-| `wren/` | | the Wren scripting subsystem: VM (`wren-sys`), bindings (`deluge-wren-core`), `wren-firmware`, and the web editor/debugger |
 | `firmwares/` | | standalone firmware images: the app-loader (second-stage bootloader), demo, controller, MSC |
 | `hw-tests/` | | single-purpose hardware bring-up / validation probes |
 | `examples/baremetal/`, `examples/linux/` | | SDK example apps for each backend |
@@ -267,7 +266,7 @@ bare `cargo build`:
 
 The app-loader and other firmwares have their own aliases
 (`cargo build-app-loader` / `-bin`, `cargo build-controller-bin`,
-`cargo build-msc` / `-bin`, `cargo build-wren` / `-bin`); see each crate's
+`cargo build-msc` / `-bin`); see each crate's
 README. Every image is a RAM-linked ELF (loaded at SRAM `0x20020000`).
 
 ### Testing
