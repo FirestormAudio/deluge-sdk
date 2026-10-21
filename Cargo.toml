@@ -66,13 +66,6 @@ repository = "https://github.com/FirestormAudio/deluge-sdk"
 homepage = "https://github.com/FirestormAudio/deluge-sdk"
 
 [workspace.dependencies]
-# The audio engine, from the flare repository checked out next to this one.
-flare = { path = "../flare/crates/flare" }
-flare-graph = { path = "../flare/crates/flare-graph" }
-flare-kernels = { path = "../flare/crates/flare-kernels" }
-flare-fft = { path = "../flare/crates/flare-fft" }
-flare-mipgen = { path = "../flare/crates/flare-mipgen" }
-
 # Embassy async runtime and USB stacks. Versions are set here only.
 embassy-executor = "0.10.0"
 embassy-futures = "0.1.2"
@@ -119,11 +112,6 @@ opt-level = "s"
 lto = true
 codegen-units = 1
 debug = true
-
-# The FFT is worth its size at full optimisation. Profiles apply only in the
-# workspace being built, so this must be set here rather than in flare.
-[profile.release.package.flare-fft]
-opt-level = 3
 
 [profile.dev]
 opt-level = 1

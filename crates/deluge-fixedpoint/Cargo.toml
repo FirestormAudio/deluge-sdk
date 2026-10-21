@@ -19,10 +19,6 @@ armv7-dsp-intrinsics.workspace = true
 
 [dev-dependencies]
 proptest = "1.5"
-# The cross-crate dsp_pipeline integration test (tests/dsp_pipeline.rs):
-# quantise + fixed-point gain feeding the FFT. It lives on this side of the
-# flare seam so flare-fft keeps no dev-dependency on a crate staying in the SDK.
-flare-fft.workspace = true
 # The test exercises the real DSP instructions (SMMUL etc.), which need
 # `nightly`; the normal dependency above is featureless so the firmware keeps
 # the raw-`asm!` path.

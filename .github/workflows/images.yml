@@ -37,17 +37,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # deluge-sdk's workspace path-depends on a sibling ../flare checkout (the audio engine).
-      # actions/checkout can't write outside the workspace, so check it out inside and link it.
-      - name: Checkout flare
-        uses: actions/checkout@v7
-        with:
-          repository: FirestormAudio/flare
-          ref: ce4d6826192e9e34e2d189ddce94777d06e352c2
-          path: flare
-          token: ${{ secrets.FLARE_TOKEN || github.token }}
-      - name: Place flare beside the checkout
-        run: ln -s "$GITHUB_WORKSPACE/flare" "$GITHUB_WORKSPACE/../flare"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master

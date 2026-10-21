@@ -14,10 +14,6 @@ rustup show
 cargo install --path tools/cargo-deluge   # the `cargo deluge` host subcommand
 ```
 
-The audio engine comes from the separate `flare` repository through path
-dependencies, so the workspace only resolves with a `flare` checkout next to
-this one (`../flare`).
-
 To build firmware images and examples, use the build aliases defined in
 `.cargo/config.toml` (they pass the required `-Zbuild-std` flags) rather than a
 bare `cargo build`. See the [README](README.md#working-on-the-sdk-itself) and

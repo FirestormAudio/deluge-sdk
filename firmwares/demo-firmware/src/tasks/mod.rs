@@ -2,6 +2,7 @@ pub(crate) mod analysis;
 pub(crate) mod audio;
 pub(crate) mod blink;
 pub(crate) mod encoder;
+pub(crate) mod fft;
 pub(crate) mod jack_detect;
 pub(crate) mod midi;
 pub(crate) mod oled;

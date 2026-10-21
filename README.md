@@ -203,10 +203,6 @@ compile-proves all of them on the firmware target).
 | `tools/cargo-deluge/` | | the `cargo deluge` host subcommand |
 | `tools/deluge-web-sim/` | | browser front panel that connects to a simulator core over WebSocket |
 
-The audio engine (`flare`, `flare-graph`, `flare-kernels`, `flare-fft`,
-`flare-mipgen`) lives in the separate `flare` repository and is used through
-path dependencies on a sibling checkout at `../flare`.
-
 The `deluge` SDK facade depends only on the BSP and HAL — it does **not** pull
 in the GPL UI toolkit, so an app stays permissively licensed unless it opts in.
 
@@ -240,17 +236,6 @@ it opts into the toolkit, in which case that app becomes GPL.
 
 The sections below are for hacking on the firmware and SDK internals rather than
 writing apps. App authors can stop at [`cargo deluge`](#cargo-deluge).
-
-### Workspace setup
-
-The workspace resolves the `flare` audio engine from a sibling checkout, so clone
-it next to this repository first:
-
-```text
-<parent>/
-├── deluge-sdk/   # this repository
-└── flare/        # the audio engine
-```
 
 ### Building firmware images
 

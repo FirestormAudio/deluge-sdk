@@ -12,7 +12,7 @@ use embassy_futures::yield_now;
 use embassy_time::Timer;
 
 use crate::tasks::audio::USB_AUDIO_STREAMING;
-use flare_fft::{Complex, RealFft, apply_hann_window_real};
+use crate::tasks::fft::{self, BINS, N as FFT_N};
 
 // ---------------------------------------------------------------------------
 // Shared output buffers
@@ -36,17 +36,11 @@ pub(crate) static mut WAVEFORM: [f32; 128] = [0.0; 128];
 /// `rgb_task` takes one `sqrt` per display column (18 total) after averaging.
 ///
 /// Written only by `analysis_task`; read only by `rgb_task`.
-pub(crate) static mut SPECTRUM: [f32; 257] = [0.0; 257];
+pub(crate) static mut SPECTRUM: [f32; BINS] = [0.0; BINS];
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-/// FFT window length in mid-channel samples (≈ 11.6 ms at 44.1 kHz).
-const FFT_N: usize = 512;
-
-/// SIMD lane width — 4 × f32 maps to a NEON `float32x4_t` on Cortex-A9.
-const LANES: usize = 4;
 
 /// Number of waveform points (equals `oled::WIDTH = 128`).
 const WAVE_PTS: usize = 128;
@@ -198,13 +192,10 @@ pub(crate) async fn analysis_task() {
         }
 
         // ── FFT → magnitude spectrum ─────────────────────────────────────────
-        // Apply Hann window to the real samples, then run a real-input FFT
-        // (internally an N/2-point radix-4 complex FFT + post-processing), about
-        // twice as fast as a full N-point complex FFT.
-        apply_hann_window_real(&mut wave_raw);
+        fft::apply_hann(&mut wave_raw);
         yield_now().await;
-        let mut spec_cx = [Complex::ZERO; FFT_N / 2 + 1]; // 257 bins
-        RealFft::<FFT_N, LANES>::process(&wave_raw, &mut spec_cx);
+        let mut power = [0.0f32; BINS];
+        fft::power_spectrum(&wave_raw, &mut power);
         yield_now().await;
 
         // Store squared magnitude, normalised so a full-scale sine → peak ≈ 1.0.
@@ -213,8 +204,8 @@ pub(crate) async fn analysis_task() {
         let norm = 4.0 / FFT_N as f32;
         let norm_sq = norm * norm;
         unsafe {
-            for i in 0..257 {
-                SPECTRUM[i] = spec_cx[i].norm_sq() * norm_sq;
+            for i in 0..BINS {
+                SPECTRUM[i] = power[i] * norm_sq;
             }
         }
 
