@@ -321,16 +321,27 @@ struct PipeLayout {
     carry: EndpointType,
 }
 
-/// The pipe layout for an endpoint of `ep_type` with descriptor `w_max_packet`.
+/// The pipe layout for an endpoint of `ep_type` going `dir_in` with descriptor `w_max_packet`.
 ///
-/// Interrupt pipes (6-9) stop at 64 bytes, so a larger interrupt endpoint (Overbridge's
-/// 368-byte blocks) rides a bulk pipe. On the wire an interrupt and a bulk transaction use the
-/// same tokens, handshakes and toggles, and a bulk pipe is polled every microframe the bus has
-/// room for, at least as often as `bInterval` 1. Pipes 3-5 take only MXPS 8/16/32/64/512
-/// (TRM §28.3.34), so up to 512 bytes the pipe is programmed at 512 and every packet is short;
-/// above that only pipes 1-2 take the size. A high-bandwidth endpoint (bits 12:11) can't ride
-/// a bulk pipe and is rejected.
-fn pipe_layout(ep_type: EndpointType, w_max_packet: u16) -> Result<PipeLayout, HostError> {
+/// Interrupt pipes (6-9) stop at 64 bytes, so a larger interrupt endpoint needs another way:
+/// - **IN** (Overbridge's 368-byte blocks) rides a bulk pipe. On the wire an interrupt and a
+///   bulk IN transaction use the same tokens, handshakes and toggles, and a bulk pipe is
+///   polled every microframe the bus has room for, at least as often as `bInterval` 1. Pipes
+///   3-5 take only MXPS 8/16/32/64/512 (TRM §28.3.34), so up to 512 bytes the pipe is
+///   programmed at 512 and every packet is short; above that only pipes 1-2 take the size.
+/// - **OUT** stays on an interrupt pipe at MXPS 64, so a block goes out as several packets. A
+///   bulk pipe can't carry it: at high speed it starts every transfer, and resumes after any
+///   NAK or NYET, with a PING (TRM §28.4.7 (1); only the DCP can turn that off), and PING is
+///   defined only for bulk and control endpoints. A Digitakt NYETs every OUT and never answers
+///   the PING, so its stream failed at once on hardware. An isochronous pipe skips PING but
+///   always sends DATA0 (TRM §28.4.3), which an interrupt endpoint discards as a repeat.
+///
+/// A high-bandwidth endpoint (bits 12:11) is rejected.
+fn pipe_layout(
+    ep_type: EndpointType,
+    dir_in: bool,
+    w_max_packet: u16,
+) -> Result<PipeLayout, HostError> {
     let mps = w_max_packet & PIPEMAXP_MXPS_MASK;
     let layout = |first, last, mxps, carry| {
         Ok(PipeLayout {
@@ -348,6 +359,7 @@ fn pipe_layout(ep_type: EndpointType, w_max_packet: u16) -> Result<PipeLayout, H
         EndpointType::Interrupt if w_max_packet >> 11 != 0 || mps > 1024 => Err(HostError::Other(
             "interrupt endpoint is high-bandwidth or over 1024 bytes",
         )),
+        EndpointType::Interrupt if !dir_in => layout(6, 9, 64, EndpointType::Interrupt),
         EndpointType::Interrupt if mps <= 512 => layout(1, 5, 512, EndpointType::Bulk),
         EndpointType::Interrupt => layout(1, 2, mps, EndpointType::Bulk),
     }
@@ -1515,7 +1527,7 @@ impl<'d> Rusb1HostDriver<'d> {
 
         critical_section::with(|cs| {
             let alloc = unsafe { &mut *HCD_ALLOC[p].borrow(cs).get() };
-            let layout = pipe_layout(ep_type, mps)?;
+            let layout = pipe_layout(ep_type, dir_in, mps)?;
             let shares = ep_type == EndpointType::Bulk && !dir_in;
             if shares && alloc.shared_out.is_some() {
                 // A later bulk OUT endpoint joins the pipe that is already open. An endpoint
@@ -3537,7 +3549,7 @@ mod tests {
     #[test]
     fn an_interrupt_endpoint_over_64_bytes_is_carried_on_a_bulk_pipe_at_mxps_512() {
         assert_eq!(
-            pipe_layout(EndpointType::Interrupt, 368),
+            pipe_layout(EndpointType::Interrupt, true, 368),
             Ok(PipeLayout {
                 first: 1,
                 last: 5,
@@ -3546,7 +3558,7 @@ mod tests {
             })
         );
         assert_eq!(
-            pipe_layout(EndpointType::Interrupt, 88),
+            pipe_layout(EndpointType::Interrupt, true, 88),
             Ok(PipeLayout {
                 first: 1,
                 last: 5,
@@ -3556,11 +3568,31 @@ mod tests {
         );
     }
 
+    /// The Digitakt's Overbridge OUT endpoint (interrupt, 88 bytes) can't ride a bulk pipe: the
+    /// pipe would PING, which the Digitakt never answers. It keeps an interrupt pipe at MXPS 64,
+    /// so a block goes out as 64 + 24.
+    #[test]
+    fn an_interrupt_out_endpoint_over_64_bytes_keeps_an_interrupt_pipe_at_mxps_64() {
+        for mps in [88, 256, 1024] {
+            assert_eq!(
+                pipe_layout(EndpointType::Interrupt, false, mps),
+                Ok(PipeLayout {
+                    first: 6,
+                    last: 9,
+                    mxps: 64,
+                    carry: EndpointType::Interrupt
+                })
+            );
+        }
+        assert!(pipe_layout(EndpointType::Interrupt, false, (1 << 11) | 88).is_err());
+    }
+
+
     /// Over 512 bytes (a Digitakt II's 1012-byte IN endpoint) only pipes 1-2 take the size.
     #[test]
     fn an_interrupt_endpoint_over_512_bytes_needs_pipe_1_or_2() {
         assert_eq!(
-            pipe_layout(EndpointType::Interrupt, 1012),
+            pipe_layout(EndpointType::Interrupt, true, 1012),
             Ok(PipeLayout {
                 first: 1,
                 last: 2,
@@ -3569,7 +3601,7 @@ mod tests {
             })
         );
         assert_eq!(
-            pipe_layout(EndpointType::Interrupt, 1024),
+            pipe_layout(EndpointType::Interrupt, true, 1024),
             Ok(PipeLayout {
                 first: 1,
                 last: 2,
@@ -3584,7 +3616,7 @@ mod tests {
     fn an_interrupt_endpoint_of_64_bytes_or_less_keeps_an_interrupt_pipe() {
         for mps in [1, 8, 64] {
             assert_eq!(
-                pipe_layout(EndpointType::Interrupt, mps),
+                pipe_layout(EndpointType::Interrupt, true, mps),
                 Ok(PipeLayout {
                     first: 6,
                     last: 9,
@@ -3599,16 +3631,16 @@ mod tests {
     /// microframe) can't ride a bulk pipe, and one over 1024 bytes isn't valid USB.
     #[test]
     fn a_high_bandwidth_or_oversized_interrupt_endpoint_is_rejected() {
-        assert!(pipe_layout(EndpointType::Interrupt, (1 << 11) | 368).is_err());
-        assert!(pipe_layout(EndpointType::Interrupt, (2 << 11) | 1024).is_err());
-        assert!(pipe_layout(EndpointType::Interrupt, 1025).is_err());
+        assert!(pipe_layout(EndpointType::Interrupt, true, (1 << 11) | 368).is_err());
+        assert!(pipe_layout(EndpointType::Interrupt, true, (2 << 11) | 1024).is_err());
+        assert!(pipe_layout(EndpointType::Interrupt, true, 1025).is_err());
     }
 
     /// Bulk and isochronous endpoints are laid out as before.
     #[test]
     fn bulk_and_isochronous_layouts_are_unchanged() {
         assert_eq!(
-            pipe_layout(EndpointType::Bulk, 512),
+            pipe_layout(EndpointType::Bulk, true, 512),
             Ok(PipeLayout {
                 first: 1,
                 last: 5,
@@ -3617,7 +3649,7 @@ mod tests {
             })
         );
         assert_eq!(
-            pipe_layout(EndpointType::Bulk, 64),
+            pipe_layout(EndpointType::Bulk, true, 64),
             Ok(PipeLayout {
                 first: 1,
                 last: 5,
@@ -3626,7 +3658,7 @@ mod tests {
             })
         );
         assert_eq!(
-            pipe_layout(EndpointType::Isochronous, 56),
+            pipe_layout(EndpointType::Isochronous, true, 56),
             Ok(PipeLayout {
                 first: 1,
                 last: 2,
@@ -3635,7 +3667,7 @@ mod tests {
             })
         );
         assert_eq!(
-            pipe_layout(EndpointType::Control, 64),
+            pipe_layout(EndpointType::Control, true, 64),
             Err(HostError::OutOfPipes)
         );
     }
@@ -3683,14 +3715,15 @@ mod tests {
     }
 
     #[test]
-    fn an_88_byte_interrupt_out_endpoint_opens_as_a_bulk_pipe() {
+    fn an_88_byte_interrupt_out_endpoint_opens_as_an_interrupt_pipe_at_mxps_64() {
         use crate::usb::regs::{PIPECFG_DIR, PIPECFG_TYPE_MASK};
         let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
-        let (pipe, cfg, maxp, _) = open_on_fresh_port(0x03, EndpointType::Interrupt, 88, 1);
-        assert!((3..=5).contains(&pipe), "pipe {pipe}");
-        assert_eq!(cfg & PIPECFG_TYPE_MASK, PIPECFG_TYPE_BULK);
+        let (pipe, cfg, maxp, peri) = open_on_fresh_port(0x03, EndpointType::Interrupt, 88, 1);
+        assert!((6..=9).contains(&pipe), "pipe {pipe}");
+        assert_eq!(cfg & PIPECFG_TYPE_MASK, PIPECFG_TYPE_INTR);
         assert_ne!(cfg & PIPECFG_DIR, 0, "OUT: host sends");
-        assert_eq!(maxp & PIPEMAXP_MXPS_MASK, 512);
+        assert_eq!(maxp & PIPEMAXP_MXPS_MASK, 64);
+        assert_eq!(peri & PIPEPERI_IITV_MASK, 0, "bInterval 1: every microframe");
     }
 
     #[test]
@@ -3714,11 +3747,11 @@ mod tests {
         assert_eq!(maxp & PIPEMAXP_MXPS_MASK, 64);
     }
 
-    /// A Digitakt opens its two Overbridge endpoints and its two USB-MIDI bulk endpoints: four
-    /// of the five bulk-capable pipes. One isochronous stream (a USB audio interface) still
-    /// fits; a second doesn't, and fails cleanly.
+    /// A Digitakt's Overbridge IN and USB-MIDI endpoints take three of the five bulk-capable
+    /// pipes (MIDI IN, the shared send pipe and Overbridge IN), all in 3-5, and its Overbridge
+    /// OUT an interrupt pipe. Both isochronous pipes stay free; a third stream fails cleanly.
     #[test]
-    fn a_digitakt_leaves_one_isochronous_pipe() {
+    fn a_digitakt_leaves_both_isochronous_pipes() {
         let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let h = host_with_bus(0b00, DVSTCTR0_RHST_HS | DVSTCTR0_UACT);
         critical_section::with(|cs| unsafe { *HCD_ALLOC[0].borrow(cs).get() = HcdAlloc::new() });
@@ -3736,12 +3769,17 @@ mod tests {
         pipes.sort();
         pipes.dedup();
         assert_eq!(pipes.len(), 4, "distinct pipes");
-        assert!(pipes.iter().all(|p| (1..=5).contains(p)));
+        assert!((6..=9).contains(&h.ep_to_pipe(1, 0x03).unwrap()));
+        for ep in [0x83, 0x81, 0x01] {
+            assert!((3..=5).contains(&h.ep_to_pipe(1, ep).unwrap()));
+        }
 
         h.edpt_open(2, 0x84, EndpointType::Isochronous, 196, 1)
             .unwrap();
+        h.edpt_open(2, 0x05, EndpointType::Isochronous, 196, 1)
+            .unwrap();
         assert_eq!(
-            h.edpt_open(2, 0x05, EndpointType::Isochronous, 196, 1),
+            h.edpt_open(2, 0x86, EndpointType::Isochronous, 196, 1),
             Err(HostError::OutOfPipes)
         );
     }
