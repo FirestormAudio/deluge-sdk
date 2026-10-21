@@ -349,6 +349,10 @@ pub fn encode(c: Cmd) -> [u8; REC] {
         Cmd::EndUpdate => r[0] = END_UPDATE,
         Cmd::ClearSchedule => r[0] = CLEAR_SCHEDULE,
         Cmd::Reset => r[0] = RESET,
+        // `Cmd` is non-exhaustive. Commands the wire has no record for
+        // (`NewCustomNode`, and any added later) cross as `Nop`, as unknown
+        // tags decode.
+        _ => r[0] = NOP,
     }
     r
 }
@@ -497,6 +501,18 @@ mod tests {
 
     fn assert_round(c: Cmd) {
         assert_eq!(round(c), c, "did not survive the wire: {c:?}");
+    }
+
+    /// A command the wire has no record for (Wren never creates custom nodes)
+    /// encodes as `Nop`, as an unknown tag decodes.
+    #[test]
+    fn custom_node_crosses_as_nop() {
+        let c = Cmd::NewCustomNode {
+            node: NodeId(5),
+            kind: flare_graph::CustomKind { set: 0xdead_beef, kind: 3 },
+            args: [Input::Const(1.0); 3],
+        };
+        assert_eq!(round(c), Cmd::Nop);
     }
 
     /// Every `Cmd` variant, with distinctive field values so a field written to
@@ -713,7 +729,7 @@ mod tests {
         for k in flare_graph::node::ALL_KINDS {
             assert_round(Cmd::NewNode {
                 node: NodeId(1),
-                kind: k,
+                kind: *k,
                 args: [Input::Const(0.0); 3],
             });
         }
