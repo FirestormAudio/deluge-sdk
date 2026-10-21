@@ -201,22 +201,24 @@ fn encode(
     format: Format,
     ch: usize,
     from_device: bool,
+    block_frames: usize,
     counter: u16,
     frames: &[i32],
     block: &mut [u8],
 ) -> usize {
-    let len = block_len(format.frame_bytes(ch, from_device));
+    let len = HEADER_LEN + block_frames * format.frame_bytes(ch, from_device);
     let block = &mut block[..len];
     let header = if from_device {
         HEADER_FROM_DEVICE
     } else {
-        HEADER_TO_DEVICE
+        // The high byte is the block's frame count (7 in a full block).
+        HEADER_TO_DEVICE & 0x00FF | (block_frames as u16) << 8
     };
     block[..2].copy_from_slice(&header.to_be_bytes());
     block[2..4].copy_from_slice(&counter.to_be_bytes());
     block[4..HEADER_LEN].fill(0);
     let mut at = HEADER_LEN;
-    for (i, &x) in frames[..FRAMES_PER_BLOCK * ch].iter().enumerate() {
+    for (i, &x) in frames[..block_frames * ch].iter().enumerate() {
         let w = format.width(i % ch, from_device);
         encode_sample(format, x, &mut block[at..at + w]);
         at += w;
@@ -243,7 +245,26 @@ pub fn encode_to_device(
     frames: &[i32],
     block: &mut [u8],
 ) -> usize {
-    encode(format, ch, false, counter, frames, block)
+    encode_to_device_frames(format, ch, FRAMES_PER_BLOCK, counter, frames, block)
+}
+
+/// Encode `block_frames` × `ch` interleaved frames as a host-to-device block, for a host that
+/// can't send a full one in a single packet. Returns its length.
+///
+/// The Digitakt takes the header's high byte as the block's frame count and copies that many
+/// frames, and every packet it receives is a block of its own (re/notes/overbridge-out.md in the
+/// Digitakt analysis), so a shorter block must say so and arrive whole: a full block split
+/// across packets made it copy past its buffer and lock up.
+pub fn encode_to_device_frames(
+    format: Format,
+    ch: usize,
+    block_frames: usize,
+    counter: u16,
+    frames: &[i32],
+    block: &mut [u8],
+) -> usize {
+    debug_assert!(block_frames <= FRAMES_PER_BLOCK);
+    encode(format, ch, false, block_frames, counter, frames, block)
 }
 
 /// Device side: encode 7 × `ch` interleaved frames as a device-to-host block. Returns its length.
@@ -254,7 +275,7 @@ pub fn encode_from_device(
     frames: &[i32],
     block: &mut [u8],
 ) -> usize {
-    encode(format, ch, true, counter, frames, block)
+    encode(format, ch, true, FRAMES_PER_BLOCK, counter, frames, block)
 }
 
 /// Device side: decode a host-to-device block. Returns its frame counter.
@@ -317,6 +338,21 @@ mod tests {
     extern crate std;
     use super::*;
     use std::vec::Vec;
+
+    /// A short block: byte 0 of the header is the frame count, so a 4-frame block to a
+    /// 2-channel device is 32 + 4 × 8 = 64 bytes with header 0x04FF.
+    #[test]
+    fn a_to_device_block_can_carry_fewer_than_7_frames() {
+        let frames = [0x0100_0000, -0x0100_0000, 1, 2, 3, 4, 5, 6];
+        let mut block = [0xAAu8; 88];
+        let len = encode_to_device_frames(Format::V2, 2, 4, 0x1234, &frames, &mut block);
+        assert_eq!(len, 64);
+        assert_eq!(&block[..4], &[0x04, 0xFF, 0x12, 0x34]);
+        assert!(block[4..32].iter().all(|&b| b == 0));
+        assert_eq!(&block[32..40], &[0x01, 0, 0, 0, 0xFF, 0, 0, 0]);
+        assert_eq!(&block[56..64], &[0, 0, 0, 5, 0, 0, 0, 6]);
+        assert!(block[64..].iter().all(|&b| b == 0xAA), "nothing past the block");
+    }
 
     /// A device-to-host block built byte by byte, independently of the encoder: header 0x0700,
     /// `counter`, 28 zero bytes, then `samples` (already in wire form) in order.

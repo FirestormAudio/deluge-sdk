@@ -4,8 +4,9 @@
 //! Setup selects alternate setting 3 on interfaces 1 (audio from the device) and 2 (audio to
 //! it), then streams: each [`OverbridgeHost::pump_once`] reads one block, decodes it into an
 //! [`OverbridgeHandle`], and sends one block back, so the device's clock paces both
-//! directions. The endpoints are high-speed interrupt endpoints; the RZ/A1L HAL carries those
-//! over 64 bytes on bulk pipes.
+//! directions. A host that can't send a block per block received runs the two halves of
+//! [`OverbridgeHost::split`] apart instead. The endpoints are high-speed interrupt endpoints;
+//! the RZ/A1L HAL carries the IN one on a bulk pipe and sends the OUT one in 64-byte packets.
 
 use embassy_usb_driver::host::{HostError, PipeError, SplitInfo, UsbHostAllocator, UsbPipe, pipe};
 use embassy_usb_driver::{Direction, EndpointType};
@@ -168,17 +169,31 @@ impl RateMeter {
 /// A hosted Overbridge device.
 pub struct OverbridgeHost<'d, A: UsbHostAllocator<'d>> {
     control: A::Pipe<pipe::Control, pipe::InOut>,
-    rx: A::Pipe<pipe::Interrupt, pipe::In>,
-    tx: A::Pipe<pipe::Interrupt, pipe::Out>,
+    rx: OverbridgeRx<'d, A>,
+    tx: OverbridgeTx<'d, A>,
     m: OverbridgeMatch,
-    tx_counter: u16,
-    rx_counter: CounterTracker,
+}
+
+/// The receiving half of an [`OverbridgeHost`], from [`OverbridgeHost::split`].
+pub struct OverbridgeRx<'d, A: UsbHostAllocator<'d>> {
+    pipe: A::Pipe<pipe::Interrupt, pipe::In>,
+    m: OverbridgeMatch,
+    counter: CounterTracker,
     framing_run: u32,
     rate: RateMeter,
-    rx_block: [u8; MAX_BLOCK],
-    tx_block: [u8; MAX_BLOCK],
+    block: [u8; MAX_BLOCK],
     frames: [i32; FRAMES_PER_BLOCK * MAX_CHANNELS],
-    _p: core::marker::PhantomData<&'d ()>,
+}
+
+/// The sending half of an [`OverbridgeHost`], from [`OverbridgeHost::split`].
+pub struct OverbridgeTx<'d, A: UsbHostAllocator<'d>> {
+    pipe: A::Pipe<pipe::Interrupt, pipe::Out>,
+    m: OverbridgeMatch,
+    /// Frames per block sent: 7, or fewer under [`OverbridgeHost::limit_out_packet`].
+    block_frames: usize,
+    counter: u16,
+    block: [u8; MAX_BLOCK],
+    frames: [i32; FRAMES_PER_BLOCK * MAX_CHANNELS],
 }
 
 impl<'d, A: UsbHostAllocator<'d>> OverbridgeHost<'d, A> {
@@ -224,17 +239,24 @@ impl<'d, A: UsbHostAllocator<'d>> OverbridgeHost<'d, A> {
         );
         Ok(Self {
             control,
-            rx,
-            tx,
+            rx: OverbridgeRx {
+                pipe: rx,
+                m,
+                counter: CounterTracker::default(),
+                framing_run: 0,
+                rate: RateMeter::default(),
+                block: [0; MAX_BLOCK],
+                frames: [0; FRAMES_PER_BLOCK * MAX_CHANNELS],
+            },
+            tx: OverbridgeTx {
+                pipe: tx,
+                m,
+                block_frames: FRAMES_PER_BLOCK,
+                counter: 0,
+                block: [0; MAX_BLOCK],
+                frames: [0; FRAMES_PER_BLOCK * MAX_CHANNELS],
+            },
             m,
-            tx_counter: 0,
-            rx_counter: CounterTracker::default(),
-            framing_run: 0,
-            rate: RateMeter::default(),
-            rx_block: [0; MAX_BLOCK],
-            tx_block: [0; MAX_BLOCK],
-            frames: [0; FRAMES_PER_BLOCK * MAX_CHANNELS],
-            _p: core::marker::PhantomData,
         })
     }
 
@@ -266,64 +288,83 @@ impl<'d, A: UsbHostAllocator<'d>> OverbridgeHost<'d, A> {
         Ok(())
     }
 
-    /// Send one OUT block of `frames` (7 × ch_to, interleaved).
-    async fn send(&mut self, silent: bool) -> Result<(), OverbridgeError> {
-        let n = FRAMES_PER_BLOCK * self.m.ch_to;
-        if silent {
-            self.frames[..n].fill(0);
-        }
-        let len = proto::encode_to_device(
-            self.m.format,
-            self.m.ch_to,
-            self.tx_counter,
-            &self.frames[..n],
-            &mut self.tx_block,
-        );
-        self.tx
-            .request_out(&self.tx_block[..len], false)
-            .await
-            .map_err(OverbridgeError::Transport)?;
-        self.tx_counter = self.tx_counter.wrapping_add(FRAMES_PER_BLOCK as u16);
-        Ok(())
-    }
-
     /// Start the stream: send the silent blocks that prime the OUT direction, so the device
     /// sees host traffic at once. Run it from the stream task, not where registration happens:
     /// a device that holds off OUT until it streams IN makes it wait.
     pub async fn start(&mut self) -> Result<(), OverbridgeError> {
-        self.prime().await
+        self.tx.prime().await
     }
 
-    async fn prime(&mut self) -> Result<(), OverbridgeError> {
-        for _ in 0..PRIME_BLOCKS {
-            self.send(true).await?;
+    /// Send blocks of no more than `max_packet` bytes, for a host that can't send the device's
+    /// full block in one packet: each block carries fewer frames and says so in its header. The
+    /// device must get every block whole in one packet; see
+    /// [`encode_to_device_frames`](proto::encode_to_device_frames). Fails when not even one
+    /// frame fits.
+    pub fn limit_out_packet(&mut self, max_packet: usize) -> Result<(), OverbridgeError> {
+        let frame = self.m.format.to_device_frame_bytes(self.m.ch_to);
+        let fit = max_packet.saturating_sub(proto::HEADER_LEN) / frame;
+        if fit == 0 {
+            return Err(OverbridgeError::BadBlockSize);
         }
+        self.tx.block_frames = fit.min(FRAMES_PER_BLOCK);
         Ok(())
     }
 
-    /// Receive one block into `h`, then send one block from it. `now_us` is local time, for
-    /// the rate measurement.
+    /// The two directions, to run apart: a host that can't send a block per block received
+    /// still receives every one.
+    pub fn split(&mut self) -> (&mut OverbridgeRx<'d, A>, &mut OverbridgeTx<'d, A>) {
+        (&mut self.rx, &mut self.tx)
+    }
+
+    /// Receive one block into `h`, then send one block from it, so the device's clock paces
+    /// both. `now_us` is local time, for the rate measurement.
     pub async fn pump_once<const RX: usize, const TX: usize>(
+        &mut self,
+        h: &OverbridgeHandle<RX, TX>,
+        now_us: u64,
+    ) -> Result<(), OverbridgeError> {
+        self.rx.receive_once(h, now_us).await?;
+        // One block out per block in, even after a bad one.
+        self.tx.send_once(h).await
+    }
+
+    /// Recover from a transport error: select the alternates again, reset the data toggles
+    /// and the counter, and prime the OUT stream.
+    pub async fn restart(&mut self) -> Result<(), OverbridgeError> {
+        Self::select_alternates(&mut self.control).await?;
+        self.rx.pipe.reset_data_toggle();
+        self.tx.pipe.reset_data_toggle();
+        self.rx.counter.reset();
+        self.rx.framing_run = 0;
+        self.rx.rate = RateMeter::default();
+        self.tx.prime().await
+    }
+}
+
+impl<'d, A: UsbHostAllocator<'d>> OverbridgeRx<'d, A> {
+    /// Receive one block and decode it into `h`. `now_us` is local time, for the rate
+    /// measurement.
+    pub async fn receive_once<const RX: usize, const TX: usize>(
         &mut self,
         h: &OverbridgeHandle<RX, TX>,
         now_us: u64,
     ) -> Result<(), OverbridgeError> {
         let want = (self.m.ep_in.max_packet_size & 0x7FF) as usize;
         let got = self
-            .rx
-            .request_in(&mut self.rx_block[..want])
+            .pipe
+            .request_in(&mut self.block[..want])
             .await
             .map_err(OverbridgeError::Transport)?;
         let n = FRAMES_PER_BLOCK * self.m.ch_from;
         match proto::decode_from_device(
             self.m.format,
             self.m.ch_from,
-            &self.rx_block[..got],
+            &self.block[..got],
             &mut self.frames[..n],
         ) {
             Ok(counter) => {
                 self.framing_run = 0;
-                let seen = self.rx_counter.observe(counter);
+                let seen = self.counter.observe(counter);
                 h.push_rx(&self.frames[..n]);
                 let ppm = self.rate.add(FRAMES_PER_BLOCK as u64, now_us);
                 h.update_stats(|s| {
@@ -349,24 +390,49 @@ impl<'d, A: UsbHostAllocator<'d>> OverbridgeHost<'d, A> {
                 }
             }
         }
-        // One block out per block in, even after a bad one: the device's clock paces both.
-        let n = FRAMES_PER_BLOCK * self.m.ch_to;
+        Ok(())
+    }
+}
+
+impl<'d, A: UsbHostAllocator<'d>> OverbridgeTx<'d, A> {
+    /// Send one block of the app's next frames from `h`.
+    pub async fn send_once<const RX: usize, const TX: usize>(
+        &mut self,
+        h: &OverbridgeHandle<RX, TX>,
+    ) -> Result<(), OverbridgeError> {
+        let n = self.block_frames * self.m.ch_to;
         h.pull_tx(&mut self.frames[..n]);
-        self.send(false).await?;
+        self.send().await?;
         h.update_stats(|s| s.blocks_out = s.blocks_out.wrapping_add(1));
         Ok(())
     }
 
-    /// Recover from a transport error: select the alternates again, reset the data toggles
-    /// and the counter, and prime the OUT stream.
-    pub async fn restart(&mut self) -> Result<(), OverbridgeError> {
-        Self::select_alternates(&mut self.control).await?;
-        self.rx.reset_data_toggle();
-        self.tx.reset_data_toggle();
-        self.rx_counter.reset();
-        self.framing_run = 0;
-        self.rate = RateMeter::default();
-        self.prime().await
+    async fn prime(&mut self) -> Result<(), OverbridgeError> {
+        let n = self.block_frames * self.m.ch_to;
+        for _ in 0..PRIME_BLOCKS {
+            self.frames[..n].fill(0);
+            self.send().await?;
+        }
+        Ok(())
+    }
+
+    /// Send `frames` (`block_frames` × ch_to, interleaved) as one OUT block.
+    async fn send(&mut self) -> Result<(), OverbridgeError> {
+        let n = self.block_frames * self.m.ch_to;
+        let len = proto::encode_to_device_frames(
+            self.m.format,
+            self.m.ch_to,
+            self.block_frames,
+            self.counter,
+            &self.frames[..n],
+            &mut self.block,
+        );
+        self.pipe
+            .request_out(&self.block[..len], false)
+            .await
+            .map_err(OverbridgeError::Transport)?;
+        self.counter = self.counter.wrapping_add(self.block_frames as u16);
+        Ok(())
     }
 }
 #[cfg(all(test, not(target_os = "none")))]
@@ -604,6 +670,85 @@ mod tests {
             &[0x01, 0, 0, 0, 0xFF, 0, 0, 0],
             "the app's frame goes out first"
         );
+    }
+
+    /// The halves run apart: receiving doesn't send, and a send takes the app's next frames and
+    /// carries on the counter. A host that can't send at the device's rate (the RZ/A1L sends
+    /// each Digitakt block as two packets) receives every block and sends what it can.
+    #[test]
+    fn the_split_halves_receive_and_send_independently() {
+        let state = MockState::leak();
+        let mut host = digitakt(state);
+        let h: OverbridgeHandle<4096, 512> = OverbridgeHandle::new();
+        h.begin(host.matched().info(), 12, 2).unwrap();
+        for c in [0u16, 7, 14] {
+            state
+                .script
+                .borrow_mut()
+                .reads
+                .push(digitakt_block(c))
+                .unwrap();
+        }
+        h.write(&[0x0100_0000, -0x0100_0000]);
+        let (rx, tx) = host.split();
+        for t in 0..3 {
+            block_on(rx.receive_once(&h, t * 146)).unwrap();
+        }
+        assert_eq!(state.log.borrow().sent.len(), 2 * 88, "only the priming blocks");
+        block_on(tx.send_once(&h)).unwrap();
+        let s = h.stats();
+        assert_eq!((s.blocks_in, s.blocks_out, s.counter_gaps), (3, 1, 0));
+        let sent = &state.log.borrow().sent;
+        assert_eq!(sent.len(), 3 * 88);
+        assert_eq!(&sent[2 * 88..2 * 88 + 4], &[0x07, 0xFF, 0x00, 0x0E]);
+        assert_eq!(
+            &sent[2 * 88 + 32..2 * 88 + 40],
+            &[0x01, 0, 0, 0, 0xFF, 0, 0, 0],
+            "the app's frame goes out first"
+        );
+    }
+
+    /// A host whose OUT packets stop at 64 bytes sends 4-frame Digitakt blocks (32 + 4 × 8), each
+    /// whole in one packet, with the header saying 4 and the counter advancing by 4.
+    #[test]
+    fn a_64_byte_out_limit_sends_whole_4_frame_blocks() {
+        let state = MockState::leak();
+        let alloc = MockAlloc::new(state);
+        let mut host = block_on(OverbridgeHost::try_register(
+            &alloc,
+            1,
+            None,
+            0x1935,
+            0x0B2C,
+            &cfg(&DIGITAKT_CONFIG),
+        ))
+        .unwrap();
+        host.limit_out_packet(64).unwrap();
+        block_on(host.start()).unwrap();
+        let h: OverbridgeHandle<4096, 512> = OverbridgeHandle::new();
+        h.begin(host.matched().info(), 12, 2).unwrap();
+        h.write(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        let (_, tx) = host.split();
+        block_on(tx.send_once(&h)).unwrap();
+        let sent = &state.log.borrow().sent;
+        assert_eq!(sent.len(), 3 * 64, "2 priming + 1 block, 64 bytes each");
+        assert_eq!(&sent[..4], &[0x04, 0xFF, 0x00, 0x00]);
+        assert_eq!(&sent[64..68], &[0x04, 0xFF, 0x00, 0x04]);
+        let block = &sent[128..192];
+        assert_eq!(&block[..4], &[0x04, 0xFF, 0x00, 0x08]);
+        assert_eq!(&block[32..36], &[0, 0, 0, 1]);
+        assert_eq!(&block[60..64], &[0, 0, 0, 8], "4 frames taken from the app");
+        let mut rest = [0i32; 2];
+        h.pull_tx(&mut rest);
+        assert_eq!(rest, [9, 10], "the 5th frame waits for the next block");
+    }
+
+    #[test]
+    fn an_out_limit_too_small_for_one_frame_is_refused() {
+        let state = MockState::leak();
+        let mut host = digitakt(state);
+        assert!(matches!(host.limit_out_packet(39), Err(OverbridgeError::BadBlockSize)));
+        assert!(host.limit_out_packet(40).is_ok());
     }
 
     #[test]
