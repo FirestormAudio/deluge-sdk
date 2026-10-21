@@ -54,10 +54,28 @@ often than before.
 - **Setup:** as in 2. The harness sends a 1 kHz tone at −12 dBFS on both channels to the
   Digitakt. On the Digitakt, route its Overbridge input to its main output.
 - **Pass:** the tone is audible and clean (no clicks) for a minute.
-- **Record:** anything the Digitakt shows about the host connection. Also whether the stream
-  survives the Digitakt NAKing an OUT block: the RZ/A1L host sends bulk OUT, and after a NAK
-  it sends a PING, which an interrupt endpoint doesn't define. If the Digitakt stalls or drops
-  the OUT stream after its first NAK, that is the cause.
+- **Record:** anything the Digitakt shows about the host connection.
+- **Known limit:** the RZ/A1L sends OUT on an interrupt pipe, which stops at 64 bytes, so each
+  OUT block is a 32-byte header + 4 frames (not 7) and the tone reaches the Digitakt short and
+  distorted. Expect that; the pass is about the link, not the tone's quality. Earlier attempts
+  and why they failed:
+  - Bulk pipe: high-speed bulk OUT always starts with PING (TRM §28.4.7 (1)); the Digitakt
+    never answers PING on EP 0x03, so the first send failed with `BadResponse`.
+  - Isochronous pipe: only sends DATA0 (TRM §28.4.3); the Digitakt drops the repeats, its sync
+    never acquires and every stem is zero.
+  - Interrupt pipe, 88 bytes as 64 + 24: the Digitakt takes each packet as a block and reads
+    byte 0 as its frame count, so the 24-byte fragment overran its buffer and locked it up
+    (power cycle needed). Never send an OUT packet whose length isn't 32 + 8 × byte 0.
+  The decompile behind this is the digitakt repo's `re/notes/overbridge-out.md`.
+- **Results (2026-10-21, Digitakt OS 1.54, sequencer running):** a 10-minute soak gave 4.09 M
+  blocks in (~7130/s), 0 counter gaps, resyncs, framing errors, overruns or underruns, real
+  stems on all 12 channels, OUT at 99.6 % of the blocks received, and CPU load 9.4 % median
+  (11.3 % peak). A cold start (Digitakt power-cycled) was also clean.
+- **Open:** in 1 of 4 runs (the first after a power cycle and a J-Link server restart), OUT
+  stopped after ~8500 blocks with no error while IN kept streaming real stems for 30 s. It
+  didn't recur, and its cause is unknown. A stuck interrupt OUT send isn't timed out, so if it
+  shows again, dump PIPE9CTR (H'E801_0080) to see whether the Digitakt is NAKing (PID BUF with
+  a full buffer) or the host missed its completion.
 
 ## 4. Digitakt II (spec §8.4 step 4, when one is available)
 

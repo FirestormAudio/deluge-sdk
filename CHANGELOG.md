@@ -28,13 +28,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   feature `usb-host-overbridge`). A Digitakt, Digitone, Syntakt, Analog Four/Rytm/Heat MKII,
   Digitakt II or Digitone II in Overbridge mode streams every track to the Deluge as 48 kHz
   stems, read through `deluge_bsp::usb::host::overbridge()`, with a stream back to the
-  device. Elektron devices are offered to Overbridge before UAC.
+  device. Elektron devices are offered to Overbridge before UAC. On the RZ/A1L the stream back
+  is one 64-byte block (header + 4 frames, `OverbridgeHost::limit_out_packet`) per block
+  received, so audio to the device runs short (4 of every 7 frames); the device's 88-byte
+  block doesn't fit an interrupt pipe, and split in two it locked a Digitakt up.
+  `OverbridgeHost::split` gives the receive and send halves to run concurrently.
 - `usb-classes` `AudioClass`: up to 48 capture channels. Above 1024 bytes the capture endpoint
   is sized per high-speed microframe (7 frames), so `AudioClass<8>` (168-byte packets) builds,
   for example for an Elektron Outbox 8. `AudioClass::CAPTURE_MAX_PACKET` gives the size.
-- `rza1l-hal` USB host: an interrupt endpoint over 64 bytes (such as Overbridge's 368-byte
+- `rza1l-hal` USB host: an interrupt IN endpoint over 64 bytes (such as Overbridge's 368-byte
   audio blocks) opens on a bulk pipe (MXPS 512 on pipes 3-5, or its own size up to 1024 on
-  pipes 1-2) instead of failing for lack of a large interrupt pipe.
+  pipes 1-2) instead of failing for lack of a large interrupt pipe. An interrupt OUT endpoint
+  over 64 bytes opens on an interrupt pipe (6-9) at MXPS 64: a high-speed bulk OUT pipe always
+  starts with PING (TRM §28.4.7), which a Digitakt's interrupt endpoint never answers, and an
+  isochronous pipe can only send DATA0 (TRM §28.4.3). Its senders must keep each packet to 64
+  bytes.
+- `deluge_bsp::cpu_load`: a rough CPU-load meter for hardware tests (an executor spin count,
+  logged once a second against the idlest second seen). It keeps the executor from sleeping,
+  so it is for the bench only.
 - Initial public release of the Deluge SDK: write apps for the Synthstrom
   Deluge in async Rust via the `#[deluge::app]` attribute and the `Deluge`
   capability handle.

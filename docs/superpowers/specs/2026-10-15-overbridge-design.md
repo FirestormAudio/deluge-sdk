@@ -28,6 +28,11 @@ uses the existing UAC2 device class at 8 channels, not Overbridge (§7).
 > - §5.3: `StreamStats` also counts `counter_resyncs` (a counter jump past ~150 ms of gap).
 > - §5.6: the shared `HostAudioArena` isn't built (it would save ≤ 32 KB). The UAC rings and
 >   the Overbridge rings stay separate statics.
+> - §4/§5 OUT: the host sends Overbridge OUT on an interrupt pipe at MXPS 64, not a bulk pipe
+>   (bulk OUT PINGs, which the Digitakt doesn't answer; iso sends only DATA0). An 88-byte
+>   block doesn't fit, so on the RZ/A1L each OUT block carries 4 frames in 64 bytes
+>   (`limit_out_packet`), one per block received, sent concurrently with receive (`split`).
+>   Audio to the device runs short. See `docs/hardware-tasks.md` §3.
 > - §6: the device sender waits for the app's frames (it never drops a block); the device face
 >   switch is a pattern in `hw-tests/overbridge-device-firmware`, not an SDK API.
 > **Evidence:** the protocol comes from Overwitch (GPL-3; read for the format
