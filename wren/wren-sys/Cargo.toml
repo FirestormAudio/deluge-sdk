@@ -8,8 +8,10 @@ description = "FFI bindings + cc build of the upstream wren-lang/wren C VM (comp
 [lib]
 test = false
 
-[dependencies]
-rza1-alloc = { path = "../../rza1/rza1-alloc" }
+# The device VM heap uses the SDK's allocator (`deluge::deluge_alloc`). Device-only: the
+# host and wasm builds route the VM through the C runtime allocator.
+[target.'cfg(target_os = "none")'.dependencies]
+deluge-sdk = { path = "../../crates/deluge-sdk", default-features = false }
 
 [build-dependencies]
 cc = "1"

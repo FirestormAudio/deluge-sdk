@@ -6895,7 +6895,7 @@ name = "wren-sys"
 version = "0.1.0"
 dependencies = [
  "cc",
- "rza1-alloc",
+ "deluge-sdk",
 ]
 
 [[package]]

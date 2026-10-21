@@ -18,22 +18,24 @@ cd "$(dirname "$0")/.."
 # Consumers that must reach the platform only through the `deluge` facade.
 FACADE_ONLY_DIRS=(wren examples/baremetal)
 
-# Code lines only: a `//` comment naming a BSP item for reference is fine.
+# Code lines only: a `//` comment naming a BSP item for reference is fine. The chip crates
+# (`rza1l_hal`, `rza1_alloc`, `rza1_rt`, …) are all off limits; the facade re-exports what an
+# app needs (the allocator as `deluge::deluge_alloc`).
 code_hits="$(grep -rnE --include='*.rs' --exclude-dir=target --exclude-dir=node_modules \
-  '\b(deluge_bsp|rza1l_hal)\b' "${FACADE_ONLY_DIRS[@]}" \
+  '\b(deluge_bsp|rza1l_hal|rza1_[a-z_]+)\b' "${FACADE_ONLY_DIRS[@]}" \
   | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)"
 
-# Matches every manifest form that can pull in the BSP/HAL: plain `key = …`,
+# Matches every manifest form that can pull in the BSP or a chip crate: plain `key = …`,
 # dotted keys (`deluge-bsp.workspace = true`), table headers
 # (`[dependencies.deluge-bsp]` / `[target.'cfg(...)'.dependencies.rza1l-hal]`),
 # and renamed deps (`package = "deluge-bsp"`).
 dep_hits="$(grep -rnE --include='Cargo.toml' --exclude-dir=target --exclude-dir=node_modules \
-  '(^[[:space:]]*(deluge-bsp|rza1l-hal)[[:space:]]*[.=])|(\.(deluge-bsp|rza1l-hal)\])|(package[[:space:]]*=[[:space:]]*"(deluge-bsp|rza1l-hal)")' \
+  '(^[[:space:]]*(deluge-bsp|rza1l-hal|rza1-[a-z-]+)[[:space:]]*[.=])|(\.(deluge-bsp|rza1l-hal|rza1-[a-z-]+)\])|(package[[:space:]]*=[[:space:]]*"(deluge-bsp|rza1l-hal|rza1-[a-z-]+)")' \
   "${FACADE_ONLY_DIRS[@]}" || true)"
 
 if [ -n "$code_hits$dep_hits" ]; then
   printf '%s\n' "$code_hits" "$dep_hits" | sed '/^$/d'
-  echo "error: facade-only code (wren/, examples/baremetal/) reaches past \`deluge\` into deluge-bsp/rza1l-hal" >&2
+  echo "error: facade-only code (wren/, examples/baremetal/) reaches past \`deluge\` into deluge-bsp or the rza1 chip crates" >&2
   exit 1
 fi
 # The chip crates are board-agnostic: no Deluge names in their code or linker scripts (comments
