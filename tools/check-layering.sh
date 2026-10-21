@@ -18,12 +18,19 @@ cd "$(dirname "$0")/.."
 # Consumers that must reach the platform only through the `deluge` facade.
 FACADE_ONLY_DIRS=(examples/baremetal)
 
-# Code lines only: a `//` comment naming a BSP item for reference is fine. The chip crates
-# (`rza1l_hal`, `rza1_alloc`, `rza1_rt`, …) are all off limits; the facade re-exports what an
-# app needs (the allocator as `deluge::deluge_alloc`).
+# Code only: a `//` comment or a string literal naming a BSP item is fine, so each hit is
+# re-checked with its strings and comment stripped. The chip crates (`rza1l_hal`,
+# `rza1_alloc`, `rza1_rt`, …) are all off limits; the facade re-exports what an app needs
+# (the allocator as `deluge::deluge_alloc`).
 code_hits="$(grep -rnE --include='*.rs' --exclude-dir=target --exclude-dir=node_modules \
   '\b(deluge_bsp|rza1l_hal|rza1_[a-z_]+)\b' "${FACADE_ONLY_DIRS[@]}" \
-  | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)"
+  | awk '{
+      code = $0
+      sub(/^[^:]+:[0-9]+:/, "", code)
+      gsub(/"([^"\\]|\\.)*"/, "\"\"", code)
+      sub(/\/\/.*/, "", code)
+      if (code ~ /(^|[^A-Za-z0-9_])(deluge_bsp|rza1l_hal|rza1_[a-z_]+)([^A-Za-z0-9_]|$)/) print
+    }' || true)"
 
 # Matches every manifest form that can pull in the BSP or a chip crate: plain `key = …`,
 # dotted keys (`deluge-bsp.workspace = true`), table headers

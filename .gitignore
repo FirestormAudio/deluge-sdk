@@ -21,7 +21,8 @@ Thumbs.db
 # Vendored build inputs (large SVD + rbsp tree) — fetched, not committed
 /vendor/
 **target/
-/rtt-flasher.log
+# RTT logs from the cortex-debug launch configs and the flasher
+/rtt*.log
 **/node_modules/*
 .playwright-mcp/
 
