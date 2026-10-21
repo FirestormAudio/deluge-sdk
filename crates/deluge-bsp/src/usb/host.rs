@@ -585,7 +585,7 @@ mod runtime {
             }
             r => r,
         };
-        let host = match host {
+        let mut host = match host {
             Ok(h) => h,
             Err(OverbridgeError::NotOverbridge) => return false,
             Err(e) => {
@@ -593,6 +593,10 @@ mod runtime {
                 return false;
             }
         };
+        if let Err(e) = host.limit_out_packet(OVERBRIDGE_OUT_PACKET) {
+            warn!("usb_host: overbridge device not bound: {:?}", e);
+            return false;
+        }
         let m = *host.matched();
         if super::overbridge()
             .begin(m.info(), m.ch_from, m.ch_to)
@@ -647,17 +651,11 @@ mod runtime {
             }
         }
         loop {
-            let result = match select(
-                host.pump_once(stems, Instant::now().as_micros()),
-                ROOT_AUDIO_STOP.wait(),
-            )
-            .await
+            let e = match select(stream_overbridge(&mut host, stems), ROOT_AUDIO_STOP.wait())
+                .await
             {
-                Either::First(r) => r,
+                Either::First(e) => e,
                 Either::Second(()) => break,
-            };
-            let Err(e) = result else {
-                continue;
             };
             let now = Instant::now();
             while failures
@@ -696,6 +694,62 @@ mod runtime {
         }
         info!("usb_host: overbridge stream ended");
         stems.end();
+    }
+
+    /// The largest OUT packet the RZ/A1L sends whole to an Overbridge device. Its OUT endpoint
+    /// is a high-speed interrupt endpoint, which the HAL carries on an interrupt pipe (a bulk
+    /// pipe would PING, which the device doesn't answer), and those stop at 64 bytes. A
+    /// Digitakt's 88-byte block doesn't fit, and split across two packets it locked the
+    /// Digitakt up (it takes every packet as a block of its own), so OUT blocks carry 4 frames
+    /// in 64 bytes instead.
+    #[cfg(feature = "usb-host-overbridge")]
+    const OVERBRIDGE_OUT_PACKET: usize = 64;
+
+    /// Blocks received per block sent. A 64-byte block is one packet a microframe, so OUT keeps
+    /// up with the device's block every ~146 µs; it carries 4 of the 7 frames, which the device
+    /// takes as host traffic. Audio to the device runs short.
+    #[cfg(feature = "usb-host-overbridge")]
+    const OVERBRIDGE_OUT_EVERY: u32 = 1;
+
+    /// Receive every block, and send one per [`OVERBRIDGE_OUT_EVERY`] received, until a
+    /// transfer fails.
+    #[cfg(feature = "usb-host-overbridge")]
+    async fn stream_overbridge(
+        host: &mut usb_classes::host::overbridge::OverbridgeHost<'static, HostAlloc>,
+        stems: &'static super::OverbridgeStems,
+    ) -> usb_classes::host::overbridge::OverbridgeError {
+        use core::cell::Cell;
+        use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+        use embassy_sync::signal::Signal;
+        use embassy_time::Instant;
+
+        let received = Cell::new(0u32);
+        let due = Signal::<NoopRawMutex, ()>::new();
+        let (rx, tx) = host.split();
+        let receive = async {
+            loop {
+                if let Err(e) = rx.receive_once(stems, Instant::now().as_micros()).await {
+                    return e;
+                }
+                received.set(received.get() + 1);
+                if received.get() >= OVERBRIDGE_OUT_EVERY {
+                    due.signal(());
+                }
+            }
+        };
+        // A send that falls behind skips blocks rather than queueing them.
+        let send = async {
+            loop {
+                due.wait().await;
+                received.set(0);
+                if let Err(e) = tx.send_once(stems).await {
+                    return e;
+                }
+            }
+        };
+        match select(receive, send).await {
+            Either::First(e) | Either::Second(e) => e,
+        }
     }
 
     /// Bytes read of a device's whole configuration descriptor. Audio interfaces carry long

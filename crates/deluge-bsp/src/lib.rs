@@ -19,6 +19,8 @@ pub mod board;
 pub use board::Board;
 pub mod bus;
 pub mod controls;
+#[cfg(target_os = "none")]
+pub mod cpu_load;
 pub mod cv_gate;
 pub mod encoder;
 /// Pure quadrature detent accumulation used by the bare-metal `encoder` driver;

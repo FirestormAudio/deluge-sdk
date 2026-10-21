@@ -84,6 +84,8 @@ pub extern "C" fn main() -> ! {
         EXECUTOR.assume_init_mut()
     };
     executor.run(|spawner: Spawner| {
+        spawner.spawn(deluge_bsp::cpu_load::spin_task().unwrap());
+        spawner.spawn(deluge_bsp::cpu_load::report_task().unwrap());
         spawner.spawn(tasks::blink::blink_task().unwrap());
         spawner.spawn(tasks::pic::pic_task().unwrap());
         spawner.spawn(tasks::report::report_task().unwrap());
