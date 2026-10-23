@@ -39,7 +39,7 @@ jobs:
 
       # rza1/tools/gen-pac.sh's pinned chiptool (check-pac.sh installs it when missing).
       - name: Cache chiptool
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: rza1/target/chiptool-bcf538a2e7b8584ae874ee9ab72efb1576fc6152
           key: chiptool-bcf538a2e7b8584ae874ee9ab72efb1576fc6152
