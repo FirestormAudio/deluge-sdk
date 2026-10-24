@@ -297,6 +297,19 @@ unsafe fn to_read_mode() {
     }
 }
 
+/// Put the controller back into memory-mapped read mode, whatever mode the previous program left
+/// it in, and flush its read cache.
+///
+/// A debugger's halt-only reset or a bootloader's jump keeps SPIBSC as it was: a program that read
+/// flash in manual mode (the original firmware's settings reads) leaves `CMNCR.MD` set, and every
+/// memory-mapped read then returns zeros.
+///
+/// # Safety
+/// Bring-up only: nothing may be mid-transfer in manual mode.
+pub(crate) unsafe fn restore_read_mode() {
+    unsafe { to_read_mode() }
+}
+
 /// Issue WREN (0x06): one command, no address, no data.
 #[inline]
 unsafe fn write_enable() {
