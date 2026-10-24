@@ -1,13 +1,15 @@
 //! Undoes what a warm start left running.
 //!
 //! A debugger's halt-only reset, or a bootloader that jumps here, restarts the core but not the
-//! peripherals: DMA channels keep transferring, the SSI keeps streaming and the SCUX keeps its
-//! paths, all as the previous program set them up. A running SCUX holds SSIF0's transmitter even
+//! peripherals: DMA channels keep transferring, the SSI keeps streaming, the SCUX keeps its paths
+//! and the SPI flash controller stays in whatever mode it was in, all as the previous program set
+//! them up. A flash controller left in manual mode makes every memory-mapped flash read return zeros. A running SCUX holds SSIF0's transmitter even
 //! with its SSIF routing register at 0, so the TX FIFO never drains, the SSI never requests its
 //! DMA, and audio stays silent. [`quiesce`] puts those modules back into their reset state before
 //! any driver starts. What the GIC was left holding is [`crate::gic::init`]'s to undo.
 
-/// Stop every DMA channel, then reset the SCUX and every SSI channel.
+/// Stop every DMA channel, reset the SCUX and every SSI channel, and put the flash controller back
+/// into memory-mapped read mode.
 ///
 /// The DMA goes first, so no channel is still moving data into a module being reset.
 ///
@@ -18,6 +20,7 @@ pub(crate) unsafe fn quiesce() {
         crate::dmac::stop_all();
         crate::scux::reset();
         crate::ssi::reset_all();
+        crate::spibsc::restore_read_mode();
     }
 }
 
@@ -60,5 +63,26 @@ mod tests {
         let ssi_reset = at(swrstcr1, 0xF9);
         let ssi_run = at(swrstcr1, 0x81);
         assert!(scux_run < ssi_reset && ssi_reset < ssi_run);
+    }
+
+    #[test]
+    fn quiesce_returns_the_flash_controller_to_memory_mapped_reads() {
+        test::reset();
+        // As the previous program left it: manual SPI mode (CMNCR.MD), the rest of its configuration kept.
+        let cmncr = crate::pac::SPIBSC0.cmncr().addr() as usize;
+        let drcr = crate::pac::SPIBSC0.drcr().addr() as usize;
+        test::poke32(cmncr, 0x81FF_F320);
+        unsafe { super::quiesce() };
+        let writes = test::writes();
+        let manual_off = writes
+            .iter()
+            .position(|&w| w == (cmncr, 0x01FF_F320))
+            .expect("CMNCR.MD is cleared and nothing else in CMNCR changes");
+        assert!(
+            writes[manual_off..]
+                .iter()
+                .any(|&(a, v)| a == drcr && v & (1 << 9) != 0),
+            "the read cache is flushed after the switch"
+        );
     }
 }
