@@ -111,6 +111,13 @@ static mut DMA_RX_BUF: [DmaRxBuf; 2] = [
 ];
 static mut DMA_RX_DESC: [DmaRxDesc; 2] = [DmaRxDesc([0; 8]), DmaRxDesc([0; 8])];
 
+/// Receive ring `ring`'s first byte, for the CPU. The DMAC's view of the same ring is its 32-bit
+/// address ([`UartRx`]'s `base`); only on the device are the two the same number.
+fn rx_ring(ring: usize) -> *mut u8 {
+    // SAFETY: the address only, no reference.
+    unsafe { core::ptr::addr_of_mut!(DMA_RX_BUF[ring].0[0]) as *mut u8 }
+}
+
 
 // ---------------------------------------------------------------------------
 // DMA TX static storage
@@ -377,9 +384,8 @@ async fn wait_tdfe(ch: usize) {
 static RX_DMA_ACTIVE: [AtomicBool; NUM_CHANNELS] = [const { AtomicBool::new(false) }; NUM_CHANNELS];
 static TX_DMA_ACTIVE: [AtomicBool; NUM_CHANNELS] = [const { AtomicBool::new(false) }; NUM_CHANNELS];
 
-/// Where the CPU reads each receive ring next: a cached address, as CRDA reports it. A ring's
-/// owner and a stolen reader ([`UartRx::steal`]) share it, so bytes one consumes the other doesn't
-/// deliver again.
+/// Where the CPU reads each receive ring next: an offset into the ring. A ring's owner and a stolen
+/// reader ([`UartRx::steal`]) share it, so bytes one consumes the other doesn't deliver again.
 static RX_READ: [AtomicU32; 2] = [const { AtomicU32::new(0) }; 2];
 
 mod sealed {
@@ -515,7 +521,8 @@ pub struct UartRx<'d> {
     /// Its ring, which indexes `DMA_RX_BUF` and [`RX_READ`].
     ring: usize,
     dma: Dma<'d>,
-    /// The ring's start (cached address, as CRDA reports it).
+    /// The ring's start as the DMAC addresses it (cached, as CRDA reports it): compared with CRDA,
+    /// never dereferenced (that is [`rx_ring`]'s).
     base: u32,
 }
 
@@ -545,11 +552,13 @@ impl<'d> UartRx<'d> {
             desc.add(7).write_volatile(desc_addr); // next: itself, so the ring loops
             // Polled, never awaited: no completion interrupt, as the descriptor and CHCFG also say.
             dma.mask_interrupt();
-            dma.init_with_link_descriptor(desc_addr as *const u32, rx_dmars(ch));
+            // The pointer itself, not `desc_addr`: that is the 32-bit address the DMAC follows, and
+            // on a 64-bit host it no longer points at the descriptor.
+            dma.init_with_link_descriptor(desc, rx_dmars(ch));
             dma.channel_start();
             // The read position before the ring counts as active: a stolen reader
             // ([`UartRx::steal`]) that sees it active must also see where to read.
-            RX_READ[T::RING].store(buf_base, Ordering::Release);
+            RX_READ[T::RING].store(0, Ordering::Release);
             RX_DMA_ACTIVE[ch].store(true, Ordering::Release);
             // TIE|RIE|TE|RE: route both requests; the GIC's RXI stays off, so receive requests go
             // only to the DMAC.
@@ -571,15 +580,15 @@ impl<'d> UartRx<'d> {
         // the store would rewind past the bytes it consumed and they'd be delivered again.
         critical_section::with(|_| {
             let read = RX_READ[self.ring].load(Ordering::Acquire);
-            // CRDA: where the DMAC writes next.
-            if self.dma.current_dst() == read {
+            // CRDA: where the DMAC writes next, as the DMAC addresses the ring.
+            if self.dma.current_dst() == self.base.wrapping_add(read) {
                 return None;
             }
-            // SAFETY: `read` is inside this UART's ring. Read through the uncached alias: the
-            // DMAC wrote physical RAM, and a cached line may be stale.
-            let byte = unsafe { crate::uncached(read as usize as *mut u8).read_volatile() };
-            let offset = (read - self.base + 1) & (DMA_RX_BUF_SIZE as u32 - 1);
-            RX_READ[self.ring].store(self.base + offset, Ordering::Release);
+            // SAFETY: `read` is an offset inside this UART's ring. Read through the uncached
+            // alias: the DMAC wrote physical RAM, and a cached line may be stale.
+            let byte =
+                unsafe { crate::uncached(rx_ring(self.ring).add(read as usize)).read_volatile() };
+            RX_READ[self.ring].store((read + 1) & (DMA_RX_BUF_SIZE as u32 - 1), Ordering::Release);
             Some(byte)
         })
     }
@@ -903,14 +912,16 @@ mod typed_tests {
         // DMARS5 holds channel 10 (low half: SCIF0 transmit); DMARS6 channel 13 (high: receive).
         assert_eq!(test::peek32(0xFCFE_1014) & 0xFFFF, 0x61);
         assert_eq!(test::peek32(0xFCFE_1018) >> 16, 0x62);
-        // The receive descriptor (NXLA): SCFRDR into the ring, linked back to itself.
-        let desc = test::peek32(chreg(13, 0x38)) as *const u32;
+        // The receive descriptor (NXLA): SCFRDR into the ring, linked back to itself. Read through
+        // its own pointer: NXLA holds the DMAC's 32-bit address of it.
+        let desc = unsafe { core::ptr::addr_of!(DMA_RX_DESC[0]) as *const u32 };
+        assert_eq!(test::peek32(chreg(13, 0x38)), desc as u32);
         unsafe {
             assert_eq!(*desc.add(1), (b + 0x14) as u32);
             assert_eq!(*desc.add(2), rx.base);
             assert_eq!(*desc.add(7), desc as u32);
         }
-        assert_eq!(RX_READ[0].load(Ordering::Relaxed), rx.base, "the ring starts empty");
+        assert_eq!(RX_READ[0].load(Ordering::Relaxed), 0, "the ring starts empty");
         // The ring raises no completion interrupt, so its DMAINT stays masked at the GIC as it was
         // before typed DMA; the transmit channel's is how a write learns it finished.
         // GICD_ICENABLER1 (0xE820_1184): DMAINT13 = 54 is bit 22, DMAINT10 = 51 is bit 19.
@@ -922,7 +933,9 @@ mod typed_tests {
         test::poke32(chreg(10, 0x24), 1 << 6);
         embassy_futures::block_on(tx.write(b"hello"));
         assert_eq!(test::peek32(chreg(10, 0x08)), 5, "N0TB: the byte count");
-        let staged = test::peek32(chreg(10, 0x00)) as *const u8;
+        // N0SA holds the DMAC's 32-bit address of the staging buffer; read it through its pointer.
+        let staged = unsafe { core::ptr::addr_of!(DMA_TX_BUF[0].0[0]) };
+        assert_eq!(test::peek32(chreg(10, 0x00)), staged as u32);
         assert_eq!(unsafe { core::slice::from_raw_parts(staged, 5) }, b"hello");
 
         // A flush waits for the last byte to leave the shift register (SCFSR.TEND), not just for
@@ -953,7 +966,7 @@ mod typed_tests {
         test::reset();
         let rx_dma = Dma::new(unsafe { DMA_CH12::steal() }, Irqs);
         let (mut rx, _tx) = Uart::new(unsafe { SCIF1::steal() }, rx_dma, None, Irqs, 31_250).split();
-        let ring = rx.base as *mut u8;
+        let ring = rx_ring(1);
         let crda = chreg(12, 0x1C);
 
         // Nothing received: the DMAC's write position is still the ring's start.
