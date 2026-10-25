@@ -35,13 +35,16 @@
 //! ## Commands (CPU → PIC) — selected subset
 //! | Byte | Command                    | Payload                         |
 //! |------|----------------------------|---------------------------------|
+//! |10+c  | SET_FLASH_COLOUR           | — (colour index c, next flash)  |
 //! |  18  | SET_DEBOUNCE_TIME          | time  (value × 4 ms)            |
 //! |  19  | SET_REFRESH_TIME           | time  (ms)                      |
 //! |  20  | SET_GOLD_KNOB_0_INDICATORS | 4 × brightness bytes            |
 //! |  21  | SET_GOLD_KNOB_1_INDICATORS | 4 × brightness bytes            |
 //! |  22  | RESEND_BUTTON_STATES       | —                               |
 //! |  23  | SET_FLASH_LENGTH           | time  (ms)                      |
+//! |24+p  | SET_PAD_FLASHING           | — (pad index p)                 |
 //! | 225  | SET_UART_SPEED             | divider (baud = 4 MHz / (d+1))  |
+//! | 243  | SET_DIMMER_INTERVAL        | interval                        |
 //! | 244  | SET_MIN_INTERRUPT_INTERVAL | time  (ms)                      |
 //! | 245  | REQUEST_FIRMWARE_VERSION   | —                               |
 //! | 247  | ENABLE_OLED                | —                               |
@@ -77,6 +80,9 @@ pub const CMD_SET_GOLD_KNOB_0_INDICATORS: u8 = 20;
 pub const CMD_SET_GOLD_KNOB_1_INDICATORS: u8 = 21;
 const CMD_RESEND_BUTTON_STATES: u8 = 22;
 const CMD_SET_FLASH_LENGTH: u8 = 23;
+const CMD_SET_FLASH_COLOUR_BASE: u8 = 10;
+const CMD_SET_PAD_FLASHING_BASE: u8 = 24;
+const CMD_SET_DIMMER_INTERVAL: u8 = 243;
 const CMD_SET_UART_SPEED: u8 = 225;
 const CMD_SET_MIN_INTERRUPT_INTERVAL: u8 = 244;
 const CMD_REQUEST_FIRMWARE_VERSION: u8 = 245;
@@ -497,6 +503,41 @@ pub async fn vertical_scroll(up: bool, colours: &[[u8; 3]]) {
 #[inline]
 pub async fn done_sending_rows() {
     tx(&[CMD_DONE_SENDING_ROWS]).await;
+}
+
+/// SET_PAD_FLASHING for pad `idx` (`y + x * 8` over the 18 × 8 grid): the PIC lights it for the
+/// flash length in the current flash colour, then restores it.
+const fn pad_flash_command(idx: u8) -> [u8; 1] {
+    [CMD_SET_PAD_FLASHING_BASE + idx]
+}
+
+/// SET_FLASH_COLOUR for the PIC's colour index `colour` (1–3), used by the next pad flash.
+const fn flash_colour_command(colour: u8) -> [u8; 1] {
+    [CMD_SET_FLASH_COLOUR_BASE + colour]
+}
+
+/// SET_DIMMER_INTERVAL with `interval`, the PIC's pad-dimming interval.
+const fn dimmer_interval_command(interval: u8) -> [u8; 2] {
+    [CMD_SET_DIMMER_INTERVAL, interval]
+}
+
+/// Flash pad `idx` (`y + x * 8`) in the current flash colour.
+#[inline]
+pub async fn flash_pad(idx: u8) {
+    tx(&pad_flash_command(idx)).await;
+}
+
+/// Flash pad `idx` (`y + x * 8`) in the PIC's colour index `colour` (1–3).
+#[inline]
+pub async fn flash_pad_colour(idx: u8, colour: u8) {
+    tx(&flash_colour_command(colour)).await;
+    flash_pad(idx).await;
+}
+
+/// Set the PIC's pad-dimming interval (SET_DIMMER_INTERVAL, command 243).
+#[inline]
+pub async fn set_dimmer_interval(interval: u8) {
+    tx(&dimmer_interval_command(interval)).await;
 }
 
 /// Set the PIC display refresh interval (SET_REFRESH_TIME, command 19).
@@ -964,6 +1005,25 @@ mod tests {
         let mut cx = Context::from_waker(&waker);
         let fut = pin!(read_byte());
         assert!(matches!(fut.poll(&mut cx), Poll::Pending));
+    }
+
+    // ---- Pad flash and dimmer commands ------------------------------------
+
+    #[test]
+    fn a_pad_flash_is_one_byte_from_24() {
+        assert_eq!(pad_flash_command(0), [24]);
+        assert_eq!(pad_flash_command(143), [167]);
+    }
+
+    #[test]
+    fn a_flash_colour_is_one_byte_from_10() {
+        assert_eq!(flash_colour_command(1), [11]);
+        assert_eq!(flash_colour_command(3), [13]);
+    }
+
+    #[test]
+    fn the_dimmer_interval_is_243_then_the_interval() {
+        assert_eq!(dimmer_interval_command(7), [243, 7]);
     }
 
     #[test]
