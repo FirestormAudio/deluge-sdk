@@ -789,6 +789,16 @@ mod oled_signal {
         DESELECTED_WAKER.wake();
     }
 
+    /// Forgets an echo already received, so a wait only returns for one that arrives after it.
+    pub fn clear_selected() {
+        SELECTED_FLAG.store(false, Ordering::Release);
+    }
+
+    /// Forgets an echo already received, so a wait only returns for one that arrives after it.
+    pub fn clear_deselected() {
+        DESELECTED_FLAG.store(false, Ordering::Release);
+    }
+
     /// Suspend until the PIC confirms OLED CS is asserted (echo 248).
     pub async fn wait_selected() {
         poll_fn(|cx| {
@@ -853,6 +863,53 @@ pub async fn wait_oled_selected() {
 #[inline]
 pub async fn wait_oled_deselected() {
     oled_signal::wait_deselected().await;
+}
+
+/// How long to wait for the PIC to echo an OLED chip-select command before sending it again.
+#[cfg(target_os = "none")]
+const OLED_ECHO_TIMEOUT_MS: u64 = 50;
+
+/// Asserts OLED chip-select via the PIC and suspends until the PIC echoes it (byte 248).
+///
+/// The command is sent again every [`OLED_ECHO_TIMEOUT_MS`] without an echo: a lost byte would
+/// otherwise leave the caller, and the RSPI0 bus it holds, waiting for good. An echo received
+/// before the command was sent is forgotten, so a late echo from an earlier attempt cannot end a
+/// later wait early.
+#[cfg(target_os = "none")]
+pub async fn oled_select_and_wait() {
+    loop {
+        oled_signal::clear_selected();
+        oled_select().await;
+        let echoed = embassy_time::with_timeout(
+            embassy_time::Duration::from_millis(OLED_ECHO_TIMEOUT_MS),
+            oled_signal::wait_selected(),
+        )
+        .await;
+        if echoed.is_ok() {
+            return;
+        }
+        log::warn!("pic: no OLED select echo in {OLED_ECHO_TIMEOUT_MS} ms, sending it again");
+    }
+}
+
+/// De-asserts OLED chip-select via the PIC and suspends until the PIC echoes it (byte 249).
+///
+/// Resends as [`oled_select_and_wait`] does.
+#[cfg(target_os = "none")]
+pub async fn oled_deselect_and_wait() {
+    loop {
+        oled_signal::clear_deselected();
+        oled_deselect().await;
+        let echoed = embassy_time::with_timeout(
+            embassy_time::Duration::from_millis(OLED_ECHO_TIMEOUT_MS),
+            oled_signal::wait_deselected(),
+        )
+        .await;
+        if echoed.is_ok() {
+            return;
+        }
+        log::warn!("pic: no OLED deselect echo in {OLED_ECHO_TIMEOUT_MS} ms, sending it again");
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
