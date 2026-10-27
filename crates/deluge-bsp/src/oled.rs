@@ -15,7 +15,7 @@
 //! sent over SCIF1.  The handshake is:
 //! 1. CPU sends `250` (DC_LOW) or `251` (DC_HIGH) to set the data/command mode.
 //! 2. CPU sends `248` (SELECT_OLED); PIC asserts CS and echoes `248` back.
-//! 3. CPU waits for the echo via [`pic::wait_oled_selected()`].
+//! 3. CPU waits for the echo via [`pic::oled_select_and_wait()`], which resends on a timeout.
 //! 4. CPU streams pixel or command bytes over RSPI0 (8-bit mode).
 //! 5. CPU sends `249` (DESELECT_OLED); PIC de-asserts CS and echoes `249` back.
 //!
@@ -404,18 +404,14 @@ pub async fn init() {
     let mut bus = crate::bus::lock_rspi0().await;
     bus.enter_8bit();
 
-    // ---- 2. PIC: DC_LOW, ENABLE_OLED, SELECT_OLED -----------------------
-    // Mirrors the original C firmware's setupOLED() exactly:
-    //   PIC::setDCLow(); PIC::enableOLED(); PIC::selectOLED(); PIC::flush();
-    // The PIC will echo these bytes back; pic_task will parse and discard
-    // them (250→ignored, 247→ignored, 248→sets SELECTED_FLAG transiently).
-    // We do NOT wait for the echo here — the C firmware never did either.
+    // ---- 2. PIC: DC_LOW, ENABLE_OLED -------------------------------------
+    // The original C firmware's setupOLED() order: setDCLow, enableOLED, selectOLED. The PIC
+    // echoes these; pic_task discards 250 and 247.
     pic::oled_dc_low().await;
     pic::oled_enable().await;
-    pic::oled_select().await;
 
-    // ---- 3. Wait for PIC to assert CS and echo SELECT_OLED (byte 248) ----
-    pic::wait_oled_selected().await;
+    // ---- 3. Assert CS and wait for the PIC to echo SELECT_OLED (byte 248) ----
+    pic::oled_select_and_wait().await;
 
     // ---- 3b. Pre-clear full 128 × 64 controller RAM ----------------------
     //
@@ -462,8 +458,7 @@ pub async fn init() {
     // OLED and shift the column pointer *once* — and since it's never re-anchored,
     // that shift is baked in for every subsequent frame (a fixed horizontal
     // offset). Holding the bus until deselect is confirmed prevents it.
-    pic::oled_deselect().await;
-    pic::wait_oled_deselected().await;
+    pic::oled_deselect_and_wait().await;
     INITIALISED.store(true, core::sync::atomic::Ordering::Release);
     log::debug!("oled: ready");
 }
@@ -612,8 +607,7 @@ pub async fn send_frame(fb: &FrameBuffer) {
     //     oled::init likewise reconfigures before it selects.
     bus.reconfigure_8bit();
 
-    pic::oled_select().await;
-    pic::wait_oled_selected().await;
+    pic::oled_select_and_wait().await;
 
     unsafe {
         // Copy frame into the uncached staging buffer so DMAC sees fresh data.
@@ -645,7 +639,7 @@ pub async fn send_frame(fb: &FrameBuffer) {
     // CV word and its GDDRAM column pointer would drift (horizontal offset /
     // first-page corruption). Holding the bus until the deselect has settled
     // guarantees nothing else clocks the bus while the OLED is still listening.
-    // Symmetric with the select path above, which waits via wait_oled_selected
+    // Symmetric with the select path above, which waits via oled_select_and_wait
     // before touching the bus. (A fast OLED+CV interleave, e.g. CV updated every
     // audio block, hits this window constantly.)
     //
@@ -654,8 +648,7 @@ pub async fn send_frame(fb: &FrameBuffer) {
     // (e.g. pad-LED updates), so a fixed timeout can elapse while the CS is still
     // asserted. The echo means the PIC has processed it and the CS is physically
     // de-asserted — only then is it safe to release the bus.
-    pic::oled_deselect().await;
-    pic::wait_oled_deselected().await;
+    pic::oled_deselect_and_wait().await;
 
     // Release RSPI0 — only now, with the OLED deselected, may a CV write proceed.
     drop(bus);
