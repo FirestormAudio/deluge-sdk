@@ -1,7 +1,7 @@
 //! CPG Standby Control Register (STBCR) initialisation for RZ/A1L.
 //!
-//! Enables peripheral module clocks by writing CPG.STBCR2–STBCR12 with a
-//! board-supplied [`StbConfig`]; a port of `STB_Init()` in the C BSP's
+//! Enables peripheral module clocks by writing CPG.STBCR2–STBCR12 with the values a
+//! [`ModuleClocks`](crate::ModuleClocks) encodes; a port of `STB_Init()` in the C BSP's
 //! `src/RZA1/stb/stb.c`.
 //!
 //! In CPG STBCRn, a **0 bit enables** (clock running) and a **1 bit stops**
@@ -25,25 +25,6 @@
 //! | STBCR11  | 0xFCFE_0440     |
 //! | STBCR12  | 0xFCFE_0444     |
 
-/// Board-specific clock-gate configuration for CPG.STBCR2–STBCR12.
-///
-/// Each field maps directly to the corresponding STBCR register (0 bit =
-/// clock running, 1 bit = clock stopped); see RZ/A1L HW Manual §10 for the
-/// module assigned to each bit.
-pub struct StbConfig {
-    pub stbcr2: u8,
-    pub stbcr3: u8,
-    pub stbcr4: u8,
-    pub stbcr5: u8,
-    pub stbcr6: u8,
-    pub stbcr7: u8,
-    pub stbcr8: u8,
-    pub stbcr9: u8,
-    pub stbcr10: u8,
-    pub stbcr11: u8,
-    pub stbcr12: u8,
-}
-
 /// Enable peripheral module clocks according to `config`.
 ///
 /// Must be called before any peripheral (SCIF, OSTM, USB, SSIF, …) is
@@ -52,7 +33,7 @@ pub struct StbConfig {
 ///
 /// # Safety
 /// Writes to memory-mapped CPG registers.
-pub unsafe fn init(config: &StbConfig) {
+pub(crate) unsafe fn init(stbcr: &[u8; 11]) {
     use crate::mmio;
     use crate::pac::CPG;
     unsafe {
@@ -60,17 +41,17 @@ pub unsafe fn init(config: &StbConfig) {
         // Each register is written then immediately read back; the dummy read
         // flushes the write buffer before the next access (HW manual §10).
         for &(addr, val) in &[
-            (CPG.stbcr2().addr(), config.stbcr2),
-            (CPG.stbcr3().addr(), config.stbcr3),
-            (CPG.stbcr4().addr(), config.stbcr4),
-            (CPG.stbcr5().addr(), config.stbcr5),
-            (CPG.stbcr6().addr(), config.stbcr6),
-            (CPG.stbcr7().addr(), config.stbcr7),
-            (CPG.stbcr8().addr(), config.stbcr8),
-            (CPG.stbcr9().addr(), config.stbcr9),
-            (CPG.stbcr10().addr(), config.stbcr10),
-            (CPG.stbcr11().addr(), config.stbcr11),
-            (CPG.stbcr12().addr(), config.stbcr12),
+            (CPG.stbcr2().addr(), stbcr[0]),
+            (CPG.stbcr3().addr(), stbcr[1]),
+            (CPG.stbcr4().addr(), stbcr[2]),
+            (CPG.stbcr5().addr(), stbcr[3]),
+            (CPG.stbcr6().addr(), stbcr[4]),
+            (CPG.stbcr7().addr(), stbcr[5]),
+            (CPG.stbcr8().addr(), stbcr[6]),
+            (CPG.stbcr9().addr(), stbcr[7]),
+            (CPG.stbcr10().addr(), stbcr[8]),
+            (CPG.stbcr11().addr(), stbcr[9]),
+            (CPG.stbcr12().addr(), stbcr[10]),
         ] {
             mmio::write8(addr, val);
             let _ = mmio::read8(addr); // dummy read
@@ -105,19 +86,7 @@ mod tests {
     #[test]
     fn init_writes_every_stbcr_in_order() {
         mmio::test::reset();
-        let cfg = StbConfig {
-            stbcr2: 0x02,
-            stbcr3: 0x03,
-            stbcr4: 0x04,
-            stbcr5: 0x05,
-            stbcr6: 0x06,
-            stbcr7: 0x07,
-            stbcr8: 0x08,
-            stbcr9: 0x09,
-            stbcr10: 0x0A,
-            stbcr11: 0x0B,
-            stbcr12: 0x0C,
-        };
+        let cfg = [0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C];
         unsafe { init(&cfg) };
 
         assert_eq!(
@@ -143,19 +112,7 @@ mod tests {
     #[test]
     fn each_write_is_followed_by_a_dummy_read_of_same_reg() {
         mmio::test::reset();
-        let cfg = StbConfig {
-            stbcr2: 1,
-            stbcr3: 1,
-            stbcr4: 1,
-            stbcr5: 1,
-            stbcr6: 1,
-            stbcr7: 1,
-            stbcr8: 1,
-            stbcr9: 1,
-            stbcr10: 1,
-            stbcr11: 1,
-            stbcr12: 1,
-        };
+        let cfg = [0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C];
         unsafe { init(&cfg) };
 
         let log = mmio::test::log();

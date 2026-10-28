@@ -14,6 +14,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 /// The board's clock source. Everything else in the clock tree is derived from it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct ClockConfig {
     /// EXTAL crystal frequency in Hz, in [`EXTAL_RANGE_HZ`]. Private so every value goes
     /// through [`ClockConfig::new`]'s range check.

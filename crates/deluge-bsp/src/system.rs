@@ -5,27 +5,15 @@
 //! `Board::new(rza1_hal::init(BOARD_CONFIG))` ([`crate::Board`]), which keeps
 //! chip-level details out of the top-level firmware crate.
 //!
-//! ## CPG clock-gate values (`StbConfig`)
+//! ## Module clocks
 //!
-//! In CPG STBCRn, a **0 bit enables** the module clock and a **1 bit stops**
-//! it.  The values below are taken from the original C BSP `STB_Init()`.
-//!
-//! | Register | Value      | Enabled modules                              |
-//! |----------|------------|----------------------------------------------|
-//! | STBCR2   | 0b01101010 | CoreSight                                    |
-//! | STBCR3   | 0b11110101 | MTU2, A/D (clock and analog supply)          |
-//! | STBCR4   | 0b00000111 | SCIF0–4                                      |
-//! | STBCR5   | 0b11111100 | OSTM0, OSTM1                                 |
-//! | STBCR6   | 0b01111111 | A/D                                          |
-//! | STBCR7   | 0b00111101 | DVDEC0/1, USB0                               |
-//! | STBCR8   | 0b11111101 | SCUX                                         |
-//! | STBCR9   | 0b11110111 | SPIBSC0                                      |
-//! | STBCR10  | 0b00011111 | RSPI0–2                                      |
-//! | STBCR11  | 0b11011111 | SSIF0                                        |
-//! | STBCR12  | 0b11111011 | SDHI01                                       |
+//! [`MODULE_CLOCKS`] runs exactly what the firmware uses and stops the rest, as the original C
+//! BSP's `STB_Init()` did: CoreSight, MTU2, the A/D converter (both its bits), SCIF0–4,
+//! OSTM0/1, USB0, SCUX, SPIBSC0, RSPI0–2, SSIF0 and SD host interface 01. The realtime clock,
+//! which runs at reset, is stopped.
 
 use rza1_hal::clocks::ClockConfig;
-use rza1_hal::stb::StbConfig;
+use rza1_hal::{ClockOutput, CpgConfig, CpuClockDivider, ModuleClock as M, ModuleClocks};
 
 // ---------------------------------------------------------------------------
 // Board-specific configuration constants
@@ -35,57 +23,43 @@ use rza1_hal::stb::StbConfig;
 /// Every peripheral clock derives from it (P0φ = 33,064,062.5 Hz, P1φ = 66,128,125 Hz).
 pub const CLOCKS: ClockConfig = ClockConfig::new(13_225_625);
 
-/// CPG clock-gate configuration for the Deluge board.
-///
-/// Enables exactly the module clocks required by the Deluge firmware.
-/// All other module clocks are left stopped (gated) to minimise power and
-/// avoid spurious interrupt sources.
-pub const STB_CONFIG: StbConfig = StbConfig {
-    // CoreSight enabled; port levels kept in standby (bit 7 = 0).
-    // `[port-level-keep][1][1][0][1][0][1][CoreSight]`
-    stbcr2: 0b01101010,
-    // MTU2 and the A/D converter's clock and analog supply enabled; IEBus,
-    // IrDA, LIN0 and CAN stopped.
-    // `[IEBus][IrDA][LIN0][1][MTU2][CAN][A/D][1]`
-    stbcr3: 0b11110101,
-    // SCIF0–4 enabled; reserved bits [2:0] held at 1.
-    // `[SCIF0][SCIF1][SCIF2][SCIF3][SCIF4][1][1][1]`
-    stbcr4: 0b00000111,
-    // OSTM0 and OSTM1 enabled; SCIM0/1 stopped.
-    // `[SCIM0][SCIM1][1][1][1][1][OSTM1][OSTM0]`
-    stbcr5: 0b11111100,
-    // A/D enabled; CEU, JCU, RTClock stopped.
-    // `[A/D][CEU][1][1][1][1][JCU][RTClock]`
-    stbcr6: 0b01111111,
-    // DVDEC0/1 and USB0 enabled; ETHER, FLCTL, USB1 stopped.
-    // `[DVDEC0][DVDEC1][1][ETHER][FLCTL][1][USB0][USB1]`
-    stbcr7: 0b00111101,
-    // SCUX clock enabled; IMR-LS2x, MMCIF, MOST50 stopped.
-    // `[IMR-LS20][IMR-LS21][IMR-LSD][MMCIF][MOST50][1][SCUX][1]`
-    stbcr8: 0b11111101,
-    // SPIBSC0 enabled; I2C0–3 and VDC5 stopped.
-    // `[I2C0][I2C1][I2C2][I2C3][SPIBSC0][1][VDC5][1]`
-    stbcr9: 0b11110111,
-    // RSPI0–2 enabled; CD-ROM decoder and SPDIF stopped.
-    // `[RSPI0][RSPI1][RSPI2][1][1][CD-ROM][SPDIF][1]`
-    stbcr10: 0b00011111,
-    // SSIF0 enabled; SSIF1–3 stopped.
-    // `[1][1][SSIF0][SSIF1][SSIF2][SSIF3][reserved][reserved]`
-    stbcr11: 0b11011111,
-    // SDHI01 enabled; SDHI00, SDHI10/11 stopped. The SDHI driver ungates the
-    // clocks of the port it uses (`rza1_hal::sdhi`).
-    // `[1][1][1][1][SDHI00][SDHI01][SDHI10][SDHI11]`
-    stbcr12: 0b11111011,
-};
+/// The CPG's frequency control: the CPU clock at ×1 (400 MHz from the ×30 PLL) and CKO held low
+/// in standby, which is FRQCR `0x1035` (I:G:B:P1:P0 = 30:20:10:5:5/2), as the known-working
+/// Deluge firmware and bootloader set it.
+pub const CPG: CpgConfig = CpgConfig::new()
+    .with_cpu_clock(CpuClockDivider::Div1)
+    .with_clock_output(ClockOutput::LowInStandby);
 
-/// The Deluge's chip configuration for `rza1_hal::init`: its 13.2256 MHz crystal, FRQCR
-/// `0x1035` (PLL ×30, I:G:B:P1:P0 = 30:20:10:5:5/2, as the known-working Deluge firmware and
-/// bootloader set it), and the module clocks in [`STB_CONFIG`].
-pub const BOARD_CONFIG: rza1_hal::Config = rza1_hal::Config {
-    clocks: CLOCKS,
-    frqcr: 0x1035,
-    stb: STB_CONFIG,
-};
+/// The module clocks the Deluge firmware runs; everything else stays stopped, to save power and
+/// keep spurious interrupt sources quiet.
+pub const MODULE_CLOCKS: ModuleClocks = ModuleClocks::new()
+    .with(M::CoreSight)
+    .with(M::Mtu2)
+    .with(M::AdcAnalog)
+    .with(M::Adc)
+    .with(M::Scif0)
+    .with(M::Scif1)
+    .with(M::Scif2)
+    .with(M::Scif3)
+    .with(M::Scif4)
+    .with(M::Ostm0)
+    .with(M::Ostm1)
+    .with(M::Usb0)
+    .with(M::Scux)
+    .with(M::Spibsc0)
+    .with(M::Rspi0)
+    .with(M::Rspi1)
+    .with(M::Rspi2)
+    .with(M::Ssif0)
+    // The SD port the card is on; the SDHI driver ungates the clocks of the port it uses.
+    .with(M::Sdhi01)
+    .without(M::Rtc);
+
+/// The Deluge's chip configuration for `rza1_hal::init`: its 13.2256 MHz crystal, [`CPG`] and
+/// [`MODULE_CLOCKS`].
+pub const BOARD_CONFIG: rza1_hal::Config = rza1_hal::Config::new(CLOCKS)
+    .with_cpg(CPG)
+    .with_module_clocks(MODULE_CLOCKS);
 
 /// SSI0's SSICR: I²S master, 24-bit data in 32-bit words, clock ÷4 (44.1 kHz with the Deluge's
 /// audio crystal).
@@ -174,5 +148,33 @@ mod tests {
         let w = crate::sdram::WINDOW;
         assert_eq!(w, 0x0C00_0000..0x1000_0000);
         assert_eq!(w.len(), 64 * 1024 * 1024);
+    }
+}
+
+#[cfg(all(test, not(target_os = "none")))]
+mod board_config_tests {
+    use super::*;
+
+    #[test]
+    fn board_config_encodes_to_the_pre_phase1_registers() {
+        // FRQCR and STBCR2–STBCR12 exactly as the raw-register BOARD_CONFIG wrote them.
+        assert_eq!(BOARD_CONFIG.cpg.frqcr(), 0x1035);
+        let want = [
+            0b0110_1010, // STBCR2
+            0b1111_0101, // STBCR3
+            0b0000_0111, // STBCR4
+            0b1111_1100, // STBCR5
+            0b0111_1111, // STBCR6
+            0b0011_1101, // STBCR7
+            0b1111_1101, // STBCR8
+            0b1111_0111, // STBCR9
+            0b0001_1111, // STBCR10
+            0b1101_1111, // STBCR11
+            0b1111_1011, // STBCR12
+        ];
+        for (i, &want) in want.iter().enumerate() {
+            let n = i as u8 + 2;
+            assert_eq!(BOARD_CONFIG.module_clocks.stbcr(n), want, "STBCR{n}");
+        }
     }
 }

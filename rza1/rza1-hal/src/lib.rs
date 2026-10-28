@@ -63,16 +63,6 @@ embassy_hal_internal::peripherals! {
     SPIBSC0, SCUX, ADC,
 }
 
-/// The board's chip configuration for [`init`].
-pub struct Config {
-    /// The board's crystal, from which every peripheral clock is derived.
-    pub clocks: clocks::ClockConfig,
-    /// The CPG frequency-control (FRQCR) value: PLL multiplier and divider ratios.
-    pub frqcr: u16,
-    /// Which module clocks to run (STBCR2–STBCR12).
-    pub stb: stb::StbConfig,
-}
-
 /// Bring up the chip and hand out its peripherals: record the clock tree, program the CPG,
 /// start the module clocks, put back what a warm start left running (the `warm_start` module), and
 /// initialise the GIC, in that order.
@@ -88,7 +78,7 @@ pub fn init(config: Config) -> Peripherals {
     // SAFETY: `take` succeeded, so this is the one bring-up.
     unsafe {
         clocks::init(config.clocks);
-        cpg_then_stb(config.frqcr, &config.stb);
+        cpg_then_stb(config.cpg.frqcr(), &config.module_clocks.stbcr_all());
         warm_start::quiesce();
         gic::init();
     }
@@ -97,10 +87,10 @@ pub fn init(config: Config) -> Peripherals {
 
 /// CPG, then the module clocks: a module clock must not start before the bus clocks it runs from
 /// are programmed.
-unsafe fn cpg_then_stb(frqcr: u16, stb: &stb::StbConfig) {
+unsafe fn cpg_then_stb(frqcr: u16, stbcr: &[u8; 11]) {
     unsafe {
         cpg::init(frqcr);
-        stb::init(stb);
+        stb::init(stbcr);
     }
 }
 
@@ -114,6 +104,8 @@ pub mod bsc;
 pub mod cache;
 /// The clock tree, derived from the board's crystal (set once at boot by the BSP).
 pub mod clocks;
+mod config;
+pub use config::{ClockOutput, ClockOutputOnChange, Config, CpgConfig, CpuClockDivider, ModuleClock, ModuleClocks};
 mod cpg;
 pub mod dmac;
 pub mod gic;
@@ -132,7 +124,7 @@ pub mod scux;
 pub mod sdhi;
 pub mod spibsc;
 pub mod ssi;
-pub mod stb;
+mod stb;
 // The OSTM-backed embassy time driver does raw MMIO and registers the global
 // `_embassy_time_now`/`_embassy_time_schedule_wake` symbols. On host the
 // simulator uses embassy-time's `std` wall-clock driver instead, so keep this
@@ -153,19 +145,8 @@ mod init_tests {
     use super::*;
     use crate::mmio::test;
 
-    const STB: stb::StbConfig = stb::StbConfig {
-        stbcr2: 0x6A,
-        stbcr3: 0x80,
-        stbcr4: 0x00,
-        stbcr5: 0x00,
-        stbcr6: 0x00,
-        stbcr7: 0x24,
-        stbcr8: 0x05,
-        stbcr9: 0x00,
-        stbcr10: 0x00,
-        stbcr11: 0xDF,
-        stbcr12: 0xFB,
-    };
+    /// STBCR2–STBCR12 as the test writes them: arbitrary, so the order check can't pass by luck.
+    const STB: [u8; 11] = [0x6A, 0x80, 0x00, 0x00, 0x00, 0x24, 0x05, 0x00, 0x00, 0xDF, 0xFB];
 
     #[test]
     fn the_pll_is_programmed_before_any_module_clock() {
@@ -174,7 +155,10 @@ mod init_tests {
         let stb_writes = test::writes();
 
         test::reset();
-        unsafe { cpg_then_stb(0x1035, &STB) };
+        let cpg = CpgConfig::new()
+            .with_cpu_clock(CpuClockDivider::Div1)
+            .with_clock_output(ClockOutput::LowInStandby);
+        unsafe { cpg_then_stb(cpg.frqcr(), &STB) };
         let writes = test::writes();
 
         // PL310 power control, then FRQCR, then SYSCR3 (retention-RAM write enable), exactly
