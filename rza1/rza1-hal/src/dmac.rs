@@ -61,9 +61,20 @@ pub(crate) const CHCFG_LVL: u32 = 1 << 6;
 pub(crate) const CHCFG_REQD: u32 = 1 << 3;
 
 // ── GIC priority for DMAC completion interrupts ───────────────────────────────
-/// GIC priority assigned to DMAC completion (DMAINT) interrupts.
-/// Matches the original C firmware value for OLED DMA.
-const DMAC_IRQ_PRIORITY: u8 = 13;
+/// The priority every channel's completion (DMAINT) interrupt gets when its driver is built:
+/// [`Config::dma_interrupt_priority`](crate::Config), stored by [`init`](crate::init).
+static INTERRUPT_PRIORITY: core::sync::atomic::AtomicU8 =
+    core::sync::atomic::AtomicU8::new(Priority::DEFAULT as u8);
+
+/// Store the priority later [`Dma::new`]/[`BlockDma::new`] give their channel's interrupt.
+pub(crate) fn set_interrupt_priority(priority: Priority) {
+    INTERRUPT_PRIORITY.store(priority as u8, core::sync::atomic::Ordering::Relaxed);
+}
+
+fn interrupt_priority() -> Priority {
+    Priority::from_level(INTERRUPT_PRIORITY.load(core::sync::atomic::Ordering::Relaxed))
+        .unwrap_or(Priority::DEFAULT)
+}
 
 // ── DCTRL group-control registers ───────────────────────────────────────────
 
@@ -94,6 +105,7 @@ use embassy_sync::waitqueue::AtomicWaker;
 use core::marker::PhantomData;
 
 use crate::Peri;
+use crate::interrupt::Priority;
 use crate::interrupt::{self, Binding, Handler, Interrupt};
 
 mod sealed {
@@ -152,11 +164,9 @@ impl<'d> Dma<'d> {
         irq: impl Binding<C::Interrupt, InterruptHandler<C>> + 'd,
     ) -> Self {
         interrupt::bind(irq);
-        // SAFETY: this channel's own interrupt, at the DMAC priority.
-        unsafe {
-            crate::gic::set_priority(C::Interrupt::ID, DMAC_IRQ_PRIORITY);
-            C::Interrupt::enable();
-        }
+        C::Interrupt::set_priority(interrupt_priority());
+        // SAFETY: this channel's own interrupt, its handler bound above.
+        unsafe { C::Interrupt::enable() };
         Self {
             ch: C::NUMBER,
             _channel: PhantomData,
@@ -340,11 +350,9 @@ impl<'d> BlockDma<'d> {
         irq: impl Binding<C::Interrupt, BlockInterruptHandler<C>> + 'd,
     ) -> Self {
         interrupt::bind(irq);
-        // SAFETY: this channel's own interrupt, at the DMAC priority.
-        unsafe {
-            crate::gic::set_priority(C::Interrupt::ID, DMAC_IRQ_PRIORITY);
-            C::Interrupt::enable();
-        }
+        C::Interrupt::set_priority(interrupt_priority());
+        // SAFETY: this channel's own interrupt, its handler bound above.
+        unsafe { C::Interrupt::enable() };
         Self {
             dma: Dma {
                 ch: C::NUMBER,
@@ -651,10 +659,13 @@ mod typed_tests {
     #[test]
     fn a_channel_is_bound_prioritised_and_enabled_when_built() {
         test::reset();
+        // What `init` stores from `Config::dma_interrupt_priority`: every test uses P13, so
+        // parallel tests agree, and P13 is not the default P16 a forgotten setting would leave.
+        set_interrupt_priority(Priority::P13);
         let dma = Dma::new(unsafe { DMA_CH4::steal() }, Irqs);
         assert_eq!(dma.number(), 4);
         assert!(crate::gic::handler(45).is_some(), "DMAINT4 has a handler");
-        // Priority 13 into IPRIORITYR11 lane 1, then ISENABLER1 bit 13.
+        // The configured priority 13 into IPRIORITYR11 lane 1, then ISENABLER1 bit 13.
         assert_eq!(
             test::writes(),
             [(0xE820_142C, (13 << 3) << 8), (0xE820_1104, 1 << 13)]
@@ -764,10 +775,11 @@ mod typed_tests {
     #[test]
     fn a_block_interrupt_clears_tc_and_wakes_the_waiter_once() {
         test::reset();
+        set_interrupt_priority(Priority::P13);
         let ring = BlockDma::new(unsafe { DMA_CH5::steal() }, BlockIrqs);
         assert_eq!(ring.number(), 5, "derefs to its Dma");
         assert!(crate::gic::handler(46).is_some(), "DMAINT5 bound");
-        // Priority 13 into IPRIORITYR11 lane 2, then ISENABLER1 bit 14.
+        // The configured priority 13 into IPRIORITYR11 lane 2, then ISENABLER1 bit 14.
         assert_eq!(
             test::writes(),
             [(0xE820_142C, (13 << 3) << 16), (0xE820_1104, 1 << 14)]

@@ -240,7 +240,6 @@ const SDHI0_IRQS: [u16; 3] = [302, 303, 304];
 /// GIC IDs for SDHI1: status-change, operation, SDIO.
 const SDHI1_IRQS: [u16; 3] = [305, 306, 307];
 
-const SDHI_IRQ_PRIORITY: u8 = 10;
 
 // ---------------------------------------------------------------------------
 // STBCR12 clock-gate bit masks
@@ -1518,10 +1517,8 @@ impl<'d> Sdhi<'d> {
         unsafe { init(T::PORT, sd_option) };
         interrupt::bind::<T::StatusInterrupt, StatusInterruptHandler<T>>(irq);
         interrupt::bind::<T::OperationInterrupt, OperationInterruptHandler<T>>(irq);
-        // SAFETY: T's own interrupts.
+        // SAFETY: T's own interrupts; their priorities are the application's.
         unsafe {
-            crate::gic::set_priority(T::StatusInterrupt::ID, SDHI_IRQ_PRIORITY);
-            crate::gic::set_priority(T::OperationInterrupt::ID, SDHI_IRQ_PRIORITY);
             T::StatusInterrupt::enable();
             T::OperationInterrupt::enable();
         }

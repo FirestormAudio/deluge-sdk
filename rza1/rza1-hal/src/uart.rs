@@ -80,7 +80,6 @@ const RXI_BASE: u16 = 223;
 const TXI_BASE: u16 = 224;
 
 // GIC interrupt priority for UART (lower number = higher priority).
-const UART_IRQ_PRIORITY: u8 = 10;
 
 // ---------------------------------------------------------------------------
 // DMA RX constants and static storage
@@ -497,10 +496,9 @@ impl<'d> Uart<'d> {
         interrupt::bind::<T::ErrorInterrupt, ErrorInterruptHandler<T>>(irq);
         interrupt::bind::<T::TxInterrupt, TxInterruptHandler<T>>(irq);
         // SAFETY: SCIF T's own interrupts. ERI is enabled although reception is by DMA: receive
-        // errors still reach the GIC, and one left uncleared stops reception for good.
+        // errors still reach the GIC, and one left uncleared stops reception for good. Their
+        // priorities are the application's.
         unsafe {
-            gic::set_priority(T::ErrorInterrupt::ID, UART_IRQ_PRIORITY);
-            gic::set_priority(T::TxInterrupt::ID, UART_IRQ_PRIORITY);
             T::ErrorInterrupt::enable();
             T::TxInterrupt::enable();
         }

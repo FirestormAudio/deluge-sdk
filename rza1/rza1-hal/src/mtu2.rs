@@ -23,7 +23,7 @@
 //! }
 //! rza1_hal::bind_interrupts!(struct Irqs { TGI2A => GateHandler; });
 //!
-//! let timer = mtu2::OneShot::new(p.MTU2_2, 64, 5, Irqs); // P0φ/64, GIC priority 5
+//! let timer = mtu2::OneShot::new(p.MTU2_2, 64, Irqs); // P0φ/64
 //! timer.arm(520); // fires after 520 ticks ≈ 1 ms
 //! ```
 
@@ -151,18 +151,15 @@ unsafe fn enable_write() {
 }
 
 /// Stop channel `ch` and configure it for one-shot compare-match use: TCR = `tpsc` with
-/// CCLR = TGRA (the counter clears on the match), TIER = 0, and TGInA's GIC priority. The GIC
-/// source stays masked until [`arm`].
+/// CCLR = TGRA (the counter clears on the match) and TIER = 0. The GIC source stays masked until
+/// [`arm`].
 ///
 /// # Safety
-/// Writes MTU2 and GIC registers; `ch` is owned.
-unsafe fn setup_one_shot(ch: u8, tpsc: u8, priority: u8) {
-    unsafe {
-        MTU2.tstr().modify(|r| r.0 &= !CST[ch as usize]);
-        TCR[ch as usize].write_value(tpsc | (1 << 5));
-        TIER[ch as usize].write_value(0);
-        crate::gic::set_priority(TGIA_IRQ[ch as usize], priority);
-    }
+/// Writes MTU2 registers; `ch` is owned.
+unsafe fn setup_one_shot(ch: u8, tpsc: u8) {
+    MTU2.tstr().modify(|r| r.0 &= !CST[ch as usize]);
+    TCR[ch as usize].write_value(tpsc | (1 << 5));
+    TIER[ch as usize].write_value(0);
 }
 
 /// Arm channel `ch` for a one-shot event `tgra` ticks from now.
@@ -291,8 +288,9 @@ pub struct OneShot<'d> {
 }
 
 impl<'d> OneShot<'d> {
-    /// Configure channel `T` at P0φ / `prescaler`, with `H` handling its compare match at GIC
-    /// `priority` (0 most urgent, 31 least). Stopped until [`arm`](Self::arm).
+    /// Configure channel `T` at P0φ / `prescaler`, with `H` handling its compare match. Stopped
+    /// until [`arm`](Self::arm). The compare-match interrupt's priority is the application's
+    /// (`T::Interrupt::set_priority`).
     ///
     /// # Panics
     /// If channel `T` has no /`prescaler`: every channel has /1, /4, /16 and /64; channels 1, 3
@@ -300,7 +298,6 @@ impl<'d> OneShot<'d> {
     pub fn new<T: Instance, H: Handler<T::Interrupt>>(
         _timer: Peri<'d, T>,
         prescaler: u16,
-        priority: u8,
         irq: impl Binding<T::Interrupt, H> + 'd,
     ) -> Self {
         let code = tpsc(T::CH, prescaler).unwrap_or_else(|| {
@@ -311,7 +308,7 @@ impl<'d> OneShot<'d> {
         // to write again.
         unsafe {
             enable_write();
-            setup_one_shot(T::CH, code, priority);
+            setup_one_shot(T::CH, code);
         }
         Self { ch: T::CH, _timer: PhantomData }
     }
@@ -411,9 +408,9 @@ mod tests {
     });
 
     #[test]
-    fn a_one_shot_is_bound_stopped_and_prioritised_but_not_enabled() {
+    fn a_one_shot_is_bound_and_stopped_but_not_enabled() {
         mmio::test::reset();
-        let _timer = OneShot::new(unsafe { MTU2_2::steal() }, 64, 5, Irqs);
+        let _timer = OneShot::new(unsafe { MTU2_2::steal() }, 64, Irqs);
         assert!(crate::gic::handler(150).is_some(), "TGI2A bound");
         assert_eq!(
             mmio::test::writes(),
@@ -422,7 +419,7 @@ mod tests {
                 (0xFCFF_0280, 0),                    // channel 2 stopped
                 (0xFCFF_0000, 0b011 | (0b001 << 5)), // P0φ/64, counter cleared on a TGRA match
                 (0xFCFF_0004, 0),
-                (0xE820_1494, (5 << 3) << 16), // GICD_IPRIORITYR37, byte lane 150 % 4 = 2
+                // No GIC priority write: the application sets TGI2A's priority.
             ]
         );
     }
@@ -430,12 +427,12 @@ mod tests {
     #[test]
     #[should_panic(expected = "MTU2 channel 0 has no /256 prescaler")]
     fn a_prescaler_the_channel_lacks_is_refused() {
-        let _ = OneShot::new(unsafe { MTU2_0::steal() }, 256, 5, Irqs);
+        let _ = OneShot::new(unsafe { MTU2_0::steal() }, 256, Irqs);
     }
 
     #[test]
     fn arming_starts_a_shot_from_zero_and_unmasks_it() {
-        let timer = OneShot::new(unsafe { MTU2_2::steal() }, 64, 5, Irqs);
+        let timer = OneShot::new(unsafe { MTU2_2::steal() }, 64, Irqs);
         mmio::test::reset();
         timer.arm(520);
         assert_eq!(
@@ -453,7 +450,7 @@ mod tests {
 
     #[test]
     fn disarming_stops_the_shot_and_masks_it() {
-        let timer = OneShot::new(unsafe { MTU2_2::steal() }, 64, 5, Irqs);
+        let timer = OneShot::new(unsafe { MTU2_2::steal() }, 64, Irqs);
         mmio::test::reset();
         mmio::test::poke8(0xFCFF_0280, CST[2] | CST[3]);
         timer.disarm();

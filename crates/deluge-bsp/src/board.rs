@@ -107,6 +107,54 @@ rza1_hal::bind_interrupts!(struct TimeIrqs {
     OSTMI1 => rza1_hal::time_driver::AlarmHandler;
 });
 
+/// The priority of the interrupts of USB, the MIDI and PIC UARTs and the SD card: one level, as
+/// the drivers set them before priorities became the board's.
+const DRIVER_PRIORITY: rza1_hal::interrupt::Priority = rza1_hal::interrupt::Priority::P10;
+
+/// The gate timer's (MTU2_2, [`crate::midi_gate`]): above USB, so gate events are not delayed
+/// behind USB servicing.
+const GATE_TIMER_PRIORITY: rza1_hal::interrupt::Priority = rza1_hal::interrupt::Priority::P5;
+
+/// The encoder pins' and the encoder poll timer's (MTU2_3, [`crate::encoder`]): one level, so
+/// neither preempts the other.
+const ENCODER_PRIORITY: rza1_hal::interrupt::Priority = rza1_hal::interrupt::Priority::P14;
+
+/// The trigger clock input's (IRQ6, [`crate::trigger_clock`]): the encoders' level, below the gate
+/// timer and the DMAC (13).
+const TRIGGER_PRIORITY: rza1_hal::interrupt::Priority = rza1_hal::interrupt::Priority::P14;
+
+/// Give every interrupt the board's drivers enable its priority. The HAL leaves them at
+/// `Priority::DEFAULT`; the DMAC's comes from `system::BOARD_CONFIG` and the time driver's from
+/// the HAL's `init`.
+pub(crate) fn apply_irq_priorities() {
+    use rza1_hal::interrupt::{Interrupt, Priority, typelevel::*};
+    let set: [(fn(Priority), Priority); 17] = [
+        (USB0::set_priority, DRIVER_PRIORITY),
+        (USB1::set_priority, DRIVER_PRIORITY),
+        (ERI0::set_priority, DRIVER_PRIORITY),
+        (TXI0::set_priority, DRIVER_PRIORITY),
+        (ERI1::set_priority, DRIVER_PRIORITY),
+        (TXI1::set_priority, DRIVER_PRIORITY),
+        (SDHI1_STATUS::set_priority, DRIVER_PRIORITY),
+        (SDHI1_OP::set_priority, DRIVER_PRIORITY),
+        // The gate timer (MTU2_2).
+        (TGI2A::set_priority, GATE_TIMER_PRIORITY),
+        // The encoder poll timer (MTU2_3) and the encoder pins.
+        (TGI3A::set_priority, ENCODER_PRIORITY),
+        (IRQ0::set_priority, ENCODER_PRIORITY),
+        (IRQ1::set_priority, ENCODER_PRIORITY),
+        (IRQ2::set_priority, ENCODER_PRIORITY),
+        (IRQ3::set_priority, ENCODER_PRIORITY),
+        (IRQ4::set_priority, ENCODER_PRIORITY),
+        (IRQ7::set_priority, ENCODER_PRIORITY),
+        // The trigger clock input.
+        (IRQ6::set_priority, TRIGGER_PRIORITY),
+    ];
+    for (set_priority, priority) in set {
+        set_priority(priority);
+    }
+}
+
 impl Board {
     /// Finish the bring-up `rza1_hal::init(system::BOARD_CONFIG)` started (the GIC's SDRAM code
     /// window, MMU, L1/L2 caches, SDRAM controller, the Embassy time driver on OSTM0/OSTM1),
@@ -123,6 +171,7 @@ impl Board {
             rza1_hal::cache::l2_init();
             crate::sdram::init();
         }
+        apply_irq_priorities();
         rza1_hal::time_driver::init(p.OSTM0, p.OSTM1, TimeIrqs);
         Self {
             usb0: p.USB0,
@@ -158,6 +207,50 @@ impl Board {
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
+    #[test]
+    fn board_irq_priorities_match_the_pre_phase1_values() {
+        use rza1_hal::interrupt::{Interrupt, Priority, typelevel::*};
+        rza1_hal::mmio::test::reset();
+        super::apply_irq_priorities();
+        // What the drivers set before priorities moved to the board: USB, SCIF and SDHI at 10;
+        // the encoder poll timer (MTU2_3), the encoder pins (IRQ0–4, IRQ7) and the trigger
+        // input (IRQ6) at 14; the gate timer (MTU2_2) at 5.
+        let got = [
+            ("USB0", USB0::get_priority()),
+            ("USB1", USB1::get_priority()),
+            ("ERI0", ERI0::get_priority()),
+            ("TXI0", TXI0::get_priority()),
+            ("ERI1", ERI1::get_priority()),
+            ("TXI1", TXI1::get_priority()),
+            ("SDHI1_STATUS", SDHI1_STATUS::get_priority()),
+            ("SDHI1_OP", SDHI1_OP::get_priority()),
+            ("TGI2A", TGI2A::get_priority()),
+            ("TGI3A", TGI3A::get_priority()),
+            ("IRQ0", IRQ0::get_priority()),
+            ("IRQ1", IRQ1::get_priority()),
+            ("IRQ2", IRQ2::get_priority()),
+            ("IRQ3", IRQ3::get_priority()),
+            ("IRQ4", IRQ4::get_priority()),
+            ("IRQ6", IRQ6::get_priority()),
+            ("IRQ7", IRQ7::get_priority()),
+        ];
+        use Priority::*;
+        let want = [
+            P10, P10, P10, P10, P10, P10, P10, P10, P5, P14, P14, P14, P14, P14, P14, P14, P14,
+        ];
+        for ((name, got), want) in got.iter().zip(want) {
+            assert_eq!(*got, want, "{name}");
+        }
+    }
+
+    #[test]
+    fn board_config_gives_the_dmac_its_pre_phase1_priority() {
+        assert_eq!(
+            crate::system::BOARD_CONFIG.dma_interrupt_priority,
+            rza1_hal::interrupt::Priority::P13
+        );
+    }
+
     use super::*;
     use crate::system::*;
     use rza1_hal::dmac::Channel;

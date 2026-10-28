@@ -135,22 +135,13 @@ pub unsafe fn module_clock_disable(port: u8) {
     let _ = stbcr7.read();
 }
 
-/// GIC interrupt priority for USB0/USB1.
-///
-/// Must be numerically less than 31 (the GICC_PMR threshold) to pass the
-/// CPU-interface priority filter.  Matches the priority used by UART/SDHI.
-const USB_IRQ_PRIORITY: u8 = 10;
-
-/// Enable the GIC interrupt for USB module `port`.
-///
-/// Sets the interrupt priority before enabling, so the CPU-interface
-/// priority filter (GICC_PMR = 31) does not block delivery.
+/// Enable the GIC interrupt for USB module `port`. Its priority is the application's
+/// (`interrupt::typelevel::USB0`/`USB1`).
 ///
 /// # Safety
 /// Writes to GIC distributor registers.
 pub unsafe fn int_enable(port: u8) {
     unsafe {
-        crate::gic::set_priority(irq(port), USB_IRQ_PRIORITY);
         crate::gic::enable(irq(port));
     }
 }

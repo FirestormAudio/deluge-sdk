@@ -29,9 +29,6 @@ const TRIG_PIN: u8 = 14;
 /// External interrupt number used by `P1_14`'s PFC alt-2 routing.
 const TRIG_IRQ: u8 = 6;
 
-/// Same priority as the encoders — well below audio (5) and OLED DMA (13).
-const TRIG_PRIORITY: u8 = 14;
-
 /// Number of pulses seen since boot (wraps at `u32::MAX`).
 pub static EDGE_COUNT: AtomicU32 = AtomicU32::new(0);
 
@@ -88,8 +85,8 @@ pub unsafe fn irq_init() {
 
         rza1_hal::interrupt::bind(TriggerIrqs);
         rza1_hal::gic::clear_irq_pending(TRIG_IRQ);
-        use rza1_hal::interrupt::{Interrupt, Priority, typelevel::IRQ6};
-        IRQ6::set_priority(Priority::from_level(TRIG_PRIORITY).unwrap());
+        // Its priority is the board's TRIGGER_PRIORITY, set by `Board::new`.
+        use rza1_hal::interrupt::{Interrupt, typelevel::IRQ6};
         IRQ6::enable();
 
         info!("trigger_clock: P1_14 → IRQ6 (GIC 38, falling-edge) ready");

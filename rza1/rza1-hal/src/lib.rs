@@ -79,6 +79,7 @@ pub fn init(config: Config) -> Peripherals {
     unsafe {
         clocks::init(config.clocks);
         cpg_then_stb(config.cpg.frqcr(), &config.module_clocks.stbcr_all());
+        dmac::set_interrupt_priority(config.dma_interrupt_priority);
         warm_start::quiesce();
         gic::init();
     }

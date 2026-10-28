@@ -129,10 +129,6 @@ static DECODERS: critical_section::Mutex<core::cell::RefCell<[QuadratureDecoder;
         [QuadratureDecoder::new(false, false); NUM_ENCODERS],
     ));
 
-/// The GIC priority of the encoder and poll interrupts.
-#[cfg(target_os = "none")]
-const ENCODER_PRIORITY: u8 = 14;
-
 #[cfg(target_os = "none")]
 fn pin(pins: u16, n: u8) -> bool {
     (pins >> n) & 1 != 0
@@ -272,8 +268,8 @@ pub unsafe fn irq_init(poll_timer: rza1_hal::Peri<'static, crate::board::Encoder
         interrupt::bind::<IRQ0, EncoderHandler<4>>(EncoderIrqs);
         interrupt::bind::<IRQ7, EncoderHandler<5>>(EncoderIrqs);
 
+        // Their priority is the board's ENCODER_PRIORITY, set by `Board::new`.
         fn arm<I: interrupt::Interrupt>() {
-            I::set_priority(interrupt::Priority::from_level(ENCODER_PRIORITY).unwrap());
             // SAFETY: the handler was bound above and its encoder state is initialised.
             unsafe { I::enable() };
         }
@@ -288,8 +284,7 @@ pub unsafe fn irq_init(poll_timer: rza1_hal::Peri<'static, crate::board::Encoder
         // is enough: see `PollHandler`.
         // Store the timer before arming it: its handler clears the match through POLL_TIMER,
         // and an uncleared match re-raises the interrupt at once.
-        let timer =
-            rza1_hal::mtu2::OneShot::new(poll_timer, POLL_PRESCALER, ENCODER_PRIORITY, PollIrqs);
+        let timer = rza1_hal::mtu2::OneShot::new(poll_timer, POLL_PRESCALER, PollIrqs);
         if POLL_TIMER.init(timer).is_err() {
             unreachable!("MTU2 channel 3 is owned once");
         }
