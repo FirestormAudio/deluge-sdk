@@ -76,7 +76,7 @@ const SRC_PAIR: u8 = 1;
 /// Must be called once from a single-threaded boot context after `crate::stb::init()`.
 pub unsafe fn init(ffd: Dma<'static>, ffu: Dma<'static>, fin_hz: u32, fout_hz: u32) {
     unsafe {
-        log::debug!(
+        debug!(
             "scux_src_path: init async SRC {} Hz → {} Hz",
             fin_hz,
             fout_hz
@@ -137,7 +137,7 @@ pub unsafe fn init(ffd: Dma<'static>, ffu: Dma<'static>, fin_hz: u32, fout_hz: u
             0b0010, // OPC mask: bit 1 = OPC ch 1
         );
 
-        log::debug!("scux_src_path: streaming started");
+        debug!("scux_src_path: streaming started");
     }
 }
 

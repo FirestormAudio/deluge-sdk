@@ -378,7 +378,7 @@ unsafe fn set_clock_div(port: u8, div: u16) {
         }
     }
     if !ok {
-        log::warn!("sdhi{}: set_clock_div: SCLKDIVEN pre-change timeout", port);
+        warn!("sdhi{}: set_clock_div: SCLKDIVEN pre-change timeout", port);
     }
     s.sd_clk_ctrl().write_value(div | CLK_ENABLE);
     ok = false;
@@ -389,7 +389,7 @@ unsafe fn set_clock_div(port: u8, div: u16) {
         }
     }
     if !ok {
-        log::warn!("sdhi{}: set_clock_div: SCLKDIVEN post-change timeout", port);
+        warn!("sdhi{}: set_clock_div: SCLKDIVEN post-change timeout", port);
     }
 }
 
@@ -594,6 +594,7 @@ unsafe fn wait_clk_stable(port: u8) {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum SdhiError {
     /// Response timeout (no response received in time).
     ResponseTimeout,

@@ -18,25 +18,25 @@ use crate::pac::DMAC;
 /// - Must be called before [`channel_start`] for the same channel.
 pub(super) unsafe fn init_with_link_descriptor(ch: u8, descriptor: *const u32, dmars_val: u32) {
     unsafe {
-        log::trace!(
+        trace!(
             "dmac: ch{} init, desc={:#010x}, dmars={:#06x}",
             ch,
             descriptor as usize,
             dmars_val
         );
         // 1. Clear group DCTRL (priority mode / round-robin reset)
-        log::trace!(
+        trace!(
             "dmac: ch{} writing DCTRL={:#010x}",
             ch,
             DMAC.dctrl((ch / 8) as usize).addr()
         );
         crate::mmio::write32(DMAC.dctrl((ch / 8) as usize).addr(), 0);
-        log::trace!("dmac: ch{} DCTRL ok", ch);
+        trace!("dmac: ch{} DCTRL ok", ch);
 
         // 2. CHCFG comes from link-descriptor word [4]
         let chcfg_val = descriptor.add(4).read();
         crate::mmio::write32(DMAC.ch(ch as usize).chcfg().addr(), chcfg_val);
-        log::trace!("dmac: ch{} CHCFG ok", ch);
+        trace!("dmac: ch{} CHCFG ok", ch);
 
         // 3. DMARS: even channel → bits [15:0], odd channel → bits [31:16]
         let dmars = DMAC.dmars((ch / 2) as usize).addr();
@@ -46,11 +46,11 @@ pub(super) unsafe fn init_with_link_descriptor(ch: u8, descriptor: *const u32, d
             ((dmars_val & 0xFFFF) << 16, 0x0000_FFFFu32)
         };
         crate::mmio::write32(dmars, (crate::mmio::read32(dmars) & mask) | shifted);
-        log::trace!("dmac: ch{} DMARS ok", ch);
+        trace!("dmac: ch{} DMARS ok", ch);
 
         // 4. NXLA = address of the link descriptor
         crate::mmio::write32(DMAC.ch(ch as usize).nxla().addr(), descriptor as u32);
-        log::trace!("dmac: ch{} NXLA ok", ch);
+        trace!("dmac: ch{} NXLA ok", ch);
     }
 }
 
@@ -65,7 +65,7 @@ pub(super) unsafe fn init_with_link_descriptor(ch: u8, descriptor: *const u32, d
 /// # Safety
 /// The channel must have been initialised with [`init_with_link_descriptor`].
 pub(super) unsafe fn channel_start(ch: u8) {
-    log::trace!("dmac: ch{} start (SWRST + SETEN)", ch);
+    trace!("dmac: ch{} start (SWRST + SETEN)", ch);
     let chctrl = DMAC.ch(ch as usize).chctrl();
     // CHCTRL bits are write-1-to-trigger; write as clean values, not RMW.
     chctrl.write_value(CHCTRL_SWRST);
@@ -162,7 +162,7 @@ pub(super) unsafe fn current_dst(ch: u8) -> u32 {
 /// # Safety
 /// Writes to DMAC registers.  Must be called before the channel is used.
 pub(super) unsafe fn init_register_mode(ch: u8, chcfg: u32, dst: u32, dmars: u32) {
-    log::debug!(
+    debug!(
         "dmac: ch{} register-mode init, chcfg={:#010x}, dst={:#010x}, dmars={:#06x}",
         ch,
         chcfg,
@@ -217,7 +217,7 @@ pub(super) fn on_dma_int(ch: u8) {
 /// # Safety
 /// Writes to DMAC registers.  Must be called before the channel is used.
 pub(super) unsafe fn init_register_mode_rx(ch: u8, chcfg: u32, src: u32, dmars: u32) {
-    log::debug!(
+    debug!(
         "dmac: ch{} register-mode-rx init, chcfg={:#010x}, src={:#010x}, dmars={:#06x}",
         ch,
         chcfg,
@@ -261,7 +261,7 @@ pub(super) unsafe fn init_register_mode_rx(ch: u8, chcfg: u32, src: u32, dmars: 
 /// The destination region `[dst, dst+count)` must be uncached memory (or have
 /// had its cache lines invalidated) so the CPU reads the DMAC-written data.
 pub(super) unsafe fn start_transfer_rx(ch: u8, dst: u32, count: u32) {
-    log::trace!(
+    trace!(
         "dmac: ch{} start_transfer_rx dst={:#010x} count={}",
         ch,
         dst,
@@ -283,7 +283,7 @@ pub(super) unsafe fn start_transfer_rx(ch: u8, dst: u32, count: u32) {
 /// The source data at `[src, src+count)` must be in uncached memory (or have
 /// had its cache lines flushed) so the DMAC reads the correct bytes.
 pub(super) unsafe fn start_transfer(ch: u8, src: u32, count: u32) {
-    log::trace!(
+    trace!(
         "dmac: ch{} start_transfer src={:#010x} count={}",
         ch,
         src,

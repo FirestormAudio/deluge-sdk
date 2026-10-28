@@ -213,7 +213,7 @@ static ICDICFR_INIT: [u32; 34] = [
 /// `cpsie i`.
 pub unsafe fn init() {
     unsafe {
-        log::debug!("gic: init ({} IRQ sources)", INT_ID_TOTAL);
+        debug!("gic: init ({} IRQ sources)", INT_ID_TOTAL);
         let n_isr = (INT_ID_TOTAL / 32) + 1; // 17 — ICDISR count
         let _n_icfr = ICDICFR_INIT.len(); // 34 — ICDICFR count
         let n_ipr = (INT_ID_TOTAL / 4) + 1; // 135 — ICDIPR count
@@ -273,7 +273,7 @@ pub unsafe fn init() {
 
         // 9. Enable GIC distributor.
         INTC.icddcr().write_value(Icddcr(1));
-        log::debug!("gic: distributor + CPU interface enabled");
+        debug!("gic: distributor + CPU interface enabled");
     }
 }
 
@@ -326,7 +326,7 @@ unsafe fn end_stale_active(n_words: usize) {
         let Some(id) = most_urgent_active(words, priority) else {
             break;
         };
-        log::warn!(
+        warn!(
             "gic: interrupt {} was left active by a reset; ending it",
             id
         );
@@ -344,7 +344,7 @@ unsafe fn end_stale_active(_n_words: usize) {}
 
 /// Install `handler` for interrupt `id`. Out-of-range IDs are ignored.
 pub(crate) fn set_handler(id: u16, handler: HandlerFn) {
-    log::trace!("gic: register IRQ {}", id);
+    trace!("gic: register IRQ {}", id);
     if (id as usize) < INT_ID_TOTAL {
         HANDLERS[id as usize].set(handler);
     }
@@ -522,7 +522,7 @@ pub unsafe fn clear_irq_pending(irq_num: u8) {
 /// Must only be called from the IRQ handler assembly, with the CPU in
 /// SYS mode (as set up by the IRQ handler prologue).
 #[cfg(target_os = "none")]
-#[unsafe(no_mangle)]
+#[cfg_attr(feature = "rt", unsafe(no_mangle))]
 pub unsafe extern "C" fn gic_dispatch(icciar: u32) {
     unsafe {
         let int_id = (icciar & ICCIAR_ACKINTID) as u16;
@@ -531,7 +531,7 @@ pub unsafe extern "C" fn gic_dispatch(icciar: u32) {
         // but we just return; the assembly will still write ICCEOIR with the value
         // we received, which is harmless for 0x3FE/0x3FF.
         if int_id >= ICCIAR_SPURIOUS as u16 {
-            log::warn!("GIC: spurious IRQ {}", int_id);
+            warn!("GIC: spurious IRQ {}", int_id);
             return;
         }
 
@@ -551,7 +551,7 @@ pub unsafe extern "C" fn gic_dispatch(icciar: u32) {
                                 .is_some_and(|h| !is_plausible_code_address(h as usize))
                         })
                         .count();
-                    log::error!(
+                    error!(
                         "GIC: id={} handler pointer {:#010x} is not a code address - REFUSING to call \
                          it. {} of {} slots damaged. The dispatch table has been corrupted at runtime.",
                         int_id,
@@ -566,7 +566,7 @@ pub unsafe extern "C" fn gic_dispatch(icciar: u32) {
                     cortex_ar::interrupt::disable();
                 }
             } else {
-                log::warn!("GIC: id={} no handler — EOI only", int_id);
+                warn!("GIC: id={} no handler — EOI only", int_id);
             }
         }
     }

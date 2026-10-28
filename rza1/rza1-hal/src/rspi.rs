@@ -183,7 +183,7 @@ unsafe fn init(ch: u8, bit_rate: u32) {
 /// # Safety
 /// Channel must have been initialised with [`init`].
 unsafe fn send32_blocking(ch: u8, data: u32) {
-    log::debug!(
+    debug!(
         "rspi: ch{} blocking send {:#010x}, SPSR={:#04x}",
         ch,
         data,
@@ -199,12 +199,12 @@ unsafe fn send32_blocking(ch: u8, data: u32) {
         }
     }
     if !ready {
-        log::warn!(
+        warn!(
             "rspi: ch{} send32_blocking: SPTEF timeout (STBCR10 cleared?)",
             ch
         );
     }
-    log::debug!("rspi: ch{} SPTEF ok", ch);
+    debug!("rspi: ch{} SPTEF ok", ch);
 
     // Reset RX buffer (prevents overflow)
     let v = rspi(ch).spbfcr().read();
@@ -212,7 +212,7 @@ unsafe fn send32_blocking(ch: u8, data: u32) {
 
     // Write data
     rspi(ch).spdr().write_value(data);
-    log::debug!("rspi: ch{} SPDR written, waiting TEND", ch);
+    debug!("rspi: ch{} SPDR written, waiting TEND", ch);
 
     // Wait for all bits to be shifted out (bounded; TEND should follow SPTEF
     // by at most frame_bits / SCK_freq ≈ 32 / 10 MHz = 3.2 µs).
@@ -224,9 +224,9 @@ unsafe fn send32_blocking(ch: u8, data: u32) {
         }
     }
     if !done {
-        log::warn!("rspi: ch{} send32_blocking: TEND timeout", ch);
+        warn!("rspi: ch{} send32_blocking: TEND timeout", ch);
     }
-    log::debug!("rspi: ch{} TEND ok", ch);
+    debug!("rspi: ch{} TEND ok", ch);
 }
 
 /// Switch RSPI channel `ch` to 8-bit frame mode for OLED (SSD1309) transfers.

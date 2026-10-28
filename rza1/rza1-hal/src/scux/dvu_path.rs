@@ -99,7 +99,7 @@ const TSEL_SSIF0_WS: u32 = FDTSEL_DIVEN | FDTSEL_SCKSEL_SSIF0_WS;
 /// `crate::stb::init()` and SSI0 pin-mux setup.
 pub unsafe fn init(ssi: Peri<'static, SSIF0>, ssi_rx: Dma<'static>, ssicr: u32, ffd: Dma<'static>) {
     unsafe {
-        log::debug!("scux_dvu_path: init DVU output path (FFD0→IPC0→2SRC0→DVU0→OPC0→SSIF0)");
+        debug!("scux_dvu_path: init DVU output path (FFD0→IPC0→2SRC0→DVU0→OPC0→SSIF0)");
 
         // Start SSI0 RX DMA (codec → memory) but intentionally skip SSI0 TX DMA —
         // the SCUX drives SSIF0 TX directly via SSICTRL.SSI0TX (step 5).
@@ -198,7 +198,7 @@ pub unsafe fn init(ssi: Peri<'static, SSIF0>, ssi_rx: Dma<'static>, ssicr: u32, 
         //    serializer to run.  SSI012TEN (SSICTRL bit 1) must stay 0 in direct mode.
         ssi::enable_tx();
 
-        log::debug!("scux_dvu_path: streaming started");
+        debug!("scux_dvu_path: streaming started");
     }
 }
 
@@ -226,7 +226,7 @@ pub unsafe fn init_with_src(
     engine_hz: u32,
 ) {
     unsafe {
-        log::debug!("scux_dvu_path: init with SRC {} Hz → 44100 Hz", engine_hz);
+        debug!("scux_dvu_path: init with SRC {} Hz → 44100 Hz", engine_hz);
 
         ssi::init_rx_only(ssi, ssi_rx, ssicr);
         scux::reset();
@@ -286,7 +286,7 @@ pub unsafe fn init_with_src(
         scux::apply_dvu_after_init(DVU_CH, dvu_cfg);
         ssi::enable_tx();
 
-        log::debug!("scux_dvu_path: SRC streaming started");
+        debug!("scux_dvu_path: SRC streaming started");
     }
 }
 

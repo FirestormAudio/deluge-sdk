@@ -65,7 +65,7 @@ const L2C_ENABLE: u32 = 0x0000_0001;
 /// enabled so that the cache attribute bits in the TTB are honoured.
 pub unsafe fn l1_enable() {
     unsafe {
-        log::debug!("cache: enabling L1 I+D, branch prediction, D-prefetch");
+        debug!("cache: enabling L1 I+D, branch prediction, D-prefetch");
         // Read SCTLR and set I-cache (bit 12), D-cache (bit 2), Z/branch (bit 11).
         let mut sctlr: u32;
         asm!("mrc p15, 0, {0}, c1, c0, 0", out(reg) sctlr, options(nomem, nostack));
@@ -76,7 +76,7 @@ pub unsafe fn l1_enable() {
         asm!("dsb", options(nostack));
         asm!("mcr p15, 0, {0}, c1, c0, 0", in(reg) sctlr, options(nomem, nostack));
         asm!("isb", options(nomem, nostack));
-        log::trace!("cache: SCTLR = {:#010x}", sctlr);
+        trace!("cache: SCTLR = {:#010x}", sctlr);
 
         // Read ACTLR and set D-side prefetch (bit 2).
         let mut actlr: u32;
@@ -84,7 +84,7 @@ pub unsafe fn l1_enable() {
         actlr |= ACTLR_DPREFETCH;
         asm!("mcr p15, 0, {0}, c1, c0, 1", in(reg) actlr, options(nomem, nostack));
         asm!("isb", options(nomem, nostack));
-        log::debug!("cache: L1 enabled");
+        debug!("cache: L1 enabled");
     }
 }
 
@@ -110,15 +110,15 @@ pub unsafe fn l1_enable() {
 /// Writes to memory-mapped PL310 registers.  Must be called after
 /// [`l1_enable`].
 pub unsafe fn l2_init() {
-    log::debug!("cache: initialising L2 (PL310)");
+    debug!("cache: initialising L2 (PL310)");
     // 1. Disable L2 cache.
     L2C.reg1_control().write_value(0x0000_0000);
 
     // 2. Flush all 8 ways — poll until hardware clears all bits.
     L2C.reg7_inv_way().write_value(L2C_8WAY);
-    log::trace!("cache: L2 invalidating all 8 ways...");
+    trace!("cache: L2 invalidating all 8 ways...");
     while L2C.reg7_inv_way().read() & L2C_8WAY != 0 {}
-    log::trace!("cache: L2 all ways invalidated");
+    trace!("cache: L2 all ways invalidated");
 
     // 3. Clear all interrupt sources in one write (bits [8:0]).
     L2C.reg2_int_clear().write_value(L2C_INT_CLR_ALL);

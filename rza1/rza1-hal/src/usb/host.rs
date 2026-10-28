@@ -1022,7 +1022,7 @@ impl<'d> Rusb1HostDriver<'d> {
     async fn probe_present(&self) -> Option<Speed> {
         let lnst = usb(self.port).syssts0().read() & SYSSTS0_LNST;
         let speed = self.bus_reset().await;
-        log::info!(
+        info!(
             "usb{}: probe: line {:02b}, bus reset → {:?}",
             self.port,
             lnst,
@@ -1481,7 +1481,7 @@ impl<'d> Rusb1HostDriver<'d> {
                 Ok(len)
             }
             embassy_futures::select::Either::Second(()) => {
-                log::warn!(
+                warn!(
                     "usb{}: receive DMA did not finish; block dropped",
                     self.port
                 );
@@ -2710,7 +2710,7 @@ impl<'d> UsbHostController<'d> for Rusb1HostDriver<'d> {
                 match speed {
                     Some(speed) => return DeviceEvent::Connected(speed),
                     None => {
-                        log::error!(
+                        error!(
                             "usb{}: attach, but the bus reset resolved no speed; waiting for the next attach",
                             self.port
                         );

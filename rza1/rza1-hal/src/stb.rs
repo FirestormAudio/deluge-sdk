@@ -56,7 +56,7 @@ pub unsafe fn init(config: &StbConfig) {
     use crate::mmio;
     use crate::pac::CPG;
     unsafe {
-        log::debug!("stb: enabling module clocks");
+        debug!("stb: enabling module clocks");
         // Each register is written then immediately read back; the dummy read
         // flushes the write buffer before the next access (HW manual §10).
         for &(addr, val) in &[
@@ -75,7 +75,7 @@ pub unsafe fn init(config: &StbConfig) {
             mmio::write8(addr, val);
             let _ = mmio::read8(addr); // dummy read
         }
-        log::debug!("stb: done (STBCR2-12 written)");
+        debug!("stb: done (STBCR2-12 written)");
     }
 }
 

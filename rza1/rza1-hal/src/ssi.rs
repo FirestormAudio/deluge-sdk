@@ -348,7 +348,7 @@ pub async fn wait_rx_block() {
 /// any audio task accesses the buffer pointers.
 unsafe fn start(ssicr: u32, tx: &mut Dma<'_>, rx: &mut Dma<'_>) {
     unsafe {
-        log::debug!(
+        debug!(
             "ssi: init SSI0 (44.1 kHz I\u{00B2}S, DMA ch{}/{})",
             tx.number(),
             rx.number()
@@ -405,7 +405,7 @@ unsafe fn start(ssicr: u32, tx: &mut Dma<'_>, rx: &mut Dma<'_>) {
         // 5. Start both DMA channels (software-reset then enable).
         tx.channel_start();
         rx.channel_start();
-        log::debug!(
+        debug!(
             "ssi: DMA TX ch{} + RX ch{} started",
             tx.number(),
             rx.number()
@@ -425,7 +425,7 @@ unsafe fn start(ssicr: u32, tx: &mut Dma<'_>, rx: &mut Dma<'_>) {
         // Enable transmit and receive
         let cr = SSIF0.ssicr();
         cr.write_value(cr.read() | SSICR_TEN | SSICR_REN);
-        log::debug!("ssi: TX+RX enabled, streaming");
+        debug!("ssi: TX+RX enabled, streaming");
     }
 }
 
@@ -512,7 +512,7 @@ unsafe fn start_block_irq(ssicr: u32, tx: &mut Dma<'_>, rx: &mut Dma<'_>) {
         fcr.write_value(fcr.read() | SSIFCR_RIE);
         let cr = SSIF0.ssicr();
         cr.write_value(cr.read() | SSICR_TEN | SSICR_REN);
-        log::debug!("ssi: TX + block-IRQ RX ({} descs) streaming", RX_RING_DESCS);
+        debug!("ssi: TX + block-IRQ RX ({} descs) streaming", RX_RING_DESCS);
     }
 }
 
@@ -529,7 +529,7 @@ unsafe fn start_block_irq(ssicr: u32, tx: &mut Dma<'_>, rx: &mut Dma<'_>) {
 /// function — call exactly one of the two.
 unsafe fn start_rx_only(ssicr: u32, rx: &mut Dma<'_>) {
     unsafe {
-        log::debug!(
+        debug!(
             "ssi: init SSI0 RX-only (44.1 kHz I\u{00B2}S, DMA ch{} RX, TX owned by SCUX)",
             rx.number()
         );
@@ -562,7 +562,7 @@ unsafe fn start_rx_only(ssicr: u32, rx: &mut Dma<'_>) {
         let rx_desc_u = crate::uncached(core::ptr::addr_of!(RX_DESC) as *mut u32) as *const u32;
         rx.init_with_link_descriptor(rx_desc_u, DMARS_SSI0_RX);
         rx.channel_start();
-        log::debug!(
+        debug!(
             "ssi: DMA RX ch{} started (TX skipped — SCUX owns TX)",
             rx.number()
         );
@@ -575,7 +575,7 @@ unsafe fn start_rx_only(ssicr: u32, rx: &mut Dma<'_>) {
         // 6. Enable receive only (TEN stays 0 — SCUX owns TX).
         let cr = SSIF0.ssicr();
         cr.write_value(cr.read() | SSICR_REN);
-        log::debug!("ssi: RX-only enabled, streaming");
+        debug!("ssi: RX-only enabled, streaming");
     }
 }
 
@@ -597,7 +597,7 @@ pub unsafe fn enable_tx() {
     fcr.write_value(fcr.read() & !SSIFCR_TFRST);
     let cr = SSIF0.ssicr();
     cr.write_value(cr.read() | SSICR_TEN);
-    log::debug!("ssi: TX enabled (SCUX direct-drive mode), TX FIFO released");
+    debug!("ssi: TX enabled (SCUX direct-drive mode), TX FIFO released");
 }
 
 // ── Buffer pointer accessors ─────────────────────────────────────────────────

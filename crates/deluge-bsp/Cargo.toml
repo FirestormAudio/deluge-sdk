@@ -67,7 +67,7 @@ max5136 = { workspace = true }
 usb-classes = { workspace = true, features = ["device-midi"] }
 # `time-driver-ostm`: `system::init` starts the OSTM time driver, so the BSP needs it even if a
 # dependent turns rza1-hal's default features off.
-rza1-hal = { path = "../../rza1/rza1-hal", version = "0.1.0", features = ["rza1l", "time-driver-ostm"] }
+rza1-hal = { path = "../../rza1/rza1-hal", version = "0.1.0", features = ["rza1l", "time-driver-ostm", "log"] }
 rza1-rt = { path = "../../rza1/rza1-rt", version = "0.1.0" }
 embedded-sdmmc = { version = "0.9", default-features = false, features = ["log"], optional = true }
 critical-section = { workspace = true }

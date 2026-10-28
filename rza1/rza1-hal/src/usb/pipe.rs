@@ -465,7 +465,7 @@ pub unsafe fn pipe_configure(u: Usb, n: usize, cfg: &PipeConfig) {
             1
         };
         let blocks = cfg.buf_blocks as u16 * banks;
-        log::debug!(
+        debug!(
             "pipe {} ep={:#04x} {} {}: buf blocks [{}, {}) ({} blk x{}buf, mps={})",
             n,
             cfg.ep_num as u16 | if cfg.is_in { 0x80 } else { 0 },

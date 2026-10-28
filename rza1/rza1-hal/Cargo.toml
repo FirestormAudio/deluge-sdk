@@ -24,7 +24,7 @@ features = ["rza1l"]
 test = false
 
 [target.'cfg(target_os = "none")'.dependencies]
-cortex-ar = { workspace = true, features = ["critical-section-single-core"] }
+cortex-ar = { workspace = true }
 
 [dependencies]
 rza1-pac = { path = "../rza1-pac", version = "0.1.0" }
@@ -39,10 +39,24 @@ embassy-usb-driver = { workspace = true }
 embedded-hal = "1"
 embedded-hal-async = "1"
 embedded-io-async = "0.7"
-log = { workspace = true }
+log = { workspace = true, optional = true }
+defmt = { version = "1", optional = true }
 
 [features]
-default = ["time-driver-ostm"]
+default = ["rt", "critical-section-impl", "time-driver-ostm"]
+## Log through the `log` crate.
+log = ["dep:log"]
+## Log through `defmt`, and derive `defmt::Format` on the public types. Not with `log`.
+defmt = ["dep:defmt", "embassy-usb-driver/defmt"]
+## Re-export the register-level PAC as `pac`. Not covered by semver: the PAC's API follows its
+## generator.
+unstable-pac = []
+## Export `gic_dispatch`, the function `rza1-rt`'s IRQ entry calls. Turn off only to dispatch
+## interrupts yourself.
+rt = []
+## Provide the `critical-section` implementation (single-core: IRQ and FIQ masking). Turn off to
+## bring your own.
+critical-section-impl = ["cortex-ar/critical-section-single-core"]
 ## The chip: enable exactly one.
 ## The RZ/A1L (R7S721020 and family).
 rza1l = ["rza1-pac/rza1l"]
@@ -63,4 +77,4 @@ embassy-time = { workspace = true, features = ["mock-driver", "generic-queue-8"]
 
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("defmt"))'] }
+unexpected_cfgs = "warn"

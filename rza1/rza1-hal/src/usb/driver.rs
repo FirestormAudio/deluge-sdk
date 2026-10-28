@@ -527,7 +527,7 @@ impl<'d> Driver<'d> for Rusb1Driver<'d> {
     }
 
     fn start(self, control_max_packet_size: u16) -> (Self::Bus, Self::ControlPipe) {
-        log::debug!(
+        debug!(
             "usb{}: start (ctrl mps={})",
             self.port,
             control_max_packet_size
@@ -538,7 +538,7 @@ impl<'d> Driver<'d> for Rusb1Driver<'d> {
             // ── PLL / clock init (TRM §28.4.1 (5)) ─────────────────────────
             // Stop clock supply to this port while touching the PLL.
             u.suspmode().modify(|r| *r &= !SUSPMODE_SUSPM);
-            log::trace!("usb{}: SUSPMODE cleared for PLL init", self.port);
+            trace!("usb{}: SUSPMODE cleared for PLL init", self.port);
 
             // UPLLE lives in USB0's SYSCFG0 regardless of which port is being
             // initialised, and may only be modified while SUSPM=0 on BOTH
@@ -588,7 +588,7 @@ impl<'d> Driver<'d> for Rusb1Driver<'d> {
             // left DPRPU=1 presents a clean disconnect and the host re-enumerates
             // from scratch, discarding stale pipe FIFO contents.
             u.syscfg0().modify(|r| *r &= !SYSCFG_DPRPU);
-            log::debug!(
+            debug!(
                 "usb{}: SYSCFG0={:#06x} (DPRPU off — connect deferred to VBUS/enable)",
                 self.port,
                 u.syscfg0().read()
@@ -608,14 +608,14 @@ impl<'d> Driver<'d> for Rusb1Driver<'d> {
             // the rising-edge VBINT will never fire.  Synthesise the event now
             // so that Bus::poll() doesn't wait forever.
             let intsts = u.intsts(0).read();
-            log::debug!(
+            debug!(
                 "usb{}: post-init INTSTS0={:#06x} VBSTS={}",
                 self.port,
                 intsts,
                 intsts & INTSTS0_VBSTS != 0
             );
             if intsts & INTSTS0_VBSTS != 0 {
-                log::debug!(
+                debug!(
                     "usb{}: VBUS already present — synthesising PowerDetected",
                     self.port
                 );
@@ -674,14 +674,14 @@ impl Bus for Rusb1Bus {
             if BUS_EVENTS[port].load(Ordering::Acquire) != 0 {
                 BUS_WAKERS[port].wake();
             }
-            log::debug!("usb{}: Bus::poll → {}", self.port, name);
+            debug!("usb{}: Bus::poll → {}", self.port, name);
             Poll::Ready(event)
         })
         .await
     }
 
     async fn enable(&mut self) {
-        log::debug!(
+        debug!(
             "usb{}: Bus::enable — waiting 30 ms for module settle",
             self.port
         );
@@ -705,7 +705,7 @@ impl Bus for Rusb1Bus {
 
                 let rb = u.intenb(0).read();
                 if rb == intenb {
-                    log::debug!(
+                    debug!(
                         "usb{}: INTENB0={:#06x} verified (attempt {})",
                         self.port,
                         rb,
@@ -713,7 +713,7 @@ impl Bus for Rusb1Bus {
                     );
                     break;
                 }
-                log::warn!(
+                warn!(
                     "usb{}: INTENB0 write failed attempt {} (wrote {:#06x}, read {:#06x}), retrying…",
                     self.port,
                     attempt + 1,
@@ -730,12 +730,12 @@ impl Bus for Rusb1Bus {
             // after Bus::poll → PowerDetected) and the SIE is fully armed, so
             // assert the D+ pull-up (see `start()` for why it waits until now).
             u.syscfg0().modify(|r| *r |= SYSCFG_DPRPU);
-            log::debug!(
+            debug!(
                 "usb{}: DPRPU set — D+ pull-up active (connected), SYSCFG0={:#06x}",
                 self.port,
                 u.syscfg0().read()
             );
-            log::debug!("usb{}: Bus::enable done", self.port);
+            debug!("usb{}: Bus::enable done", self.port);
         }
     }
 
@@ -766,7 +766,7 @@ impl Bus for Rusb1Bus {
     fn endpoint_set_enabled(&mut self, ep_addr: EndpointAddress, enabled: bool) {
         let pipe = ep_addr_to_pipe(self.port, ep_addr);
         if let Some(p) = pipe {
-            log::debug!(
+            debug!(
                 "usb{} P{} endpoint_set_enabled({}) ep={:#04x} dir={:?} — resets FIFO+toggle (SQCLR)",
                 self.port,
                 p,
@@ -868,7 +868,7 @@ impl ControlPipe for Rusb1ControlPipe {
     }
 
     async fn setup(&mut self) -> [u8; 8] {
-        log::trace!("usb{}: setup() waiting", self.port);
+        trace!("usb{}: setup() waiting", self.port);
         let pkt = core::future::poll_fn(|cx| {
             CTRL_WAKERS[self.port as usize].register(cx.waker());
             let stage = CTRL_STAGE[self.port as usize].swap(CTRL_STAGE_NONE, Ordering::Acquire);
@@ -891,7 +891,7 @@ impl ControlPipe for Rusb1ControlPipe {
         // transfer (the next packet would wipe the flag, then hang on a
         // BRDY/BEMP the re-enumerating host never produces).
         CTRL_ABORT[self.port as usize].store(false, Ordering::Release);
-        log::debug!("usb{}: setup() → {:02x?}", self.port, pkt);
+        debug!("usb{}: setup() → {:?}", self.port, pkt);
         pkt
     }
 
@@ -902,7 +902,7 @@ impl ControlPipe for Rusb1ControlPipe {
         _last: bool,
     ) -> Result<usize, EndpointError> {
         let p = self.port as usize;
-        log::trace!("usb{}: data_out buf_len={}", self.port, buf.len());
+        trace!("usb{}: data_out buf_len={}", self.port, buf.len());
 
         // Set PID=BUF so hardware ACKs the host's OUT token and receives the
         // data-stage payload into the CFIFO.  PID was forced to NAK by hardware
@@ -959,7 +959,7 @@ impl ControlPipe for Rusb1ControlPipe {
                 hw_to_sw_fifo(&fifo, buf.as_mut_ptr(), len);
             }
             fifo_bclr(&fifo);
-            log::trace!(
+            trace!(
                 "usb{}: data_out read {} bytes (fifo had {})",
                 self.port,
                 len,
@@ -975,7 +975,7 @@ impl ControlPipe for Rusb1ControlPipe {
         _first: bool,
         last: bool,
     ) -> Result<(), EndpointError> {
-        log::trace!("usb{}: data_in len={} last={}", self.port, data.len(), last);
+        trace!("usb{}: data_in len={} last={}", self.port, data.len(), last);
         unsafe {
             let u = usb(self.port);
 
@@ -1002,14 +1002,14 @@ impl ControlPipe for Rusb1ControlPipe {
                     break;
                 }
             }
-            log::trace!(
+            trace!(
                 "usb{}: CFIFO ISEL ready={} frdy={}",
                 self.port,
                 ready,
                 fifo_is_ready(&fifo, 0)
             );
             if !ready || !fifo_is_ready(&fifo, 0) {
-                log::warn!(
+                warn!(
                     "usb{}: data_in CFIFO not ready — returning Disabled",
                     self.port
                 );
@@ -1059,7 +1059,7 @@ impl ControlPipe for Rusb1ControlPipe {
         // The device sends a zero-length IN to acknowledge (status stage).
         // Disable BEMP0/BRDY0 BEFORE setting CCPL so the status-ZLP BEMP/BRDY
         // don't set stale flags for the next transfer.
-        log::trace!("usb{}: accept (control-write status stage)", self.port);
+        trace!("usb{}: accept (control-write status stage)", self.port);
         let u = usb(self.port);
         u.bempenb().modify(|r| *r &= !0x0001);
         u.brdyenb().modify(|r| *r &= !0x0001);
@@ -1068,7 +1068,7 @@ impl ControlPipe for Rusb1ControlPipe {
     }
 
     async fn reject(&mut self) {
-        log::trace!("usb{}: reject (STALL)", self.port);
+        trace!("usb{}: reject (STALL)", self.port);
         unsafe {
             let u = usb(self.port);
             // State-aware STALL on the DCP (NAK→STALL10, BUF→STALL11) via RMW:
@@ -1080,7 +1080,7 @@ impl ControlPipe for Rusb1ControlPipe {
     }
 
     async fn accept_set_address(&mut self, addr: u8) {
-        log::debug!("usb{}: accept_set_address({})", self.port, addr);
+        debug!("usb{}: accept_set_address({})", self.port, addr);
         let u = usb(self.port);
         // Hardware auto-updates USBADDR when CCPL is set.
         // Disable pipe 0 BEMP and BRDY interrupts BEFORE setting CCPL (see
@@ -1684,7 +1684,7 @@ fn ep_addr_to_pipe(port: u8, ep_addr: EndpointAddress) -> Option<usize> {
 /// - Then reconfigures all pipes so they are ready for the re-enumeration.
 unsafe fn process_bus_reset(port: u8) {
     unsafe {
-        log::debug!("usb{}: bus reset — reconfiguring", port);
+        debug!("usb{}: bus reset — reconfiguring", port);
         let u = usb(port);
         let p = port as usize;
 
@@ -1695,7 +1695,7 @@ unsafe fn process_bus_reset(port: u8) {
             r if r == DVSTCTR0_RHST_FS => "FS (12 Mbps)",
             _ => "LS / unknown",
         };
-        log::info!(
+        info!(
             "usb{}: bus reset — negotiated speed: {} (RHST={:#06x})",
             port,
             speed_str,

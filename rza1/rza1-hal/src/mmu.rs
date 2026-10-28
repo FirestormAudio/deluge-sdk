@@ -72,7 +72,7 @@ pub unsafe fn init_and_enable() {
         // SAFETY: TTB is static mut; we call this exactly once at startup before
         // any other core accesses it.
         let table_ptr = core::ptr::addr_of_mut!(TTB) as *mut u32;
-        log::debug!(
+        debug!(
             "mmu: building TTB ({} entries) at {:#010x}",
             4096usize,
             table_ptr as usize
@@ -87,7 +87,7 @@ pub unsafe fn init_and_enable() {
             }
         }
         // idx should equal 4096 here (all entries filled).
-        log::trace!("mmu: TTB filled ({} entries)", idx);
+        trace!("mmu: TTB filled ({} entries)", idx);
 
         // TTBCR = 0: N=0, use TTBR0 for all translations.
         asm!("mcr p15, 0, {0}, c2, c0, 2", in(reg) 0u32, options(nomem, nostack));
@@ -99,7 +99,7 @@ pub unsafe fn init_and_enable() {
         let ttbr0 = (table_ptr as u32) | 0x08 | 0x40;
         asm!("mcr p15, 0, {0}, c2, c0, 0", in(reg) ttbr0, options(nomem, nostack));
         isb();
-        log::trace!("mmu: TTBR0 = {:#010x}", ttbr0);
+        trace!("mmu: TTBR0 = {:#010x}", ttbr0);
 
         // DACR: all 16 domains → Client access (b01 per pair) = 0x55555555.
         asm!("mcr p15, 0, {0}, c3, c0, 0", in(reg) 0x5555_5555u32, options(nomem, nostack));
@@ -117,7 +117,7 @@ pub unsafe fn init_and_enable() {
         sctlr |= 1; // M bit
         asm!("mcr p15, 0, {0}, c1, c0, 0", in(reg) sctlr, options(nomem, nostack));
         isb();
-        log::debug!("mmu: enabled (SCTLR.M set)");
+        debug!("mmu: enabled (SCTLR.M set)");
     }
 }
 

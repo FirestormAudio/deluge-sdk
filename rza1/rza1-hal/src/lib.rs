@@ -6,6 +6,10 @@
 #![cfg_attr(target_os = "none", no_std)]
 #![allow(dead_code)]
 
+// Logging macros (`trace!` … `error!`) over `log`, `defmt` or nothing: first, so every module sees
+// them.
+mod fmt;
+
 #[cfg(not(any(feature = "rza1l", feature = "rza1h")))]
 compile_error!("rza1-hal: enable exactly one chip feature: rza1l or rza1h");
 #[cfg(all(feature = "rza1l", feature = "rza1h"))]
@@ -33,8 +37,12 @@ pub(crate) fn uncached<T>(p: *mut T) -> *mut T {
 
 pub use embassy_hal_internal::{Peri, PeripheralType};
 /// The chip's registers, generated from the vendor SVD ([`rza1_pac`], built with the chip feature
-/// this crate is built with). The RZ/A1L's are checked against its manual.
+/// this crate is built with). The RZ/A1L's are checked against its manual. Behind the
+/// `unstable-pac` feature: the PAC's API is not covered by this crate's semver.
+#[cfg(feature = "unstable-pac")]
 pub use rza1_pac as pac;
+#[cfg(not(feature = "unstable-pac"))]
+pub(crate) use rza1_pac as pac;
 /// The MMIO seam every register access goes through (real volatile on the device, a shadow with
 /// an access log under host tests).
 pub use rza1_pac::mmio;

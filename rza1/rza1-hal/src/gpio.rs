@@ -161,7 +161,7 @@ pub unsafe fn set_pin_mux(port: u8, pin: u8, mux: u8) {
         }
     }
 
-    log::trace!("gpio: set_pin_mux port={} pin={} mux={}", port, pin, mux);
+    trace!("gpio: set_pin_mux port={} pin={} mux={}", port, pin, mux);
     let n = port as usize;
     modify(GPIO.pfcae(n), pin, mux >= 5);
     modify(GPIO.pfce(n), pin, ((mux - 1) >> 1) & 1 != 0);

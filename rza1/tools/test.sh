@@ -49,6 +49,12 @@ for chip in rza1l rza1h; do
   cargo build "${BUILD_STD[@]}" -p rza1-hal --features "$chip"
 done
 
+echo "==> rza1: logging builds (log, defmt, neither)"
+cargo build "${BUILD_STD[@]}" -p rza1-hal --features rza1l,log
+cargo build "${BUILD_STD[@]}" -p rza1-hal --features rza1l,defmt
+# With no logging, every log argument must still be consumed: no unused-variable warnings.
+cargo rustc "${BUILD_STD[@]}" -p rza1-hal --lib --features rza1l -- -D unused
+
 tools/check-register-tables.sh
 tools/check-pac.sh
 

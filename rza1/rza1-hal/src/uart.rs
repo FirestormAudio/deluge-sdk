@@ -222,7 +222,7 @@ fn scbrr(p1_hz: u32, baud: u32) -> u8 {
 unsafe fn configure(ch: usize, baud_rate: u32) {
     debug_assert!(ch < NUM_CHANNELS);
     let brr = scbrr(crate::clocks::get().p1_hz(), baud_rate);
-    log::debug!("uart: ch{} init at {} bps (SCBRR={})", ch, baud_rate, brr);
+    debug!("uart: ch{} init at {} bps (SCBRR={})", ch, baud_rate, brr);
     let sc = scif(ch);
 
     // 1. Stop all SCIF operations.
@@ -259,7 +259,7 @@ unsafe fn configure(ch: usize, baud_rate: u32) {
 
     // 11. Enable TX and RX; leave TIE/RIE off (enabled on demand by futures).
     sc.scr().write_value(Scr(TE | RE));
-    log::debug!("uart: ch{} ready", ch);
+    debug!("uart: ch{} ready", ch);
 }
 
 // ---------------------------------------------------------------------------
@@ -563,7 +563,7 @@ impl<'d> UartRx<'d> {
             // TIE|RIE|TE|RE: route both requests; the GIC's RXI stays off, so receive requests go
             // only to the DMAC.
             sc.scr().write_value(Scr(TIE | RIE | RE | TE));
-            log::debug!(
+            debug!(
                 "uart: ch{} DMA RX active (dma_ch={}, buf={:#010x})",
                 ch,
                 dma_ch,
@@ -657,7 +657,7 @@ impl<'d> UartTx<'d> {
                 // TXI's handler clears TIE, which would stall the DMAC: mask TXI at the GIC.
                 gic::disable(TXI_BASE + (ch as u16) * 4);
             }
-            log::info!("uart: ch{} DMA TX active (dma_ch={})", ch, dma.number());
+            info!("uart: ch{} DMA TX active (dma_ch={})", ch, dma.number());
         }
         Self { ch, dma: Mutex::new(dma) }
     }
