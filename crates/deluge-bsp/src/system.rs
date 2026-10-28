@@ -2,7 +2,7 @@
 //!
 //! Centralises all board-specific peripheral configuration values and
 //! provides [`BOARD_CONFIG`], the Deluge's chip configuration: boot is
-//! `Board::new(rza1l_hal::init(BOARD_CONFIG))` ([`crate::Board`]), which keeps
+//! `Board::new(rza1_hal::init(BOARD_CONFIG))` ([`crate::Board`]), which keeps
 //! chip-level details out of the top-level firmware crate.
 //!
 //! ## CPG clock-gate values (`StbConfig`)
@@ -24,8 +24,8 @@
 //! | STBCR11  | 0b11011111 | SSIF0                                        |
 //! | STBCR12  | 0b11111011 | SDHI01                                       |
 
-use rza1l_hal::clocks::ClockConfig;
-use rza1l_hal::stb::StbConfig;
+use rza1_hal::clocks::ClockConfig;
+use rza1_hal::stb::StbConfig;
 
 // ---------------------------------------------------------------------------
 // Board-specific configuration constants
@@ -73,15 +73,15 @@ pub const STB_CONFIG: StbConfig = StbConfig {
     // `[1][1][SSIF0][SSIF1][SSIF2][SSIF3][reserved][reserved]`
     stbcr11: 0b11011111,
     // SDHI01 enabled; SDHI00, SDHI10/11 stopped. The SDHI driver ungates the
-    // clocks of the port it uses (`rza1l_hal::sdhi`).
+    // clocks of the port it uses (`rza1_hal::sdhi`).
     // `[1][1][1][1][SDHI00][SDHI01][SDHI10][SDHI11]`
     stbcr12: 0b11111011,
 };
 
-/// The Deluge's chip configuration for `rza1l_hal::init`: its 13.2256 MHz crystal, FRQCR
+/// The Deluge's chip configuration for `rza1_hal::init`: its 13.2256 MHz crystal, FRQCR
 /// `0x1035` (PLL ×30, I:G:B:P1:P0 = 30:20:10:5:5/2, as the known-working Deluge firmware and
 /// bootloader set it), and the module clocks in [`STB_CONFIG`].
-pub const BOARD_CONFIG: rza1l_hal::Config = rza1l_hal::Config {
+pub const BOARD_CONFIG: rza1_hal::Config = rza1_hal::Config {
     clocks: CLOCKS,
     frqcr: 0x1035,
     stb: STB_CONFIG,
@@ -107,8 +107,8 @@ pub const SD_OPTION: u16 = 0x00BD;
 // SCUX DMA channel assignments for the Deluge board
 // ---------------------------------------------------------------------------
 //
-// Pass these as the `dma_ch` argument to `rza1l_hal::scux::init_ffd_dma` and
-// `rza1l_hal::scux::init_ffu_dma`.
+// Pass these as the `dma_ch` argument to `rza1_hal::scux::init_ffd_dma` and
+// `rza1_hal::scux::init_ffu_dma`.
 
 /// DMA channel for FFD path 0 (CPU → SCUX, 8-ch, main synthesis / DVU path).
 pub const SCUX_FFD0_DMA_CH: u8 = 0;

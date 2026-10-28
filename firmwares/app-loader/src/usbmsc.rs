@@ -18,7 +18,7 @@ use log::info;
 
 use deluge_bsp::oled::{self, text};
 use deluge_bsp::usb::sd_block::SdBlock;
-use rza1l_hal::usb::{
+use rza1_hal::usb::{
     Rusb1Driver, Rusb1EndpointIn, Rusb1EndpointOut, disconnect, init_device_mode,
 };
 use usb_classes::bot::{self, BlockDevice};
@@ -31,8 +31,8 @@ static mut USB_MSOS_DESC: [u8; 0] = [];
 static mut USB_CONTROL_BUF: [u8; 64] = [0; 64];
 static mut MSC_CLASS_BUF: MaybeUninit<MscClass> = MaybeUninit::uninit();
 
-rza1l_hal::bind_interrupts!(struct UsbIrqs {
-    USB0 => rza1l_hal::usb::DeviceInterruptHandler<rza1l_hal::peripherals::USB0>;
+rza1_hal::bind_interrupts!(struct UsbIrqs {
+    USB0 => rza1_hal::usb::DeviceInterruptHandler<rza1_hal::peripherals::USB0>;
 });
 
 /// Enter SD-card DATA TRANSFER (USB mass storage) mode.  Returns on BACK.
@@ -62,7 +62,7 @@ async fn run_session<B: BlockDevice>(dev: B, product: &'static str) {
     // Drop back to the menu: unplug from the host so it doesn't see a stale
     // unresponsive device.
     // SAFETY: the session is over: its driver went with `proto` and `usb`.
-    disconnect(unsafe { rza1l_hal::peripherals::USB0::steal() });
+    disconnect(unsafe { rza1_hal::peripherals::USB0::steal() });
     info!("USB: mode exited (BACK)");
 }
 
@@ -80,7 +80,7 @@ unsafe fn build_usb(
     unsafe {
         // SAFETY: one USB session at a time (this function's contract): the previous session's
         // driver is gone, so this session is USB0's only user.
-        let usb0 = rza1l_hal::peripherals::USB0::steal();
+        let usb0 = rza1_hal::peripherals::USB0::steal();
         let (_port, driver) = init_device_mode(usb0, UsbIrqs);
         let mut config = embassy_usb::Config::new(
             deluge_bsp::usb::ids::VID,

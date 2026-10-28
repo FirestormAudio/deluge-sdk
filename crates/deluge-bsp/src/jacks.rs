@@ -4,12 +4,12 @@
 //! contacts wired to GPIO inputs (a present jack reads high), and gates its
 //! on-board speaker amplifier through one GPIO output.  These pins are plain
 //! GPIO level reads — no ADC, no PIC involvement — so this module is a thin map
-//! over [`rza1l_hal::gpio`].
+//! over [`rza1_hal::gpio`].
 //!
 //! The speaker-enable *policy* (when to mute the amp) is product-specific and
 //! intentionally left to the caller; see [`set_speaker_enable`].
 
-use rza1l_hal::gpio;
+use rza1_hal::gpio;
 
 /// The audio jacks whose insertion can be sensed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

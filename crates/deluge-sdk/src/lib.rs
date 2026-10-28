@@ -193,7 +193,7 @@ mod not_send_assertions {
 
 // The allocator is re-exported for apps that place data in SDRAM explicitly; it is a device-only
 // escape hatch (no host equivalent). The board and chip crates are not re-exported: an app that
-// needs them depends on `deluge-bsp` or `rza1l-hal` directly. The allocator stays
+// needs them depends on `deluge-bsp` or `rza1-hal` directly. The allocator stays
 // `deluge::deluge_alloc` for apps; the crate is `rza1-alloc`.
 #[cfg(target_os = "none")]
 pub use rza1_alloc as deluge_alloc;
@@ -604,7 +604,7 @@ pub mod __rt {
                 // The chip (CPG, module clocks, GIC), then the board (MMU, caches, SDRAM, OSTM
                 // time driver).
                 let board =
-                    deluge_bsp::Board::new(rza1l_hal::init(deluge_bsp::system::BOARD_CONFIG));
+                    deluge_bsp::Board::new(rza1_hal::init(deluge_bsp::system::BOARD_CONFIG));
 
                 // SDRAM heap — now that the SDRAM window is accessible.
                 rza1_alloc::SDRAM.init(SDRAM_BASE as *mut u8, SDRAM_SIZE);
@@ -722,17 +722,17 @@ pub mod __rt {
             // Always-visible fallback: strobe the SYNC LED forever. A panic before the clock tree
             // is registered can't time the strobe, and must not panic again here (that would
             // recurse until the stack overflows), so it holds the LED on instead.
-            unsafe { rza1l_hal::gpio::set_as_output(6, 7) };
+            unsafe { rza1_hal::gpio::set_as_output(6, 7) };
             loop {
                 unsafe {
-                    rza1l_hal::gpio::write(6, 7, true);
-                    if !rza1l_hal::ostm::try_delay_ms(100) {
+                    rza1_hal::gpio::write(6, 7, true);
+                    if !rza1_hal::ostm::try_delay_ms(100) {
                         loop {
                             core::hint::spin_loop();
                         }
                     }
-                    rza1l_hal::gpio::write(6, 7, false);
-                    rza1l_hal::ostm::try_delay_ms(100);
+                    rza1_hal::gpio::write(6, 7, false);
+                    rza1_hal::ostm::try_delay_ms(100);
                 }
             }
         }

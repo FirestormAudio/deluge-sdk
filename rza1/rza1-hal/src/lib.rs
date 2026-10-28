@@ -1,9 +1,15 @@
-//! `rza1l-hal` — Embassy HAL for the Renesas RZ/A1L (Cortex-A9, R7S721020).
+//! `rza1-hal` — Embassy HAL for the Renesas RZ/A1 (Cortex-A9): the RZ/A1L (`rza1l` feature) and
+//! the RZ/A1H (`rza1h`). Enable exactly one chip feature.
 //!
 //! Peripheral base addresses are taken from the RZ/A1L Hardware Manual.
 
 #![cfg_attr(target_os = "none", no_std)]
 #![allow(dead_code)]
+
+#[cfg(not(any(feature = "rza1l", feature = "rza1h")))]
+compile_error!("rza1-hal: enable exactly one chip feature: rza1l or rza1h");
+#[cfg(all(feature = "rza1l", feature = "rza1h"))]
+compile_error!("rza1-hal: enable exactly one chip feature: rza1l or rza1h (both are enabled)");
 
 /// Offset from a cached address to its uncached mirror alias.
 ///
@@ -26,8 +32,8 @@ pub(crate) fn uncached<T>(p: *mut T) -> *mut T {
 }
 
 pub use embassy_hal_internal::{Peri, PeripheralType};
-/// The RZ/A1L's registers, generated from the vendor SVD and checked against the RZ/A1L manual
-/// ([`rza1_pac`], built with its `rza1l` feature).
+/// The chip's registers, generated from the vendor SVD ([`rza1_pac`], built with the chip feature
+/// this crate is built with). The RZ/A1L's are checked against its manual.
 pub use rza1_pac as pac;
 /// The MMIO seam every register access goes through (real volatile on the device, a shadow with
 /// an access log under host tests).
@@ -36,9 +42,12 @@ pub use rza1_pac::mmio;
 embassy_hal_internal::peripherals! {
     OSTM0, OSTM1,
     RSPI0, RSPI1, RSPI2,
+    #[cfg(feature = "rza1h")] RSPI3,
+    #[cfg(feature = "rza1h")] RSPI4,
     SCIF0, SCIF1, SCIF2, SCIF3, SCIF4,
     SSIF0, SSIF1, SSIF2, SSIF3,
-    SDHI0, SDHI1,
+    #[cfg(feature = "rza1l")] SDHI0,
+    #[cfg(feature = "rza1l")] SDHI1,
     USB0, USB1,
     DMA_CH0, DMA_CH1, DMA_CH2, DMA_CH3, DMA_CH4, DMA_CH5, DMA_CH6, DMA_CH7,
     DMA_CH8, DMA_CH9, DMA_CH10, DMA_CH11, DMA_CH12, DMA_CH13, DMA_CH14, DMA_CH15,
@@ -110,6 +119,8 @@ pub mod mtu2;
 pub mod ostm;
 pub mod rspi;
 pub mod scux;
+// The RZ/A1H's PAC has no SDHI block.
+#[cfg(feature = "rza1l")]
 pub mod sdhi;
 pub mod spibsc;
 pub mod ssi;

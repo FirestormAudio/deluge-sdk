@@ -1,7 +1,7 @@
 //! Mock [`UsbHostAllocator`] / [`UsbPipe`] for unit tests.
 //!
 //! Lets the generic class drivers be exercised with scripted pipe responses,
-//! with no hardware and no `rza1l-hal` register access.
+//! with no hardware and no `rza1-hal` register access.
 
 // This module only compiles under `cfg(all(test, not(target_os = "none")))`,
 // where std is available — see the crate's QEMU bucket in tools/test.sh.

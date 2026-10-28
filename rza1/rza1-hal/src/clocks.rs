@@ -81,7 +81,7 @@ impl Store {
         {
             assert!(
                 prev == config.extal_hz,
-                "rza1l_hal::clocks::init called again with a different crystal ({} Hz, was {} Hz)",
+                "rza1_hal::clocks::init called again with a different crystal ({} Hz, was {} Hz)",
                 config.extal_hz,
                 prev
             );
@@ -113,7 +113,7 @@ pub fn init(config: ClockConfig) {
 pub fn get() -> ClockConfig {
     STORE
         .get()
-        .expect("rza1l_hal::clocks::init was not called before a clock-dependent driver")
+        .expect("rza1_hal::clocks::init was not called before a clock-dependent driver")
 }
 
 /// The registered clock tree, or `None` before [`init`].

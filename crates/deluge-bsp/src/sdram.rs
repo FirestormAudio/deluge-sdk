@@ -38,7 +38,7 @@
 //! SDRAM mode registers (CS2 @ 0x3FFF_D040, CS3 @ 0x3FFF_E040) are written
 //! as 16-bit accesses to latch the JEDEC mode register into the DRAM.
 
-use rza1l_hal::gpio::set_pin_mux;
+use rza1_hal::gpio::set_pin_mux;
 
 // BSC register addresses
 const CS2BCR: usize = 0x3FFF_C00C;
@@ -58,7 +58,7 @@ pub const WINDOW: core::ops::Range<usize> = 0x0C00_0000..0x1000_0000;
 /// Initialise SDRAM: configure GPIO pin-mux then set up the BSC.
 ///
 /// After this call, the 64 MB SDRAM window at 0x0C00_0000–0x0FFF_FFFF is
-/// accessible. Call [`rza1l_hal::mmu::init_and_enable`] first so the BSC
+/// accessible. Call [`rza1_hal::mmu::init_and_enable`] first so the BSC
 /// registers at 0x3FFF_Cxxx are in the strongly-ordered I/O region.
 ///
 /// # Safety

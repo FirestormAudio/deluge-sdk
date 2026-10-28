@@ -5,7 +5,7 @@
 //! ADC result once it has completed. Mirrors the C BSP's battery path; the
 //! application converts the raw reading to a voltage/level.
 
-use rza1l_hal::adc;
+use rza1_hal::adc;
 
 /// ADC channel wired to the battery voltage divider on this board.
 const VOLT_SENSE_CHANNEL: u8 = 5;

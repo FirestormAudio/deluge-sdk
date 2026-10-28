@@ -44,7 +44,7 @@ pub mod typelevel {
             #[allow(non_camel_case_types)]
             #[doc = concat!("GIC interrupt ", stringify!($id), ".")]
             pub enum $name {}
-            impl super::Interrupt for $name {
+            impl $crate::interrupt::Interrupt for $name {
                 const ID: u16 = $id;
             }
         )*};
@@ -69,16 +69,25 @@ pub mod typelevel {
         // SCIF channel n's receive error and transmit-FIFO-empty.
         ERI0 = 222, TXI0 = 224, ERI1 = 226, TXI1 = 228, ERI2 = 230, TXI2 = 232,
         ERI3 = 234, TXI3 = 236, ERI4 = 238, TXI4 = 240,
-        // SDHI channel n's status (card detect), operation and SDIO interrupts.
-        SDHI0_STATUS = 302, SDHI0_OP = 303, SDHI0_SDIO = 304,
-        SDHI1_STATUS = 305, SDHI1_OP = 306, SDHI1_SDIO = 307,
     }
+
+    // SDHI channel n's status (card detect), operation and SDIO interrupts. The RZ/A1H's PAC has
+    // no SDHI block, so neither are these.
+    #[cfg(feature = "rza1l")]
+    mod sdhi {
+        interrupts! {
+            SDHI0_STATUS = 302, SDHI0_OP = 303, SDHI0_SDIO = 304,
+            SDHI1_STATUS = 305, SDHI1_OP = 306, SDHI1_SDIO = 307,
+        }
+    }
+    #[cfg(feature = "rza1l")]
+    pub use sdhi::*;
 }
 
 /// Declare which handler serves which interrupt:
 ///
 /// ```ignore
-/// rza1l_hal::bind_interrupts!(struct Irqs {
+/// rza1_hal::bind_interrupts!(struct Irqs {
 ///     USB0 => MyUsbHandler;
 /// });
 /// ```

@@ -360,15 +360,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rza1-pac"
-version = "0.1.0"
-
-[[package]]
-name = "rza1-rt"
-version = "0.1.0"
-
-[[package]]
-name = "rza1l-hal"
+name = "rza1-hal"
 version = "0.1.0"
 dependencies = [
  "cortex-ar",
@@ -386,6 +378,14 @@ dependencies = [
  "log",
  "rza1-pac",
 ]
+
+[[package]]
+name = "rza1-pac"
+version = "0.1.0"
+
+[[package]]
+name = "rza1-rt"
+version = "0.1.0"
 
 [[package]]
 name = "stable_deref_trait"

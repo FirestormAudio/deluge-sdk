@@ -12,7 +12,7 @@ use core::ptr::addr_of_mut;
 use embassy_executor::Spawner;
 use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver, Sender, State};
 use embassy_usb::{Builder, Config, UsbDevice};
-use rza1l_hal::usb::{Rusb1Driver, init_device_mode};
+use rza1_hal::usb::{Rusb1Driver, init_device_mode};
 
 /// The `embassy-usb` driver for the Deluge's USB0 device port.
 pub type Driver = Rusb1Driver<'static>;
@@ -50,8 +50,8 @@ static mut CDC_ACM_STATE: State<'static> = State::new();
 use core::cell::RefCell;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use rza1l_hal::Peri;
-use rza1l_hal::peripherals::USB0;
+use rza1_hal::Peri;
+use rza1_hal::peripherals::USB0;
 
 /// USB0, held from the runtime until [`Deluge::usb_serial`](crate::Deluge::usb_serial) takes it.
 static PORT: Mutex<CriticalSectionRawMutex, RefCell<Option<Peri<'static, USB0>>>> =

@@ -168,7 +168,7 @@ pub unsafe fn invalidate_tlb_all() {
 ///
 /// ```no_run
 /// // Remap the internal SRAM region as strongly-ordered (e.g. for DMA setup):
-/// unsafe { rza1l_hal::mmu::update_section(0x2000_0000, rza1l_hal::mmu::PARA_STRONGLY_ORDERED) };
+/// unsafe { rza1_hal::mmu::update_section(0x2000_0000, rza1_hal::mmu::PARA_STRONGLY_ORDERED) };
 /// ```
 ///
 /// # Safety

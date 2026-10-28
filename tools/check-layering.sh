@@ -4,7 +4,7 @@
 #   - The bare-metal examples consume the SDK only through the `deluge` facade, never
 #     the BSP or chip crates beneath it, so SDK-internal changes can't silently break
 #     them. (deluge-wren holds its own Wren code to the same rule.)
-#   - The chip crates (rza1l-hal, rza1-rt, rza1-alloc) never name the Deluge, and the HAL has no
+#   - The chip crates (rza1-hal, rza1-rt, rza1-alloc) never name the Deluge, and the HAL has no
 #     global_asm! (startup is rza1-rt's).
 #   - usb/ and drivers/ are board-agnostic: they never name the chip HAL or any deluge-* crate.
 #   - deluge-bsp never depends on the simulator; deluge-sdk's sim backend plugs into
@@ -19,25 +19,25 @@ cd "$(dirname "$0")/.."
 FACADE_ONLY_DIRS=(examples/baremetal)
 
 # Code only: a `//` comment or a string literal naming a BSP item is fine, so each hit is
-# re-checked with its strings and comment stripped. The chip crates (`rza1l_hal`,
+# re-checked with its strings and comment stripped. The chip crates (`rza1_hal`,
 # `rza1_alloc`, `rza1_rt`, …) are all off limits; the facade re-exports what an app needs
 # (the allocator as `deluge::deluge_alloc`).
 code_hits="$(grep -rnE --include='*.rs' --exclude-dir=target --exclude-dir=node_modules \
-  '\b(deluge_bsp|rza1l_hal|rza1_[a-z_]+)\b' "${FACADE_ONLY_DIRS[@]}" \
+  '\b(deluge_bsp|rza1_hal|rza1_[a-z_]+)\b' "${FACADE_ONLY_DIRS[@]}" \
   | awk '{
       code = $0
       sub(/^[^:]+:[0-9]+:/, "", code)
       gsub(/"([^"\\]|\\.)*"/, "\"\"", code)
       sub(/\/\/.*/, "", code)
-      if (code ~ /(^|[^A-Za-z0-9_])(deluge_bsp|rza1l_hal|rza1_[a-z_]+)([^A-Za-z0-9_]|$)/) print
+      if (code ~ /(^|[^A-Za-z0-9_])(deluge_bsp|rza1_hal|rza1_[a-z_]+)([^A-Za-z0-9_]|$)/) print
     }' || true)"
 
 # Matches every manifest form that can pull in the BSP or a chip crate: plain `key = …`,
 # dotted keys (`deluge-bsp.workspace = true`), table headers
-# (`[dependencies.deluge-bsp]` / `[target.'cfg(...)'.dependencies.rza1l-hal]`),
+# (`[dependencies.deluge-bsp]` / `[target.'cfg(...)'.dependencies.rza1-hal]`),
 # and renamed deps (`package = "deluge-bsp"`).
 dep_hits="$(grep -rnE --include='Cargo.toml' --exclude-dir=target --exclude-dir=node_modules \
-  '(^[[:space:]]*(deluge-bsp|rza1l-hal|rza1-[a-z-]+)[[:space:]]*[.=])|(\.(deluge-bsp|rza1l-hal|rza1-[a-z-]+)\])|(package[[:space:]]*=[[:space:]]*"(deluge-bsp|rza1l-hal|rza1-[a-z-]+)")' \
+  '(^[[:space:]]*(deluge-bsp|rza1-hal|rza1-[a-z-]+)[[:space:]]*[.=])|(\.(deluge-bsp|rza1-hal|rza1-[a-z-]+)\])|(package[[:space:]]*=[[:space:]]*"(deluge-bsp|rza1-hal|rza1-[a-z-]+)")' \
   "${FACADE_ONLY_DIRS[@]}" || true)"
 
 if [ -n "$code_hits$dep_hits" ]; then
@@ -53,20 +53,20 @@ chip_code_hits="$(grep -rniE --include='*.rs' --include='*.x' 'deluge' "${CHIP_D
   | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)' || true)"
 if [ -n "$chip_code_hits" ]; then
   printf '%s\n' "$chip_code_hits"
-  echo "error: a chip crate (rza1-pac, rza1l-hal, rza1-rt, rza1-alloc) names the Deluge; board facts belong in deluge-bsp" >&2
+  echo "error: a chip crate (rza1-pac, rza1-hal, rza1-rt, rza1-alloc) names the Deluge; board facts belong in deluge-bsp" >&2
   exit 1
 fi
 # Startup and exception entry are rza1-rt's: the HAL has no global_asm! (spec, Phase 3 exit).
-hal_asm_hits="$(grep -rn --include='*.rs' 'global_asm' rza1/rza1l-hal | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)"
+hal_asm_hits="$(grep -rn --include='*.rs' 'global_asm' rza1/rza1-hal | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)"
 if [ -n "$hal_asm_hits" ]; then
   printf '%s\n' "$hal_asm_hits"
-  echo "error: rza1l-hal contains global_asm!; startup and exception entry belong in rza1-rt" >&2
+  echo "error: rza1-hal contains global_asm!; startup and exception entry belong in rza1-rt" >&2
   exit 1
 fi
 # Board-agnostic crates (spec rule 3): usb/ and drivers/ never name the chip HAL, the board, or
 # any deluge-* crate in code. Their dependencies are checked against Cargo's graph at the end.
 AGNOSTIC_DIRS=(usb drivers)
-agnostic_hits="$(grep -rnE --include='*.rs' --exclude-dir=target '\b(rza1l_hal|deluge_[a-z_]+)\b' "${AGNOSTIC_DIRS[@]}" \
+agnostic_hits="$(grep -rnE --include='*.rs' --exclude-dir=target '\b(rza1_hal|deluge_[a-z_]+)\b' "${AGNOSTIC_DIRS[@]}" \
   | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)"
 if [ -n "$agnostic_hits" ]; then
   printf '%s\n' "$agnostic_hits"
@@ -115,9 +115,9 @@ def closure(start):
 RULES = [
     ("rza1/", lambda n: n.startswith("deluge-") or n.startswith("flare"),
      "an rza1 chip crate depends on a deluge-* or flare crate; board facts belong in deluge-bsp"),
-    ("usb/", lambda n: n == "rza1l-hal" or n.startswith("deluge-"),
+    ("usb/", lambda n: n == "rza1-hal" or n.startswith("deluge-"),
      "usb/ depends on the chip or the board; it must stay board-agnostic"),
-    ("drivers/", lambda n: n == "rza1l-hal" or n.startswith("deluge-"),
+    ("drivers/", lambda n: n == "rza1-hal" or n.startswith("deluge-"),
      "drivers/ depends on the chip or the board; it must stay board-agnostic"),
     ("crates/deluge-bsp/", lambda n: n in ("deluge-sim-link", "deluge-simulator"),
      "deluge-bsp depends on the simulator; plug in through deluge_bsp::host_panel"),

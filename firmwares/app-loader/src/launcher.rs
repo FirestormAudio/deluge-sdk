@@ -32,7 +32,7 @@
 
 use core::arch::{asm, global_asm};
 
-use rza1l_hal::cache;
+use rza1_hal::cache;
 
 use crate::elf::SramSegDesc;
 

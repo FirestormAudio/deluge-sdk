@@ -1,5 +1,5 @@
 [package]
-name = "rza1l-hal"
+name = "rza1-hal"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme = "README.md"
-description = "Embassy HAL for the Renesas RZ/A1L (ARM Cortex-A9, R7S721020)."
+description = "Embassy HAL for the Renesas RZ/A1 (RZ/A1L, RZ/A1H; ARM Cortex-A9)."
 categories = ["embedded", "no-std", "hardware-support"]
 keywords = ["rza1", "renesas", "cortex-a9", "embassy", "hal"]
 
@@ -15,6 +15,7 @@ keywords = ["rza1", "renesas", "cortex-a9", "embassy", "hal"]
 # compiles for the device triple, so build the docs there.
 [package.metadata.docs.rs]
 default-target = "armv7a-none-eabihf"
+features = ["rza1l"]
 
 [lib]
 # Unit tests (in #[cfg(all(test, not(target_os="none")))]) run natively via
@@ -26,7 +27,7 @@ test = false
 cortex-ar = { workspace = true, features = ["critical-section-single-core"] }
 
 [dependencies]
-rza1-pac = { path = "../rza1-pac", version = "0.1.0", features = ["rza1l"] }
+rza1-pac = { path = "../rza1-pac", version = "0.1.0" }
 critical-section = { workspace = true }
 embassy-sync = { workspace = true }
 embassy-futures = { workspace = true }
@@ -42,6 +43,12 @@ log = { workspace = true }
 
 [features]
 default = ["time-driver-ostm"]
+## The chip: enable exactly one.
+## The RZ/A1L (R7S721020 and family).
+rza1l = ["rza1-pac/rza1l"]
+## The RZ/A1H. Compiles and exposes the A1H's extra driver instances (RSPI3/RSPI4, the larger
+## interrupt table); not hardware-validated, and its pin tables are not yet filled in.
+rza1h = ["rza1-pac/rza1h"]
 ## The Embassy time driver on OSTM0 (free-running count) and OSTM1 (alarm): `time_driver`.
 ## Turn default features off to bring your own driver.
 time-driver-ostm = []

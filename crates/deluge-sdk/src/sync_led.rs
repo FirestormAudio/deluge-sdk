@@ -2,7 +2,7 @@
 
 use embedded_hal::digital::{OutputPin, StatefulOutputPin};
 #[cfg(target_os = "none")]
-use rza1l_hal::gpio::{Output, Pin};
+use rza1_hal::gpio::{Output, Pin};
 
 /// The SYNC LED is wired to port 6, pin 7.
 #[cfg(target_os = "none")]

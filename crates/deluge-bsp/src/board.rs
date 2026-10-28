@@ -1,8 +1,8 @@
 //! The Deluge's peripherals, each in the role the board wires it to. [`Board::new`] finishes the
-//! bring-up `rza1l_hal::init` starts, then hands the peripherals out by role.
+//! bring-up `rza1_hal::init` starts, then hands the peripherals out by role.
 
-use rza1l_hal::Peri;
-use rza1l_hal::peripherals::*;
+use rza1_hal::Peri;
+use rza1_hal::peripherals::*;
 
 /// DMA channel 0: SCUX FFD0 (DVU playback path).
 pub type ScuxFfd0Dma = DMA_CH0;
@@ -102,28 +102,28 @@ pub struct Board {
 }
 
 #[cfg(target_os = "none")]
-rza1l_hal::bind_interrupts!(struct TimeIrqs {
-    OSTMI0 => rza1l_hal::time_driver::OverflowHandler;
-    OSTMI1 => rza1l_hal::time_driver::AlarmHandler;
+rza1_hal::bind_interrupts!(struct TimeIrqs {
+    OSTMI0 => rza1_hal::time_driver::OverflowHandler;
+    OSTMI1 => rza1_hal::time_driver::AlarmHandler;
 });
 
 impl Board {
-    /// Finish the bring-up `rza1l_hal::init(system::BOARD_CONFIG)` started (the GIC's SDRAM code
+    /// Finish the bring-up `rza1_hal::init(system::BOARD_CONFIG)` started (the GIC's SDRAM code
     /// window, MMU, L1/L2 caches, SDRAM controller, the Embassy time driver on OSTM0/OSTM1),
     /// then hand out the peripherals.
     ///
-    /// Safe: only the one `Peripherals` from `rza1l_hal::init` can reach it.
+    /// Safe: only the one `Peripherals` from `rza1_hal::init` can reach it.
     #[cfg(target_os = "none")]
-    pub fn new(p: rza1l_hal::Peripherals) -> Self {
-        // SAFETY: once, straight after `rza1l_hal::init`, before any peripheral is used.
+    pub fn new(p: rza1_hal::Peripherals) -> Self {
+        // SAFETY: once, straight after `rza1_hal::init`, before any peripheral is used.
         unsafe {
-            rza1l_hal::gic::set_sdram_code_window(crate::sdram::WINDOW);
-            rza1l_hal::mmu::init_and_enable();
-            rza1l_hal::cache::l1_enable();
-            rza1l_hal::cache::l2_init();
+            rza1_hal::gic::set_sdram_code_window(crate::sdram::WINDOW);
+            rza1_hal::mmu::init_and_enable();
+            rza1_hal::cache::l1_enable();
+            rza1_hal::cache::l2_init();
             crate::sdram::init();
         }
-        rza1l_hal::time_driver::init(p.OSTM0, p.OSTM1, TimeIrqs);
+        rza1_hal::time_driver::init(p.OSTM0, p.OSTM1, TimeIrqs);
         Self {
             usb0: p.USB0,
             usb1: p.USB1,
@@ -160,7 +160,7 @@ impl Board {
 mod tests {
     use super::*;
     use crate::system::*;
-    use rza1l_hal::dmac::Channel;
+    use rza1_hal::dmac::Channel;
 
     #[test]
     fn board_dma_roles_name_the_channels_the_drivers_use() {

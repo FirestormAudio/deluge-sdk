@@ -37,9 +37,9 @@
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use embassy_sync::once_lock::OnceLock;
-use rza1l_hal::Peri;
-use rza1l_hal::interrupt::{Handler, typelevel};
-use rza1l_hal::mtu2::OneShot;
+use rza1_hal::Peri;
+use rza1_hal::interrupt::{Handler, typelevel};
+use rza1_hal::mtu2::OneShot;
 
 use crate::board::GateTimer;
 
@@ -82,7 +82,7 @@ impl Handler<typelevel::TGI2A> for ShotHandler {
     }
 }
 
-rza1l_hal::bind_interrupts!(struct Irqs {
+rza1_hal::bind_interrupts!(struct Irqs {
     TGI2A => ShotHandler;
 });
 

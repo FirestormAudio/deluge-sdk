@@ -102,7 +102,7 @@ pub extern "C" fn main() -> ! {
         allocator::SRAM.init(start, size);
     }
 
-    let board = deluge_bsp::Board::new(rza1l_hal::init(deluge_bsp::system::BOARD_CONFIG));
+    let board = deluge_bsp::Board::new(rza1_hal::init(deluge_bsp::system::BOARD_CONFIG));
     info!("platform: clocks, MMU, cache, SDRAM, GIC ready");
 
     // SDRAM heap initialised but not used by the bootloader itself;
@@ -195,11 +195,11 @@ pub(crate) unsafe fn quiesce_for_handoff() {
         // Stop + software-reset every DMA channel and clear its DMARS request
         // route (covers PIC RX/TX, SD, and OLED channels). Clearing DMARS lets
         // Linux's rz-dmac claim SCIF1-RX cleanly.
-        rza1l_hal::dmac::stop_all();
+        rza1_hal::dmac::stop_all();
         // Stop the Embassy time-driver timers (OSTM0 free-run + OSTM1 alarm).
-        rza1l_hal::time_driver::stop();
+        rza1_hal::time_driver::stop();
         // Turn the interrupt controller off entirely.
-        rza1l_hal::gic::shutdown();
+        rza1_hal::gic::shutdown();
     }
 }
 
@@ -309,7 +309,7 @@ async fn write_app_to_flash(
 async fn boot_task(spawner: Spawner) {
     // Global IRQs must be unmasked *before* the first interrupt-driven await.
     // pic::init() and oled::init() use embassy_time `Timer`s, which are woken
-    // only by the OSTM1 GIC interrupt (see rza1l_hal::time_driver); with
+    // only by the OSTM1 GIC interrupt (see rza1_hal::time_driver); with
     // CPSR.I still masked that interrupt can never be taken and the executor
     // parks in wfe() forever.  main() has already registered every GIC source the
     // boot tasks need.
@@ -488,7 +488,7 @@ async fn boot_task(spawner: Spawner) {
         // up, tear it down so the port is free for a later DATA TRANSFER MSC init.
         if cfg.dev_mode {
             // SAFETY: the listener's session is over.
-            rza1l_hal::usb::disconnect(unsafe { rza1l_hal::peripherals::USB0::steal() });
+            rza1_hal::usb::disconnect(unsafe { rza1_hal::peripherals::USB0::steal() });
         }
 
         // ---- Long-press on an SD `/APPS` ELF: store it to the flash slot ----
@@ -551,8 +551,8 @@ async fn boot_task(spawner: Spawner) {
                 // register so the failure can be diagnosed: ID `01 02 20`
                 // confirms manual-mode works; status `BP[2:0]` (bits 2-4) set
                 // means the settings sector is write-protected.
-                let id = rza1l_hal::spibsc::read_id();
-                let sr = rza1l_hal::spibsc::read_status_reg();
+                let id = rza1_hal::spibsc::read_id();
+                let sr = rza1_hal::spibsc::read_status_reg();
                 error!(
                     "Settings flash write failed: JEDEC={:02x} {:02x} {:02x}, SR={:#04x}",
                     id[0], id[1], id[2], sr

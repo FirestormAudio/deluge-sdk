@@ -43,7 +43,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use deluge_bsp::cv_gate;
 use deluge_bsp::uart as bsp_uart;
 use rza1_alloc as allocator;
-use rza1l_hal::usb::{Rusb1Driver, init_device_mode, init_host_mode};
+use rza1_hal::usb::{Rusb1Driver, init_device_mode, init_host_mode};
 
 unsafe extern "C" {
     /// Start of the free SRAM heap region (set by the linker script).
@@ -68,8 +68,8 @@ fn panic(info: &PanicInfo) -> ! {
 static USB0_HOST_MODE: AtomicBool = AtomicBool::new(false);
 
 // USB0's interrupt goes to the host or device handler, whichever mode the port was brought up in.
-rza1l_hal::bind_interrupts!(struct UsbIrqs {
-    USB0 => rza1l_hal::usb::DualRoleInterruptHandler<rza1l_hal::peripherals::USB0>;
+rza1_hal::bind_interrupts!(struct UsbIrqs {
+    USB0 => rza1_hal::usb::DualRoleInterruptHandler<rza1_hal::peripherals::USB0>;
 });
 
 // ---------------------------------------------------------------------------
@@ -131,7 +131,7 @@ pub extern "C" fn main() -> ! {
         s / 1024
     });
 
-    let board = deluge_bsp::Board::new(rza1l_hal::init(deluge_bsp::system::BOARD_CONFIG));
+    let board = deluge_bsp::Board::new(rza1_hal::init(deluge_bsp::system::BOARD_CONFIG));
     info!("system: module clocks, MMU, cache, SDRAM, GIC, OSTM, time driver ready");
 
     // Initialise the SDRAM heap now that the SDRAM window is accessible.
@@ -139,7 +139,7 @@ pub extern "C" fn main() -> ! {
     info!("SDRAM heap: initialised (64 MB)");
 
     info!("GPIO: configuring heartbeat LED...");
-    unsafe { rza1l_hal::gpio::set_as_output(6, 7) };
+    unsafe { rza1_hal::gpio::set_as_output(6, 7) };
     info!("GPIO: heartbeat LED P6_7 configured");
 
     info!("UART: initialising MIDI...");
@@ -178,10 +178,10 @@ pub extern "C" fn main() -> ! {
     //
     // `init_device_mode` / `init_host_mode` both call `module_clock_enable`.
     // UsbDevice buffers must be `'static`; they live in the statics above.
-    let mut usb_host_driver: Option<rza1l_hal::usb::Rusb1HostDriver<'static>> = None;
+    let mut usb_host_driver: Option<rza1_hal::usb::Rusb1HostDriver<'static>> = None;
     let mut usb_device_opt: Option<embassy_usb::UsbDevice<'static, Rusb1Driver<'static>>> = None;
-    let mut ep_out_opt: Option<rza1l_hal::usb::Rusb1EndpointOut> = None;
-    let mut ep_in_opt: Option<rza1l_hal::usb::Rusb1EndpointIn> = None;
+    let mut ep_out_opt: Option<rza1_hal::usb::Rusb1EndpointOut> = None;
+    let mut ep_in_opt: Option<rza1_hal::usb::Rusb1EndpointIn> = None;
     let mut cdc_opt: Option<
         embassy_usb::class::cdc_acm::CdcAcmClass<'static, Rusb1Driver<'static>>,
     > = None;

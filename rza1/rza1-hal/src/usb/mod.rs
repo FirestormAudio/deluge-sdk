@@ -17,10 +17,10 @@
 //! ## Quick start — device mode
 //!
 //! ```ignore
-//! use rza1l_hal::usb::{self, init_device_mode};
-//! use rza1l_hal::peripherals::USB0;
+//! use rza1_hal::usb::{self, init_device_mode};
+//! use rza1_hal::peripherals::USB0;
 //!
-//! rza1l_hal::bind_interrupts!(struct Irqs { USB0 => usb::DeviceInterruptHandler<USB0>; });
+//! rza1_hal::bind_interrupts!(struct Irqs { USB0 => usb::DeviceInterruptHandler<USB0>; });
 //! let (port, driver) = init_device_mode(p.USB0, Irqs);
 //! // pass `driver` to `embassy_usb::UsbDevice::new(driver, config, ...)`
 //! ```
@@ -28,11 +28,11 @@
 //! ## Quick start — host mode
 //!
 //! ```ignore
-//! use rza1l_hal::usb::{self, init_host_mode};
-//! use rza1l_hal::peripherals::USB0;
+//! use rza1_hal::usb::{self, init_host_mode};
+//! use rza1_hal::peripherals::USB0;
 //! use embassy_usb_host::{bus, BusState, handler::BusRoute};
 //!
-//! rza1l_hal::bind_interrupts!(struct Irqs { USB0 => usb::HostInterruptHandler<USB0>; });
+//! rza1_hal::bind_interrupts!(struct Irqs { USB0 => usb::HostInterruptHandler<USB0>; });
 //! static BUS_STATE: BusState = BusState::new();
 //! let (port, host) = init_host_mode(p.USB0, Irqs);
 //! let (mut controller, handle) = bus(host, &BUS_STATE);
@@ -46,7 +46,7 @@
 //! `init_device_mode` / `init_host_mode`:
 //!
 //! ```ignore
-//! rza1l_hal::bind_interrupts!(struct Irqs { USB0 => usb::DeviceInterruptHandler<USB0>; });
+//! rza1_hal::bind_interrupts!(struct Irqs { USB0 => usb::DeviceInterruptHandler<USB0>; });
 //! let (_port, driver) = usb::init_device_mode(p.USB0, Irqs);
 //! ```
 //!

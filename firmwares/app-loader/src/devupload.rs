@@ -26,7 +26,7 @@ use embassy_time::{Duration, Timer};
 use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver, State};
 use log::{info, warn};
 
-use rza1l_hal::usb::{Rusb1Driver, disconnect, init_device_mode};
+use rza1_hal::usb::{Rusb1Driver, disconnect, init_device_mode};
 
 use deluge_image::Crc32;
 use deluge_image::elf::{MAX_PHDRS, SDRAM_HI, SDRAM_LO, StreamRouter};
@@ -67,8 +67,8 @@ static mut USB_MSOS_DESC: [u8; 0] = [];
 static mut USB_CONTROL_BUF: [u8; 64] = [0; 64];
 static mut CDC_STATE: State = State::new();
 
-rza1l_hal::bind_interrupts!(struct UsbIrqs {
-    USB0 => rza1l_hal::usb::DeviceInterruptHandler<rza1l_hal::peripherals::USB0>;
+rza1_hal::bind_interrupts!(struct UsbIrqs {
+    USB0 => rza1_hal::usb::DeviceInterruptHandler<rza1_hal::peripherals::USB0>;
 });
 
 /// A brought-up dev-upload USB device, ready to listen.
@@ -119,7 +119,7 @@ unsafe fn build_usb() -> (
     unsafe {
         // SAFETY: one listener at a time (this function's contract): the previous session's
         // driver is gone, so this session is USB0's only user.
-        let usb0 = rza1l_hal::peripherals::USB0::steal();
+        let usb0 = rza1_hal::peripherals::USB0::steal();
         let (_port, driver) = init_device_mode(usb0, UsbIrqs);
         let mut config = embassy_usb::Config::new(
             deluge_bsp::usb::ids::VID,
@@ -325,7 +325,7 @@ async fn handoff(result: elf::LoadResult) -> ! {
     // launched app's own USB stack (e.g. the usb-log CDC for `cargo deluge run
     // --log`).
     // SAFETY: the listener's session is over: nothing drives USB0 past this point.
-    disconnect(unsafe { rza1l_hal::peripherals::USB0::steal() });
+    disconnect(unsafe { rza1_hal::peripherals::USB0::steal() });
 
     cortex_ar::interrupt::disable();
     unsafe { crate::quiesce_for_handoff() };

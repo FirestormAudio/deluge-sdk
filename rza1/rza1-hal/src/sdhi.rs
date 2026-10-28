@@ -23,7 +23,7 @@
 //! ## Usage
 //!
 //! ```ignore
-//! rza1l_hal::bind_interrupts!(struct Irqs {
+//! rza1_hal::bind_interrupts!(struct Irqs {
 //!     SDHI1_STATUS => sdhi::StatusInterruptHandler<SDHI1>;
 //!     SDHI1_OP => sdhi::OperationInterruptHandler<SDHI1>;
 //!     DMAINT14 => dmac::InterruptHandler<DMA_CH14>;

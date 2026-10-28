@@ -1,7 +1,7 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use deluge_bsp::scux_dvu_path;
 use log::info;
-use rza1l_hal::ssi;
+use rza1_hal::ssi;
 
 use usb_classes::audio::{USB_BITS_PER_SAMPLE, USB_CAPTURE_BITS_PER_SAMPLE};
 
@@ -94,7 +94,7 @@ pub(crate) fn fill_tx_with_dither() {
 /// `[31:8]`; 24-bit shifts left by 8, 16-bit by 16.
 ///
 /// # Safety
-/// Installed via [`rza1l_hal::usb::pipe::register_iso_out_hook`] and called
+/// Installed via [`rza1_hal::usb::pipe::register_iso_out_hook`] and called
 /// only from the BRDY ISR (single producer, IRQs disabled).  `pkt` points to
 /// `len` valid bytes.  Uses integer arithmetic only — no VFP state to preserve.
 unsafe fn iso_out_to_ssi(pkt: *const u8, len: usize) {
@@ -190,7 +190,7 @@ unsafe fn iso_out_to_ssi(pkt: *const u8, len: usize) {
 ///   [`USB_AUDIO_STREAMING`] (so the hook re-anchors on resume), and refills the
 ///   TX ring with dither so the codec does not auto-mute.
 #[embassy_executor::task]
-pub(crate) async fn uac2_task(ep_out: rza1l_hal::usb::Rusb1EndpointOut) {
+pub(crate) async fn uac2_task(ep_out: rza1_hal::usb::Rusb1EndpointOut) {
     /// Activity poll interval.  At 8000 packets/s an active stream bumps
     /// PACKET_SEQ hundreds of times per tick, so a single tick with no change
     /// unambiguously means the host has stopped — silence follows within ≤2
@@ -206,7 +206,7 @@ pub(crate) async fn uac2_task(ep_out: rza1l_hal::usb::Rusb1EndpointOut) {
     // endpoint is enabled (driver `endpoint_set_enabled`), so once the hook is
     // registered every packet is serviced in interrupt context.
     unsafe {
-        rza1l_hal::usb::pipe::register_iso_out_hook(ep_out.pipe as usize, iso_out_to_ssi);
+        rza1_hal::usb::pipe::register_iso_out_hook(ep_out.pipe as usize, iso_out_to_ssi);
     }
     info!("uac2_task: ISO OUT hook installed; supervising stream state");
 
@@ -251,10 +251,10 @@ pub(crate) async fn uac2_task(ep_out: rza1l_hal::usb::Rusb1EndpointOut) {
         if active && !ui_streaming {
             ui_streaming = true;
             // Gate speaker: on only if no headphone / line-out is inserted.
-            let hp = unsafe { rza1l_hal::gpio::read_pin(6, 5) };
-            let lol = unsafe { rza1l_hal::gpio::read_pin(6, 3) };
-            let lor = unsafe { rza1l_hal::gpio::read_pin(6, 4) };
-            unsafe { rza1l_hal::gpio::write(4, 1, !hp && !lol && !lor) };
+            let hp = unsafe { rza1_hal::gpio::read_pin(6, 5) };
+            let lol = unsafe { rza1_hal::gpio::read_pin(6, 3) };
+            let lor = unsafe { rza1_hal::gpio::read_pin(6, 4) };
+            unsafe { rza1_hal::gpio::write(4, 1, !hp && !lol && !lor) };
             info!("uac2_task: streaming started");
         } else if !active && ui_streaming {
             ui_streaming = false;
@@ -262,7 +262,7 @@ pub(crate) async fn uac2_task(ep_out: rza1l_hal::usb::Rusb1EndpointOut) {
             // SPEAKER_ENABLE, and refill the ring with dither.  The host has
             // stopped, so no hook write races this fill.
             USB_AUDIO_STREAMING.store(false, Ordering::Release);
-            unsafe { rza1l_hal::gpio::write(4, 1, false) }; // SPEAKER_ENABLE off
+            unsafe { rza1_hal::gpio::write(4, 1, false) }; // SPEAKER_ENABLE off
             fill_tx_with_dither();
             info!("uac2_task: stream stopped");
         }
@@ -350,12 +350,12 @@ unsafe fn iso_in_from_ssi(buf: *mut u8, max: usize) -> usize {
 /// mode), so a busy executor can never stall servicing; a per-packet `write()`
 /// from a task cannot keep up with the microframe cadence.
 #[embassy_executor::task]
-pub(crate) async fn uac2_mic_task(ep_in: rza1l_hal::usb::Rusb1EndpointIn) {
+pub(crate) async fn uac2_mic_task(ep_in: rza1_hal::usb::Rusb1EndpointIn) {
     let mps = ep_in.info.max_packet_size as usize;
     // Register before the host enables capture; `endpoint_set_enabled` arms BRDY
     // + primes the first buffer for the hook pipe.
     unsafe {
-        rza1l_hal::usb::pipe::register_iso_in_hook(ep_in.pipe as usize, mps, iso_in_from_ssi);
+        rza1_hal::usb::pipe::register_iso_in_hook(ep_in.pipe as usize, mps, iso_in_from_ssi);
     }
     info!(
         "uac2_mic_task: ISO IN hook installed (pipe={}, mps={})",

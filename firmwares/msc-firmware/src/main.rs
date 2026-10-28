@@ -33,10 +33,10 @@ use embassy_executor::{Executor, Spawner};
 use rza1_alloc as allocator;
 use deluge_bsp::cv_gate;
 use deluge_bsp::uart as bsp_uart;
-use rza1l_hal::usb::init_device_mode;
+use rza1_hal::usb::init_device_mode;
 
-rza1l_hal::bind_interrupts!(struct UsbIrqs {
-    USB0 => rza1l_hal::usb::DeviceInterruptHandler<rza1l_hal::peripherals::USB0>;
+rza1_hal::bind_interrupts!(struct UsbIrqs {
+    USB0 => rza1_hal::usb::DeviceInterruptHandler<rza1_hal::peripherals::USB0>;
 });
 
 unsafe extern "C" {
@@ -103,7 +103,7 @@ pub extern "C" fn main() -> ! {
         s / 1024
     });
 
-    let board = deluge_bsp::Board::new(rza1l_hal::init(deluge_bsp::system::BOARD_CONFIG));
+    let board = deluge_bsp::Board::new(rza1_hal::init(deluge_bsp::system::BOARD_CONFIG));
     info!("system: module clocks, MMU, cache, SDRAM, GIC, OSTM, time driver ready");
 
     // Initialise the SDRAM heap now that the SDRAM window is accessible.
@@ -111,7 +111,7 @@ pub extern "C" fn main() -> ! {
     info!("SDRAM heap: initialised (64 MB)");
 
     info!("GPIO: configuring heartbeat LED...");
-    unsafe { rza1l_hal::gpio::set_as_output(6, 7) };
+    unsafe { rza1_hal::gpio::set_as_output(6, 7) };
 
     info!("UART: initialising PIC...");
     bsp_uart::init_pic(board.pic_uart, board.dma.pic_rx, board.dma.pic_tx, 31_250);

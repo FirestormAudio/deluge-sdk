@@ -7,7 +7,7 @@
 use deluge_bsp::sd;
 use embassy_time::Instant;
 use log::{error, info, warn};
-use rza1l_hal::sdhi;
+use rza1_hal::sdhi;
 
 /// Sectors per read chunk (matches the BSP DMA bounce buffer size).
 const CHUNK_SECTORS: u32 = 128; // 64 KiB

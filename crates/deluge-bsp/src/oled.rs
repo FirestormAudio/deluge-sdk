@@ -47,7 +47,7 @@
 //! ```
 
 #[cfg(target_os = "none")]
-use rza1l_hal::UNCACHED_MIRROR_OFFSET;
+use rza1_hal::UNCACHED_MIRROR_OFFSET;
 #[cfg(target_os = "none")]
 
 #[cfg(target_os = "none")]
@@ -524,7 +524,7 @@ pub fn boot_frame_captured() -> bool {
 /// handler): it steals the RSPI0 bus token without locking.
 #[cfg(target_os = "none")]
 pub unsafe fn draw_blocking(fb: &FrameBuffer) {
-    use rza1l_hal::ostm;
+    use rza1_hal::ostm;
 
     if !INITIALISED.load(core::sync::atomic::Ordering::Acquire) {
         return;

@@ -1,14 +1,14 @@
-//! The Deluge's SCUX DVU output path: [`rza1l_hal::scux::dvu_path`] on the board's SSI0 and DMA
+//! The Deluge's SCUX DVU output path: [`rza1_hal::scux::dvu_path`] on the board's SSI0 and DMA
 //! channels.
 
-pub use rza1l_hal::scux::dvu_path::*;
+pub use rza1_hal::scux::dvu_path::*;
 
-use rza1l_hal::Peri;
-use rza1l_hal::dmac::Dma;
+use rza1_hal::Peri;
+use rza1_hal::dmac::Dma;
 
 use crate::board::{AudioSsi, ScuxFfd0Dma, SsiRxDma};
 
-/// [`rza1l_hal::scux::dvu_path::init`] on the Deluge's SSI0, its RX DMA channel and FFD0's.
+/// [`rza1_hal::scux::dvu_path::init`] on the Deluge's SSI0, its RX DMA channel and FFD0's.
 pub fn init(
     ssi: Peri<'static, AudioSsi>,
     rx: Peri<'static, SsiRxDma>,
@@ -17,7 +17,7 @@ pub fn init(
     // SAFETY: SSI0, its RX channel and FFD0's channel are moved in; the DVU path's SRC0/0, DVU0
     // and FFD0 are its own, and no other path drives them.
     unsafe {
-        rza1l_hal::scux::dvu_path::init(
+        rza1_hal::scux::dvu_path::init(
             ssi,
             Dma::new_without_interrupt(rx),
             crate::system::SSICR,
@@ -26,7 +26,7 @@ pub fn init(
     }
 }
 
-/// [`rza1l_hal::scux::dvu_path::init_with_src`] on the Deluge's SSI0, its RX DMA channel and
+/// [`rza1_hal::scux::dvu_path::init_with_src`] on the Deluge's SSI0, its RX DMA channel and
 /// FFD0's.
 pub fn init_with_src(
     ssi: Peri<'static, AudioSsi>,
@@ -36,7 +36,7 @@ pub fn init_with_src(
 ) {
     // SAFETY: as in `init`.
     unsafe {
-        rza1l_hal::scux::dvu_path::init_with_src(
+        rza1_hal::scux::dvu_path::init_with_src(
             ssi,
             Dma::new_without_interrupt(rx),
             crate::system::SSICR,

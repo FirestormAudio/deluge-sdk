@@ -37,7 +37,7 @@ app-fault-reporter = ["rza1-rt/app-fault-reporter"]
 ## default poll loop. Selected by `deluge/audio-irq`.
 audio-irq = []
 ## The [`flash`] module: SPI-NOR chip profile and board memory map over
-## `rza1l_hal::spibsc`. Opt-in; only the app-loader writes flash.
+## `rza1_hal::spibsc`. Opt-in; only the app-loader writes flash.
 flash = []
 ## `embedded-graphics` `DrawTarget` for `oled::FrameBuffer`, so a caller can draw
 ## into it directly (host or device) without the async `deluge::Oled` wrapper,
@@ -66,8 +66,8 @@ host-panel = ["dep:embassy-time"]
 max5136 = { workspace = true }
 usb-classes = { workspace = true, features = ["device-midi"] }
 # `time-driver-ostm`: `system::init` starts the OSTM time driver, so the BSP needs it even if a
-# dependent turns rza1l-hal's default features off.
-rza1l-hal = { path = "../../rza1/rza1l-hal", version = "0.1.0", features = ["time-driver-ostm"] }
+# dependent turns rza1-hal's default features off.
+rza1-hal = { path = "../../rza1/rza1-hal", version = "0.1.0", features = ["rza1l", "time-driver-ostm"] }
 rza1-rt = { path = "../../rza1/rza1-rt", version = "0.1.0" }
 embedded-sdmmc = { version = "0.9", default-features = false, features = ["log"], optional = true }
 critical-section = { workspace = true }

@@ -1,7 +1,7 @@
 //! Deluge board UART assignments.
 //!
 //! Maps the two SCIF channels used on the Deluge to their physical pins and
-//! gives them meaningful names, keeping [`rza1l_hal::uart`] itself board-agnostic.
+//! gives them meaningful names, keeping [`rza1_hal::uart`] itself board-agnostic.
 //!
 //! | Channel | Signal  | TxD pin  | mux | RxD pin | mux |
 //! |---------|---------|----------|-----|---------|-----|
@@ -14,9 +14,9 @@
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_sync::once_lock::OnceLock;
-use rza1l_hal::Peri;
-use rza1l_hal::dmac::{self, Dma};
-use rza1l_hal::uart::{self, Uart, UartRx, UartTx};
+use rza1_hal::Peri;
+use rza1_hal::dmac::{self, Dma};
+use rza1_hal::uart::{self, Uart, UartRx, UartTx};
 
 use crate::board::{MidiRxDma, MidiScif, PicRxDma, PicScif, PicTxDma};
 
@@ -26,13 +26,13 @@ pub const MIDI_CH: usize = 0;
 /// SCIF channel used for the PIC32 co-processor.
 pub const PIC_CH: usize = 1;
 
-rza1l_hal::bind_interrupts!(struct MidiIrqs {
+rza1_hal::bind_interrupts!(struct MidiIrqs {
     ERI0 => uart::ErrorInterruptHandler<MidiScif>;
     TXI0 => uart::TxInterruptHandler<MidiScif>;
     DMAINT13 => dmac::InterruptHandler<MidiRxDma>;
 });
 
-rza1l_hal::bind_interrupts!(struct PicIrqs {
+rza1_hal::bind_interrupts!(struct PicIrqs {
     ERI1 => uart::ErrorInterruptHandler<PicScif>;
     TXI1 => uart::TxInterruptHandler<PicScif>;
     DMAINT10 => dmac::InterruptHandler<PicTxDma>;
@@ -54,8 +54,8 @@ pub fn init_midi(scif: Peri<'static, MidiScif>, rx_dma: Peri<'static, MidiRxDma>
     // SAFETY: TxD0 and RxD0, which only SCIF0 drives. Muxed first, so the receive ring never
     // samples an unconnected pin.
     unsafe {
-        rza1l_hal::gpio::set_pin_mux(6, 15, 5); // TxD0
-        rza1l_hal::gpio::set_pin_mux(6, 14, 5); // RxD0
+        rza1_hal::gpio::set_pin_mux(6, 15, 5); // TxD0
+        rza1_hal::gpio::set_pin_mux(6, 14, 5); // RxD0
     }
     let rx_dma = Dma::new(rx_dma, MidiIrqs);
     let (rx, tx) = Uart::new(scif, rx_dma, None, MidiIrqs, baud).split();
@@ -78,8 +78,8 @@ pub fn init_pic(
     log::debug!("bsp uart: PIC SCIF{} @ {} bps", PIC_CH, baud);
     // SAFETY: TxD1 and RxD1, which only SCIF1 drives; muxed first, as in `init_midi`.
     unsafe {
-        rza1l_hal::gpio::set_pin_mux(3, 15, 5); // TxD1
-        rza1l_hal::gpio::set_pin_mux(1, 9, 3); // RxD1
+        rza1_hal::gpio::set_pin_mux(3, 15, 5); // TxD1
+        rza1_hal::gpio::set_pin_mux(1, 9, 3); // RxD1
     }
     let rx_dma = Dma::new(rx_dma, PicIrqs);
     let tx_dma = Dma::new(tx_dma, PicIrqs);
@@ -228,7 +228,7 @@ mod tests {
     /// Both channels must be within the RZ/A1L SCIF range (0–4).
     #[test]
     fn channels_in_range() {
-        assert!(MIDI_CH < rza1l_hal::uart::NUM_CHANNELS);
-        assert!(PIC_CH < rza1l_hal::uart::NUM_CHANNELS);
+        assert!(MIDI_CH < rza1_hal::uart::NUM_CHANNELS);
+        assert!(PIC_CH < rza1_hal::uart::NUM_CHANNELS);
     }
 }

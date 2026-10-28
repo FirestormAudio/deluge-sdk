@@ -16,8 +16,8 @@ use deluge_bsp::board::{
 };
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use rza1l_hal::Peri;
-use rza1l_hal::peripherals::USB0;
+use rza1_hal::Peri;
+use rza1_hal::peripherals::USB0;
 
 /// The unclaimed peripherals. A `None` field has been taken.
 pub struct Parts {
@@ -53,7 +53,7 @@ pub struct Parts {
     pub ssi_rx_dma: Option<Peri<'static, SsiRxDma>>,
     /// SCUX FFD0's DMA channel, for `deluge_bsp::audio::init_with_scux`.
     pub scux_ffd0_dma: Option<Peri<'static, ScuxFfd0Dma>>,
-    /// USB0, when neither `usb-log` nor `usb-serial` claims it, for `rza1l_hal::usb::init_*_mode`.
+    /// USB0, when neither `usb-log` nor `usb-serial` claims it, for `rza1_hal::usb::init_*_mode`.
     pub usb0: Option<Peri<'static, USB0>>,
 }
 

@@ -18,15 +18,15 @@ use log::{error, info};
 
 use deluge_bsp::uart as bsp_uart;
 use rza1_alloc as allocator;
-use rza1l_hal::usb::init_host_mode;
+use rza1_hal::usb::init_host_mode;
 
-rza1l_hal::bind_interrupts!(struct UsbIrqs {
-    USB0 => rza1l_hal::usb::HostInterruptHandler<rza1l_hal::peripherals::USB0>;
+rza1_hal::bind_interrupts!(struct UsbIrqs {
+    USB0 => rza1_hal::usb::HostInterruptHandler<rza1_hal::peripherals::USB0>;
 });
 
 #[cfg(not(feature = "cpu-rx"))]
-rza1l_hal::bind_interrupts!(struct RxDmaIrqs {
-    DMAINT1 => rza1l_hal::dmac::InterruptHandler<deluge_bsp::board::Usb0RxDma>;
+rza1_hal::bind_interrupts!(struct RxDmaIrqs {
+    DMAINT1 => rza1_hal::dmac::InterruptHandler<deluge_bsp::board::Usb0RxDma>;
 });
 
 unsafe extern "C" {
@@ -62,17 +62,17 @@ pub extern "C" fn main() -> ! {
         let size = core::ptr::addr_of!(__sram_heap_end) as usize - start as usize;
         allocator::SRAM.init(start, size);
     }
-    let board = deluge_bsp::Board::new(rza1l_hal::init(deluge_bsp::system::BOARD_CONFIG));
+    let board = deluge_bsp::Board::new(rza1_hal::init(deluge_bsp::system::BOARD_CONFIG));
     unsafe { allocator::SDRAM.init(0x0C00_0000 as *mut u8, 64 * 1024 * 1024) };
 
-    unsafe { rza1l_hal::gpio::set_as_output(6, 7) };
+    unsafe { rza1_hal::gpio::set_as_output(6, 7) };
     bsp_uart::init_pic(board.pic_uart, board.dma.pic_rx, board.dma.pic_tx, 31_250);
 
     let (_port, host_driver) = init_host_mode(board.usb0, UsbIrqs);
     // The Overbridge stream's receive pipe is drained by DMA; `cpu-rx` keeps the byte-wise CPU
     // path, for comparing the two (docs/hardware-tasks.md, task 2).
     #[cfg(not(feature = "cpu-rx"))]
-    host_driver.enable_rx_dma(rza1l_hal::dmac::Dma::new(board.dma.scux_ffu0, RxDmaIrqs));
+    host_driver.enable_rx_dma(rza1_hal::dmac::Dma::new(board.dma.scux_ffu0, RxDmaIrqs));
     info!("USB: host driver ready (USB0 host mode)");
 
     unsafe { cortex_ar::interrupt::enable() };

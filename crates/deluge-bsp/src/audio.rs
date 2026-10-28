@@ -21,18 +21,18 @@
 //! **not** started; SCUX drives SSIF0 TX directly via `SSICTRL.SSI0TX`.  SSI0 RX
 //! DMA (ch 7) is started as usual.
 
-use rza1l_hal::Peri;
+use rza1_hal::Peri;
 #[cfg(feature = "audio-irq")]
-use rza1l_hal::dmac::BlockDma;
-use rza1l_hal::dmac::Dma;
-use rza1l_hal::{gpio, ostm, ssi};
+use rza1_hal::dmac::BlockDma;
+use rza1_hal::dmac::Dma;
+use rza1_hal::{gpio, ostm, ssi};
 
 use crate::board::{AudioSsi, ScuxFfd0Dma, SsiRxDma, SsiTxDma};
 use crate::scux_dvu_path;
 
 #[cfg(feature = "audio-irq")]
-rza1l_hal::bind_interrupts!(struct BlockIrqs {
-    DMAINT7 => rza1l_hal::dmac::BlockInterruptHandler<SsiRxDma>;
+rza1_hal::bind_interrupts!(struct BlockIrqs {
+    DMAINT7 => rza1_hal::dmac::BlockInterruptHandler<SsiRxDma>;
 });
 
 /// Port and pin of the codec hardware-enable line.
@@ -50,7 +50,7 @@ const CODEC_POWER_DELAY_MS: u32 = 5;
 /// Configures SSI0 pin-mux + the SCUX DVU path + SSI RX DMA, waits the codec
 /// power-on delay, then asserts `CODEC_POWER`.
 ///
-/// **Call after:** `rza1l_hal::time_driver::init`, before any audio task starts.
+/// **Call after:** `rza1_hal::time_driver::init`, before any audio task starts.
 pub fn init_with_scux(
     ssi: Peri<'static, AudioSsi>,
     rx: Peri<'static, SsiRxDma>,
@@ -63,7 +63,7 @@ pub fn init_with_scux(
 /// samples written into the DVU path's ring at `engine_hz` (48 kHz from a USB audio device,
 /// say) play at the codec rate, converted in hardware.
 ///
-/// **Call after:** `rza1l_hal::time_driver::init`, before any audio task starts.
+/// **Call after:** `rza1_hal::time_driver::init`, before any audio task starts.
 pub fn init_with_scux_src(
     ssi: Peri<'static, AudioSsi>,
     rx: Peri<'static, SsiRxDma>,
@@ -116,7 +116,7 @@ fn bring_up_scux(path: impl FnOnce()) {
 /// Configures SSI0 pin-mux, drives SSIF0 TX directly from the SSI TX DMA
 /// ([`ssi::init`]), waits the codec power-on delay, then asserts `CODEC_POWER`.
 ///
-/// **Call after:** `rza1l_hal::time_driver::init`, before any audio task starts.
+/// **Call after:** `rza1_hal::time_driver::init`, before any audio task starts.
 pub fn init(
     ssi: Peri<'static, AudioSsi>,
     tx: Peri<'static, SsiTxDma>,

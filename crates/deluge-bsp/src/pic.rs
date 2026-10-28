@@ -29,7 +29,7 @@
 //! | 254     | NO_PRESSES_HAPPENING                                     |
 //!
 //! **Note:** Rotary encoders are wired directly to RZ/A1L GPIO pins and are
-//! read by a dedicated encoder task via [`rza1l_hal::gpio`] — the PIC does not
+//! read by a dedicated encoder task via [`rza1_hal::gpio`] — the PIC does not
 //! transmit encoder data over UART.
 //!
 //! ## Commands (CPU → PIC) — selected subset

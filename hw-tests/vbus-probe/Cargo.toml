@@ -10,7 +10,7 @@ name = "vbus-probe"
 test = false
 
 [dependencies]
-rza1l-hal = { path = "../../rza1/rza1l-hal" }
+rza1-hal = { path = "../../rza1/rza1-hal", features = ["rza1l"] }
 rza1-alloc = { path = "../../rza1/rza1-alloc" }
 deluge-bsp = { path = "../../crates/deluge-bsp" }
 cortex-ar = { workspace = true }

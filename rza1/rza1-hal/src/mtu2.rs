@@ -21,7 +21,7 @@
 //! impl Handler<typelevel::TGI2A> for GateHandler {
 //!     unsafe fn on_interrupt() { /* timer.clear_flag(); act; timer.disarm(); */ }
 //! }
-//! rza1l_hal::bind_interrupts!(struct Irqs { TGI2A => GateHandler; });
+//! rza1_hal::bind_interrupts!(struct Irqs { TGI2A => GateHandler; });
 //!
 //! let timer = mtu2::OneShot::new(p.MTU2_2, 64, 5, Irqs); // P0φ/64, GIC priority 5
 //! timer.arm(520); // fires after 520 ticks ≈ 1 ms

@@ -12,7 +12,7 @@
 //!
 //! ## Usage
 //! ```ignore
-//! rza1l_hal::bind_interrupts!(struct Irqs {
+//! rza1_hal::bind_interrupts!(struct Irqs {
 //!     ERI0 => uart::ErrorInterruptHandler<SCIF0>;
 //!     TXI0 => uart::TxInterruptHandler<SCIF0>;
 //!     DMAINT13 => dmac::InterruptHandler<DMA_CH13>;

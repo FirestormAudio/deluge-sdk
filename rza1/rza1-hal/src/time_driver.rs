@@ -130,7 +130,7 @@ impl OstmDriver {
         let ratio = RATIO.load();
         assert!(
             ratio.is_set(),
-            "embassy-time alarm armed before rza1l_hal::time_driver::init"
+            "embassy-time alarm armed before rza1_hal::time_driver::init"
         );
         // Clamp to max_arm_ticks; a farther alarm is re-armed when that intermediate ISR
         // fires, so capping only costs wakeups, never accuracy.

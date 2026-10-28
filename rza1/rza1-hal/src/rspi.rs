@@ -91,9 +91,19 @@ fn spbr_for(p1_hz: u32, bit_rate: u32) -> u8 {
 
 // ── Register access helpers ───────────────────────────────────────────────────
 
-/// RSPI channel `ch`'s registers (the RZ/A1L has channels 0–2).
+/// RSPI channel `ch`'s registers (channels 0–2 on the RZ/A1L, 0–4 on the RZ/A1H).
 fn rspi(ch: u8) -> crate::pac::rspi::Rspi {
-    [crate::pac::RSPI0, crate::pac::RSPI1, crate::pac::RSPI2][ch as usize]
+    #[cfg(feature = "rza1l")]
+    let channels = [crate::pac::RSPI0, crate::pac::RSPI1, crate::pac::RSPI2];
+    #[cfg(feature = "rza1h")]
+    let channels = [
+        crate::pac::RSPI0,
+        crate::pac::RSPI1,
+        crate::pac::RSPI2,
+        crate::pac::RSPI3,
+        crate::pac::RSPI4,
+    ];
+    channels[ch as usize]
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -291,9 +301,10 @@ mod sealed {
     pub trait Sealed {}
 }
 
-/// An RSPI channel singleton (`peripherals::RSPI0`–`RSPI2`; the RZ/A1L has three channels).
+/// An RSPI channel singleton (`peripherals::RSPI0`–`RSPI2` on the RZ/A1L, `RSPI0`–`RSPI4` on the
+/// RZ/A1H).
 pub trait Instance: crate::PeripheralType + sealed::Sealed + 'static {
-    /// The channel number, 0–2 (the RZ/A1L has three).
+    /// The channel number: 0–2 on the RZ/A1L, 0–4 on the RZ/A1H.
     const INDEX: u8;
 }
 
@@ -307,6 +318,8 @@ macro_rules! instances {
 }
 
 instances!(RSPI0 = 0, RSPI1 = 1, RSPI2 = 2);
+#[cfg(feature = "rza1h")]
+instances!(RSPI3 = 3, RSPI4 = 4);
 
 /// An RSPI channel as an SPI master, SPI mode 0, in 32-bit or 8-bit frames.
 pub struct Rspi<'d> {

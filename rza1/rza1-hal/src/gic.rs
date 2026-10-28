@@ -4,7 +4,7 @@
 //!   - GIC Distributor (GICD) at 0xE820_1000  (the Renesas "INTC" peripheral)
 //!   - GIC CPU Interface (GICC) at 0xE820_2000
 //!
-//! The chip has 587 interrupt sources total (IDs 0–586).
+//! The RZ/A1L has 538 interrupt sources (IDs 0–537), the RZ/A1H 587 (IDs 0–586): [`INT_ID_TOTAL`].
 //!
 //! ## Initialization sequence
 //! Call [`init`] once before enabling global IRQ (`cpsie i`).
@@ -52,7 +52,11 @@ const ICCIAR_SPURIOUS: u32 = 0x3FE;
 // ---------------------------------------------------------------------------
 
 /// Total number of interrupt sources on the RZ/A1L: IDs 0–537 (hardware manual Table 7.3).
+#[cfg(feature = "rza1l")]
 pub const INT_ID_TOTAL: usize = 538;
+/// Total number of interrupt sources on the RZ/A1H: IDs 0–586.
+#[cfg(feature = "rza1h")]
+pub const INT_ID_TOTAL: usize = 587;
 
 /// Interrupt handler type. The handler is called with IRQ re-enabled
 /// (nested interrupts supported), already in SYS mode.

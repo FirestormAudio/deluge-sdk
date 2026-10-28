@@ -11,7 +11,7 @@ test = false
 
 [dependencies]
 usb-classes = { workspace = true, features = ["host-overbridge"] }
-rza1l-hal = { path = "../../rza1/rza1l-hal" }
+rza1-hal = { path = "../../rza1/rza1-hal", features = ["rza1l"] }
 deluge-bsp = { path = "../../crates/deluge-bsp", features = ["usb-host-overbridge"] }
 rza1-alloc = { path = "../../rza1/rza1-alloc" }
 cortex-ar = { workspace = true }
