@@ -272,10 +272,17 @@ pub unsafe fn irq_init(poll_timer: rza1_hal::Peri<'static, crate::board::Encoder
         interrupt::bind::<IRQ0, EncoderHandler<4>>(EncoderIrqs);
         interrupt::bind::<IRQ7, EncoderHandler<5>>(EncoderIrqs);
 
-        for w in &WIRING {
-            rza1_hal::gic::set_priority(w.gic_id, ENCODER_PRIORITY);
-            rza1_hal::gic::enable(w.gic_id);
+        fn arm<I: interrupt::Interrupt>() {
+            I::set_priority(interrupt::Priority::from_level(ENCODER_PRIORITY).unwrap());
+            // SAFETY: the handler was bound above and its encoder state is initialised.
+            unsafe { I::enable() };
         }
+        arm::<IRQ3>();
+        arm::<IRQ2>();
+        arm::<IRQ4>();
+        arm::<IRQ1>();
+        arm::<IRQ0>();
+        arm::<IRQ7>();
 
         // The pin poll, at the encoders' own priority so neither preempts the other. Arming it once
         // is enough: see `PollHandler`.

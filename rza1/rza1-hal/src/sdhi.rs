@@ -1521,8 +1521,8 @@ impl<'d> Sdhi<'d> {
         unsafe {
             crate::gic::set_priority(T::StatusInterrupt::ID, SDHI_IRQ_PRIORITY);
             crate::gic::set_priority(T::OperationInterrupt::ID, SDHI_IRQ_PRIORITY);
-            crate::gic::enable(T::StatusInterrupt::ID);
-            crate::gic::enable(T::OperationInterrupt::ID);
+            T::StatusInterrupt::enable();
+            T::OperationInterrupt::enable();
         }
         Self {
             port: T::PORT,

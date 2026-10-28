@@ -29,10 +29,6 @@ const TRIG_PIN: u8 = 14;
 /// External interrupt number used by `P1_14`'s PFC alt-2 routing.
 const TRIG_IRQ: u8 = 6;
 
-/// GIC interrupt ID for IRQ6 (= 32 + 6), from its typed binding so the two can't disagree.
-const TRIG_GIC_ID: u16 =
-    <rza1_hal::interrupt::typelevel::IRQ6 as rza1_hal::interrupt::Interrupt>::ID;
-
 /// Same priority as the encoders — well below audio (5) and OLED DMA (13).
 const TRIG_PRIORITY: u8 = 14;
 
@@ -92,8 +88,9 @@ pub unsafe fn irq_init() {
 
         rza1_hal::interrupt::bind(TriggerIrqs);
         rza1_hal::gic::clear_irq_pending(TRIG_IRQ);
-        rza1_hal::gic::set_priority(TRIG_GIC_ID, TRIG_PRIORITY);
-        rza1_hal::gic::enable(TRIG_GIC_ID);
+        use rza1_hal::interrupt::{Interrupt, Priority, typelevel::IRQ6};
+        IRQ6::set_priority(Priority::from_level(TRIG_PRIORITY).unwrap());
+        IRQ6::enable();
 
         info!("trigger_clock: P1_14 → IRQ6 (GIC 38, falling-edge) ready");
     }

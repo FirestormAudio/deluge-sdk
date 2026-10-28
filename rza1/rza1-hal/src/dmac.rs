@@ -155,7 +155,7 @@ impl<'d> Dma<'d> {
         // SAFETY: this channel's own interrupt, at the DMAC priority.
         unsafe {
             crate::gic::set_priority(C::Interrupt::ID, DMAC_IRQ_PRIORITY);
-            crate::gic::enable(C::Interrupt::ID);
+            C::Interrupt::enable();
         }
         Self {
             ch: C::NUMBER,
@@ -343,7 +343,7 @@ impl<'d> BlockDma<'d> {
         // SAFETY: this channel's own interrupt, at the DMAC priority.
         unsafe {
             crate::gic::set_priority(C::Interrupt::ID, DMAC_IRQ_PRIORITY);
-            crate::gic::enable(C::Interrupt::ID);
+            C::Interrupt::enable();
         }
         Self {
             dma: Dma {

@@ -145,7 +145,7 @@ impl OstmDriver {
         // Safety: both channels are clocked and registers accessible.
         unsafe {
             ostm::start_alarm(1, delta_ostm);
-            gic::enable(OSTMI1::ID);
+            OSTMI1::enable();
         }
         true
     }
@@ -198,7 +198,7 @@ impl Handler<OSTMI1> for AlarmHandler {
         // Stop OSTM1 at once (interval mode would reload), and mask it until the next alarm.
         unsafe {
             ostm::stop(1);
-            gic::disable(OSTMI1::ID);
+            OSTMI1::disable();
         }
         let now = DRIVER.now();
         critical_section::with(|cs| {
@@ -239,7 +239,7 @@ pub fn init(
     unsafe {
         gic::set_priority(OSTMI0::ID, OSTM_IRQ_PRIORITY);
         gic::set_priority(OSTMI1::ID, OSTM_IRQ_PRIORITY);
-        gic::enable(OSTMI0::ID);
+        OSTMI0::enable();
     }
 }
 
@@ -251,8 +251,8 @@ pub fn init(
 pub unsafe fn stop() {
     ostm::set_running(false);
     unsafe {
-        gic::disable(OSTMI0::ID);
-        gic::disable(OSTMI1::ID);
+        OSTMI0::disable();
+        OSTMI1::disable();
         ostm::stop(0);
         ostm::stop(1);
     }

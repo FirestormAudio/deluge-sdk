@@ -501,8 +501,8 @@ impl<'d> Uart<'d> {
         unsafe {
             gic::set_priority(T::ErrorInterrupt::ID, UART_IRQ_PRIORITY);
             gic::set_priority(T::TxInterrupt::ID, UART_IRQ_PRIORITY);
-            gic::enable(T::ErrorInterrupt::ID);
-            gic::enable(T::TxInterrupt::ID);
+            T::ErrorInterrupt::enable();
+            T::TxInterrupt::enable();
         }
         let rx = UartRx::start::<T>(rx_dma);
         let tx = UartTx::new(T::INDEX, tx_dma);

@@ -5,10 +5,106 @@
 
 use crate::gic;
 
+/// A GIC interrupt priority: `P0` is the highest. The GIC implements 32 levels, and the CPU
+/// interface's priority mask sits at 31, so an interrupt at 31 would never be signalled: the
+/// levels offered are `P0`–`P30`. Every interrupt starts at [`Priority::DEFAULT`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(u8)]
+#[allow(missing_docs)]
+#[rustfmt::skip]
+pub enum Priority {
+    P0 = 0, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11, P12, P13, P14, P15,
+    P16, P17, P18, P19, P20, P21, P22, P23, P24, P25, P26, P27, P28, P29, P30,
+}
+
+impl Priority {
+    /// What every interrupt starts at: the middle level, so an application can place one above
+    /// or below the rest.
+    pub const DEFAULT: Self = Priority::P16;
+
+    /// The priority with GIC level `level`, or `None` past `P30`.
+    pub const fn from_level(level: u8) -> Option<Self> {
+        if level <= Priority::P30 as u8 {
+            // SAFETY: `Priority` is `repr(u8)` with every value 0..=30 a variant.
+            Some(unsafe { core::mem::transmute::<u8, Priority>(level) })
+        } else {
+            None
+        }
+    }
+}
+
+impl Default for Priority {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
 /// A GIC interrupt.
 pub trait Interrupt: 'static {
     /// Its GIC interrupt ID.
     const ID: u16;
+
+    /// Unmask it in the distributor.
+    ///
+    /// # Safety
+    /// Its handler may run as soon as this returns: whatever it touches must be ready, and no
+    /// critical section the handler could break may be in progress.
+    #[inline]
+    unsafe fn enable() {
+        // SAFETY: the caller's contract.
+        unsafe { gic::enable(Self::ID) }
+    }
+
+    /// Mask it in the distributor.
+    #[inline]
+    fn disable() {
+        // SAFETY: masking an interrupt can't make a handler run.
+        unsafe { gic::disable(Self::ID) }
+    }
+
+    /// Whether it is unmasked.
+    #[inline]
+    fn is_enabled() -> bool {
+        gic::is_enabled(Self::ID)
+    }
+
+    /// Whether it is pending.
+    #[inline]
+    fn is_pending() -> bool {
+        gic::is_pending(Self::ID)
+    }
+
+    /// Make it pending: its handler runs when it is enabled and nothing of higher priority is
+    /// active. For a software-generated interrupt (`SGI0`–`SGI15`), this raises it on this CPU.
+    #[inline]
+    fn pend() {
+        gic::pend(Self::ID)
+    }
+
+    /// Clear its pending state. A software-generated interrupt can't be cleared; for those this
+    /// does nothing.
+    #[inline]
+    fn unpend() {
+        gic::unpend(Self::ID)
+    }
+
+    /// Its priority.
+    #[inline]
+    fn get_priority() -> Priority {
+        // The field only ever holds what `set_priority` or `gic::init` wrote, and both write P0–P30.
+        Priority::from_level(gic::priority(Self::ID)).unwrap_or(Priority::P30)
+    }
+
+    /// Set its priority.
+    #[inline]
+    fn set_priority(priority: Priority) {
+        // A read-modify-write of the word it shares with three other interrupts.
+        critical_section::with(|_| {
+            // SAFETY: priority changes can't make a handler run that couldn't before.
+            unsafe { gic::set_priority(Self::ID, priority as u8) }
+        })
+    }
 }
 
 /// An interrupt handler for `I`.
@@ -132,6 +228,81 @@ mod tests {
     }
 
     #[test]
+    fn pend_on_an_spi_sets_its_ispr_bit() {
+        test::reset();
+        typelevel::USB0::pend();
+        // GICD_ISPENDR2 (0xE820_1200 + 2*4), bit 73 - 64 = 9.
+        assert_eq!(test::writes(), [(0xE820_1208, 1 << 9)]);
+    }
+
+    #[test]
+    fn pend_on_an_sgi_writes_sgir_to_self() {
+        test::reset();
+        typelevel::SGI3::pend();
+        // GICD_SGIR: TargetListFilter = 0b10 (this CPU only), SGIINTID = 3.
+        assert_eq!(test::writes(), [(0xE820_1F00, (0b10 << 24) | 3)]);
+    }
+
+    #[test]
+    fn unpend_clears_its_icpr_bit() {
+        test::reset();
+        typelevel::USB0::unpend();
+        // GICD_ICPENDR2 (0xE820_1280 + 2*4), bit 9.
+        assert_eq!(test::writes(), [(0xE820_1288, 1 << 9)]);
+    }
+
+    #[test]
+    fn is_pending_reads_its_ispr_bit() {
+        test::reset();
+        test::poke32(0xE820_1208, 1 << 9);
+        assert!(typelevel::USB0::is_pending());
+        assert!(!typelevel::USB1::is_pending());
+    }
+
+    #[test]
+    fn is_enabled_reads_its_iser_bit() {
+        test::reset();
+        test::poke32(0xE820_1108, 1 << 9);
+        assert!(typelevel::USB0::is_enabled());
+        assert!(!typelevel::USB1::is_enabled());
+    }
+
+    #[test]
+    fn set_priority_writes_its_byte_lane() {
+        test::reset();
+        typelevel::DMAINT4::set_priority(Priority::P13);
+        // DMAINT4 is GIC 45: GICD_IPRIORITYR11 (0xE820_1400 + 11*4), byte lane 1, value 13 << 3.
+        assert_eq!(test::writes(), [(0xE820_142C, (13 << 3) << 8)]);
+    }
+
+    #[test]
+    fn get_priority_reads_back_what_was_set() {
+        test::reset();
+        typelevel::DMAINT4::set_priority(Priority::P13);
+        typelevel::DMAINT5::set_priority(Priority::P2);
+        assert_eq!(typelevel::DMAINT4::get_priority(), Priority::P13);
+        assert_eq!(typelevel::DMAINT5::get_priority(), Priority::P2);
+    }
+
+    #[test]
+    fn the_default_priority_is_p16() {
+        assert_eq!(Priority::default(), Priority::P16);
+    }
+
+    #[test]
+    fn gic_init_defaults_every_priority_to_p16() {
+        test::reset();
+        unsafe { crate::gic::init() };
+        let ipr = 0xE820_1400..0xE820_1400 + (crate::gic::INT_ID_TOTAL / 4 + 1) * 4;
+        let writes: std::vec::Vec<_> = test::writes()
+            .into_iter()
+            .filter(|(a, _)| ipr.contains(a))
+            .collect();
+        assert_eq!(writes.len(), crate::gic::INT_ID_TOTAL / 4 + 1);
+        assert!(writes.iter().all(|&(_, v)| v == 0x8080_8080), "{writes:x?}");
+    }
+
+    #[test]
     fn interrupt_ids_match_the_hardware_manual() {
         assert_eq!(typelevel::DMAINT0::ID, 41);
         assert_eq!(typelevel::DMAINT15::ID, 56);
@@ -142,18 +313,11 @@ mod tests {
     #[test]
     fn enabling_an_interrupt_sets_its_distributor_bit() {
         test::reset();
-        unsafe { crate::gic::enable(73) };
+        unsafe { typelevel::USB0::enable() };
         // GICD_ISENABLER2 (0xE820_1100 + 2*4), bit 73 - 64 = 9.
         assert_eq!(test::writes(), [(0xE820_1108, 1 << 9)]);
     }
 
-    #[test]
-    fn setting_a_priority_writes_its_byte_lane() {
-        test::reset();
-        unsafe { crate::gic::set_priority(45, 13) };
-        // GICD_IPRIORITYR11 (0xE820_1400 + 11*4), byte lane 45 % 4 = 1, value 13 << 3.
-        assert_eq!(test::writes(), [(0xE820_142C, (13 << 3) << 8)]);
-    }
     #[test]
     fn the_4b_interrupt_ids_match_the_hardware_manual() {
         assert_eq!(typelevel::SGI0::ID, 0);
@@ -196,7 +360,7 @@ mod tests {
     #[test]
     fn disabling_an_interrupt_sets_its_clear_enable_bit() {
         test::reset();
-        unsafe { crate::gic::disable(73) };
+        typelevel::USB0::disable();
         // GICD_ICENABLER2 (0xE820_1180 + 2*4), bit 73 - 64 = 9.
         assert_eq!(test::writes(), [(0xE820_1188, 1 << 9)]);
     }

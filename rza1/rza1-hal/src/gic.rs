@@ -32,10 +32,11 @@ use crate::pac::intc::regs::{Iccbpr, Iccicr, Iccpmr, Icddcr, Icr1, Irqrr};
 /// GIC priority field is bits [7:3] of each IPRIORITYR byte; shift a 5-bit
 /// priority value left by this amount to position it correctly.
 const GIC_PRIORITY_SHIFT: u32 = 3;
-/// Priority-word filled with the lowest active priority (31 << 3 = 0xF8)
-/// repeated in every byte.  Written to all IPRIORITYR words during init to
-/// start all interrupts at the lowest priority until explicitly lowered.
-const GIC_PRIORITY_LOWEST_WORD: u32 = 0xF8F8_F8F8;
+/// An IPRIORITYR word holding [`Priority::default`](crate::interrupt::Priority) in every byte
+/// lane. [`init`] writes it to every word, so an interrupt nobody gave a priority still reaches
+/// the CPU once enabled.
+const GIC_PRIORITY_DEFAULT_WORD: u32 =
+    ((crate::interrupt::Priority::DEFAULT as u32) << GIC_PRIORITY_SHIFT) * 0x0101_0101;
 /// GICC_CTLR (ICCICR) bit 0: EnableS — enables forwarding of Group 0 (secure) interrupts.
 /// BSP: INTC_ICCICR_EnableS = 0x01
 const ICCICR_ENABLES: u32 = 0x1;
@@ -240,10 +241,10 @@ pub unsafe fn init() {
             INTC.icdicfr(i).write_value(val);
         }
 
-        // 3. Set all interrupt priorities to the lowest active level (31).
-        //    Priority field is [7:3], so 31 << 3 = 0xF8 per byte.
+        // 3. Start every interrupt at the default priority (P16): below PMR (31), so an enabled
+        //    interrupt reaches the CPU even if nobody set its priority. Field [7:3] per byte.
         for i in 0..n_ipr {
-            INTC.icdipr(i).write_value(GIC_PRIORITY_LOWEST_WORD);
+            INTC.icdipr(i).write_value(GIC_PRIORITY_DEFAULT_WORD);
         }
 
         // 4. Route all SPI interrupts (IDs 32+) to CPU 0 (target byte = 0x01).
@@ -363,7 +364,7 @@ pub(crate) fn handler(id: u16) -> Option<HandlerFn> {
 ///
 /// # Safety
 /// Writes to memory-mapped peripheral registers.
-pub unsafe fn enable(id: u16) {
+pub(crate) unsafe fn enable(id: u16) {
     if (id as usize) >= INT_ID_TOTAL {
         return;
     }
@@ -375,7 +376,7 @@ pub unsafe fn enable(id: u16) {
 ///
 /// # Safety
 /// Writes to memory-mapped peripheral registers.
-pub unsafe fn disable(id: u16) {
+pub(crate) unsafe fn disable(id: u16) {
     if (id as usize) >= INT_ID_TOTAL {
         return;
     }
@@ -401,7 +402,7 @@ pub unsafe fn shutdown() {
 ///
 /// # Safety
 /// Writes to memory-mapped peripheral registers.
-pub unsafe fn set_priority(id: u16, priority: u8) {
+pub(crate) unsafe fn set_priority(id: u16, priority: u8) {
     if (id as usize) >= INT_ID_TOTAL || priority >= 32 {
         return;
     }
@@ -411,6 +412,52 @@ pub unsafe fn set_priority(id: u16, priority: u8) {
     val &= !(0xFFu32 << shift);
     val |= ((priority as u32) << GIC_PRIORITY_SHIFT) << shift; // bits [7:3] are the valid field
     ipr.write_value(val);
+}
+
+/// Priority of interrupt `id` (0 = highest, 31 = lowest): the inverse of [`set_priority`].
+pub(crate) fn priority(id: u16) -> u8 {
+    if (id as usize) >= INT_ID_TOTAL {
+        return 31;
+    }
+    let shift = ((id % 4) * 8) as u32;
+    ((INTC.icdipr((id / 4) as usize).read() >> shift) as u8) >> GIC_PRIORITY_SHIFT
+}
+
+/// Whether interrupt `id` is enabled in the distributor.
+pub(crate) fn is_enabled(id: u16) -> bool {
+    (id as usize) < INT_ID_TOTAL
+        && INTC.icdiser((id >> 5) as usize).read() & (1u32 << (id & 31)) != 0
+}
+
+/// Whether interrupt `id` is pending in the distributor.
+pub(crate) fn is_pending(id: u16) -> bool {
+    (id as usize) < INT_ID_TOTAL
+        && INTC.icdispr((id >> 5) as usize).read() & (1u32 << (id & 31)) != 0
+}
+
+/// GICD_SGIR TargetListFilter 0b10: send the SGI to the requesting CPU only.
+const SGIR_TARGET_SELF: u32 = 0b10 << 24;
+
+/// Make interrupt `id` pending. A software-generated interrupt (ID 0–15) can only be raised
+/// through GICD_SGIR (its ISPENDR bits are read-only on the PL390); every other ID through its
+/// set-pending bit.
+pub(crate) fn pend(id: u16) {
+    if id < 16 {
+        INTC.icdsgir()
+            .write_value(crate::pac::intc::regs::Icdsgir(SGIR_TARGET_SELF | id as u32));
+    } else if (id as usize) < INT_ID_TOTAL {
+        INTC.icdispr((id >> 5) as usize)
+            .write_value(1u32 << (id & 31));
+    }
+}
+
+/// Clear interrupt `id`'s pending state. SGIs' clear-pending bits are read-only on the PL390, so
+/// for them this does nothing: an SGI stays pending until it is taken.
+pub(crate) fn unpend(id: u16) {
+    if (16..INT_ID_TOTAL as u16).contains(&id) {
+        INTC.icdicpr((id >> 5) as usize)
+            .write_value(1u32 << (id & 31));
+    }
 }
 
 // ---------------------------------------------------------------------------
