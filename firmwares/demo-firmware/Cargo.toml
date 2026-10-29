@@ -12,7 +12,7 @@ test = false
 [dependencies]
 usb-classes = { workspace = true, features = ["device-audio"] }
 deluge = { path = "../../crates/deluge-sdk", package = "deluge-sdk" }
-rza1l-hal = { path = "../../rza1/rza1l-hal" }
+rza1-hal = { path = "../../rza1/rza1-hal", features = ["rza1l"] }
 deluge-bsp = { path = "../../crates/deluge-bsp", features = ["usb-host"] }
 cortex-ar = { workspace = true }
 embassy-executor = { workspace = true, features = ["nightly", "platform-cortex-ar", "executor-thread"] }
@@ -23,7 +23,6 @@ embassy-usb-driver = { workspace = true }
 embassy-usb-host = { workspace = true }
 log = { workspace = true }
 embassy-futures = { workspace = true }
-flare-fft.workspace = true
 rtt-target = { workspace = true, optional = true }
 
 [features]

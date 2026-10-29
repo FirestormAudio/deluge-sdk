@@ -38,9 +38,7 @@ echo "==> QEMU ARM bucket ($QEMU)"
 # under QEMU. The portable fallback is covered in the host bucket below.
 cargo test --target "$QEMU" -p armv7-dsp-intrinsics --lib
 cargo test --target "$QEMU" -p armv7-dsp-intrinsics --features nightly --lib
-# No --lib: also runs the cross-crate dsp_pipeline integration test. It lives
-# here because the FFT crate (flare-fft) is in its own repo and must not
-# dev-depend on the SDK.
+# No --lib: also runs the cross-crate dsp_pipeline integration test.
 cargo test --target "$QEMU" -p deluge-fixedpoint
 # The chip crates are their own workspace; their suite (tests, PAC checks, register-table check)
 # runs from rza1/tools/test.sh, which CI also runs on its own.
@@ -48,9 +46,6 @@ rza1/tools/test.sh
 cargo test --target "$QEMU" -p deluge-bsp --features usb-host-uac,usb-host-overbridge --lib
 cargo test --target "$QEMU" -p usb-classes --features device-audio,device-midi,host-midi,host-uac,host-overbridge,device-overbridge --lib
 cargo test --target "$QEMU" -p deluge-fonts --lib
-# The audio engine (flare-kernels, flare-graph, flare-fft) lives in its own
-# repo and is tested by that repo's tools/test.sh, which runs its own
-# two-bucket, two-config matrix.
 
 echo "==> Host bucket ($HOST)"
 # Portable-fallback / non-NEON paths of the fixed-point crates (the QEMU bucket

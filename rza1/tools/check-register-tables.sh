@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Phase 5 exit check (spec: "no const OFF_*/*_BASE register tables left in rza1l-hal"), over the
+# Phase 5 exit check (spec: "no const OFF_*/*_BASE register tables left in rza1-hal"), over the
 # whole crate: no module may declare an OFF_*/*_BASE constant or name a raw peripheral address
 # (0xE8……, 0xFC……, 0x3F……) outside comments and its test module. Only address-typed (`usize`)
 # constants count: `*_BASE` interrupt-ID bases (`u16`) are not tables.
@@ -10,13 +10,13 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-# Every module under rza1l-hal/src takes its registers from rza1_pac, except these, which
+# Every module under rza1-hal/src takes its registers from rza1_pac, except these, which
 # describe memory rather than registers.
 EXEMPT=(memmap.rs mmu.rs)
 
 status=0
 while IFS= read -r f; do
-  m="${f#rza1l-hal/src/}"
+  m="${f#rza1-hal/src/}"
   for e in "${EXEMPT[@]}"; do [ "$m" = "$e" ] && continue 2; done
   # Everything before the first host-test module (a `#[cfg(all(test…` line followed by `mod`; the
   # same cfg on a `use` doesn't end the scan); comment lines skipped.
@@ -27,8 +27,8 @@ while IFS= read -r f; do
     printf '%s\n' "$hits"
     status=1
   fi
-done < <(find rza1l-hal/src -name '*.rs' | sort)
+done < <(find rza1-hal/src -name '*.rs' | sort)
 if [ "$status" -ne 0 ]; then
-  echo "error: an rza1l-hal module still hand-writes register addresses; take them from rza1_pac" >&2
+  echo "error: an rza1-hal module still hand-writes register addresses; take them from rza1_pac" >&2
 fi
 exit "$status"

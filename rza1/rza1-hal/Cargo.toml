@@ -1,0 +1,84 @@
+[package]
+name = "rza1-hal"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Embassy HAL for the Renesas RZ/A1 (RZ/A1L, RZ/A1H; ARM Cortex-A9)."
+categories = ["embedded", "no-std", "hardware-support"]
+keywords = ["rza1", "renesas", "cortex-a9", "embassy", "hal"]
+
+# docs.rs builds on the x86_64 host by default; the bare-metal driver code only
+# compiles for the device triple, so build the docs there.
+[package.metadata.docs.rs]
+default-target = "armv7a-none-eabihf"
+features = ["rza1l"]
+
+[lib]
+# Unit tests (in #[cfg(all(test, not(target_os="none")))]) run natively via
+# `cargo test` (host target). They cannot compile for armv7a-none-eabihf
+# because the `test` crate requires std.
+test = false
+
+[target.'cfg(target_os = "none")'.dependencies]
+cortex-ar = { workspace = true }
+# The time driver's queue: the driver is device-only (it registers embassy's global time symbols).
+embassy-time-queue-utils = { workspace = true, optional = true }
+
+[dependencies]
+rza1-pac = { path = "../rza1-pac", version = "0.1.0" }
+critical-section = { workspace = true }
+embassy-sync = { workspace = true }
+embassy-futures = { workspace = true }
+embassy-hal-internal = { workspace = true }
+embassy-time = { workspace = true }
+embassy-time-driver = { workspace = true }
+embassy-usb-driver = { workspace = true }
+embedded-hal = "1"
+embedded-hal-async = "1"
+embedded-io-async = "0.7"
+log = { workspace = true, optional = true }
+defmt = { version = "1", optional = true }
+
+[features]
+default = ["rt", "critical-section-impl", "time-driver-ostm"]
+## Log through the `log` crate.
+log = ["dep:log"]
+## Log through `defmt`, and derive `defmt::Format` on the public types. Not with `log`.
+defmt = ["dep:defmt", "embassy-usb-driver/defmt"]
+## Re-export the register-level PAC as `pac`. Not covered by semver: the PAC's API follows its
+## generator.
+unstable-pac = []
+## Export `gic_dispatch`, the function `rza1-rt`'s IRQ entry calls. Turn off only to dispatch
+## interrupts yourself.
+rt = []
+## Provide the `critical-section` implementation (single-core: IRQ and FIQ masking). Turn off to
+## bring your own.
+critical-section-impl = ["cortex-ar/critical-section-single-core"]
+## `Dma::steal`, `Rspi::steal` and `UartRx::steal`: for panic and fault paths that must reach an
+## initialised driver without its owner. Hidden from the docs and not covered by semver.
+unstable-driver-steal = []
+## The chip: enable exactly one.
+## The RZ/A1L (R7S721020 and family).
+rza1l = ["rza1-pac/rza1l"]
+## The RZ/A1H. Compiles and exposes the A1H's extra driver instances (RSPI3/RSPI4, the larger
+## interrupt table); not hardware-validated, and its pin tables are not yet filled in.
+rza1h = ["rza1-pac/rza1h"]
+## The Embassy time driver on OSTM0 (free-running count) and OSTM1 (alarm): `time_driver`.
+## Turn default features off to bring your own driver.
+time-driver-ostm = ["dep:embassy-time-queue-utils"]
+unlock-bootloader = []
+
+[target.'cfg(not(target_os = "none"))'.dev-dependencies]
+critical-section = { workspace = true, features = ["std"] }
+embassy-futures = { workspace = true }
+# Host tests have no executor or OSTM: `mock-driver` supplies a time driver to link against, and
+# `generic-queue-8` a timer queue, for code that reaches `embassy_time::Timer`.
+embassy-time = { workspace = true, features = ["mock-driver", "generic-queue-8"] }
+
+
+[lints.rust]
+unexpected_cfgs = "warn"

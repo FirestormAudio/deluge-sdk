@@ -3,7 +3,7 @@
 # Phase 6 splits into the rza1-rs repository.
 [workspace]
 resolver = "2"
-members = ["rza1-pac", "rza1-rt", "rza1l-hal", "rza1-alloc"]
+members = ["rza1-pac", "rza1-rt", "rza1-hal", "rza1-alloc"]
 
 [workspace.package]
 version = "0.1.0"
@@ -25,4 +25,5 @@ embassy-time = "0.5.1"
 embassy-time-driver = "0.2.2"
 embassy-time-queue-utils = "0.3.2"
 embassy-usb-driver = "0.2.2"
-log = { version = "0.4", features = ["release_max_level_info"] }
+# No max-level feature: the application picks its own log level.
+log = "0.4"

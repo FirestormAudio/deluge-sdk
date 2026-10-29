@@ -24,7 +24,7 @@ pub const PT_LOAD: u32 = 1;
 
 // --- Deluge load-region geometry -------------------------------------------
 
-/// Uncached mirror alias offset (`rza1l_hal::UNCACHED_MIRROR_OFFSET`).
+/// Uncached mirror alias offset (`rza1_hal::UNCACHED_MIRROR_OFFSET`).
 pub const UNCACHED_MIRROR_OFFSET: u32 = 0x4000_0000;
 
 /// SDRAM region usable by app images: `0x0C000000..0x0FD20000`. The top
@@ -436,7 +436,7 @@ impl From<HeaderError> for PlanError {
 // --- FSB metadata --------------------------------------------------------
 
 /// Image offsets of the first-stage-bootloader (FSB) metadata words, emitted by
-/// `rza1l-hal/src/startup.rs` just past the eight-entry vector table.
+/// `rza1-hal/src/startup.rs` just past the eight-entry vector table.
 pub const FSB_CODE_START: usize = 0x20;
 /// Offset of the `code_end` word (one past the last image byte).
 pub const FSB_CODE_END: usize = 0x24;
@@ -532,7 +532,7 @@ pub fn validate_fsb_metadata(image: &[u8], image_base: u32) -> Result<FsbMeta, F
 /// The flash-boot path keys off the `.BootLoad_ValidProgramTest.` signature at
 /// [`FSB_SIGNATURE_OFF`] from image byte 0, so byte 0 must be the vector table.
 /// The flattener bases the staged image at the *lowest* `PT_LOAD` load address,
-/// which for SDK firmware (`rza1l-hal`'s startup) already *is* the vector table —
+/// which for SDK firmware (`rza1-hal`'s startup) already *is* the vector table —
 /// so this returns `Some(0)`.
 ///
 /// Some firmware lays out differently: the DelugeFirmware linker places a

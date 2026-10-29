@@ -34,7 +34,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use deluge::prelude::*;
 use deluge_bsp::cv_gate;
 use deluge_bsp::uart as bsp_uart;
-use rza1l_hal::usb::{Rusb1Driver, init_device_mode, init_host_mode};
+use rza1_hal::usb::{Rusb1Driver, init_device_mode, init_host_mode};
 
 // ---------------------------------------------------------------------------
 // USB mode selection
@@ -44,8 +44,8 @@ use rza1l_hal::usb::{Rusb1Driver, init_device_mode, init_host_mode};
 static USB0_HOST_MODE: AtomicBool = AtomicBool::new(false);
 
 // USB0's interrupt goes to the host or device handler, whichever mode the port was brought up in.
-rza1l_hal::bind_interrupts!(struct UsbIrqs {
-    USB0 => rza1l_hal::usb::DualRoleInterruptHandler<rza1l_hal::peripherals::USB0>;
+rza1_hal::bind_interrupts!(struct UsbIrqs {
+    USB0 => rza1_hal::usb::DualRoleInterruptHandler<rza1_hal::peripherals::USB0>;
 });
 
 // ---------------------------------------------------------------------------
@@ -78,7 +78,7 @@ fn setup() {
     info!("Pad paint demo: press pads to toggle, buttons 0/1/2 to clear/fill/invert");
 
     info!("GPIO: configuring heartbeat LED...");
-    unsafe { rza1l_hal::gpio::set_as_output(6, 7) };
+    unsafe { rza1_hal::gpio::set_as_output(6, 7) };
 
     info!("UART: initialising MIDI...");
     let (midi, midi_rx) = deluge::parts::with(|p| (p.midi_uart.take(), p.midi_rx_dma.take()));
@@ -154,10 +154,10 @@ async fn main(dlg: Deluge) {
         USB0_HOST_MODE.load(Ordering::Relaxed)
     );
 
-    let mut usb_host_driver: Option<rza1l_hal::usb::Rusb1HostDriver<'static>> = None;
+    let mut usb_host_driver: Option<rza1_hal::usb::Rusb1HostDriver<'static>> = None;
     let mut usb_device_opt: Option<embassy_usb::UsbDevice<'static, Rusb1Driver<'static>>> = None;
-    let mut ep_out_opt: Option<rza1l_hal::usb::Rusb1EndpointOut> = None;
-    let mut ep_in_opt: Option<rza1l_hal::usb::Rusb1EndpointIn> = None;
+    let mut ep_out_opt: Option<rza1_hal::usb::Rusb1EndpointOut> = None;
+    let mut ep_in_opt: Option<rza1_hal::usb::Rusb1EndpointIn> = None;
     let mut midi_sender_opt: Option<
         embassy_usb::class::midi::Sender<'static, Rusb1Driver<'static>>,
     > = None;

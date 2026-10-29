@@ -25,8 +25,8 @@
 //! | 3       | 4    | 0   |
 
 #[cfg(target_os = "none")]
-use rza1l_hal::ostm;
-use rza1l_hal::gpio;
+use rza1_hal::ostm;
+use rza1_hal::gpio;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -69,7 +69,7 @@ fn dac_word(ch: u8, value: u16) -> Option<u32> {
 
 /// Initialise the CV DAC + gate GPIO lines.
 ///
-/// **Must be called after** [`crate::bus::init`] (RSPI0) and `rza1l_hal::time_driver::init`
+/// **Must be called after** [`crate::bus::init`] (RSPI0) and `rza1_hal::init` (which starts the time driver)
 /// (which `delay_ms` needs).
 ///
 /// After this function returns:

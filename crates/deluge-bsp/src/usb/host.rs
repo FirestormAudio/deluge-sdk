@@ -2,7 +2,7 @@
 //!
 //! The class drivers it runs (USB-MIDI, UAC) are board-agnostic and live in
 //! `usb_classes::host`. This module wires them to the RUSB1 host driver in
-//! [`rza1l_hal::usb`] and to the Deluge's pipe budget and engine sample rate.
+//! [`rza1_hal::usb`] and to the Deluge's pipe budget and engine sample rate.
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
@@ -321,7 +321,7 @@ mod runtime {
     use embassy_usb_host::handler::{BusRoute, HandlerEvent};
     use embassy_usb_host::{BusHandle, BusState, bus};
     use log::{error, info, warn};
-    use rza1l_hal::usb::{Rusb1Allocator, Rusb1HostDriver};
+    use rza1_hal::usb::{Rusb1Allocator, Rusb1HostDriver};
 
     use super::{DeviceId, MAX_MIDI_DEVICES, MIDI_RX, MIDI_TX};
     use usb_classes::host::midi::MidiHost;
@@ -897,7 +897,7 @@ mod runtime {
     ///
     /// Spawn this instead of a bare enumerate-and-log task when the port is in
     /// host mode. The `driver` must have been initialised via
-    /// [`rza1l_hal::usb::init_host_mode`], whose binding serves host mode.
+    /// [`rza1_hal::usb::init_host_mode`], whose binding serves host mode.
     #[embassy_executor::task]
     pub async fn usb_host_supervisor(driver: Rusb1HostDriver<'static>, spawner: Spawner) {
         static BUS_STATE: BusState = BusState::new();

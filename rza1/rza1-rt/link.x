@@ -34,7 +34,7 @@ TTB_SIZE = 0x4000;
 
 /* The status LED the reset and fault handlers drive (startup.rs). The port's GPIO registers are
  * 16 bits wide and 4 bytes apart per port (RZ/A1L hardware manual, ch. 54: Pn, PMn, PMCn,
- * PIPCn; matches rza1l_hal::gpio). Port 0 is input-only, so it has no PM/PIPC register. */
+ * PIPCn; matches rza1_hal::gpio). Port 0 is input-only, so it has no PM/PIPC register. */
 ASSERT(DEFINED(RZA1_STATUS_LED_PORT) && DEFINED(RZA1_STATUS_LED_PIN),
        "memory.x must define RZA1_STATUS_LED_PORT and RZA1_STATUS_LED_PIN")
 /* Every other use is guarded with DEFINED(), so a missing symbol fails on the ASSERT above
@@ -61,7 +61,7 @@ SECTIONS {
      */
     .ttb_mmu1 ORIGIN(RAM) (NOLOAD) : ALIGN(0x4000) {
         ttb_mmu1_base = .;
-        /* rza1l_hal::mmu::TTB itself (16 KB, 16 KB-aligned), here rather than in
+        /* rza1_hal::mmu::TTB itself (16 KB, 16 KB-aligned), here rather than in
          * .bss. KEEP, because nothing references the input section by name. The
          * reservation stays TTB_SIZE whatever it holds; a table that outgrew it
          * would move the location counter backwards, which is a link error. */

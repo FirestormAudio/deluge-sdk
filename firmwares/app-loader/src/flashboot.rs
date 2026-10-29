@@ -9,7 +9,7 @@
 //! The on-flash image is a **raw `.bin`** (e.g. produced by `cargo build-fw-bin`)
 //! linked to load and run from SRAM at `0x2002_0000`.  Byte 0 of the image is the
 //! vector table / `_start`, and the standard FSB metadata words sit just past the
-//! eight vector entries (see `rza1l-hal/src/startup.rs`):
+//! eight vector entries (see `rza1-hal/src/startup.rs`):
 //!
 //! | Image offset | Word |
 //! |--------------|------|

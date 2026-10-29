@@ -28,7 +28,7 @@ pub use deluge_image::settings::{
 /// ops: after [`write()`] programs the sector, the cached window can still return
 /// the stale pre-write line, which would make the post-write read-back (and a
 /// same-session re-read) lie.  The uncached mirror always sees current flash.
-const SETTINGS_UNCACHED_ADDR: u32 = flash::SETTINGS_ADDR + rza1l_hal::UNCACHED_MIRROR_OFFSET as u32;
+const SETTINGS_UNCACHED_ADDR: u32 = flash::SETTINGS_ADDR + rza1_hal::UNCACHED_MIRROR_OFFSET as u32;
 
 /// Read the persisted settings from the flash settings sector (via the uncached
 /// mirror), falling back to [`Settings::default`] on a blank or invalid record

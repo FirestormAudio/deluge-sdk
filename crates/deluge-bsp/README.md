@@ -3,7 +3,7 @@
 Board Support Package for the Synthstrom Deluge controller, targeting the
 Renesas RZ/A1L (Arm Cortex-A9, 400 MHz, 3 MB on-chip SRAM + 64 MB SDRAM).
 
-This crate sits on top of [`rza1l-hal`](../rza1l-hal) and provides
+This crate sits on top of [`rza1-hal`](../rza1-hal) and provides
 ready-to-use drivers and initialization routines for every peripheral on the
 Deluge board.  It is `no_std` when compiled for the bare-metal target
 (`armv7a-none-eabihf`), and can also be compiled for the host for unit
@@ -13,12 +13,12 @@ testing.
 
 | Module | Description |
 |---|---|
-| [`system`] | Clock gating (`StbConfig`), the DMA channel map, and `BOARD_CONFIG`, the chip configuration `rza1l_hal::init` takes |
+| [`system`] | `BOARD_CONFIG`, the chip configuration `rza1_hal::init` takes (crystal, `CPG`, `MODULE_CLOCKS`, DMAC and time-driver priorities), and the DMA channel map |
 | [`sdram`] | 64 MB SDRAM (Micron MT48LC16M16A2P-75) — pin-mux, BSC registers, JEDEC init |
 | [`audio`] | SSI0 stereo codec interface; codec power sequencing and master-clock enable |
-| [`scux_dvu_path`] | SCUX DVU path — CPU SRAM → DMA → SCUX → SSIF0 TX (2048-frame buffer, software volume / fade); [`rza1l_hal::scux::dvu_path`] bound to the Deluge's SSI0 config and DMA channel |
-| [`scux_src_path`] | SCUX async SRC path — asynchronous sample-rate conversion between two independent clock domains (e.g. 44.1 kHz ↔ 48 kHz); [`rza1l_hal::scux::src_path`] on the Deluge's DMA channels |
-| [`scux_usb_tx_path`] | SCUX USB-rate SRC path; [`rza1l_hal::scux::usb_tx_path`] on the Deluge's DMA channels |
+| [`scux_dvu_path`] | SCUX DVU path — CPU SRAM → DMA → SCUX → SSIF0 TX (2048-frame buffer, software volume / fade); [`rza1_hal::scux::dvu_path`] bound to the Deluge's SSI0 config and DMA channel |
+| [`scux_src_path`] | SCUX async SRC path — asynchronous sample-rate conversion between two independent clock domains (e.g. 44.1 kHz ↔ 48 kHz); [`rza1_hal::scux::src_path`] on the Deluge's DMA channels |
+| [`scux_usb_tx_path`] | SCUX USB-rate SRC path; [`rza1_hal::scux::usb_tx_path`] on the Deluge's DMA channels |
 | [`cv_gate`] | MAX5136 quad 16-bit SPI CV DAC (2 channels, ~6552 counts/V; frames from the [`max5136`](../../drivers/max5136) crate) + 4 V-trig gate GPIOs |
 | [`midi_gate`] | MTU2 one-shot timer for sub-millisecond precise gate-off scheduling (~1.92 µs resolution); `setup(board.gate_timer)` |
 | [`oled`] | SSD1309 128×48 OLED — `FrameBuffer`, pixel API, DMA frame send via RSPI0; CS/RST handshaked through the PIC co-processor |
@@ -36,7 +36,7 @@ testing.
 | [`trigger_clock`] | Analog trigger-clock input |
 | [`rgb`] | RGB pad-LED surface for the 18 × 8 grid |
 | [`battery`] | Battery-voltage sense via the ADC |
-| [`board`] | `Board::new(rza1l_hal::init(system::BOARD_CONFIG))`: the rest of the bring-up, then the Deluge's peripherals by role (USB0/1, RSPI0, SCIF0/1, MTU2 2/3, SDHI1 `sd_card`, SSIF0 `audio_ssi`, the 16 DMA channels) |
+| [`board`] | `Board::new(rza1_hal::init(system::BOARD_CONFIG))`: the rest of the bring-up, then the Deluge's peripherals by role (USB0/1, RSPI0, SCIF0/1, MTU2 2/3, SDHI1 `sd_card`, SSIF0 `audio_ssi`, the 16 DMA channels) |
 | [`flash`] | SPI-NOR chip profile and board flash map (feature `flash`) |
 | [`host_panel`] | Host builds: the hook a simulated front panel plugs into (`deluge-sdk`'s simulator backend installs one) |
 
@@ -52,7 +52,7 @@ drop. The guard tracks the current frame mode, so switching between the OLED's
 
 The chip-level RUSB1 device and host drivers (`init_device_mode` /
 `init_host_mode`, the `embassy-usb-driver` implementations) live in
-[`rza1l_hal::usb`](../rza1l-hal/README.md), and the board-agnostic classes (UAC2,
+[`rza1_hal::usb`](../rza1-hal/README.md), and the board-agnostic classes (UAC2,
 USB-MIDI, MSC + Bulk-Only Transport, host MIDI/UAC) in
 [`usb-classes`](../../usb/usb-classes). This crate adds only the Deluge's part:
 its USB identities, the SD-backed `SdBlock`, and the host-role supervisor.
@@ -88,7 +88,7 @@ deluge-bsp = { path = "../deluge-bsp" }
 A typical boot sequence (`Board::new` also brings up the MMU, caches and the SDRAM controller):
 
 ```rust
-let board = deluge_bsp::Board::new(rza1l_hal::init(deluge_bsp::system::BOARD_CONFIG));
+let board = deluge_bsp::Board::new(rza1_hal::init(deluge_bsp::system::BOARD_CONFIG));
 deluge_bsp::uart::init_pic(board.pic_uart, board.dma.pic_rx, board.dma.pic_tx, 31_250);
 deluge_bsp::bus::init(board.shared_spi, board.dma.oled);
 deluge_bsp::sd::init_hw(board.sd_card, board.dma.sd_tx, board.dma.sd_rx);

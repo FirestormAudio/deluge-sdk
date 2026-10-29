@@ -3,13 +3,13 @@ use embassy_usb_host::handler::BusRoute;
 use embassy_usb_host::{BusState, bus};
 use log::{error, info};
 
-use rza1l_hal::usb::Rusb1HostDriver;
+use rza1_hal::usb::Rusb1HostDriver;
 
 /// Runs the USB host stack: waits for a device, enumerates it, then waits for
 /// disconnect before looping.
 ///
 /// Spawn this task *instead of* `usb_task` when the port is in host mode.
-/// The `driver` must have been initialised via [`rza1l_hal::usb::init_host_mode`],
+/// The `driver` must have been initialised via [`rza1_hal::usb::init_host_mode`],
 /// whose binding serves host mode.
 #[embassy_executor::task]
 pub(crate) async fn usb_host_task(driver: Rusb1HostDriver<'static>) {

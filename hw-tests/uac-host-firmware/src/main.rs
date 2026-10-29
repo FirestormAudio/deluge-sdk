@@ -19,10 +19,10 @@ use log::{error, info};
 
 use deluge_bsp::{cv_gate, uart as bsp_uart};
 use rza1_alloc as allocator;
-use rza1l_hal::usb::init_host_mode;
+use rza1_hal::usb::init_host_mode;
 
-rza1l_hal::bind_interrupts!(struct UsbIrqs {
-    USB0 => rza1l_hal::usb::HostInterruptHandler<rza1l_hal::peripherals::USB0>;
+rza1_hal::bind_interrupts!(struct UsbIrqs {
+    USB0 => rza1_hal::usb::HostInterruptHandler<rza1_hal::peripherals::USB0>;
 });
 
 unsafe extern "C" {
@@ -58,10 +58,10 @@ pub extern "C" fn main() -> ! {
         let size = core::ptr::addr_of!(__sram_heap_end) as usize - start as usize;
         allocator::SRAM.init(start, size);
     }
-    let board = deluge_bsp::Board::new(rza1l_hal::init(deluge_bsp::system::BOARD_CONFIG));
+    let board = deluge_bsp::Board::new(rza1_hal::init(deluge_bsp::system::BOARD_CONFIG));
     unsafe { allocator::SDRAM.init(0x0C00_0000 as *mut u8, 64 * 1024 * 1024) };
 
-    unsafe { rza1l_hal::gpio::set_as_output(6, 7) };
+    unsafe { rza1_hal::gpio::set_as_output(6, 7) };
     bsp_uart::init_pic(board.pic_uart, board.dma.pic_rx, board.dma.pic_tx, 31_250);
     deluge_bsp::bus::init(board.shared_spi, board.dma.oled);
     unsafe { cv_gate::init() };

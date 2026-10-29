@@ -1,8 +1,8 @@
 //! The Deluge's peripherals, each in the role the board wires it to. [`Board::new`] finishes the
-//! bring-up `rza1l_hal::init` starts, then hands the peripherals out by role.
+//! bring-up `rza1_hal::init` starts, then hands the peripherals out by role.
 
-use rza1l_hal::Peri;
-use rza1l_hal::peripherals::*;
+use rza1_hal::Peri;
+use rza1_hal::peripherals::*;
 
 /// DMA channel 0: SCUX FFD0 (DVU playback path).
 pub type ScuxFfd0Dma = DMA_CH0;
@@ -101,29 +101,71 @@ pub struct Board {
     pub dma: BoardDma,
 }
 
-#[cfg(target_os = "none")]
-rza1l_hal::bind_interrupts!(struct TimeIrqs {
-    OSTMI0 => rza1l_hal::time_driver::OverflowHandler;
-    OSTMI1 => rza1l_hal::time_driver::AlarmHandler;
-});
+/// The priority of the interrupts of USB, the MIDI and PIC UARTs and the SD card: one level, as
+/// the drivers set them before priorities became the board's.
+const DRIVER_PRIORITY: rza1_hal::interrupt::Priority = rza1_hal::interrupt::Priority::P10;
+
+/// The gate timer's (MTU2_2, [`crate::midi_gate`]): above USB, so gate events are not delayed
+/// behind USB servicing.
+const GATE_TIMER_PRIORITY: rza1_hal::interrupt::Priority = rza1_hal::interrupt::Priority::P5;
+
+/// The encoder pins' and the encoder poll timer's (MTU2_3, [`crate::encoder`]): one level, so
+/// neither preempts the other.
+const ENCODER_PRIORITY: rza1_hal::interrupt::Priority = rza1_hal::interrupt::Priority::P14;
+
+/// The trigger clock input's (IRQ6, [`crate::trigger_clock`]): the encoders' level, below the gate
+/// timer and the DMAC (13).
+const TRIGGER_PRIORITY: rza1_hal::interrupt::Priority = rza1_hal::interrupt::Priority::P14;
+
+/// Give every interrupt the board's drivers enable its priority. The HAL leaves them at
+/// `Priority::DEFAULT`; the DMAC's comes from `system::BOARD_CONFIG` and the time driver's from
+/// the HAL's `init`.
+pub(crate) fn apply_irq_priorities() {
+    use rza1_hal::interrupt::{Interrupt, Priority, typelevel::*};
+    let set: [(fn(Priority), Priority); 17] = [
+        (USB0::set_priority, DRIVER_PRIORITY),
+        (USB1::set_priority, DRIVER_PRIORITY),
+        (ERI0::set_priority, DRIVER_PRIORITY),
+        (TXI0::set_priority, DRIVER_PRIORITY),
+        (ERI1::set_priority, DRIVER_PRIORITY),
+        (TXI1::set_priority, DRIVER_PRIORITY),
+        (SDHI1_STATUS::set_priority, DRIVER_PRIORITY),
+        (SDHI1_OP::set_priority, DRIVER_PRIORITY),
+        // The gate timer (MTU2_2).
+        (TGI2A::set_priority, GATE_TIMER_PRIORITY),
+        // The encoder poll timer (MTU2_3) and the encoder pins.
+        (TGI3A::set_priority, ENCODER_PRIORITY),
+        (IRQ0::set_priority, ENCODER_PRIORITY),
+        (IRQ1::set_priority, ENCODER_PRIORITY),
+        (IRQ2::set_priority, ENCODER_PRIORITY),
+        (IRQ3::set_priority, ENCODER_PRIORITY),
+        (IRQ4::set_priority, ENCODER_PRIORITY),
+        (IRQ7::set_priority, ENCODER_PRIORITY),
+        // The trigger clock input.
+        (IRQ6::set_priority, TRIGGER_PRIORITY),
+    ];
+    for (set_priority, priority) in set {
+        set_priority(priority);
+    }
+}
 
 impl Board {
-    /// Finish the bring-up `rza1l_hal::init(system::BOARD_CONFIG)` started (the GIC's SDRAM code
-    /// window, MMU, L1/L2 caches, SDRAM controller, the Embassy time driver on OSTM0/OSTM1),
-    /// then hand out the peripherals.
+    /// Finish the bring-up `rza1_hal::init(system::BOARD_CONFIG)` started (the GIC's SDRAM code
+    /// window, MMU, L1/L2 caches, SDRAM controller, the board's interrupt priorities), then hand
+    /// out the peripherals. The HAL's `init` has already started the time driver.
     ///
-    /// Safe: only the one `Peripherals` from `rza1l_hal::init` can reach it.
+    /// Safe: only the one `Peripherals` from `rza1_hal::init` can reach it.
     #[cfg(target_os = "none")]
-    pub fn new(p: rza1l_hal::Peripherals) -> Self {
-        // SAFETY: once, straight after `rza1l_hal::init`, before any peripheral is used.
+    pub fn new(p: rza1_hal::Peripherals) -> Self {
+        // SAFETY: once, straight after `rza1_hal::init`, before any peripheral is used.
         unsafe {
-            rza1l_hal::gic::set_sdram_code_window(crate::sdram::WINDOW);
-            rza1l_hal::mmu::init_and_enable();
-            rza1l_hal::cache::l1_enable();
-            rza1l_hal::cache::l2_init();
+            rza1_hal::gic::set_sdram_code_window(crate::sdram::WINDOW);
+            rza1_hal::mmu::init_and_enable();
+            rza1_hal::cache::l1_enable();
+            rza1_hal::cache::l2_init();
             crate::sdram::init();
         }
-        rza1l_hal::time_driver::init(p.OSTM0, p.OSTM1, TimeIrqs);
+        apply_irq_priorities();
         Self {
             usb0: p.USB0,
             usb1: p.USB1,
@@ -158,9 +200,125 @@ impl Board {
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
+    #[test]
+    fn board_irq_priorities_match_the_pre_phase1_values() {
+        use rza1_hal::interrupt::{Interrupt, Priority, typelevel::*};
+        rza1_hal::mmio::test::reset();
+        super::apply_irq_priorities();
+        // What the drivers set before priorities moved to the board: USB, SCIF and SDHI at 10;
+        // the encoder poll timer (MTU2_3), the encoder pins (IRQ0–4, IRQ7) and the trigger
+        // input (IRQ6) at 14; the gate timer (MTU2_2) at 5.
+        let got = [
+            ("USB0", USB0::get_priority()),
+            ("USB1", USB1::get_priority()),
+            ("ERI0", ERI0::get_priority()),
+            ("TXI0", TXI0::get_priority()),
+            ("ERI1", ERI1::get_priority()),
+            ("TXI1", TXI1::get_priority()),
+            ("SDHI1_STATUS", SDHI1_STATUS::get_priority()),
+            ("SDHI1_OP", SDHI1_OP::get_priority()),
+            ("TGI2A", TGI2A::get_priority()),
+            ("TGI3A", TGI3A::get_priority()),
+            ("IRQ0", IRQ0::get_priority()),
+            ("IRQ1", IRQ1::get_priority()),
+            ("IRQ2", IRQ2::get_priority()),
+            ("IRQ3", IRQ3::get_priority()),
+            ("IRQ4", IRQ4::get_priority()),
+            ("IRQ6", IRQ6::get_priority()),
+            ("IRQ7", IRQ7::get_priority()),
+        ];
+        use Priority::*;
+        let want = [
+            P10, P10, P10, P10, P10, P10, P10, P10, P5, P14, P14, P14, P14, P14, P14, P14, P14,
+        ];
+        for ((name, got), want) in got.iter().zip(want) {
+            assert_eq!(*got, want, "{name}");
+        }
+    }
+
+    /// The interrupt names in `src`'s `bind_interrupts!` blocks (`NAME => Handler;`) and
+    /// `interrupt::bind::<NAME, …>` calls.
+    fn bound_interrupts(src: &str) -> std::vec::Vec<std::string::String> {
+        let mut names = std::vec::Vec::new();
+        let mut in_block = false;
+        let is_ident = |n: &str| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+        for line in src.lines() {
+            let line = line.trim();
+            if line.starts_with("//") {
+                continue;
+            }
+            if line.contains("bind_interrupts!(") {
+                in_block = true;
+                continue;
+            }
+            if in_block {
+                if line.starts_with('}') {
+                    in_block = false;
+                } else if let Some((name, _)) = line.split_once("=>") {
+                    if is_ident(name.trim()) {
+                        names.push(name.trim().into());
+                    }
+                }
+            }
+            if let Some(rest) = line.split_once("interrupt::bind::<").map(|(_, r)| r) {
+                if let Some((name, _)) = rest.split_once(',') {
+                    if is_ident(name.trim()) {
+                        names.push(name.trim().into());
+                    }
+                }
+            }
+        }
+        names
+    }
+
+    #[test]
+    fn every_interrupt_the_bsp_binds_gets_a_board_priority() {
+        // A driver the BSP adds later must not sit at the HAL's default P16 by omission: each
+        // interrupt bound in deluge-bsp or the deluge facade is in `apply_irq_priorities`, or is
+        // a DMAC completion (its priority is `Config::dma_interrupt_priority`).
+        let root = env!("CARGO_MANIFEST_DIR");
+        let table = std::fs::read_to_string(std::format!("{root}/src/board.rs")).unwrap();
+        let mut missing = std::vec::Vec::new();
+        for dir in ["src", "../deluge-sdk/src"] {
+            let mut stack = std::vec![std::path::PathBuf::from(std::format!("{root}/{dir}"))];
+            while let Some(path) = stack.pop() {
+                if path.is_dir() {
+                    stack.extend(std::fs::read_dir(&path).unwrap().map(|e| e.unwrap().path()));
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let src = std::fs::read_to_string(&path).unwrap();
+                    for name in bound_interrupts(&src) {
+                        let covered = name.starts_with("DMAINT")
+                            || table.contains(&std::format!("({name}::set_priority,"));
+                        if !covered {
+                            missing.push(std::format!("{name} ({})", path.display()));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(missing.is_empty(), "bound but given no board priority: {missing:?}");
+    }
+
+    #[test]
+    fn board_config_gives_the_time_driver_its_pre_phase1_priority() {
+        // The OSTM time driver's interrupts were at 14 when the driver set them itself.
+        assert_eq!(
+            crate::system::BOARD_CONFIG.time_interrupt_priority,
+            rza1_hal::interrupt::Priority::P14
+        );
+    }
+
+    #[test]
+    fn board_config_gives_the_dmac_its_pre_phase1_priority() {
+        assert_eq!(
+            crate::system::BOARD_CONFIG.dma_interrupt_priority,
+            rza1_hal::interrupt::Priority::P13
+        );
+    }
+
     use super::*;
     use crate::system::*;
-    use rza1l_hal::dmac::Channel;
+    use rza1_hal::dmac::Channel;
 
     #[test]
     fn board_dma_roles_name_the_channels_the_drivers_use() {

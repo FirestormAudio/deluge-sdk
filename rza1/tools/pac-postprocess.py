@@ -3,7 +3,7 @@
 
 chiptool always emits an `Interrupt` enum implementing `cortex_m::interrupt::InterruptNumber`, an
 `rt` vector table and a `cortex_m_rt` re-export. The RZ/A1L is a Cortex-A9 whose interrupts go
-through the GIC (`rza1l_hal::interrupt`), so they go, as do the crate-level attributes, which the
+through the GIC (`rza1_hal::interrupt`), so they go, as do the crate-level attributes, which the
 PAC's own lib.rs sets around `include!`. Each removal asserts its target exists, so a chiptool
 change that moves them fails here instead of shipping half-stripped.
 

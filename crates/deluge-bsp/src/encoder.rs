@@ -114,7 +114,7 @@ const WIRING: [Wiring; NUM_ENCODERS] = [
 // Each encoder's A pin is bound to the typed interrupt below; its GIC ID must agree.
 #[cfg(target_os = "none")]
 const _: () = {
-    use rza1l_hal::interrupt::{Interrupt, typelevel::*};
+    use rza1_hal::interrupt::{Interrupt, typelevel::*};
     assert!(WIRING[0].gic_id == IRQ3::ID && WIRING[1].gic_id == IRQ2::ID);
     assert!(WIRING[2].gic_id == IRQ4::ID && WIRING[3].gic_id == IRQ1::ID);
     assert!(WIRING[4].gic_id == IRQ0::ID && WIRING[5].gic_id == IRQ7::ID);
@@ -129,10 +129,6 @@ static DECODERS: critical_section::Mutex<core::cell::RefCell<[QuadratureDecoder;
         [QuadratureDecoder::new(false, false); NUM_ENCODERS],
     ));
 
-/// The GIC priority of the encoder and poll interrupts.
-#[cfg(target_os = "none")]
-const ENCODER_PRIORITY: u8 = 14;
-
 #[cfg(target_os = "none")]
 fn pin(pins: u16, n: u8) -> bool {
     (pins >> n) & 1 != 0
@@ -143,8 +139,8 @@ fn enc_irq_handler(index: usize) {
     let w = &WIRING[index];
     // Clear the pending edge BEFORE reading the pins: an A edge after the read then raises the
     // interrupt again, rather than being cleared away unread.
-    unsafe { rza1l_hal::gic::clear_irq_pending(w.irq_num) };
-    let pins = unsafe { rza1l_hal::gpio::read_port(1) };
+    unsafe { rza1_hal::gic::clear_irq_pending(w.irq_num) };
+    let pins = unsafe { rza1_hal::gpio::read_port(1) };
     let edges = critical_section::with(|cs| {
         DECODERS.borrow_ref_mut(cs)[index].observe_a_edge(
             pin(pins, w.irq_pin),
@@ -167,7 +163,7 @@ const _: () = assert!(POLL_TICKS == 516, "encoder poll period changed");
 
 /// The poll timer (MTU2 channel 3), once [`irq_init`] has run. Its handler reaches it here.
 #[cfg(target_os = "none")]
-static POLL_TIMER: embassy_sync::once_lock::OnceLock<rza1l_hal::mtu2::OneShot<'static>> =
+static POLL_TIMER: embassy_sync::once_lock::OnceLock<rza1_hal::mtu2::OneShot<'static>> =
     embassy_sync::once_lock::OnceLock::new();
 
 /// The poll's compare-match interrupt. The channel clears its counter on the match, so leaving it
@@ -176,7 +172,7 @@ static POLL_TIMER: embassy_sync::once_lock::OnceLock<rza1l_hal::mtu2::OneShot<'s
 struct PollHandler;
 
 #[cfg(target_os = "none")]
-impl rza1l_hal::interrupt::Handler<rza1l_hal::interrupt::typelevel::TGI3A> for PollHandler {
+impl rza1_hal::interrupt::Handler<rza1_hal::interrupt::typelevel::TGI3A> for PollHandler {
     unsafe fn on_interrupt() {
         if let Some(timer) = POLL_TIMER.try_get() {
             timer.clear_flag();
@@ -186,7 +182,7 @@ impl rza1l_hal::interrupt::Handler<rza1l_hal::interrupt::typelevel::TGI3A> for P
 }
 
 #[cfg(target_os = "none")]
-rza1l_hal::bind_interrupts!(struct PollIrqs {
+rza1_hal::bind_interrupts!(struct PollIrqs {
     TGI3A => PollHandler;
 });
 
@@ -194,7 +190,7 @@ rza1l_hal::bind_interrupts!(struct PollIrqs {
 #[cfg(target_os = "none")]
 fn poll() {
     critical_section::with(|cs| {
-        let pins = unsafe { rza1l_hal::gpio::read_port(1) };
+        let pins = unsafe { rza1_hal::gpio::read_port(1) };
         let mut decoders = DECODERS.borrow_ref_mut(cs);
         for (index, w) in WIRING.iter().enumerate() {
             let edges =
@@ -211,7 +207,7 @@ struct EncoderHandler<const I: usize>;
 #[cfg(target_os = "none")]
 macro_rules! encoder_handlers {
     ($($i:literal => $irq:ident),* $(,)?) => {$(
-        impl rza1l_hal::interrupt::Handler<rza1l_hal::interrupt::typelevel::$irq>
+        impl rza1_hal::interrupt::Handler<rza1_hal::interrupt::typelevel::$irq>
             for EncoderHandler<$i>
         {
             unsafe fn on_interrupt() {
@@ -225,7 +221,7 @@ macro_rules! encoder_handlers {
 encoder_handlers!(0 => IRQ3, 1 => IRQ2, 2 => IRQ4, 3 => IRQ1, 4 => IRQ0, 5 => IRQ7);
 
 #[cfg(target_os = "none")]
-rza1l_hal::bind_interrupts!(struct EncoderIrqs {
+rza1_hal::bind_interrupts!(struct EncoderIrqs {
     IRQ3 => EncoderHandler<0>;
     IRQ2 => EncoderHandler<1>;
     IRQ4 => EncoderHandler<2>;
@@ -243,16 +239,16 @@ rza1l_hal::bind_interrupts!(struct EncoderIrqs {
 /// # Safety
 /// Must be called before `cortex_ar::interrupt::enable()`.
 #[cfg(target_os = "none")]
-pub unsafe fn irq_init(poll_timer: rza1l_hal::Peri<'static, crate::board::EncoderPollTimer>) {
+pub unsafe fn irq_init(poll_timer: rza1_hal::Peri<'static, crate::board::EncoderPollTimer>) {
     unsafe {
         for w in &WIRING {
-            rza1l_hal::gpio::set_pin_mux(1, w.irq_pin, 2);
-            rza1l_hal::gpio::enable_input_buffer(1, w.irq_pin);
-            rza1l_hal::gpio::set_as_input(1, w.comp_pin);
+            rza1_hal::gpio::set_pin_mux(1, w.irq_pin, 2);
+            rza1_hal::gpio::enable_input_buffer(1, w.irq_pin);
+            rza1_hal::gpio::set_as_input(1, w.comp_pin);
         }
 
         // Start every decoder at the pins' current levels, so bring-up isn't read as a turn.
-        let pins = rza1l_hal::gpio::read_port(1);
+        let pins = rza1_hal::gpio::read_port(1);
         critical_section::with(|cs| {
             let mut decoders = DECODERS.borrow_ref_mut(cs);
             for (decoder, w) in decoders.iter_mut().zip(&WIRING) {
@@ -261,10 +257,10 @@ pub unsafe fn irq_init(poll_timer: rza1l_hal::Peri<'static, crate::board::Encode
         });
 
         for w in &WIRING {
-            rza1l_hal::gic::set_irq_both_edges(w.irq_num);
+            rza1_hal::gic::set_irq_both_edges(w.irq_num);
         }
 
-        use rza1l_hal::interrupt::{self, typelevel::*};
+        use rza1_hal::interrupt::{self, typelevel::*};
         interrupt::bind::<IRQ3, EncoderHandler<0>>(EncoderIrqs);
         interrupt::bind::<IRQ2, EncoderHandler<1>>(EncoderIrqs);
         interrupt::bind::<IRQ4, EncoderHandler<2>>(EncoderIrqs);
@@ -272,17 +268,23 @@ pub unsafe fn irq_init(poll_timer: rza1l_hal::Peri<'static, crate::board::Encode
         interrupt::bind::<IRQ0, EncoderHandler<4>>(EncoderIrqs);
         interrupt::bind::<IRQ7, EncoderHandler<5>>(EncoderIrqs);
 
-        for w in &WIRING {
-            rza1l_hal::gic::set_priority(w.gic_id, ENCODER_PRIORITY);
-            rza1l_hal::gic::enable(w.gic_id);
+        // Their priority is the board's ENCODER_PRIORITY, set by `Board::new`.
+        fn arm<I: interrupt::Interrupt>() {
+            // SAFETY: the handler was bound above and its encoder state is initialised.
+            unsafe { I::enable() };
         }
+        arm::<IRQ3>();
+        arm::<IRQ2>();
+        arm::<IRQ4>();
+        arm::<IRQ1>();
+        arm::<IRQ0>();
+        arm::<IRQ7>();
 
         // The pin poll, at the encoders' own priority so neither preempts the other. Arming it once
         // is enough: see `PollHandler`.
         // Store the timer before arming it: its handler clears the match through POLL_TIMER,
         // and an uncleared match re-raises the interrupt at once.
-        let timer =
-            rza1l_hal::mtu2::OneShot::new(poll_timer, POLL_PRESCALER, ENCODER_PRIORITY, PollIrqs);
+        let timer = rza1_hal::mtu2::OneShot::new(poll_timer, POLL_PRESCALER, PollIrqs);
         if POLL_TIMER.init(timer).is_err() {
             unreachable!("MTU2 channel 3 is owned once");
         }
@@ -303,7 +305,7 @@ pub unsafe fn irq_init(poll_timer: rza1l_hal::Peri<'static, crate::board::Encode
 /// No-op; trivially safe. Signature matches the device variant so callers
 /// don't need to branch on target.
 #[cfg(not(target_os = "none"))]
-pub unsafe fn irq_init(_poll_timer: rza1l_hal::Peri<'static, crate::board::EncoderPollTimer>) {}
+pub unsafe fn irq_init(_poll_timer: rza1_hal::Peri<'static, crate::board::EncoderPollTimer>) {}
 
 #[cfg(all(test, not(target_os = "none")))]
 mod host_tests {
@@ -313,7 +315,7 @@ mod host_tests {
     #[test]
     fn host_irq_init_is_a_safe_noop_and_encoders_are_quiescent() {
         // Must not touch hardware / must not panic on host.
-        unsafe { irq_init(rza1l_hal::peripherals::MTU2_3::steal()) };
+        unsafe { irq_init(rza1_hal::peripherals::MTU2_3::steal()) };
         assert_eq!(NUM_ENCODERS, 6);
         // Deltas start (and stay) zero with no ISRs firing.
         for d in &ENCODER_DELTAS {

@@ -4,7 +4,7 @@
 //! writes processed output ahead of the SCUX TX DMA read head, reusing the
 //! existing free-running rings. There is no DMA/SCUX reconfiguration: this
 //! module only *reads* the public accessors of the audio path
-//! ([`crate::audio`], [`crate::scux_dvu_path`], [`rza1l_hal::ssi`]). The offset
+//! ([`crate::audio`], [`crate::scux_dvu_path`], [`rza1_hal::ssi`]). The offset
 //! math and anti-auto-mute dither match the firmware's `iso_out_to_ssi`.
 //!
 //! Board-specific concerns (i32↔f32 format, uncached ring access, wrap, dither)
@@ -12,7 +12,7 @@
 
 #![cfg(target_os = "none")]
 
-use rza1l_hal::ssi;
+use rza1_hal::ssi;
 
 /// Codec sample rate.
 pub const SAMPLE_RATE_HZ: u32 = 44_100;
@@ -171,5 +171,5 @@ impl Default for BlockState {
 /// in a loop. Requires the block ring `audio::init` starts under the `audio-irq` feature.
 #[cfg(feature = "audio-irq")]
 pub async fn wait_block() {
-    rza1l_hal::ssi::wait_rx_block().await;
+    rza1_hal::ssi::wait_rx_block().await;
 }

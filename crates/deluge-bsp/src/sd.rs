@@ -47,7 +47,7 @@
 pub enum SdError {
     /// Low-level SDHI hardware error. Device-only.
     #[cfg(target_os = "none")]
-    Hardware(rza1l_hal::sdhi::SdhiError),
+    Hardware(rza1_hal::sdhi::SdhiError),
     /// Card not present.
     NoCard,
     /// Unsupported card type (e.g. MMC, old SD v1 without sane CMD8 response).
@@ -63,8 +63,8 @@ pub enum SdError {
 }
 
 #[cfg(target_os = "none")]
-impl From<rza1l_hal::sdhi::SdhiError> for SdError {
-    fn from(e: rza1l_hal::sdhi::SdhiError) -> Self {
+impl From<rza1_hal::sdhi::SdhiError> for SdError {
+    fn from(e: rza1_hal::sdhi::SdhiError) -> Self {
         SdError::Hardware(e)
     }
 }
@@ -121,17 +121,17 @@ mod device {
     use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
     use embassy_sync::mutex::Mutex;
     use embassy_sync::once_lock::OnceLock;
-    use rza1l_hal::Peri;
-    use rza1l_hal::UNCACHED_MIRROR_OFFSET;
-    use rza1l_hal::cache;
-    use rza1l_hal::dmac::{self, Dma};
-    use rza1l_hal::sdhi::{self, Sdhi};
+    use rza1_hal::Peri;
+    use rza1_hal::UNCACHED_MIRROR_OFFSET;
+    use rza1_hal::cache;
+    use rza1_hal::dmac::{self, Dma};
+    use rza1_hal::sdhi::{self, Sdhi};
 
     use super::SdError;
     use crate::board::{SdCard, SdRxDma, SdTxDma};
     use crate::system::SD_DMA_MAX_SECTORS;
 
-    rza1l_hal::bind_interrupts!(struct Irqs {
+    rza1_hal::bind_interrupts!(struct Irqs {
         SDHI1_STATUS => sdhi::StatusInterruptHandler<SdCard>;
         SDHI1_OP => sdhi::OperationInterruptHandler<SdCard>;
         DMAINT14 => dmac::InterruptHandler<SdRxDma>;
@@ -154,14 +154,14 @@ mod device {
     ) {
         // SAFETY: P7_0–7 are the SD slot's, mux 3 (SDHI1).
         unsafe {
-            rza1l_hal::gpio::set_pin_mux(7, 0, 3); // SD_CD1  — card detect
-            rza1l_hal::gpio::set_pin_mux(7, 1, 3); // SD_WP1  — write protect
-            rza1l_hal::gpio::set_pin_mux(7, 2, 3); // SD_D11  — data bit 1
-            rza1l_hal::gpio::set_pin_mux(7, 3, 3); // SD_D01  — data bit 0
-            rza1l_hal::gpio::set_pin_mux(7, 4, 3); // SD_CLK1 — clock
-            rza1l_hal::gpio::set_pin_mux(7, 5, 3); // SD_CMD1 — command
-            rza1l_hal::gpio::set_pin_mux(7, 6, 3); // SD_D31  — data bit 3
-            rza1l_hal::gpio::set_pin_mux(7, 7, 3); // SD_D21  — data bit 2
+            rza1_hal::gpio::set_pin_mux(7, 0, 3); // SD_CD1  — card detect
+            rza1_hal::gpio::set_pin_mux(7, 1, 3); // SD_WP1  — write protect
+            rza1_hal::gpio::set_pin_mux(7, 2, 3); // SD_D11  — data bit 1
+            rza1_hal::gpio::set_pin_mux(7, 3, 3); // SD_D01  — data bit 0
+            rza1_hal::gpio::set_pin_mux(7, 4, 3); // SD_CLK1 — clock
+            rza1_hal::gpio::set_pin_mux(7, 5, 3); // SD_CMD1 — command
+            rza1_hal::gpio::set_pin_mux(7, 6, 3); // SD_D31  — data bit 3
+            rza1_hal::gpio::set_pin_mux(7, 7, 3); // SD_D21  — data bit 2
         }
         let sdhi = Sdhi::new(
             card,

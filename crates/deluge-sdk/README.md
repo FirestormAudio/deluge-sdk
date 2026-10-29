@@ -8,7 +8,7 @@ A user-friendly SDK for building apps that run on the [Synthstrom Deluge]
 > `deluge`, so all code uses `use deluge::…` unchanged.
 
 It wraps the board support package ([`deluge-bsp`]) and the HAL
-([`rza1l-hal`]) behind a single dependency, and provides the
+([`rza1-hal`]) behind a single dependency, and provides the
 `#[deluge::app]` attribute that absorbs the platform bring-up boilerplate
 (heaps, clocks, interrupts, executor, panic handler).
 
@@ -77,5 +77,5 @@ your option.
 
 [Synthstrom Deluge]: https://synthstrom.com/product/deluge/
 [`deluge-bsp`]: https://crates.io/crates/deluge-bsp
-[`rza1l-hal`]: https://crates.io/crates/rza1l-hal
+[`rza1-hal`]: https://crates.io/crates/rza1-hal
 [advanced developer guide]: https://github.com/FirestormAudio/deluge-sdk/blob/main/docs/advanced-guide.md

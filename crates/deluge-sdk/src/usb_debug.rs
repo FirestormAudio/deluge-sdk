@@ -20,7 +20,7 @@ use embassy_usb::class::cdc_acm::{CdcAcmClass, Sender, State};
 use embassy_usb::{Builder, Config, UsbDevice};
 use log::{LevelFilter, Log, Metadata, Record};
 
-use rza1l_hal::usb::{Rusb1Driver, init_device_mode};
+use rza1_hal::usb::{Rusb1Driver, init_device_mode};
 
 // ── USB descriptor / class `'static` backing storage ─────────────────────────
 //
@@ -115,7 +115,7 @@ impl Write for FmtBuf {
 /// Takes USB0: only one of `usb-log` and `usb-serial` can own it. Call before interrupts are
 /// enabled (the runtime does).
 pub fn build(
-    usb0: rza1l_hal::Peri<'static, rza1l_hal::peripherals::USB0>,
+    usb0: rza1_hal::Peri<'static, rza1_hal::peripherals::USB0>,
 ) -> (
     UsbDevice<'static, Rusb1Driver<'static>>,
     Sender<'static, Rusb1Driver<'static>>,

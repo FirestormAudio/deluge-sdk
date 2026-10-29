@@ -31,16 +31,52 @@ if bad or named:
     sys.exit("error: the rza1 workspace reaches outside rza1/: " + ", ".join(bad + named))
 '
 
+echo "==> rza1: chip features (exactly one of rza1l / rza1h)"
+BUILD_STD=(-Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem)
+for bad in "" "rza1l,rza1h"; do
+  if out=$(cargo check "${BUILD_STD[@]}" -p rza1-hal --no-default-features ${bad:+--features "$bad"} 2>&1); then
+    echo "error: rza1-hal built with chip features '${bad}'; it must require exactly one" >&2
+    exit 1
+  fi
+  # With no chip, rza1-pac stops first with its own "enable a chip feature" error.
+  if ! grep -qE "exactly one chip feature|enable a chip feature" <<<"$out"; then
+    echo "error: rza1-hal with chip features '${bad}' failed without the chip-feature message:" >&2
+    echo "$out" | tail -20 >&2
+    exit 1
+  fi
+done
+for chip in rza1l rza1h; do
+  cargo build "${BUILD_STD[@]}" -p rza1-hal --features "$chip"
+done
+# Without the OSTM time driver (an application bringing its own): OSTM0/OSTM1 are its to use.
+cargo build "${BUILD_STD[@]}" -p rza1-hal --no-default-features --features rza1l,rt,critical-section-impl
+
+echo "==> rza1: logging builds (log, defmt, neither)"
+cargo build "${BUILD_STD[@]}" -p rza1-hal --features rza1l,log
+cargo build "${BUILD_STD[@]}" -p rza1-hal --features rza1l,defmt
+# With no logging, every log argument must still be consumed: no unused-variable warnings.
+cargo rustc "${BUILD_STD[@]}" -p rza1-hal --lib --features rza1l -- -D unused
+
+echo "==> rza1: drivers document no steal() (it is behind the hidden unstable-driver-steal feature)"
+cargo doc "${BUILD_STD[@]}" -p rza1-hal --features rza1l --no-deps
+DOC=target/armv7a-none-eabihf/doc/rza1_hal
+for page in dmac/struct.Dma.html rspi/struct.Rspi.html uart/struct.UartRx.html; do
+  if grep -q 'method\.steal' "$DOC/$page"; then
+    echo "error: $page documents a steal() method" >&2
+    exit 1
+  fi
+done
+
 tools/check-register-tables.sh
 tools/check-pac.sh
 
 echo "==> rza1: QEMU ARM tests"
 cargo test --target "$QEMU" -p rza1-pac --features rza1l --lib
 cargo test --target "$QEMU" -p rza1-pac --features rza1h --lib
-cargo test --target "$QEMU" -p rza1l-hal --lib
+cargo test --target "$QEMU" -p rza1-hal --features rza1l --lib
 
 echo "==> rza1: device build"
-cargo build -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem \
-  -p rza1l-hal -p rza1-rt -p rza1-alloc
+cargo build "${BUILD_STD[@]}" -p rza1-hal --features rza1l
+cargo build "${BUILD_STD[@]}" -p rza1-rt -p rza1-alloc
 
 echo "==> rza1: all checks passed."

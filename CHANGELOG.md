@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`rza1l-hal` is now `rza1-hal`**, with chip features `rza1l` and `rza1h`: enable exactly one.
+  `rza1h` compiles and adds RSPI3/RSPI4 and the 587-entry interrupt table; it is not
+  hardware-validated, and SDHI is `rza1l`-only (the A1H PAC has no SDHI block).
+- `rza1-hal` features: `log` and `defmt` (optional, at most one) replace the hard `log`
+  dependency, and the HAL no longer forces `release_max_level_info` downstream; `unstable-pac`
+  gates `rza1_hal::pac`; `rt` gates the `gic_dispatch` export; `critical-section-impl` (default)
+  provides the critical-section implementation; `unstable-driver-steal` gates the now
+  `#[doc(hidden)]` `Dma::steal`, `Rspi::steal` and `UartRx::steal`.
+- `rza1_hal::Config` is typed and `#[non_exhaustive]`: `Config::new(clocks)` with `const`
+  builders for `CpgConfig` (FRQCR), `ModuleClocks` (named STBCR2–12 module clocks, reset state by
+  default), and the DMAC and time-driver interrupt priorities. It has no `Default`: the RZ/A1 has
+  no internal oscillator, so there is no safe crystal to assume. `stb::StbConfig` is gone.
+- Interrupts: `interrupt::Priority` (`P0`–`P30`), and `Interrupt` gains `enable`, `disable`,
+  `is_enabled`, `is_pending`, `pend` (SGIs through GICD_SGIR), `unpend`, `get_priority` and
+  `set_priority`. The GIC now starts every interrupt at `Priority::DEFAULT` (P16) instead of 31,
+  so an enabled interrupt fires even if nobody set its priority. `gic::enable`, `gic::disable`
+  and `gic::set_priority` are crate-private.
+- Drivers no longer set interrupt priorities (UART, SDHI, USB, MTU2; `mtu2::OneShot::new` loses
+  its `priority` parameter); DMAC channels take `Config::dma_interrupt_priority`. `deluge-bsp`
+  sets the Deluge's priorities explicitly in `Board::new`, to the values the drivers used.
+- `rza1_hal::init` starts the OSTM time driver itself (`time-driver-ostm`), at
+  `Config::time_interrupt_priority`; `time_driver::init` and its handler types are gone, and
+  OSTM0/OSTM1 and their interrupts are not in `Peripherals` while the driver owns them.
+- DelugeFirmware#next does not build against this until its migration (phase 9 of the
+  pre-0.1 API pass).
+
 ### Removed
 
 - The Wren scripting subsystem (`wren-sys`, `deluge-wren-core`, `wren-firmware`, the web

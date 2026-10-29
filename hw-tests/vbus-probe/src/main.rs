@@ -29,8 +29,8 @@ use rza1_alloc as allocator;
 use deluge_bsp::cv_gate;
 use deluge_bsp::uart as bsp_uart;
 
-rza1l_hal::bind_interrupts!(struct UsbIrqs {
-    USB0 => rza1l_hal::usb::HostInterruptHandler<rza1l_hal::peripherals::USB0>;
+rza1_hal::bind_interrupts!(struct UsbIrqs {
+    USB0 => rza1_hal::usb::HostInterruptHandler<rza1_hal::peripherals::USB0>;
 });
 
 unsafe extern "C" {
@@ -76,13 +76,13 @@ pub extern "C" fn main() -> ! {
         allocator::SRAM.init(start, size);
     }
 
-    let board = deluge_bsp::Board::new(rza1l_hal::init(deluge_bsp::system::BOARD_CONFIG));
+    let board = deluge_bsp::Board::new(rza1_hal::init(deluge_bsp::system::BOARD_CONFIG));
     info!("system: clocks, MMU, cache, SDRAM, GIC, OSTM, time driver ready");
 
     unsafe { allocator::SDRAM.init(0x0C00_0000 as *mut u8, 64 * 1024 * 1024) };
 
     // Heartbeat LED pin (unused beyond init; keeps parity with other firmwares).
-    unsafe { rza1l_hal::gpio::set_as_output(6, 7) };
+    unsafe { rza1_hal::gpio::set_as_output(6, 7) };
 
     info!("UART: initialising PIC...");
     bsp_uart::init_pic(board.pic_uart, board.dma.pic_rx, board.dma.pic_tx, 31_250);
@@ -95,7 +95,7 @@ pub extern "C" fn main() -> ! {
     // Bring USB0 up in host mode so VBSTS reflects the real host-mode VBUS
     // state. The returned driver is unused — this firmware only reads the VBUS
     // monitor; the host handler services whatever interrupts the port raises.
-    let (_port, _driver) = rza1l_hal::usb::init_host_mode(board.usb0, UsbIrqs);
+    let (_port, _driver) = rza1_hal::usb::init_host_mode(board.usb0, UsbIrqs);
     info!("USB: USB0 in host mode (VBUS sense only)");
 
     unsafe { cortex_ar::interrupt::enable() };

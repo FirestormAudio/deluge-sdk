@@ -2,7 +2,7 @@
 //!
 //! The SPIBSC *controller* (manual-mode transfers, memory-mapped read mode, JEDEC
 //! reads, the chip-bounds anti-alias guard) is SoC-generic and lives in
-//! [`rza1l_hal::spibsc`].  The facts that depend on **which flash part is on the
+//! [`rza1_hal::spibsc`].  The facts that depend on **which flash part is on the
 //! Deluge and how its space is carved up** live here, so a different part or board
 //! is a one-line change.
 //!
@@ -25,7 +25,7 @@
 //! [`MAP`]; every erase/program through [`MAP`] is refused outside them (and
 //! outside the physically present chip).
 
-use rza1l_hal::spibsc::{self, FlashMap};
+use rza1_hal::spibsc::{self, FlashMap};
 
 /// Erase-block size in bytes — the `0xD8` block-erase granularity of the part.
 pub const SECTOR_SIZE: u32 = 0x0001_0000; // 64 KB
@@ -84,7 +84,7 @@ pub const MAP: FlashMap = FlashMap {
 
 // Controller-level reads need no map; re-export them so flash access funnels
 // through this module.
-pub use rza1l_hal::spibsc::{read_id, read_status_reg};
+pub use rza1_hal::spibsc::{read_id, read_status_reg};
 
 #[cfg(test)]
 mod tests {

@@ -18,7 +18,7 @@ use embassy_time::Instant;
 #[cfg(not(feature = "audio-irq"))]
 use embassy_time::{Duration, Ticker};
 use embedded_hal::digital::{OutputPin, StatefulOutputPin};
-use rza1l_hal::gpio::{Output, Pin};
+use rza1_hal::gpio::{Output, Pin};
 
 /// Run `f` over every audio block, forever.
 pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame]) + Send + 'static>(

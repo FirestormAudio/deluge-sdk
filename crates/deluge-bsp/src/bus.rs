@@ -24,9 +24,9 @@
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::{MappedMutexGuard, Mutex, MutexGuard};
-use rza1l_hal::Peri;
-use rza1l_hal::dmac::{self, Dma};
-use rza1l_hal::rspi::Rspi;
+use rza1_hal::Peri;
+use rza1_hal::dmac::{self, Dma};
+use rza1_hal::rspi::Rspi;
 
 use crate::board::{OledDma, SharedSpi};
 
@@ -41,7 +41,7 @@ const RATE_HZ: u32 = 4_000_000;
 const SCK: (u8, u8, u8) = (6, 0, 3);
 const MOSI: (u8, u8, u8) = (6, 2, 3);
 
-rza1l_hal::bind_interrupts!(struct Irqs {
+rza1_hal::bind_interrupts!(struct Irqs {
     DMAINT4 => dmac::InterruptHandler<OledDma>;
 });
 
@@ -154,8 +154,8 @@ pub fn init(spi: Peri<'static, SharedSpi>, oled_dma: Peri<'static, OledDma>) {
     assert!(!is_initialised(), "RSPI0's bus is already up: bus::init runs once");
     // SAFETY: RSPI0's own pins, which only this bus drives.
     unsafe {
-        rza1l_hal::gpio::set_pin_mux(SCK.0, SCK.1, SCK.2);
-        rza1l_hal::gpio::set_pin_mux(MOSI.0, MOSI.1, MOSI.2);
+        rza1_hal::gpio::set_pin_mux(SCK.0, SCK.1, SCK.2);
+        rza1_hal::gpio::set_pin_mux(MOSI.0, MOSI.1, MOSI.2);
     }
     let rspi = Rspi::new(spi, RATE_HZ);
     let mut oled_dma = Dma::new(oled_dma, Irqs);
@@ -234,12 +234,12 @@ pub unsafe fn steal_rspi0() -> Rspi0 {
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
     use super::*;
-    use rza1l_hal::mmio::test;
-    use rza1l_hal::peripherals::{DMA_CH4, RSPI0};
+    use rza1_hal::mmio::test;
+    use rza1_hal::peripherals::{DMA_CH4, RSPI0};
 
     #[test]
     fn the_bus_comes_up_in_32_bit_mode_with_the_oled_dma_aimed_at_spdr() {
-        rza1l_hal::clocks::init(crate::system::CLOCKS);
+        rza1_hal::clocks::init(crate::system::CLOCKS);
         test::reset();
 
         assert!(!is_initialised());

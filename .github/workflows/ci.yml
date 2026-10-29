@@ -10,22 +10,16 @@ jobs:
   examples:
     name: Examples
     uses: ./.github/workflows/examples.yml
-    # Pass FLARE_TOKEN (a private flare checkout) through to the called workflow.
-    secrets: inherit
 
   images:
     name: Images
     uses: ./.github/workflows/images.yml
-    # Pass FLARE_TOKEN (a private flare checkout) through to the called workflow.
-    secrets: inherit
     with:
       retention-days: 7
 
   tests:
     name: Tests
     uses: ./.github/workflows/test.yml
-    # Pass FLARE_TOKEN (a private flare checkout) through to the called workflow.
-    secrets: inherit
 
   rza1:
     name: rza1

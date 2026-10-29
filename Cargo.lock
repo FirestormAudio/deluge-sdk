@@ -223,7 +223,7 @@ dependencies = [
  "log",
  "rtt-target",
  "rza1-alloc",
- "rza1l-hal",
+ "rza1-hal",
  "usb-classes",
 ]
 
@@ -1296,8 +1296,8 @@ dependencies = [
  "log",
  "max5136",
  "proptest",
+ "rza1-hal",
  "rza1-rt",
- "rza1l-hal",
  "usb-classes",
 ]
 
@@ -1317,7 +1317,7 @@ dependencies = [
  "log",
  "rtt-target",
  "rza1-alloc",
- "rza1l-hal",
+ "rza1-hal",
  "usb-classes",
 ]
 
@@ -1326,7 +1326,6 @@ name = "deluge-fixedpoint"
 version = "0.1.0"
 dependencies = [
  "armv7-dsp-intrinsics",
- "flare-fft",
  "proptest",
 ]
 
@@ -1388,7 +1387,7 @@ dependencies = [
  "log",
  "rtt-target",
  "rza1-alloc",
- "rza1l-hal",
+ "rza1-hal",
 ]
 
 [[package]]
@@ -1461,10 +1460,9 @@ dependencies = [
  "embassy-usb",
  "embassy-usb-driver",
  "embassy-usb-host",
- "flare-fft",
  "log",
  "rtt-target",
- "rza1l-hal",
+ "rza1-hal",
  "usb-classes",
 ]
 
@@ -1978,10 +1976,6 @@ name = "find-msvc-tools"
 version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "26b73573e6edcd2af0cdf47bd6cb58f0b3839491263c314eaad1ccf24430e1de"
-
-[[package]]
-name = "flare-fft"
-version = "0.1.0"
 
 [[package]]
 name = "flate2"
@@ -3359,7 +3353,7 @@ dependencies = [
  "log",
  "rtt-target",
  "rza1-alloc",
- "rza1l-hal",
+ "rza1-hal",
  "usb-classes",
 ]
 
@@ -4101,7 +4095,7 @@ dependencies = [
  "log",
  "rtt-target",
  "rza1-alloc",
- "rza1l-hal",
+ "rza1-hal",
  "usb-classes",
 ]
 
@@ -4116,7 +4110,7 @@ dependencies = [
  "log",
  "rtt-target",
  "rza1-alloc",
- "rza1l-hal",
+ "rza1-hal",
  "usb-classes",
 ]
 
@@ -4873,15 +4867,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rza1-pac"
-version = "0.1.0"
-
-[[package]]
-name = "rza1-rt"
-version = "0.1.0"
-
-[[package]]
-name = "rza1l-hal"
+name = "rza1-hal"
 version = "0.1.0"
 dependencies = [
  "cortex-ar",
@@ -4899,6 +4885,14 @@ dependencies = [
  "log",
  "rza1-pac",
 ]
+
+[[package]]
+name = "rza1-pac"
+version = "0.1.0"
+
+[[package]]
+name = "rza1-rt"
+version = "0.1.0"
 
 [[package]]
 name = "same-file"
@@ -4947,7 +4941,7 @@ dependencies = [
  "log",
  "rtt-target",
  "rza1-alloc",
- "rza1l-hal",
+ "rza1-hal",
 ]
 
 [[package]]
@@ -5715,7 +5709,7 @@ dependencies = [
  "log",
  "rtt-target",
  "rza1-alloc",
- "rza1l-hal",
+ "rza1-hal",
  "usb-classes",
 ]
 
@@ -5953,7 +5947,7 @@ dependencies = [
  "log",
  "rtt-target",
  "rza1-alloc",
- "rza1l-hal",
+ "rza1-hal",
 ]
 
 [[package]]
@@ -6833,7 +6827,7 @@ dependencies = [
  "log",
  "rtt-target",
  "rza1-alloc",
- "rza1l-hal",
+ "rza1-hal",
 ]
 
 [[package]]

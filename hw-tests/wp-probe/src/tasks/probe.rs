@@ -39,7 +39,7 @@ pub(crate) async fn probe_task() {
     let _ = sd::init().await;
 
     // Let PPR reflect the live P7_1 level without taking the pin off SD_WP1.
-    unsafe { rza1l_hal::gpio::enable_input_buffer(7, 1) };
+    unsafe { rza1_hal::gpio::enable_input_buffer(7, 1) };
 
     let mut fb = oled::FrameBuffer::new();
     loop {
@@ -48,7 +48,7 @@ pub(crate) async fn probe_task() {
         // SDHI's view: INFO7 != 0 (the driver's "write protected" test).
         let info7 = sd::controller().card_write_protected();
         // Raw live pin level on P7_1.
-        let pin_high = unsafe { rza1l_hal::gpio::read_pin(7, 1) };
+        let pin_high = unsafe { rza1_hal::gpio::read_pin(7, 1) };
 
         info!(
             "WP-PROBE: card={} ready={} INFO7={} P7_1={}",

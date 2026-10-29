@@ -37,18 +37,14 @@
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use embassy_sync::once_lock::OnceLock;
-use rza1l_hal::Peri;
-use rza1l_hal::interrupt::{Handler, typelevel};
-use rza1l_hal::mtu2::OneShot;
+use rza1_hal::Peri;
+use rza1_hal::interrupt::{Handler, typelevel};
+use rza1_hal::mtu2::OneShot;
 
 use crate::board::GateTimer;
 
 /// Prescaler: P0 / 64 ≈ 520 kHz.
 const PRESCALER: u16 = 64;
-
-/// GIC priority for TGI2A (must be lower-number / higher-priority than USB
-/// at 9, to ensure gate events are not delayed behind USB servicing).
-const PRIORITY: u8 = 5;
 
 /// Sentinel value meaning "no pending action".
 const NO_ACTION: u8 = 0xFF;
@@ -82,7 +78,7 @@ impl Handler<typelevel::TGI2A> for ShotHandler {
     }
 }
 
-rza1l_hal::bind_interrupts!(struct Irqs {
+rza1_hal::bind_interrupts!(struct Irqs {
     TGI2A => ShotHandler;
 });
 
@@ -90,7 +86,7 @@ rza1l_hal::bind_interrupts!(struct Irqs {
 /// by [`schedule_gate_off`].
 pub fn setup(timer: Peri<'static, GateTimer>) {
     // Fill TIMER before the binding can fire: the handler needs it.
-    if TIMER.init(OneShot::new(timer, PRESCALER, PRIORITY, Irqs)).is_err() {
+    if TIMER.init(OneShot::new(timer, PRESCALER, Irqs)).is_err() {
         unreachable!("MTU2 channel 2 is owned once");
     }
 }

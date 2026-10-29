@@ -186,7 +186,7 @@ compile-proves all of them on the firmware target).
 | `crates/deluge-sdk` | `deluge-sdk` (imported as `deluge`) | the SDK facade + `#[deluge::app]` runtime |
 | `crates/deluge-sdk-macros` | `deluge-sdk-macros` | the `#[deluge::app]` proc-macro |
 | `crates/deluge-bsp` | `deluge-bsp` | board support: peripherals, PIC, OLED, SD, … |
-| `rza1/rza1l-hal` | `rza1l-hal` | RZ/A1L hardware abstraction layer |
+| `rza1/rza1-hal` | `rza1-hal` | RZ/A1L hardware abstraction layer |
 | `rza1/rza1-rt` | `rza1-rt` | Runtime for the RZ/A1L: reset vector, exception entry, linker script |
 | `rza1/rza1-alloc` | `rza1-alloc` | SRAM / SDRAM heap allocators |
 | `usb/usb-classes` | `usb-classes` | board-agnostic Embassy USB classes: UAC2, USB-MIDI, MSC + Bulk-Only Transport, host MIDI/UAC |
@@ -202,10 +202,6 @@ compile-proves all of them on the firmware target).
 | `examples/baremetal/`, `examples/linux/` | | SDK example apps for each backend |
 | `tools/cargo-deluge/` | | the `cargo deluge` host subcommand |
 | `tools/deluge-web-sim/` | | browser front panel that connects to a simulator core over WebSocket |
-
-The audio engine (`flare`, `flare-graph`, `flare-kernels`, `flare-fft`,
-`flare-mipgen`) lives in the separate `flare` repository and is used through
-path dependencies on a sibling checkout at `../flare`.
 
 The `deluge` SDK facade depends only on the BSP and HAL — it does **not** pull
 in the GPL UI toolkit, so an app stays permissively licensed unless it opts in.
@@ -240,17 +236,6 @@ it opts into the toolkit, in which case that app becomes GPL.
 
 The sections below are for hacking on the firmware and SDK internals rather than
 writing apps. App authors can stop at [`cargo deluge`](#cargo-deluge).
-
-### Workspace setup
-
-The workspace resolves the `flare` audio engine from a sibling checkout, so clone
-it next to this repository first:
-
-```text
-<parent>/
-├── deluge-sdk/   # this repository
-└── flare/        # the audio engine
-```
 
 ### Building firmware images
 

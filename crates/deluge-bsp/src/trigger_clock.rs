@@ -29,13 +29,6 @@ const TRIG_PIN: u8 = 14;
 /// External interrupt number used by `P1_14`'s PFC alt-2 routing.
 const TRIG_IRQ: u8 = 6;
 
-/// GIC interrupt ID for IRQ6 (= 32 + 6), from its typed binding so the two can't disagree.
-const TRIG_GIC_ID: u16 =
-    <rza1l_hal::interrupt::typelevel::IRQ6 as rza1l_hal::interrupt::Interrupt>::ID;
-
-/// Same priority as the encoders — well below audio (5) and OLED DMA (13).
-const TRIG_PRIORITY: u8 = 14;
-
 /// Number of pulses seen since boot (wraps at `u32::MAX`).
 pub static EDGE_COUNT: AtomicU32 = AtomicU32::new(0);
 
@@ -50,7 +43,7 @@ fn trig_irq_handler() {
     let now = Instant::now().as_ticks();
     LAST_EDGE_TICKS.store(now, Ordering::Relaxed);
     EDGE_COUNT.fetch_add(1, Ordering::Relaxed);
-    unsafe { rza1l_hal::gic::clear_irq_pending(TRIG_IRQ) };
+    unsafe { rza1_hal::gic::clear_irq_pending(TRIG_IRQ) };
     EDGE_WAKER.wake();
 }
 
@@ -59,14 +52,14 @@ fn trig_irq_handler() {
 struct TriggerHandler;
 
 #[cfg(target_os = "none")]
-impl rza1l_hal::interrupt::Handler<rza1l_hal::interrupt::typelevel::IRQ6> for TriggerHandler {
+impl rza1_hal::interrupt::Handler<rza1_hal::interrupt::typelevel::IRQ6> for TriggerHandler {
     unsafe fn on_interrupt() {
         trig_irq_handler();
     }
 }
 
 #[cfg(target_os = "none")]
-rza1l_hal::bind_interrupts!(struct TriggerIrqs {
+rza1_hal::bind_interrupts!(struct TriggerIrqs {
     IRQ6 => TriggerHandler;
 });
 
@@ -79,21 +72,22 @@ rza1l_hal::bind_interrupts!(struct TriggerIrqs {
 pub unsafe fn irq_init() {
     unsafe {
         // Route P1_14 → IRQ6 via PFC alt-function 2.
-        rza1l_hal::gpio::set_pin_mux(TRIG_PORT, TRIG_PIN, 2);
+        rza1_hal::gpio::set_pin_mux(TRIG_PORT, TRIG_PIN, 2);
         // `set_pin_mux` doesn't enable PIBC, without which the pin's level
         // isn't visible in PPR. The IRQ itself doesn't need it (IRQn taps the
         // pad before the PIBC gate); enabled so the level stays readable, as
         // in the encoder setup.
-        rza1l_hal::gpio::enable_input_buffer(TRIG_PORT, TRIG_PIN);
+        rza1_hal::gpio::enable_input_buffer(TRIG_PORT, TRIG_PIN);
 
         // Falling edge: the on-board transistor inverts the external clock,
         // so the external rising edge appears as a falling edge on P1_14.
-        rza1l_hal::gic::set_irq_falling_edge(TRIG_IRQ);
+        rza1_hal::gic::set_irq_falling_edge(TRIG_IRQ);
 
-        rza1l_hal::interrupt::bind(TriggerIrqs);
-        rza1l_hal::gic::clear_irq_pending(TRIG_IRQ);
-        rza1l_hal::gic::set_priority(TRIG_GIC_ID, TRIG_PRIORITY);
-        rza1l_hal::gic::enable(TRIG_GIC_ID);
+        rza1_hal::interrupt::bind(TriggerIrqs);
+        rza1_hal::gic::clear_irq_pending(TRIG_IRQ);
+        // Its priority is the board's TRIGGER_PRIORITY, set by `Board::new`.
+        use rza1_hal::interrupt::{Interrupt, typelevel::IRQ6};
+        IRQ6::enable();
 
         info!("trigger_clock: P1_14 → IRQ6 (GIC 38, falling-edge) ready");
     }

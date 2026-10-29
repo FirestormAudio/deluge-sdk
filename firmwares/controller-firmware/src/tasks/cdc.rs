@@ -18,7 +18,7 @@ use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver, Sender};
 use log::{debug, info};
 
 use deluge_bsp::{cv_gate, pic};
-use rza1l_hal::usb::Rusb1Driver;
+use rza1_hal::usb::Rusb1Driver;
 
 use crate::events::{EVENT_CHANNEL, HardwareEvent};
 use crate::tasks::oled as oled_task;
@@ -321,7 +321,7 @@ async fn handle_message(type_byte: u8, data: &[u8]) {
             if !data.is_empty() {
                 let on = data[0] != 0;
                 unsafe {
-                    rza1l_hal::gpio::write(6, 7, on);
+                    rza1_hal::gpio::write(6, 7, on);
                 }
             }
         }
@@ -334,7 +334,7 @@ async fn handle_message(type_byte: u8, data: &[u8]) {
             pic::set_gold_knob_indicators(1, [0; 4]).await;
             // Also clear the synced LED.
             unsafe {
-                rza1l_hal::gpio::write(6, 7, false);
+                rza1_hal::gpio::write(6, 7, false);
             }
         }
         MSG_TO_SET_BRIGHTNESS => {
