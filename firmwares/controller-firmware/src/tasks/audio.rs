@@ -3,6 +3,7 @@ use deluge_bsp::audio;
 use embassy_usb::driver::{Endpoint as _, EndpointIn as _};
 use log::info;
 
+use rza1_hal::usb::iso::IsoOutConsumer;
 use usb_classes::audio::{USB_BITS_PER_SAMPLE, USB_CAPTURE_BITS_PER_SAMPLE};
 
 /// `true` while the host is actively sending UAC2 speaker data.
@@ -10,7 +11,7 @@ use usb_classes::audio::{USB_BITS_PER_SAMPLE, USB_CAPTURE_BITS_PER_SAMPLE};
 /// Tracks actual USB audio traffic, not whether the SCUX/SSI output path is
 /// running with dither.
 ///
-/// Set by the ISO OUT hook ([`iso_out_to_ssi`]) on the first packet of a stream
+/// Set by the ISO OUT consumer ([`SpeakerSink`]) on the first packet of a stream
 /// and cleared by [`uac2_task`] when packet activity stops.
 pub(crate) static USB_AUDIO_STREAMING: AtomicBool = AtomicBool::new(false);
 
@@ -24,11 +25,20 @@ const WRITE_AHEAD: usize = 2048;
 /// participating in the (latency-critical) data path.
 static PACKET_SEQ: AtomicU32 = AtomicU32::new(0);
 
-/// Data-path state owned exclusively by the ISO OUT BRDY ISR (single producer,
-/// IRQs disabled — no locking needed).  `HOOK_WRITE_OFF` is the next TX ring word
-/// to write; `HOOK_LFSR` is the dither generator state carried across packets.
-static mut HOOK_WRITE_OFF: usize = 0;
-static mut HOOK_LFSR: u32 = 0xACE1;
+/// The ISO OUT stream's consumer: its state is touched only by the USB interrupt
+/// (single producer, IRQs disabled — no locking needed).  `write_off` is the next
+/// TX ring word to write; `lfsr` is the dither generator state carried across
+/// packets.
+struct SpeakerSink {
+    write_off: usize,
+    lfsr: u32,
+}
+
+/// The speaker consumer, lent once to the ISO OUT stream by [`uac2_task`].
+static mut SPEAKER: SpeakerSink = SpeakerSink {
+    write_off: 0,
+    lfsr: 0xACE1,
+};
 
 // ── Diagnostics ──────────────────────────────────────────────────────────────
 // Updated by the ISO OUT hook (ISR), drained + logged once a second by the
@@ -37,7 +47,7 @@ static mut HOOK_LFSR: u32 = 0xACE1;
 
 /// Count of samples whose value + dither saturated at the i32 rail this second.
 /// A non-zero value means the host is sending full-scale ("hot") audio — see
-/// [`iso_out_to_ssi`], where saturation replaces what would otherwise be a
+/// [`SpeakerSink`], where saturation replaces what would otherwise be a
 /// sign-flipping wraparound (a loud click).
 static CLIP_COUNT: AtomicU32 = AtomicU32::new(0);
 /// Count of underrun re-anchors this second (DMA caught up to the write head).
@@ -83,90 +93,92 @@ pub(crate) fn fill_tx_with_dither() {
 /// Packet format: stereo 16- or 24-bit LE PCM.  SSI expects audio in bits
 /// `[31:8]`; 24-bit shifts left by 8, 16-bit by 16.
 ///
-/// # Safety
-/// Installed via [`rza1_hal::usb::pipe::register_iso_out_hook`] and called
-/// only from the BRDY ISR (single producer, IRQs disabled).  `pkt` points to
-/// `len` valid bytes.  Uses integer arithmetic only — no VFP state to preserve.
-unsafe fn iso_out_to_ssi(pkt: *const u8, len: usize) {
-    audio::with_tx(|tx| unsafe {
-        let buf_len = tx.len();
-        // The DMA's read position, already wrapped into [0, buf_len) and frame-aligned.
-        let dma_off = tx.position();
-        let ring = tx.ring_mut();
+/// Runs in the BRDY ISR (single producer, IRQs disabled), bound by
+/// [`uac2_task`]'s iso stream.  Uses integer arithmetic only — no VFP state to
+/// preserve.
+impl IsoOutConsumer for SpeakerSink {
+    fn on_packet(&mut self, packet: &[u8]) {
+        let (pkt, len) = (packet.as_ptr(), packet.len());
+        audio::with_tx(|tx| unsafe {
+            let buf_len = tx.len();
+            // The DMA's read position, already wrapped into [0, buf_len) and frame-aligned.
+            let dma_off = tx.position();
+            let ring = tx.ring_mut();
 
-        let mut write_off = HOOK_WRITE_OFF;
+            let mut write_off = self.write_off;
 
-        // First packet after silence — re-anchor the write pointer WRITE_AHEAD
-        // slots ahead of the DMA, snapped to a stereo frame boundary (even
-        // offset) to keep L/R channels correct.  USB_AUDIO_STREAMING is cleared
-        // by uac2_task when packet activity stops.
-        if !USB_AUDIO_STREAMING.load(Ordering::Acquire) {
-            write_off = ((dma_off + WRITE_AHEAD) % buf_len) & !1;
-            USB_AUDIO_STREAMING.store(true, Ordering::Release);
-        }
+            // First packet after silence — re-anchor the write pointer WRITE_AHEAD
+            // slots ahead of the DMA, snapped to a stereo frame boundary (even
+            // offset) to keep L/R channels correct.  USB_AUDIO_STREAMING is cleared
+            // by uac2_task when packet activity stops.
+            if !USB_AUDIO_STREAMING.load(Ordering::Acquire) {
+                write_off = ((dma_off + WRITE_AHEAD) % buf_len) & !1;
+                USB_AUDIO_STREAMING.store(true, Ordering::Release);
+            }
 
-        // Underrun guard: if the DMA has caught up to the write offset, re-anchor.
-        let ahead = (write_off + buf_len - dma_off) % buf_len;
-        if ahead < WRITE_AHEAD / 2 {
-            write_off = ((dma_off + WRITE_AHEAD) % buf_len) & !1;
-            REANCHOR_COUNT.fetch_add(1, Ordering::Relaxed);
-        }
+            // Underrun guard: if the DMA has caught up to the write offset, re-anchor.
+            let ahead = (write_off + buf_len - dma_off) % buf_len;
+            if ahead < WRITE_AHEAD / 2 {
+                write_off = ((dma_off + WRITE_AHEAD) % buf_len) & !1;
+                REANCHOR_COUNT.fetch_add(1, Ordering::Relaxed);
+            }
 
-        // ── Convert USB samples → MSB-aligned 32-bit SSI, mixing in dither ──
-        let bytes_per_sample = (USB_BITS_PER_SAMPLE.load(Ordering::Relaxed) / 8) as usize;
-        if let Some(num_samples) = len.checked_div(bytes_per_sample) {
-            let mut lfsr = HOOK_LFSR;
-            let mut clips = 0u32;
-            let mut peak = 0u32;
-            for i in 0..num_samples {
-                let raw = if bytes_per_sample == 3 {
-                    let b0 = *pkt.add(i * 3) as u32;
-                    let b1 = *pkt.add(i * 3 + 1) as u32;
-                    let b2 = *pkt.add(i * 3 + 2) as u32;
-                    (b0 << 8 | b1 << 16 | b2 << 24) as i32
-                } else {
-                    // 16-bit signed LE → MSB-align in 32 bits
-                    let v = (*pkt.add(i * 2) as u16 | (*pkt.add(i * 2 + 1) as u16) << 8) as i16;
-                    (v as i32) << 16
-                };
+            // ── Convert USB samples → MSB-aligned 32-bit SSI, mixing in dither ──
+            let bytes_per_sample = (USB_BITS_PER_SAMPLE.load(Ordering::Relaxed) / 8) as usize;
+            if let Some(num_samples) = len.checked_div(bytes_per_sample) {
+                let mut lfsr = self.lfsr;
+                let mut clips = 0u32;
+                let mut peak = 0u32;
+                for i in 0..num_samples {
+                    let raw = if bytes_per_sample == 3 {
+                        let b0 = *pkt.add(i * 3) as u32;
+                        let b1 = *pkt.add(i * 3 + 1) as u32;
+                        let b2 = *pkt.add(i * 3 + 2) as u32;
+                        (b0 << 8 | b1 << 16 | b2 << 24) as i32
+                    } else {
+                        // 16-bit signed LE → MSB-align in 32 bits
+                        let v = (*pkt.add(i * 2) as u16 | (*pkt.add(i * 2 + 1) as u16) << 8) as i16;
+                        (v as i32) << 16
+                    };
 
-                peak = peak.max(raw.unsigned_abs());
+                    peak = peak.max(raw.unsigned_abs());
 
-                // Mix in dither with saturation: a near-full-scale sample plus
-                // dither can overflow i32, and wrapping would flip the sign — a
-                // rail-to-rail click on 0 dBFS material.  The clamped LSBs are
-                // inaudible.
-                let dith = dither_sample(&mut lfsr);
-                let sample = raw.saturating_add(dith);
-                if sample != raw.wrapping_add(dith) {
-                    clips += 1;
+                    // Mix in dither with saturation: a near-full-scale sample plus
+                    // dither can overflow i32, and wrapping would flip the sign — a
+                    // rail-to-rail click on 0 dBFS material.  The clamped LSBs are
+                    // inaudible.
+                    let dith = dither_sample(&mut lfsr);
+                    let sample = raw.saturating_add(dith);
+                    if sample != raw.wrapping_add(dith) {
+                        clips += 1;
+                    }
+
+                    ring[write_off] = sample as u32;
+                    write_off = (write_off + 1) % buf_len;
                 }
-
-                ring[write_off] = sample as u32;
-                write_off = (write_off + 1) % buf_len;
+                self.lfsr = lfsr;
+                if clips != 0 {
+                    CLIP_COUNT.fetch_add(clips, Ordering::Relaxed);
+                }
+                PEAK_LEVEL.fetch_max(peak, Ordering::Relaxed);
             }
-            HOOK_LFSR = lfsr;
-            if clips != 0 {
-                CLIP_COUNT.fetch_add(clips, Ordering::Relaxed);
-            }
-            PEAK_LEVEL.fetch_max(peak, Ordering::Relaxed);
-        }
 
-        HOOK_WRITE_OFF = write_off;
-        PACKET_SEQ.fetch_add(1, Ordering::Relaxed);
-    });
+            self.write_off = write_off;
+            PACKET_SEQ.fetch_add(1, Ordering::Relaxed);
+        });
+    }
 }
 
 /// UAC2 speaker supervisor task.
 ///
-/// The latency-critical data path lives entirely in [`iso_out_to_ssi`], invoked
-/// from the BRDY ISR.  This task installs that hook and then only handles the
+/// The latency-critical data path lives entirely in [`SpeakerSink`], called from
+/// the BRDY ISR.  This task binds it to the ISO OUT stream and then only handles the
 /// slow, non-latency-critical policy by watching [`PACKET_SEQ`] for activity:
 ///
 /// - `SPEAKER_ENABLE` (P4.1) is raised when a stream becomes active AND no
 ///   headphone or line-out jack is inserted (matching the C firmware).
 /// - When packets stop arriving it drops `SPEAKER_ENABLE`, clears
-///   [`USB_AUDIO_STREAMING`] (so the hook re-anchors on resume), and refills the
+///   [`USB_AUDIO_STREAMING`] (so the sink re-anchors on resume), and refills the
 ///   TX ring with dither so the codec does not auto-mute.
 #[embassy_executor::task]
 pub(crate) async fn uac2_task(ep_out: rza1_hal::usb::Rusb1EndpointOut) {
@@ -179,15 +191,15 @@ pub(crate) async fn uac2_task(ep_out: rza1_hal::usb::Rusb1EndpointOut) {
     // Pre-fill with dither so the codec stays alive before streaming begins, and
     // anchor the hook's write pointer somewhere valid before its first packet.
     fill_tx_with_dither();
-    unsafe { HOOK_WRITE_OFF = 0 };
 
-    // Install the ISR fast path.  BRDY is armed for the ISO OUT pipe whenever the
-    // endpoint is enabled (driver `endpoint_set_enabled`), so once the hook is
-    // registered every packet is serviced in interrupt context.
-    unsafe {
-        rza1_hal::usb::pipe::register_iso_out_hook(ep_out.pipe as usize, iso_out_to_ssi);
-    }
-    info!("uac2_task: ISO OUT hook installed; supervising stream state");
+    // Bind the ISR fast path.  BRDY is armed for the ISO OUT pipe whenever the
+    // endpoint is enabled (driver `endpoint_set_enabled`), so once the stream is
+    // bound every packet is serviced in interrupt context.  The stream lives as
+    // long as this task (forever).
+    // SAFETY: SPEAKER is lent once, here; only the stream's interrupt uses it after.
+    let speaker: &'static mut SpeakerSink = unsafe { &mut *core::ptr::addr_of_mut!(SPEAKER) };
+    let _stream = ep_out.into_iso_stream(speaker);
+    info!("uac2_task: ISO OUT stream bound; supervising stream state");
 
     let mut ticker = embassy_time::Ticker::every(embassy_time::Duration::from_millis(POLL_MS));
     let mut last_seq = PACKET_SEQ.load(Ordering::Relaxed);

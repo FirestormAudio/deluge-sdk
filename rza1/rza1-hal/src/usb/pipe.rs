@@ -64,58 +64,6 @@ pub static PIPE_NRDY: AtomicU16 = AtomicU16::new(0);
 /// conditions.
 pub static PIPE_IS_IN: AtomicU16 = AtomicU16::new(0);
 
-// ---------------------------------------------------------------------------
-// The fn-pointer iso hooks, as adapters over `iso` streams (removed once the firmwares bind
-// streams themselves)
-// ---------------------------------------------------------------------------
-
-struct FnOut(unsafe fn(*const u8, usize));
-impl super::iso::IsoOutConsumer for FnOut {
-    fn on_packet(&mut self, packet: &[u8]) {
-        // SAFETY: the registered hook's contract: a pointer to `len` received bytes.
-        unsafe { (self.0)(packet.as_ptr(), packet.len()) }
-    }
-}
-
-struct FnIn(unsafe fn(*mut u8, usize) -> usize);
-impl super::iso::IsoInProducer for FnIn {
-    fn fill_packet(&mut self, buf: &mut [u8]) -> usize {
-        // SAFETY: the registered hook's contract: fill up to `max` bytes of `buf`.
-        unsafe { (self.0)(buf.as_mut_ptr(), buf.len()) }
-    }
-}
-
-static mut OUT_ADAPTER: Option<FnOut> = None;
-static mut IN_ADAPTER: Option<FnIn> = None;
-
-/// Hand every packet port 0's ISO OUT `pipe` receives to `cb`, in the BRDY interrupt.
-///
-/// # Safety
-/// Call once, from task context, before the pipe is armed.
-pub unsafe fn register_iso_out_hook(pipe: usize, cb: unsafe fn(*const u8, usize)) {
-    // SAFETY: the caller's contract: once, before the interrupt can reach the adapter.
-    unsafe {
-        let adapter = &mut *core::ptr::addr_of_mut!(OUT_ADAPTER);
-        super::iso::bind_out(0, pipe as u8, adapter.insert(FnOut(cb)));
-    }
-}
-
-/// Fill port 0's ISO IN `pipe`'s `mps`-byte packets from `cb`, in the BRDY interrupt.
-///
-/// # Safety
-/// Call once, from task context, before the pipe is enabled.
-pub unsafe fn register_iso_in_hook(
-    pipe: usize,
-    mps: usize,
-    cb: unsafe fn(*mut u8, usize) -> usize,
-) {
-    // SAFETY: as `register_iso_out_hook`.
-    unsafe {
-        let adapter = &mut *core::ptr::addr_of_mut!(IN_ADAPTER);
-        super::iso::bind_in(0, pipe as u8, mps as u16, adapter.insert(FnIn(cb)));
-    }
-}
-
 /// Activate an ISO IN pipe for continuous BRDY-driven streaming.
 ///
 /// Sequence: reset FIFO+toggle (leaves PID=NAK), prime both double-buffer
@@ -125,6 +73,8 @@ pub unsafe fn register_iso_in_hook(
 ///
 /// # Safety
 /// Task context (no transfer in flight on this pipe).
+/// For DelugeFirmware's alt-setting workaround until phase 9; not part of the API.
+#[doc(hidden)]
 pub unsafe fn pipe_iso_in_activate(u: Usb, n: usize) {
     unsafe {
         // pipe_reset quiesces (PID=NAK, deselect) and pulses ACLRM|SQCLR.
@@ -719,6 +669,8 @@ fn pid_nak_if_stall(ctr: Reg<u16, RW>) {
 ///
 /// # Safety
 /// The caller owns USB port `u`: no other context reconfigures pipe `n` meanwhile.
+/// For DelugeFirmware's alt-setting workaround until phase 9; not part of the API.
+#[doc(hidden)]
 pub unsafe fn pipe_enable(u: Usb, n: usize) {
     let ctr = pipectr(u, n);
     // Clear any residual STALL first (matches Linux usbhs_pipe_enable).
@@ -759,6 +711,8 @@ pub unsafe fn pipe_stall(u: Usb, n: usize) {
 ///
 /// # Safety
 /// The caller owns USB port `u`: no other context reconfigures pipe `n` meanwhile.
+/// For DelugeFirmware's alt-setting workaround until phase 9; not part of the API.
+#[doc(hidden)]
 pub unsafe fn pipe_reset(u: Usb, n: usize) {
     unsafe {
         // ACLRM and SQCLR require PID=NAK with the pipe idle (PBUSY=0).
@@ -830,6 +784,8 @@ unsafe fn pipe_quiesce(u: Usb, n: usize) {
 ///
 /// # Safety
 /// The caller owns USB port `u`: no other context reconfigures pipe `n` meanwhile.
+/// For DelugeFirmware's alt-setting workaround until phase 9; not part of the API.
+#[doc(hidden)]
 pub unsafe fn pipe_brdy_enable(u: Usb, n: usize) {
     let brdysts = u.brdysts();
     let brdyenb = u.brdyenb();
