@@ -105,12 +105,12 @@ pub struct SdPins {
 pub struct AudioPins {
     /// AUDIO_XOUT, the codec's master clock (P7_11).
     pub xout: Peri<'static, P7_11>,
-    /// SSITxD0, I²S data to the codec (P6_8).
-    pub tx: Peri<'static, P6_8>,
-    /// SSISCK0, the bit clock (P6_9).
-    pub sck: Peri<'static, P6_9>,
-    /// SSIWS0, the word clock (P6_10).
-    pub ws: Peri<'static, P6_10>,
+    /// SSISCK0, the bit clock (P6_8).
+    pub sck: Peri<'static, P6_8>,
+    /// SSIWS0, the word clock (P6_9).
+    pub ws: Peri<'static, P6_9>,
+    /// SSITxD0, I²S data to the codec (P6_10).
+    pub tx: Peri<'static, P6_10>,
     /// SSIRxD0, I²S data from the codec (P6_11).
     pub rx: Peri<'static, P6_11>,
     /// The codec's power, high = on (P6_12).
@@ -373,9 +373,9 @@ impl Board {
                 },
                 audio: AudioPins {
                     xout: p.P7_11,
-                    tx: p.P6_8,
-                    sck: p.P6_9,
-                    ws: p.P6_10,
+                    sck: p.P6_8,
+                    ws: p.P6_9,
+                    tx: p.P6_10,
                     rx: p.P6_11,
                     codec_power: p.P6_12,
                 },
@@ -414,6 +414,16 @@ impl Board {
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
+    #[test]
+    fn audio_pins_are_named_by_their_ssi_signals() {
+        // HW manual Table 41.23 (P6), alternative 3: P6_8 SSISCK0, P6_9 SSIWS0, P6_10 SSITxD0,
+        // P6_11 SSIRxD0.
+        use rza1_hal::gpio::Pin;
+        let (board, _) = super::Board::split(unsafe { rza1_hal::Peripherals::steal() });
+        let a = &board.pins.audio;
+        assert_eq!((a.sck.bit(), a.ws.bit(), a.tx.bit(), a.rx.bit()), (8, 9, 10, 11));
+    }
+
     #[test]
     fn board_pins_name_every_pin_the_bsp_drives() {
         use rza1_hal::gpio::Pin;
@@ -461,9 +471,9 @@ mod tests {
         let a = &pins.audio;
         for (port, bit) in [
             (a.xout.port(), a.xout.bit()),
-            (a.tx.port(), a.tx.bit()),
             (a.sck.port(), a.sck.bit()),
             (a.ws.port(), a.ws.bit()),
+            (a.tx.port(), a.tx.bit()),
             (a.rx.port(), a.rx.bit()),
             (a.codec_power.port(), a.codec_power.bit()),
         ] {

@@ -77,13 +77,13 @@ pub fn init_with_scux_src(
 ///
 /// Each pin keeps PIPC = 1 (the function drives its direction), as the pin-mux always set it,
 /// SSITxD0 included, although HW manual Table 41.7 asks for PIPC = 0 on SSITxD0; the SSI driver
-/// will apply Table 41.7 when it takes its pins.
+/// will apply Table 41.7 when it takes its pins. The pins are muxed in port order, as before.
 fn mux_ssi(pins: AudioPins) -> Output<'static> {
-    Flex::new(pins.xout).set_as_alternate(Alternate::Alt6); // AUDIO_XOUT, master clock to codec
-    Flex::new(pins.tx).set_as_alternate(Alternate::Alt3); // SSITxD0, I²S TX data
-    Flex::new(pins.sck).set_as_alternate(Alternate::Alt3); // SSISCK0, I²S BCLK
-    Flex::new(pins.ws).set_as_alternate(Alternate::Alt3); // SSIWS0, I²S LRCK
-    Flex::new(pins.rx).set_as_alternate(Alternate::Alt3); // SSIRxD0, I²S RX data
+    Flex::new(pins.xout).set_as_alternate(Alternate::Alt6); // AUDIO_XOUT (P7_11), codec master clock
+    Flex::new(pins.sck).set_as_alternate(Alternate::Alt3); // SSISCK0 (P6_8), I²S BCLK
+    Flex::new(pins.ws).set_as_alternate(Alternate::Alt3); // SSIWS0 (P6_9), I²S LRCK
+    Flex::new(pins.tx).set_as_alternate(Alternate::Alt3); // SSITxD0 (P6_10), I²S TX data
+    Flex::new(pins.rx).set_as_alternate(Alternate::Alt3); // SSIRxD0 (P6_11), I²S RX data
     // CODEC_POWER: low while the SSI clocks stabilise.
     Output::new(pins.codec_power, Level::Low)
 }
@@ -91,7 +91,7 @@ fn mux_ssi(pins: AudioPins) -> Output<'static> {
 /// Pin-mux SSI0, hold the codec off, start the SCUX path `path`, wait the codec's power-on
 /// delay, then power the codec.
 fn bring_up_scux(pins: AudioPins, path: impl FnOnce()) {
-    log::debug!("audio: pin-mux SSI0 (P7.11, P6.8-11)");
+    log::debug!("audio: pin-mux SSI0 (P7_11, P6_8-11)");
     let mut codec_power = mux_ssi(pins);
 
     // ── SCUX path: SSI RX DMA + SCUX → SSIF0 TX ─────────────────────────────

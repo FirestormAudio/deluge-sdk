@@ -2,11 +2,13 @@
 //!
 //! Every pin is a singleton in [`Peripherals`](crate::Peripherals) (`P6_7` …). Take one into an
 //! [`Input`], an [`Output`] or a [`Flex`]; drivers that use a pin for a peripheral function take
-//! it by its pin-function trait (`uart::TxPin<T>` …) and set the function themselves. Level,
-//! direction and mode are written through the set/reset registers (PSRn, PMSRn, PMCSRn) and
-//! toggles through PNOTn, so they never undo a write an interrupt made to another pin of the
-//! port; the function-select, input-buffer and PIPC registers, which have no set/reset twin, are
-//! read-modify-written in a critical section.
+//! it by its pin-function trait (`uart::TxPin<T>` …) and set the function themselves. An output's
+//! level is written through PSRn and toggled through PNOTn, which every output-capable pin has a
+//! bit in. Mode, direction, function select, input buffer and PIPC are read-modify-written in a
+//! critical section: PMCSRn and PMSRn would avoid that, but PMCSR1/PMSR1 have no bits for
+//! P1_8-P1_15 (Table 41.14), so a pin there could never reach alternative mode through them.
+//! Either way a write never undoes another pin's. Port 0 has no P, PSR, PM, PMSR or PIPC, and
+//! nothing writes them.
 //!
 //! Register map (16-bit unless noted, port `n` at `+4n` from `0xFCFE_3000`): P `+0x000`,
 //! PSR (32-bit) `+0x100`, PPR `+0x200`, PM `+0x300`, PMC `+0x400`, PFC `+0x500`, PFCE `+0x600`,
@@ -164,7 +166,7 @@ const fn has_port_output(port: u8, bit: u8) -> bool {
 }
 
 /// A set/reset register's value that sets the bits of `mask` to `value`'s: the upper half selects
-/// which lower bits are written (PSRn, PMSRn, PMCSRn).
+/// which lower bits are written (PSRn).
 const fn set_reset(mask: u16, value: bool) -> u32 {
     ((mask as u32) << 16) | if value { mask as u32 } else { 0 }
 }
@@ -206,12 +208,14 @@ impl<'d> Flex<'d> {
         1 << self.pin.bit()
     }
 
-    /// A software-controlled input: port mode (PMC = 0), input direction (PM = 1), input buffer
-    /// on (PIBC = 1).
+    /// A software-controlled input: port mode (PMC = 0), input direction (PM = 1; port 0 has no
+    /// PM, its pins are inputs), input buffer on (PIBC = 1).
     pub fn set_as_input(&mut self) {
         let (n, m) = (self.n(), self.mask());
-        GPIO.pmcsr(n).write_value(set_reset(m, false));
-        GPIO.pmsr(n).write_value(set_reset(m, true));
+        modify_bit(GPIO.pmc(n), m, false);
+        if n != 0 {
+            modify_bit(GPIO.pm(n), m, true);
+        }
         modify_bit(GPIO.pibc(n), m, true);
     }
 
@@ -227,9 +231,9 @@ impl<'d> Flex<'d> {
         }
         let (n, m) = (self.n(), self.mask());
         GPIO.psr(n).write_value(set_reset(m, initial.into()));
-        GPIO.pmcsr(n).write_value(set_reset(m, false));
+        modify_bit(GPIO.pmc(n), m, false);
         modify_bit(GPIO.pipc(n), m, false);
-        GPIO.pmsr(n).write_value(set_reset(m, false));
+        modify_bit(GPIO.pm(n), m, false);
     }
 
     fn select_alternate(&mut self, alt: Alternate) {
@@ -238,7 +242,7 @@ impl<'d> Flex<'d> {
         modify_bit(GPIO.pfcae(n), m, k >= 4);
         modify_bit(GPIO.pfce(n), m, (k >> 1) & 1 != 0);
         modify_bit(GPIO.pfc(n), m, k & 1 != 0);
-        GPIO.pmcsr(n).write_value(set_reset(m, true));
+        modify_bit(GPIO.pmc(n), m, true);
     }
 
     /// Alternative function `alt`, its I/O direction driven by the function (PIPC = 1). Use
@@ -246,7 +250,10 @@ impl<'d> Flex<'d> {
     /// HW manual Table 41.7 (TIOCnx, SSITxD0/1/3, WDTOVF).
     pub fn set_as_alternate(&mut self, alt: Alternate) {
         self.select_alternate(alt);
-        modify_bit(GPIO.pipc(self.n()), self.mask(), true);
+        // Port 0 has no PIPC: its alternative functions are inputs, driven by the function.
+        if self.n() != 0 {
+            modify_bit(GPIO.pipc(self.n()), self.mask(), true);
+        }
     }
 
     /// Alternative function `alt` with its I/O direction set by PM, as HW manual Table 41.7
@@ -254,8 +261,10 @@ impl<'d> Flex<'d> {
     pub fn set_as_alternate_software_io(&mut self, alt: Alternate, output: bool) {
         self.select_alternate(alt);
         let (n, m) = (self.n(), self.mask());
-        modify_bit(GPIO.pipc(n), m, false);
-        GPIO.pmsr(n).write_value(set_reset(m, !output));
+        if n != 0 {
+            modify_bit(GPIO.pipc(n), m, false);
+            modify_bit(GPIO.pm(n), m, !output);
+        }
     }
 
     /// Turn the input buffer on (PIBC = 1), so the level of a pin in an alternative function can
@@ -475,9 +484,9 @@ mod owned_pin_tests {
             test::writes(),
             [
                 (0xFCFE_3118, (1 << 23) | (1 << 7)), // PSR6: P6_7 high
-                (0xFCFE_3918, 1 << 23),              // PMCSR6: PMC6_7 = 0 (port mode)
+                (0xFCFE_3418, 0),                    // PMC6: bit 7 cleared (port mode)
                 (0xFCFE_7218, 0),                    // PIPC6: bit 7 cleared
-                (0xFCFE_3818, 1 << 23),              // PMSR6: PM6_7 = 0 (output)
+                (0xFCFE_3318, 0),                    // PM6: bit 7 cleared (output)
             ]
         );
     }
@@ -498,9 +507,9 @@ mod owned_pin_tests {
         assert_eq!(
             test::writes(),
             [
-                (0xFCFE_3918, 1 << 19),              // PMCSR6: PMC6_3 = 0
-                (0xFCFE_3818, (1 << 19) | (1 << 3)), // PMSR6: PM6_3 = 1 (input)
-                (0xFCFE_7018, 1 << 3),               // PIBC6: input buffer on
+                (0xFCFE_3418, 0),      // PMC6: bit 3 cleared (port mode)
+                (0xFCFE_3318, 1 << 3), // PM6: bit 3 set (input)
+                (0xFCFE_7018, 1 << 3), // PIBC6: input buffer on
             ]
         );
     }
@@ -523,10 +532,7 @@ mod owned_pin_tests {
         assert_eq!(test::peek16(0xFCFE_3A04), bit, "PFCAE set (alternative 5 or above)");
         assert_eq!(test::peek16(0xFCFE_3604), 0, "PFCE clear");
         assert_eq!(test::peek16(0xFCFE_3504), bit, "PFC set");
-        assert!(
-            test::writes().contains(&(0xFCFE_3904, ((bit as u32) << 16) | bit as u32)),
-            "PMCSR1: PMC1_7 = 1 (alternative mode)"
-        );
+        assert_eq!(test::peek16(0xFCFE_3404), bit, "PMC set (alternative mode)");
         assert_eq!(test::peek16(0xFCFE_7204), bit, "PIPC set (the function drives direction)");
     }
 
@@ -534,13 +540,38 @@ mod owned_pin_tests {
     fn set_as_alternate_software_io_clears_pipc() {
         test::reset();
         test::poke32(0xFCFE_7218, 0xFFFF); // PIPC6 all set beforehand
-        let mut pin = Flex::new(unsafe { P6_8::steal() });
+        test::poke32(0xFCFE_3318, 0xFFFF); // PM6 at its reset value: all inputs
+        // P6_10 is SSITxD0 on alternative 3, one of Table 41.7's functions.
+        let mut pin = Flex::new(unsafe { P6_10::steal() });
         pin.set_as_alternate_software_io(Alternate::Alt3, true);
-        let bit = 1u32 << 8;
-        assert_eq!(test::peek16(0xFCFE_7218) as u32 & bit, 0, "PIPC clear (Table 41.7)");
-        let writes = test::writes();
-        assert!(writes.contains(&(0xFCFE_3818, bit << 16)), "PMSR6: PM6_8 = 0 (output)");
-        assert!(writes.contains(&(0xFCFE_3918, (bit << 16) | bit)), "PMCSR6: PMC6_8 = 1");
+        let bit = 1u16 << 10;
+        assert_eq!(test::peek16(0xFCFE_7218) & bit, 0, "PIPC clear (Table 41.7)");
+        assert_eq!(test::peek16(0xFCFE_3318) & bit, 0, "PM clear (output)");
+        assert_eq!(test::peek16(0xFCFE_3418) & bit, bit, "PMC set");
+    }
+
+    #[test]
+    fn alternate_mode_reaches_pmc_on_p1_8_to_p1_15() {
+        // PMCSR1 has no bits for P1_8-P1_15 (Table 41.14: valid bits 23-16 and 7-0), so PMC1 must
+        // be written itself: the resulting PMC1 holds the pin's bit.
+        test::reset();
+        Flex::new(unsafe { P1_9::steal() }).set_as_alternate(Alternate::Alt3);
+        Flex::new(unsafe { P1_14::steal() }).set_as_alternate(Alternate::Alt2);
+        let pmc1 = test::peek16(0xFCFE_3404);
+        assert_eq!(pmc1 & ((1 << 9) | (1 << 14)), (1 << 9) | (1 << 14), "PMC1 = {pmc1:#06x}");
+    }
+
+    #[test]
+    fn port_0_touches_only_the_registers_it_has() {
+        // Port 0 has PPR, PMC, PFC, PFCE, PMCSR, PFCAE and PIBC only (Table 41.12): no P, PSR, PM,
+        // PMSR or PIPC.
+        test::reset();
+        Input::new(unsafe { P0_0::steal() });
+        Flex::new(unsafe { P0_2::steal() }).set_as_alternate(Alternate::Alt2);
+        let missing = [0xFCFE_3000, 0xFCFE_3100, 0xFCFE_3300, 0xFCFE_3800, 0xFCFE_7200];
+        let bad: std::vec::Vec<_> =
+            test::writes().into_iter().filter(|(a, _)| missing.contains(a)).collect();
+        assert!(bad.is_empty(), "writes to port 0 registers that don't exist: {bad:x?}");
     }
 
     #[test]
