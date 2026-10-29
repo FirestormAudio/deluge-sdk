@@ -999,7 +999,7 @@ mod config_tests {
     use super::*;
 
     #[test]
-    fn the_deluge_codec_config_encodes_0x002b_c020() {
+    fn the_default_config_encodes_0x002b_c020() {
         assert_eq!(ssicr(&Config::default()), 0x002B_C020);
     }
 
