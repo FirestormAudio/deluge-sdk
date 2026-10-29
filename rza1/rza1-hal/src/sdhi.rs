@@ -1547,7 +1547,9 @@ impl<T: Instance> Handler<T::OperationInterrupt> for OperationInterruptHandler<T
 /// An SD host controller, with its DMA channels.
 ///
 /// Its methods take `&self`, so firmware can keep it in a static. The card protocol is a
-/// sequence: issue one command (and its transfer) at a time.
+/// sequence: issue one command (and its transfer) at a time, serialised by the caller. A command
+/// or transfer dropped mid-flight resets the whole controller ([`take_aborted`](Self::take_aborted)),
+/// so one from another task running alongside it would never complete.
 pub struct Sdhi<'d> {
     port: u8,
     /// Whether a command or transfer was dropped mid-flight ([`take_aborted`](Self::take_aborted)).
@@ -1641,6 +1643,10 @@ impl<'d> Sdhi<'d> {
     /// Whether a command or transfer was dropped mid-flight since the last call. If so the
     /// controller has been stopped and reset to identification mode, and the card must be
     /// re-identified before it is used again.
+    ///
+    /// The controller runs one command or transfer at a time, and the caller serialises them (as
+    /// `deluge-bsp`'s SD layer does with one lock): an abort resets the whole controller, so an
+    /// operation another task had in flight on it would never complete.
     pub fn take_aborted(&self) -> bool {
         self.aborted.swap(false, Ordering::AcqRel)
     }
@@ -1656,9 +1662,9 @@ impl<'d> Sdhi<'d> {
             {
                 warn!("sdhi{}: DMA channel {} didn't stop on abort", self.port, ch);
             }
-            let s = sdhi(self.port);
-            s.sd_stop().write_value(SD_STOP_STP);
-            s.sd_stop().write_value(0x0000);
+            // STP stays set: the soft reset in `init` clears it and ends any CMD12 sequence
+            // (HW manual §38.2.3 note 3 forbids clearing STP while one may still run).
+            sdhi(self.port).sd_stop().write_value(SD_STOP_STP);
             // SAFETY: the owned controller; the transfer in flight is stopped above.
             unsafe { init(self.port, self.sd_option) };
             self.aborted.store(true, Ordering::Release);
@@ -1998,6 +2004,11 @@ mod typed_tests {
         }
         let (stp, reset, _) = abort_writes();
         assert!(stp && reset, "SD_STOP.STP and a soft reset");
+        // STP stays set until the soft reset (HW manual §38.2.3 note 3: don't clear STP while a
+        // CMD12 sequence may still run); SDRST itself ends the sequence.
+        let stop = super::sdhi(1).sd_stop().addr();
+        let last_stop = test::writes().into_iter().filter(|&(a, _)| a == stop).last();
+        assert_eq!(last_stop.map(|(_, v)| v), Some(SD_STOP_STP as u32), "STP not cleared by hand");
         assert!(sdhi.take_aborted());
         assert!(!sdhi.take_aborted(), "taken once");
     }

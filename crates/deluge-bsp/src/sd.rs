@@ -812,7 +812,9 @@ mod device {
 
     /// Returns `true` if `init()` completed successfully and the card is ready.
     pub fn is_ready() -> bool {
-        CARD_READY.load(Ordering::Acquire)
+        // An aborted transfer makes the card unready until `init` (USB mass storage's
+        // `ensure_ready` relies on this to re-initialise).
+        super::card_usable(aborted(), &CARD_READY).is_ok()
     }
 
     /// Returns `true` if the card is a High Capacity (SDHC/SDXC) card.
@@ -837,7 +839,7 @@ mod device {
     /// Reads the SDHI SD_WP signal.  Only meaningful once the controller is up
     /// (after [`init`]); returns `false` when no card is ready.
     pub fn is_write_protected() -> bool {
-        if !CARD_READY.load(Ordering::Acquire) {
+        if super::card_usable(aborted(), &CARD_READY).is_err() {
             return false;
         }
         controller().card_write_protected()
@@ -848,7 +850,7 @@ mod device {
     /// Only valid after [`init()`] has returned `Ok(())`.  Returns 0 if the card
     /// is not ready.  Used to answer SCSI READ CAPACITY for USB mass storage.
     pub fn total_sectors() -> u32 {
-        if !CARD_READY.load(Ordering::Acquire) {
+        if super::card_usable(aborted(), &CARD_READY).is_err() {
             return 0;
         }
         controller().card_size_blocks()
