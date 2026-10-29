@@ -261,11 +261,13 @@ const TRIGGER_PRIORITY: rza1_hal::interrupt::Priority = rza1_hal::interrupt::Pri
 /// the HAL's `init`.
 pub(crate) fn apply_irq_priorities() {
     use rza1_hal::interrupt::{Interrupt, Priority, typelevel::*};
-    let set: [(fn(Priority), Priority); 17] = [
+    let set: [(fn(Priority), Priority); 19] = [
         (USB0::set_priority, DRIVER_PRIORITY),
         (USB1::set_priority, DRIVER_PRIORITY),
+        (BRI0::set_priority, DRIVER_PRIORITY),
         (ERI0::set_priority, DRIVER_PRIORITY),
         (TXI0::set_priority, DRIVER_PRIORITY),
+        (BRI1::set_priority, DRIVER_PRIORITY),
         (ERI1::set_priority, DRIVER_PRIORITY),
         (TXI1::set_priority, DRIVER_PRIORITY),
         (SDHI1_STATUS::set_priority, DRIVER_PRIORITY),

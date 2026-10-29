@@ -39,6 +39,8 @@ embassy-time-driver = { workspace = true }
 embassy-usb-driver = { workspace = true }
 embedded-hal = "1"
 embedded-hal-async = "1"
+embedded-hal-nb = "1"
+embedded-io = "0.7"
 embedded-io-async = "0.7"
 log = { workspace = true, optional = true }
 defmt = { version = "1", optional = true }
