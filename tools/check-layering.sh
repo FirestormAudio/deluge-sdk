@@ -56,6 +56,15 @@ if [ -n "$chip_code_hits" ]; then
   echo "error: a chip crate (rza1-pac, rza1-hal, rza1-rt, rza1-alloc) names the Deluge; board facts belong in deluge-bsp" >&2
   exit 1
 fi
+# The boot header and the status LED are the board's (spec decision 4): rza1-rt only places a
+# `.boot_header` section; deluge-bsp emits the Deluge's header and blinks its LED on a fault.
+chip_board_hits="$(grep -rnE --include='*.rs' --include='*.x' --exclude-dir=target 'BootLoad_ValidProgramTest|RZA1_STATUS_LED' "${CHIP_DIRS[@]}" \
+  | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)' || true)"
+if [ -n "$chip_board_hits" ]; then
+  printf '%s\n' "$chip_board_hits"
+  echo "error: a chip crate holds the board's boot header or status LED; they belong in deluge-bsp" >&2
+  exit 1
+fi
 # Startup and exception entry are rza1-rt's: the HAL has no global_asm! (spec, Phase 3 exit).
 hal_asm_hits="$(grep -rn --include='*.rs' 'global_asm' rza1/rza1-hal | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)"
 if [ -n "$hal_asm_hits" ]; then
@@ -71,6 +80,27 @@ if [ -n "$iso_hook_hits" ]; then
   echo "error: a USB iso hook is still registered; bind an iso stream (rza1_hal::usb::iso) instead" >&2
   exit 1
 fi
+
+# Entry points are `#[entry]` (spec decision 4), which type-checks `fn() -> !`; a hand-exported
+# `extern "C" fn main` is not.
+entry_hits="$(grep -rnE --include='*.rs' --exclude-dir=target 'extern "C" fn main\b' firmwares hw-tests examples crates/deluge-sdk-macros/src \
+  | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)"
+if [ -n "$entry_hits" ]; then
+  printf '%s\n' "$entry_hits"
+  echo "error: an entry point is a hand-exported \`extern \"C\" fn main\`; use \`#[deluge_bsp::entry]\` (or \`#[deluge::app]\`)" >&2
+  exit 1
+fi
+
+# The BSP's `fault-blink` fault handler is the image's to turn off (an application with its own
+# `rza1_cpu_fault_report`): the library crates over the BSP leave its default features alone, so
+# only an image's own defaults turn it on.
+for lib in deluge-sdk deluge-grid-toolkit; do
+  if cargo tree --locked -q -p "$lib" --no-default-features -e features --target armv7a-none-eabihf -i deluge-bsp 2>/dev/null \
+     | grep -q 'deluge-bsp feature "fault-blink"'; then
+    echo "error: $lib turns on deluge-bsp's fault-blink with its default features off; depend on deluge-bsp with default-features = false" >&2
+    exit 1
+  fi
+done
 
 # Board-agnostic crates (spec rule 3): usb/ and drivers/ never name the chip HAL, the board, or
 # any deluge-* crate in code. Their dependencies are checked against Cargo's graph at the end.

@@ -436,7 +436,7 @@ impl From<HeaderError> for PlanError {
 // --- FSB metadata --------------------------------------------------------
 
 /// Image offsets of the first-stage-bootloader (FSB) metadata words, emitted by
-/// `rza1-hal/src/startup.rs` just past the eight-entry vector table.
+/// `deluge-bsp/src/boot_header.rs` just past the eight-entry vector table.
 pub const FSB_CODE_START: usize = 0x20;
 /// Offset of the `code_end` word (one past the last image byte).
 pub const FSB_CODE_END: usize = 0x24;

@@ -9,6 +9,16 @@
 // so this is what links it into every image built on the BSP.
 #[cfg(target_os = "none")]
 use rza1_rt as _;
+// The Deluge's boot header, in the `.boot_header` section rza1-rt places after the vector table.
+#[cfg(target_os = "none")]
+mod boot_header;
+// The image's fault handler, unless the application brings its own.
+#[cfg(all(target_os = "none", feature = "fault-blink"))]
+mod fault_blink;
+/// The image's entry point: `#[entry] fn main() -> !`, called once the reset handler has zeroed
+/// BSS. (`#[deluge::app]` generates it for an SDK app.)
+#[cfg(target_os = "none")]
+pub use rza1_rt::entry;
 
 pub mod audio;
 #[cfg(target_os = "none")]

@@ -72,6 +72,10 @@ tools/check-register-tables.sh
 python3 tools/gen-pins.py --check
 tools/check-pac.sh
 
+echo "==> rza1: host tests (the runtime's macros and fault types)"
+HOST=$(rustc -vV | sed -n 's/^host: //p')
+cargo test --target "$HOST" -p rza1-rt-macros -p rza1-rt
+
 echo "==> rza1: QEMU ARM tests"
 cargo test --target "$QEMU" -p rza1-pac --features rza1l --lib
 cargo test --target "$QEMU" -p rza1-pac --features rza1h --lib

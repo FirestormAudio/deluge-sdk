@@ -5,6 +5,7 @@ members = [
   "firmwares/msc-firmware",
   "hw-tests/wp-probe",
   "hw-tests/loopback-probe",
+  "hw-tests/fault-probe",
   "hw-tests/sd-bench",
   "hw-tests/vbus-probe",
   "hw-tests/uac-host-firmware",

@@ -17,15 +17,11 @@ links = "rza1-rt"
 [package.metadata.docs.rs]
 default-target = "armv7a-none-eabihf"
 
-[lib]
-# Assembly only; nothing to unit-test.
-test = false
+[dependencies]
+rza1-rt-macros = { version = "0.1.0", path = "../rza1-rt-macros" }
 
 [features]
 ## Each fault handler first dumps the fault registers to SEGGER RTT channel 0, and the linker
 ## script reserves the RTT buffer (the board's memory.x must then define RTT_RAM and
 ## NCACHE_RTT_RAM). The image must also link `rtt-target`, which defines `_SEGGER_RTT`.
 rtt = []
-## Hand every CPU fault to the application's `rza1_cpu_fault_report`; without it, faults blink
-## the status LED. The application must then define the reporter, or the link fails.
-app-fault-reporter = []

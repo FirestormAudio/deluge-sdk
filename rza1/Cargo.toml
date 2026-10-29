@@ -3,7 +3,7 @@
 # Phase 6 splits into the rza1-rs repository.
 [workspace]
 resolver = "2"
-members = ["rza1-pac", "rza1-rt", "rza1-hal", "rza1-alloc"]
+members = ["rza1-pac", "rza1-rt", "rza1-rt-macros", "rza1-hal", "rza1-alloc"]
 
 [workspace.package]
 version = "0.1.0"

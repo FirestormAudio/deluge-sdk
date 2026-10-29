@@ -1,0 +1,19 @@
+[package]
+name = "rza1-rt-macros"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Attribute macros for rza1-rt: #[entry], #[irq] and #[fault]."
+categories = ["embedded", "no-std", "development-tools::procedural-macro-helpers"]
+keywords = ["rza1", "renesas", "cortex-a9", "runtime", "macros"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "3", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"

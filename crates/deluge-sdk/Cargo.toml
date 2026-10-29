@@ -23,7 +23,9 @@ path = "src/lib.rs"
 
 [dependencies]
 deluge-macros = { path = "../deluge-sdk-macros", version = "0.1.0", package = "deluge-sdk-macros" }
-deluge-bsp = { path = "../deluge-bsp", version = "0.1.0" }
+# Default features off so `fault-blink` follows this crate's own feature of that name: an app
+# with its own fault handler turns `deluge`'s defaults off.
+deluge-bsp = { path = "../deluge-bsp", version = "0.1.0", default-features = false, features = ["memory-x"] }
 rza1-alloc = { path = "../../rza1/rza1-alloc", version = "0.1.0" }
 rza1-hal = { path = "../../rza1/rza1-hal", version = "0.1.0", features = ["rza1l"] }
 fixedpoint = { workspace = true }
@@ -51,7 +53,7 @@ embassy-executor = { workspace = true, features = [
 ] }
 # `Sd` is built on the BSP's FAT support on the device; the simulator backs it
 # with host files instead.
-deluge-bsp = { path = "../deluge-bsp", version = "0.1.0", features = ["fat"] }
+deluge-bsp = { path = "../deluge-bsp", version = "0.1.0", default-features = false, features = ["memory-x", "fat"] }
 
 # ── Host (the desktop simulator, `cargo deluge sim`) ─────────────────────────
 # A std executor, with the capability modules driving the simulator panel.
@@ -74,7 +76,10 @@ libc = { version = "0.2", optional = true }
 [features]
 # No default backend: `sim` depends on host-only crates, so enabling it by
 # default would break device builds. `cargo deluge sim` passes it explicitly.
-default = []
+default = ["fault-blink"]
+## The fault handler: a CPU fault blinks the SYNC LED (deluge-bsp's `fault-blink`). An app with
+## its own `#[rza1_rt::fault]` handler turns `deluge`'s default features off.
+fault-blink = ["deluge-bsp/fault-blink"]
 ## Desktop simulator backend (`cargo deluge sim`): drives the in-process
 ## simulator panel (deluge-sim-link) instead of real peripherals.
 sim = ["dep:deluge-sim-link", "dep:deluge-simulator", "deluge-bsp/host-panel"]

@@ -437,6 +437,18 @@ version = "0.1.0"
 [[package]]
 name = "rza1-rt"
 version = "0.1.0"
+dependencies = [
+ "rza1-rt-macros",
+]
+
+[[package]]
+name = "rza1-rt-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+]
 
 [[package]]
 name = "stable_deref_trait"

@@ -20,8 +20,6 @@ ENTRY(_start)
  *   ABT_STACK_SIZE     = ...;
  *
  *   INTERNAL_RAM_END   = ...;   -- top byte address of on-chip SRAM
- *   RZA1_STATUS_LED_PORT = ...; -- GPIO port of the status LED (1-11)
- *   RZA1_STATUS_LED_PIN  = ...; -- its pin (0-15)
  *
  * With rza1-rt's `rtt` feature, build.rs publishes link_rtt.x as link.x instead (it requires
  * RTT_RAM and NCACHE_RTT_RAM regions in memory.x).
@@ -32,25 +30,14 @@ INCLUDE memory.x
  * only (TTBCR.N = 0) and no second-level tables, so nothing else needs room here. */
 TTB_SIZE = 0x4000;
 
-/* The status LED the reset and fault handlers drive (startup.rs). The port's GPIO registers are
- * 16 bits wide and 4 bytes apart per port (RZ/A1L hardware manual, ch. 54: Pn, PMn, PMCn,
- * PIPCn; matches rza1_hal::gpio). Port 0 is input-only, so it has no PM/PIPC register. */
-ASSERT(DEFINED(RZA1_STATUS_LED_PORT) && DEFINED(RZA1_STATUS_LED_PIN),
-       "memory.x must define RZA1_STATUS_LED_PORT and RZA1_STATUS_LED_PIN")
-/* Every other use is guarded with DEFINED(), so a missing symbol fails on the ASSERT above
- * rather than as a bare "symbol not found" at each use. */
-ASSERT(!DEFINED(RZA1_STATUS_LED_PORT)
-       || (RZA1_STATUS_LED_PORT >= 1 && RZA1_STATUS_LED_PORT <= 11),
-       "RZA1_STATUS_LED_PORT must be 1-11 (P1-P11)")
-ASSERT(!DEFINED(RZA1_STATUS_LED_PIN) || RZA1_STATUS_LED_PIN <= 15,
-       "RZA1_STATUS_LED_PIN must be 0-15")
-__rza1_status_led_port = DEFINED(RZA1_STATUS_LED_PORT) ? RZA1_STATUS_LED_PORT : 1;
-__rza1_status_led_pin  = DEFINED(RZA1_STATUS_LED_PIN) ? RZA1_STATUS_LED_PIN : 0;
-__rza1_status_led_p    = 0xFCFE3000 + 4 * __rza1_status_led_port;
-__rza1_status_led_pm   = 0xFCFE3300 + 4 * __rza1_status_led_port;
-__rza1_status_led_pmc  = 0xFCFE3400 + 4 * __rza1_status_led_port;
-__rza1_status_led_pipc = 0xFCFE7200 + 4 * __rza1_status_led_port;
-__rza1_status_led_mask = 1 << __rza1_status_led_pin;
+/* The fault hook: the image's `#[rza1_rt::fault]` handler (or a C `rza1_cpu_fault_report`), or
+ * else rza1-rt's default, which parks the core. */
+PROVIDE(rza1_cpu_fault_report = __rza1_rt_default_fault_report);
+
+/* A board's boot header (see `.vector_table` below) is pulled in by name: nothing references it,
+ * so without this its archive member would never be linked. The board labels the header
+ * `__rza1_boot_header`; an image with no boot header leaves the symbol undefined, which is fine. */
+EXTERN(__rza1_boot_header)
 
 SECTIONS {
     /*
@@ -80,16 +67,13 @@ SECTIONS {
     } > RAM
 
     /*
-     * Vector table + bootloader metadata.
-     * Must be the first loadable bytes of the binary.
-     * The bootloader reads fixed offsets past the 8 vector entries:
-     *   +0x20: code_start   (word: address of _start)
-     *   +0x24: code_end     (word: address of end)
-     *   +0x28: code_execute (word: execution entry = _start)
-     *   +0x2C: ".BootLoad_ValidProgramTest." signature
+     * The vector table, the first loadable bytes of the image, then the board's boot header, if
+     * it has one: a board crate emits the words and signature its first-stage loader checks into
+     * `.boot_header`, which therefore lands at `_start + 0x20`. Optional; nothing requires it.
      */
     .vector_table : ALIGN(0x20) {
         KEEP(*(.vector_table))
+        KEEP(*(.boot_header))
     } > RAM
 
     /* Main code */

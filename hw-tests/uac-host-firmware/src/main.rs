@@ -40,8 +40,8 @@ fn panic(info: &PanicInfo) -> ! {
 
 static mut EXECUTOR: MaybeUninit<Executor> = MaybeUninit::uninit();
 
-#[unsafe(no_mangle)]
-pub extern "C" fn main() -> ! {
+#[deluge_bsp::entry]
+fn main() -> ! {
     #[cfg(feature = "rtt")]
     {
         let channels = rtt_target::rtt_init! {
