@@ -23,6 +23,7 @@
 //! let b = rx.read_byte().await;
 //! ```
 
+use core::convert::Infallible;
 use core::future::poll_fn;
 use core::task::Poll;
 
@@ -37,7 +38,8 @@ use crate::Peri;
 use crate::dmac::Dma;
 use crate::gic;
 use crate::interrupt::{self, Binding, Handler, Interrupt};
-use crate::mode::{Async, Mode};
+use crate::mode::{Async, Blocking, Mode};
+use embedded_hal_nb::nb;
 
 use crate::pac::scif::regs::{Brr, Emr, Fcr, Fsr, Ftdr, Lsr, Scr, Smr, Sptr};
 
@@ -670,16 +672,52 @@ impl<'d, M: Mode> Uart<'d, M> {
     }
 }
 
-/// A UART's receiver: a 256-byte ring the DMAC fills from the receive FIFO, with no interrupt.
+/// A UART's receiver. An async one built by [`Uart::new`] reads a 256-byte ring the DMAC fills
+/// from the receive FIFO, with no interrupt; a blocking one reads the receive FIFO itself.
 pub struct UartRx<'d, M: Mode> {
     ch: usize,
+    path: RxPath<'d>,
+    _mode: PhantomData<M>,
+}
+
+/// Where a receiver's bytes come from.
+enum RxPath<'d> {
+    /// The receive FIFO, polled.
+    Fifo,
+    /// A ring the DMAC fills.
+    Dma(DmaRing<'d>),
+}
+
+/// A receive ring the DMAC fills from the receive FIFO.
+struct DmaRing<'d> {
     /// Its ring, which indexes `DMA_RX_BUF` and [`RX_READ`].
     ring: usize,
     dma: Dma<'d>,
     /// The ring's start as the DMAC addresses it (cached, as CRDA reports it): compared with CRDA,
     /// never dereferenced (that is [`rx_ring`]'s).
     base: u32,
-    _mode: PhantomData<M>,
+}
+
+impl DmaRing<'_> {
+    /// The next byte from the ring.
+    fn try_read(&mut self) -> Option<u8> {
+        // One step, interrupts masked: a stolen reader running in an interrupt (a freeze raised
+        // from an interrupt-priority executor) must not land between this load and store, or
+        // the store would rewind past the bytes it consumed and they'd be delivered again.
+        critical_section::with(|_| {
+            let read = RX_READ[self.ring].load(Ordering::Acquire);
+            // CRDA: where the DMAC writes next, as the DMAC addresses the ring.
+            if self.dma.current_dst() == self.base.wrapping_add(read) {
+                return None;
+            }
+            // SAFETY: `read` is an offset inside this UART's ring. Read through the uncached
+            // alias: the DMAC wrote physical RAM, and a cached line may be stale.
+            let byte =
+                unsafe { crate::uncached(rx_ring(self.ring).add(read as usize)).read_volatile() };
+            RX_READ[self.ring].store((read + 1) & (DMA_RX_BUF_SIZE as u32 - 1), Ordering::Release);
+            Some(byte)
+        })
+    }
 }
 
 impl<'d> UartRx<'d, Async> {
@@ -725,7 +763,11 @@ impl<'d> UartRx<'d, Async> {
                 dma_ch,
                 buf_base
             );
-            Self { ch, ring: T::RING, dma, base: buf_base, _mode: PhantomData }
+            Self {
+                ch,
+                path: RxPath::Dma(DmaRing { ring: T::RING, dma, base: buf_base }),
+                _mode: PhantomData,
+            }
         }
     }
 
@@ -741,22 +783,20 @@ impl<'d> UartRx<'d, Async> {
 
     /// The next byte from the ring, ignoring latched errors.
     fn try_read_ring(&mut self) -> Option<u8> {
-        // One step, interrupts masked: a stolen reader running in an interrupt (a freeze raised
-        // from an interrupt-priority executor) must not land between this load and store, or
-        // the store would rewind past the bytes it consumed and they'd be delivered again.
-        critical_section::with(|_| {
-            let read = RX_READ[self.ring].load(Ordering::Acquire);
-            // CRDA: where the DMAC writes next, as the DMAC addresses the ring.
-            if self.dma.current_dst() == self.base.wrapping_add(read) {
-                return None;
-            }
-            // SAFETY: `read` is an offset inside this UART's ring. Read through the uncached
-            // alias: the DMAC wrote physical RAM, and a cached line may be stale.
-            let byte =
-                unsafe { crate::uncached(rx_ring(self.ring).add(read as usize)).read_volatile() };
-            RX_READ[self.ring].store((read + 1) & (DMA_RX_BUF_SIZE as u32 - 1), Ordering::Release);
-            Some(byte)
-        })
+        match &mut self.path {
+            RxPath::Dma(ring) => ring.try_read(),
+            // An async receiver is never built on the FIFO.
+            RxPath::Fifo => None,
+        }
+    }
+
+    /// The ring's start as the DMAC addresses it.
+    #[cfg(test)]
+    fn ring_base(&self) -> u32 {
+        match &self.path {
+            RxPath::Dma(ring) => ring.base,
+            RxPath::Fifo => unreachable!("not a ring"),
+        }
     }
 
     /// SCIF `T`'s receiver, read through its ring's DMA channel `C`, without the owner: for a
@@ -780,11 +820,13 @@ impl<'d> UartRx<'d, Async> {
         let base = unsafe { core::ptr::addr_of!(DMA_RX_BUF[T::RING].0[0]) as u32 };
         Some(UartRx {
             ch: T::INDEX,
-            ring: T::RING,
-            // SAFETY: the caller's contract: only this reader uses the channel meanwhile, and it
-            // only reads CRDA.
-            dma: unsafe { Dma::steal::<C>() },
-            base,
+            path: RxPath::Dma(DmaRing {
+                ring: T::RING,
+                // SAFETY: the caller's contract: only this reader uses the channel meanwhile, and
+                // it only reads CRDA.
+                dma: unsafe { Dma::steal::<C>() },
+                base,
+            }),
             _mode: PhantomData,
         })
     }
@@ -884,25 +926,234 @@ impl<'d> UartTx<'d, Async> {
         n
     }
 
-    /// Free space in the transmit FIFO, in bytes: how many [`try_write`](Self::try_write) would
-    /// take now.
+}
+
+impl<'d, M: Mode> UartTx<'d, M> {
+    /// Free space in the transmit FIFO, in bytes: how many bytes fit without waiting.
     pub fn tx_free(&self) -> usize {
         let in_fifo = ((scif(self.ch).fdr().read().0 >> 8) & 0x1F) as usize;
         TX_FIFO_SIZE.saturating_sub(in_fifo)
     }
 
     /// Change the line settings (baud rate, parity, stop bits). TX and RX stop briefly: wait for
-    /// the FIFO to drain first ([`flush`](Self::flush)), or its bytes go out wrong. The DMA
-    /// request enables are kept.
+    /// the transmitter to drain first (a flush), or its bytes go out wrong. The DMA request
+    /// enables are kept.
     pub fn set_config(&self, config: &Config) {
         // SAFETY: the owned SCIF.
         unsafe { set_baud_regs(self.ch, config) }
     }
 }
 
+// ── Blocking mode ─────────────────────────────────────────────────────────────
+
+
+impl<'d> Uart<'d, Blocking> {
+    /// Bring SCIF `T` up with `config` on pins `tx` and `rx`, polled: no interrupt, no DMA. Any
+    /// SCIF; the receive FIFO holds 16 bytes, so read it often enough not to overrun.
+    ///
+    /// # Panics
+    /// If [`crate::clocks::init`] has not been called.
+    pub fn new_blocking<T: Instance>(
+        _scif: Peri<'d, T>,
+        tx: Peri<'d, impl TxPin<T>>,
+        rx: Peri<'d, impl RxPin<T>>,
+        config: Config,
+    ) -> Self {
+        let (tx_alt, rx_alt) = (tx.alternate(), rx.alternate());
+        crate::gpio::mux(tx, tx_alt);
+        crate::gpio::mux(rx, rx_alt);
+        // SAFETY: SCIF T is owned.
+        unsafe { configure(T::INDEX, &config) };
+        let ch = T::INDEX;
+        Self {
+            rx: UartRx { ch, path: RxPath::Fifo, _mode: PhantomData },
+            tx: UartTx { ch, dma: Mutex::new(None), _mode: PhantomData },
+        }
+    }
+}
+
+/// Whether SCIF `ch` reports a receive error: SCFSR ER/BRK/FER/PER or SCLSR ORER.
+fn rx_error_flags(ch: usize) -> bool {
+    let sc = scif(ch);
+    sc.fsr().read().0 & (ER | BRK | FER | PER) != 0 || sc.lsr().read().0 & 1 != 0
+}
+
+/// Move SCIF `ch`'s receive-error flags into its latch, as the error interrupt does.
+fn poll_rx_errors(ch: usize) {
+    if rx_error_flags(ch) {
+        latch_rx_errors(ch);
+        clear_rx_errors(ch);
+    }
+}
+
+/// The next byte in SCIF `ch`'s receive FIFO, clearing RDF and DR after it.
+fn fifo_read(ch: usize) -> Option<u8> {
+    let sc = scif(ch);
+    if sc.fdr().read().0 & 0x1F == 0 {
+        return None;
+    }
+    let byte = sc.frdr().read().0;
+    // Written 0 after being read as 1, as `clear_rx_errors` does.
+    let scfsr = sc.fsr().read().0;
+    sc.fsr().write_value(Fsr(scfsr & !(RDF | DR)));
+    Some(byte)
+}
+
+impl<'d> UartRx<'d, Blocking> {
+    /// The next received byte, a receive error (overrun, framing, parity, break, each once), or
+    /// `WouldBlock` if the FIFO is empty.
+    pub fn nb_read(&mut self) -> nb::Result<u8, Error> {
+        poll_rx_errors(self.ch);
+        if let Some(e) = take_error(self.ch) {
+            return Err(nb::Error::Other(e));
+        }
+        fifo_read(self.ch).ok_or(nb::Error::WouldBlock)
+    }
+
+    /// Wait for at least one byte, then take whatever else the FIFO holds, up to `buf.len()`. A
+    /// receive error before the first byte is returned; one after it waits for the next call.
+    pub fn blocking_read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        buf[0] = loop {
+            match self.nb_read() {
+                Ok(byte) => break byte,
+                Err(nb::Error::WouldBlock) => {}
+                Err(nb::Error::Other(e)) => return Err(e),
+            }
+        };
+        let mut n = 1;
+        while n < buf.len() {
+            poll_rx_errors(self.ch);
+            if RX_ERROR[self.ch].load(Ordering::Acquire) != 0 {
+                break;
+            }
+            match fifo_read(self.ch) {
+                Some(byte) => {
+                    buf[n] = byte;
+                    n += 1;
+                }
+                None => break,
+            }
+        }
+        Ok(n)
+    }
+}
+
+impl<'d> UartTx<'d, Blocking> {
+    /// Put `byte` in the transmit FIFO, or `WouldBlock` if it is full.
+    pub fn nb_write(&mut self, byte: u8) -> nb::Result<(), Infallible> {
+        if self.tx_free() == 0 {
+            return Err(nb::Error::WouldBlock);
+        }
+        scif(self.ch).ftdr().write_value(Ftdr(byte));
+        Ok(())
+    }
+
+    /// Write all of `buf`, waiting for FIFO space. Returns once the last byte is in the FIFO;
+    /// [`blocking_flush`](Self::blocking_flush) waits for it to leave.
+    pub fn blocking_write(&mut self, buf: &[u8]) -> Result<(), Infallible> {
+        for &byte in buf {
+            while self.nb_write(byte).is_err() {}
+        }
+        Ok(())
+    }
+
+    /// Wait until everything written has left the shift register (TEND).
+    pub fn blocking_flush(&mut self) {
+        while scif(self.ch).fsr().read().0 & TEND == 0 {}
+    }
+}
+
+impl embedded_io::ErrorType for UartRx<'_, Blocking> {
+    type Error = Error;
+}
+
+impl embedded_io::Read for UartRx<'_, Blocking> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
+        self.blocking_read(buf)
+    }
+}
+
+impl embedded_io::ReadReady for UartRx<'_, Blocking> {
+    fn read_ready(&mut self) -> Result<bool, Error> {
+        Ok(RX_ERROR[self.ch].load(Ordering::Acquire) != 0
+            || rx_error_flags(self.ch)
+            || scif(self.ch).fdr().read().0 & 0x1F != 0)
+    }
+}
+
+impl embedded_io::ErrorType for UartTx<'_, Blocking> {
+    type Error = Infallible;
+}
+
+impl embedded_io::Write for UartTx<'_, Blocking> {
+    fn write(&mut self, buf: &[u8]) -> Result<usize, Infallible> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        while self.tx_free() == 0 {}
+        let n = buf.len().min(self.tx_free());
+        for &byte in &buf[..n] {
+            scif(self.ch).ftdr().write_value(Ftdr(byte));
+        }
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> Result<(), Infallible> {
+        self.blocking_flush();
+        Ok(())
+    }
+}
+
+impl embedded_io::WriteReady for UartTx<'_, Blocking> {
+    fn write_ready(&mut self) -> Result<bool, Infallible> {
+        Ok(self.tx_free() > 0)
+    }
+}
+
+impl embedded_hal_nb::serial::Error for Error {
+    fn kind(&self) -> embedded_hal_nb::serial::ErrorKind {
+        use embedded_hal_nb::serial::ErrorKind;
+        match self {
+            Error::Overrun => ErrorKind::Overrun,
+            Error::Framing => ErrorKind::FrameFormat,
+            Error::Parity => ErrorKind::Parity,
+            Error::Break => ErrorKind::Other,
+        }
+    }
+}
+
+impl embedded_hal_nb::serial::ErrorType for UartRx<'_, Blocking> {
+    type Error = Error;
+}
+
+impl embedded_hal_nb::serial::Read<u8> for UartRx<'_, Blocking> {
+    fn read(&mut self) -> nb::Result<u8, Error> {
+        self.nb_read()
+    }
+}
+
+impl embedded_hal_nb::serial::ErrorType for UartTx<'_, Blocking> {
+    type Error = Infallible;
+}
+
+impl embedded_hal_nb::serial::Write<u8> for UartTx<'_, Blocking> {
+    fn write(&mut self, byte: u8) -> nb::Result<(), Infallible> {
+        self.nb_write(byte)
+    }
+
+    fn flush(&mut self) -> nb::Result<(), Infallible> {
+        if scif(self.ch).fsr().read().0 & TEND == 0 {
+            return Err(nb::Error::WouldBlock);
+        }
+        Ok(())
+    }
+}
+
 // ── embedded-io-async impls ───────────────────────────────────────────────────
 
-use core::convert::Infallible;
 
 impl embedded_io_async::ErrorType for UartRx<'_, Async> {
     type Error = Error;
@@ -1118,7 +1369,7 @@ mod typed_tests {
         }
         .split();
         while take_error(1).is_some() {}
-        test::poke32(chreg(12, 0x1C), rx.base);
+        test::poke32(chreg(12, 0x1C), rx.ring_base());
         rx
     }
 
@@ -1155,7 +1406,7 @@ mod typed_tests {
         let mut rx = scif1_rx();
         let b = 0xE800_7800usize; // SCIF1
         unsafe { rx_ring(1).write(0x5A) };
-        test::poke32(chreg(12, 0x1C), rx.base + 1);
+        test::poke32(chreg(12, 0x1C), rx.ring_base() + 1);
         test::poke16(b + 0x10, FER | ER);
         on_eri(1);
         assert_eq!(rx.try_read(), Err(Error::Framing));
@@ -1169,7 +1420,7 @@ mod typed_tests {
         let mut rx = scif1_rx();
         let b = 0xE800_7800usize; // SCIF1
         unsafe { rx_ring(1).write(0x33) };
-        test::poke32(chreg(12, 0x1C), rx.base + 1);
+        test::poke32(chreg(12, 0x1C), rx.ring_base() + 1);
         test::poke16(b + 0x10, PER | ER);
         on_eri(1);
         let mut buf = [0u8; 4];
@@ -1231,7 +1482,7 @@ mod typed_tests {
         assert_eq!(test::peek32(chreg(13, 0x38)), desc as u32);
         unsafe {
             assert_eq!(*desc.add(1), (b + 0x14) as u32);
-            assert_eq!(*desc.add(2), rx.base);
+            assert_eq!(*desc.add(2), rx.ring_base());
             assert_eq!(*desc.add(7), desc as u32);
         }
         assert_eq!(RX_READ[0].load(Ordering::Relaxed), 0, "the ring starts empty");
@@ -1295,14 +1546,14 @@ mod typed_tests {
         let crda = chreg(12, 0x1C);
 
         // Nothing received: the DMAC's write position is still the ring's start.
-        test::poke32(crda, rx.base);
+        test::poke32(crda, rx.ring_base());
         assert_eq!(rx.try_read(), Ok(None));
 
         // The DMAC fills the ring up to its last byte...
         for i in 0..DMA_RX_BUF_SIZE {
             unsafe { ring.add(i).write(i as u8) };
         }
-        test::poke32(crda, rx.base + DMA_RX_BUF_SIZE as u32 - 1);
+        test::poke32(crda, rx.ring_base() + DMA_RX_BUF_SIZE as u32 - 1);
         for i in 0..DMA_RX_BUF_SIZE - 1 {
             assert_eq!(rx.try_read(), Ok(Some(i as u8)));
         }
@@ -1310,7 +1561,7 @@ mod typed_tests {
 
         // ...then writes the last byte and wraps round to overwrite the first.
         unsafe { ring.write(0xAA) };
-        test::poke32(crda, rx.base + 1);
+        test::poke32(crda, rx.ring_base() + 1);
         assert_eq!(rx.try_read(), Ok(Some(0xFF)));
         assert_eq!(rx.try_read(), Ok(Some(0xAA)));
         assert_eq!(rx.try_read(), Ok(None));
@@ -1321,10 +1572,114 @@ mod typed_tests {
             ring.add(1).write(0x11);
             ring.add(2).write(0x22);
         }
-        test::poke32(crda, rx.base + 3);
+        test::poke32(crda, rx.ring_base() + 3);
         let mut stolen = unsafe { UartRx::steal::<SCIF1, DMA_CH12>() }.expect("SCIF1's ring runs");
         assert_eq!(stolen.try_read(), Ok(Some(0x11)));
         assert_eq!(rx.try_read(), Ok(Some(0x22)));
         assert_eq!(stolen.try_read(), Ok(None));
+    }
+}
+
+#[cfg(all(test, not(target_os = "none")))]
+mod blocking_tests {
+    use super::*;
+    use crate::mmio::test;
+
+    const B: usize = 0xE800_8800; // SCIF3
+    const SCSCR: usize = B + 0x08;
+    const SCFSR: usize = B + 0x10;
+    const SCFRDR: usize = B + 0x14;
+    const SCFDR: usize = B + 0x1C;
+    const SCLSR: usize = B + 0x24;
+
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn scif3() -> (UartRx<'static, Blocking>, UartTx<'static, Blocking>) {
+        crate::clocks::init(crate::clocks::TEST_CLOCKS);
+        test::reset();
+        while take_error(3).is_some() {}
+        unsafe {
+            Uart::new_blocking(
+                crate::peripherals::SCIF3::steal(),
+                crate::peripherals::P3_9::steal(),
+                crate::peripherals::P3_10::steal(),
+                Config::default(),
+            )
+        }
+        .split()
+    }
+
+    #[test]
+    fn new_blocking_enables_only_te_re() {
+        let _serial = serial();
+        let _uart = scif3();
+        assert_eq!(test::peek16(SCSCR), TE | RE);
+    }
+
+    #[test]
+    fn nb_read_would_block_on_an_empty_fifo() {
+        let _serial = serial();
+        let (mut rx, _tx) = scif3();
+        test::poke16(SCFDR, 0);
+        assert_eq!(rx.nb_read(), Err(nb::Error::WouldBlock));
+    }
+
+    #[test]
+    fn nb_read_returns_a_byte_and_clears_rdf_dr() {
+        let _serial = serial();
+        let (mut rx, _tx) = scif3();
+        test::poke16(SCFDR, 1);
+        test::poke8(SCFRDR, 0x5A);
+        test::poke16(SCFSR, RDF | DR);
+        assert_eq!(rx.nb_read(), Ok(0x5A));
+        assert_eq!(test::peek16(SCFSR) & (RDF | DR), 0);
+    }
+
+    #[test]
+    fn nb_read_reports_a_framing_error_from_scfsr() {
+        let _serial = serial();
+        let (mut rx, _tx) = scif3();
+        test::poke16(SCFDR, 1);
+        test::poke16(SCFSR, FER | ER | RDF);
+        assert_eq!(rx.nb_read(), Err(nb::Error::Other(Error::Framing)));
+        assert_eq!(test::peek16(SCFSR) & (FER | ER), 0);
+        test::poke16(SCLSR, 1);
+        assert_eq!(rx.nb_read(), Err(nb::Error::Other(Error::Overrun)));
+        assert_eq!(test::peek16(SCLSR) & 1, 0);
+    }
+
+    #[test]
+    fn nb_write_would_block_on_a_full_fifo() {
+        let _serial = serial();
+        let (_rx, mut tx) = scif3();
+        test::poke16(SCFDR, 16 << 8);
+        assert_eq!(tx.nb_write(0x41), Err(nb::Error::WouldBlock));
+        test::poke16(SCFDR, 15 << 8);
+        assert_eq!(tx.nb_write(0x41), Ok(()));
+        assert_eq!(test::peek8(B + 0x0C), 0x41);
+    }
+
+    #[test]
+    fn blocking_read_returns_what_the_fifo_holds() {
+        let _serial = serial();
+        let (mut rx, _tx) = scif3();
+        test::poke16(SCFDR, 1);
+        test::poke8(SCFRDR, 0x7E);
+        let mut buf = [0u8; 1];
+        assert_eq!(embedded_io::Read::read(&mut rx, &mut buf), Ok(1));
+        assert_eq!(buf, [0x7E]);
+        assert_eq!(embedded_io::ReadReady::read_ready(&mut rx), Ok(true));
+    }
+
+    #[test]
+    fn nb_error_kinds() {
+        use embedded_hal_nb::serial::{Error as _, ErrorKind};
+        assert_eq!(Error::Overrun.kind(), ErrorKind::Overrun);
+        assert_eq!(Error::Framing.kind(), ErrorKind::FrameFormat);
+        assert_eq!(Error::Parity.kind(), ErrorKind::Parity);
+        assert_eq!(Error::Break.kind(), ErrorKind::Other);
     }
 }
