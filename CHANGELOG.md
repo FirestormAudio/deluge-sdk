@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `deluge-bsp`: `BoardPins` hands out the battery LED (`battery_led`, P1_1, open-drain) and the
+  battery-voltage sense input (`volt_sense`, P1_13). `battery::init(volt_sense)` muxes P1_13 to the
+  ADC's AN5. DelugeFirmware drove both with the raw GPIO functions, which phase 2 removed.
+
 - `rza1` crates docs and lint sweep (phase 8 of the pre-0.1 API pass):
   - **Lints.** All five crates are `#![deny(missing_docs)]`.
     - The PAC's generated chip code is exempt, at the module that includes it.

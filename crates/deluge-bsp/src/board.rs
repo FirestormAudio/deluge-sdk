@@ -190,6 +190,10 @@ pub struct BoardPins {
     pub trigger: Peri<'static, P1_14>,
     /// The SYNC LED (P6_7).
     pub sync_led: Peri<'static, P6_7>,
+    /// The battery LED (P1_1), open-drain: low lights it.
+    pub battery_led: Peri<'static, P1_1>,
+    /// The battery-voltage sense input (P1_13, AN5; [`crate::battery::init`]).
+    pub volt_sense: Peri<'static, P1_13>,
 }
 
 /// Every DMA channel, by the role the Deluge gives it.
@@ -413,6 +417,8 @@ impl Board {
                 },
                 trigger: p.P1_14,
                 sync_led: p.P6_7,
+                battery_led: p.P1_1,
+                volt_sense: p.P1_13,
             },
         };
         (board, sdram)
@@ -448,6 +454,7 @@ mod tests {
         want.extend([(1, 11), (1, 6), (1, 0), (1, 5), (1, 8), (1, 3)]); // encoder IRQ pins
         want.extend([(1, 12), (1, 7), (1, 15), (1, 4), (1, 10), (1, 2)]); // encoder direction pins
         want.extend([(1, 14), (6, 7)]); // trigger input, SYNC LED
+        want.extend([(1, 1), (1, 13)]); // battery LED, voltage sense
 
         let (board, sdram) = super::Board::split(unsafe { rza1_hal::Peripherals::steal() });
         let pins = &board.pins;
@@ -512,6 +519,8 @@ mod tests {
         }
         add(pins.trigger.port(), pins.trigger.bit());
         add(pins.sync_led.port(), pins.sync_led.bit());
+        add(pins.battery_led.port(), pins.battery_led.bit());
+        add(pins.volt_sense.port(), pins.volt_sense.bit());
 
         assert_eq!(got, want);
     }
