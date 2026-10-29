@@ -53,10 +53,20 @@ pub fn init(
     };
     let path = ch2.into_ffu_path(
         AudioInfo::STEREO_24,
-        RingBuf { dma: BlockDma::new(ffd, Irqs), buf: tx_buf, descs: tx_descs, blocks: 8 },
+        RingBuf {
+            dma: BlockDma::new(ffd, Irqs),
+            buf: tx_buf,
+            blocks: tx_descs.len(),
+            descs: tx_descs,
+        },
         Src::Async { input_hz: fin_hz, output_hz: fout_hz },
         Dvu::Bypass,
-        RingBuf { dma: BlockDma::new(ffu, Irqs), buf: rx_buf, descs: rx_descs, blocks: 16 },
+        RingBuf {
+            dma: BlockDma::new(ffu, Irqs),
+            buf: rx_buf,
+            blocks: rx_descs.len(),
+            descs: rx_descs,
+        },
     );
     let (control, tx, rx) = path.split();
     critical_section::with(|cs| {

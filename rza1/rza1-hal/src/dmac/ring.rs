@@ -204,6 +204,8 @@ pub(crate) async fn wait_block_on(ch: u8) {
 
 impl Drop for RingDma<'_> {
     fn drop(&mut self) {
+        // A channel that won't halt keeps reading the ring and its descriptors after their borrows
+        // end; nothing better than a warning is possible here.
         if !super::halt_channel(self.dma.number()) {
             warn!("dmac ring: ch{} still active after the halt", self.dma.number());
         }

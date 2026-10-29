@@ -17,10 +17,12 @@
 //!
 //! The copy cursor doesn't see window writes: use one or the other on a ring.
 //!
-//! The ring is lent for `'d` and the DMAC runs over it until the ring is dropped, which halts the
-//! channel first. Leaking a ring (`mem::forget`, reachable from safe code) leaves the DMAC running
-//! over memory whose borrow has ended: the same gap as embassy's ring-buffered drivers. A
-//! `'static` buffer, as a board crate usually lends, can't be freed under it.
+//! The ring and its descriptor table are lent for `'d`, and the DMAC runs over them until the ring
+//! is dropped, which halts the channel first. Leaking a ring (`mem::forget`, reachable from safe
+//! code) leaves the DMAC running over memory whose borrow has ended: the same gap as embassy's
+//! ring-buffered drivers. Through a reused descriptor table that is worse than stale samples: the
+//! DMAC follows whatever the memory now holds. A `'static` buffer and table, as a board crate
+//! usually lends, can't be freed under it.
 //!
 //! Each ring has one waker: wait on it from one task at a time (one [`BlockSignal`], or the copy
 //! API's `write`/`read`), or the waiters steal each other's wake.
@@ -344,9 +346,9 @@ mod tests {
     }
 
     #[test]
-    fn a_descriptor_table_outside_dma_memory_is_refused() {
-        // On the host only an empty range fails `dma_buf`'s check; on the target, so does one
-        // outside the uncached mirror. Either way the check covers the table's whole byte range.
+    fn a_descriptor_table_runs_dma_bufs_check_over_its_whole_byte_range() {
+        // On the host only an empty range fails `dma_buf`'s check, so this proves the check runs
+        // and over which bytes; the target's refusal of cached memory is `memmap`'s, tested there.
         assert_eq!(RingDescs::new(&mut []).err(), Some(NotUncached));
         let descs = test_descs(3);
         assert_eq!(descs.len(), 3);
