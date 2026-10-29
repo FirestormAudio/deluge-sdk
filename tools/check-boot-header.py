@@ -18,6 +18,8 @@ import struct
 import sys
 
 SIGNATURE = b".BootLoad_ValidProgramTest.\0"
+VECTORS = ("_reset_handler", "_undef_handler", "_svc_handler", "_prefetch_handler",
+           "_abort_handler", "_reserved_handler", "_irq_handler", "_fiq_handler")
 
 
 class Elf:
@@ -79,10 +81,15 @@ def check(path, rtt):
         if name not in elf.symbols:
             return [f"no `{name}` symbol"]
     start = elf.symbols["_start"]
-    for i in range(8):
-        insn = elf.word(start + 4 * i)
+    for i, handler in enumerate(VECTORS):
+        addr = start + 4 * i
+        insn = elf.word(addr)
         if not is_branch(insn):
             errors.append(f"vector {i} (+0x{4 * i:02x}) is 0x{insn:08x}, not a `b`")
+        elif handler not in elf.symbols:
+            errors.append(f"no `{handler}` symbol")
+        elif branch_target(addr, insn) != elf.symbols[handler]:
+            errors.append(f"vector {i} (+0x{4 * i:02x}) branches to 0x{branch_target(addr, insn):08x}, not `{handler}`")
     expect = [("code_start", start), ("code_end", elf.symbols["__metadata_code_end"]),
               ("code_execute", start)]
     for i, (what, value) in enumerate(expect):
@@ -94,9 +101,12 @@ def check(path, rtt):
     if sig != SIGNATURE:
         errors.append(f"signature (+0x2c) is {sig!r}, expected {SIGNATURE!r}")
     if rtt:
-        for name in ("_pabt_rtt", "_fault_report"):
+        for name in ("_pabt_rtt", "_abort_rtt", "_fault_report", "_SEGGER_RTT"):
             if name not in elf.symbols:
-                return errors + [f"no `{name}` symbol"]
+                return errors + [f"no `{name}` symbol: not an RTT build"]
+        # Without `rtt`, the three dump labels alias one `b _fault_report`.
+        if elf.symbols["_pabt_rtt"] == elf.symbols["_abort_rtt"]:
+            return errors + ["`_pabt_rtt` has no RTT dump: not an RTT build"]
         begin = elf.symbols["_pabt_rtt"]
         end = min(a for a in elf.addrs if a > begin)
         last = None

@@ -37,6 +37,15 @@ fn one_typed_input(sig: &Signature) -> bool {
     sig.inputs.len() == 1 && matches!(sig.inputs.first(), Some(FnArg::Typed(_)))
 }
 
+fn only_input_is_u32(sig: &Signature) -> bool {
+    match sig.inputs.first() {
+        Some(FnArg::Typed(arg)) if sig.inputs.len() == 1 => {
+            matches!(&*arg.ty, Type::Path(p) if p.qself.is_none() && p.path.is_ident("u32"))
+        }
+        _ => false,
+    }
+}
+
 fn expand_entry(attr: TokenStream2, item: TokenStream2) -> TokenStream2 {
     let mut f = match parse(attr, item, "entry") {
         Ok(f) => f,
@@ -68,7 +77,7 @@ fn expand_irq(attr: TokenStream2, item: TokenStream2) -> TokenStream2 {
         Err(e) => return e,
     };
     let sig = &f.sig;
-    if !plain(sig) || !matches!(sig.safety, Safety::Unsafe(_)) || !one_typed_input(sig) || !matches!(sig.output, ReturnType::Default) {
+    if !plain(sig) || !matches!(sig.safety, Safety::Unsafe(_)) || !only_input_is_u32(sig) || !matches!(sig.output, ReturnType::Default) {
         return error(Span::call_site(), "`#[irq]` expects `unsafe fn(u32)` (the ICCIAR value)");
     }
     let name = &sig.ident;
@@ -77,11 +86,11 @@ fn expand_irq(attr: TokenStream2, item: TokenStream2) -> TokenStream2 {
 
         #[doc(hidden)]
         #[unsafe(export_name = "gic_dispatch")]
-        pub unsafe extern "C" fn __rza1_rt_gic_dispatch(icciar: u32) {
+        pub unsafe extern "C" fn __rza1_rt_gic_dispatch(__rza1_rt_icciar: u32) {
             let f: unsafe fn(u32) = #name;
             // SAFETY: called once per interrupt by the IRQ entry stub, the caller this
             // function's contract is written for.
-            unsafe { f(icciar) }
+            unsafe { f(__rza1_rt_icciar) }
         }
     }
 }
@@ -101,9 +110,14 @@ fn expand_fault(attr: TokenStream2, item: TokenStream2) -> TokenStream2 {
 
         #[doc(hidden)]
         #[unsafe(export_name = "rza1_cpu_fault_report")]
-        pub unsafe extern "C" fn __rza1_rt_fault_report(pc: u32, kind: u32, lr: u32, sp: u32) -> ! {
+        pub unsafe extern "C" fn __rza1_rt_fault_report(
+            __rza1_rt_pc: u32,
+            __rza1_rt_kind: u32,
+            __rza1_rt_lr: u32,
+            __rza1_rt_sp: u32,
+        ) -> ! {
             let f: fn(&::rza1_rt::FaultInfo) -> ! = #name;
-            f(&::rza1_rt::FaultInfo::__from_raw(pc, kind, lr, sp))
+            f(&::rza1_rt::FaultInfo::__from_raw(__rza1_rt_pc, __rza1_rt_kind, __rza1_rt_lr, __rza1_rt_sp))
         }
     }
 }
@@ -161,6 +175,18 @@ mod tests {
     }
 
     #[test]
+    fn entry_rejects_unsafe_generic_and_extern() {
+        for item in [
+            quote!(unsafe fn main() -> ! { loop {} }),
+            quote!(fn main<T>() -> ! { loop {} }),
+            quote!(extern "C" fn main() -> ! { loop {} }),
+        ] {
+            let out = expand_entry(quote!(), item).to_string();
+            assert!(out.contains("compile_error") && out.contains(ENTRY_ERR), "{out}");
+        }
+    }
+
+    #[test]
     fn entry_rejects_attribute_arguments() {
         let out = expand_entry(quote!(foo), quote!(fn main() -> ! { loop {} })).to_string();
         assert!(out.contains("compile_error"), "{out}");
@@ -189,6 +215,32 @@ mod tests {
         assert!(out.contains("export_name=\"rza1_cpu_fault_report\""), "{out}");
         assert!(out.contains("extern\"C\""), "{out}");
         assert!(!out.contains("compile_error"), "{out}");
+    }
+
+    #[test]
+    fn fault_rejects_two_parameters() {
+        let out = expand_fault(quote!(), quote!(fn on_fault(a: u32, b: u32) -> ! { loop {} })).to_string();
+        assert!(out.contains("compile_error") && out.contains("fn(&FaultInfo) -> !"), "{out}");
+    }
+
+    #[test]
+    fn fault_wrapper_arguments_do_not_shadow_the_handler() {
+        // A handler named like one of the reporter's arguments must still be the one called.
+        let out = squash(expand_fault(quote!(), quote!(fn pc(info: &rza1_rt::FaultInfo) -> ! { loop {} })));
+        assert!(!out.contains("(pc:u32"), "{out}");
+        assert!(out.contains("=pc;"), "{out}");
+    }
+
+    #[test]
+    fn irq_wrapper_argument_does_not_shadow_the_handler() {
+        let out = squash(expand_irq(quote!(), quote!(unsafe fn icciar(v: u32) {})));
+        assert!(!out.contains("(icciar:u32"), "{out}");
+    }
+
+    #[test]
+    fn irq_rejects_a_u16_parameter() {
+        let out = expand_irq(quote!(), quote!(unsafe fn on_irq(x: u16) {})).to_string();
+        assert!(out.contains("compile_error") && out.contains("unsafe fn(u32)"), "{out}");
     }
 
     #[test]

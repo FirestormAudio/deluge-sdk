@@ -91,6 +91,17 @@ if [ -n "$entry_hits" ]; then
   exit 1
 fi
 
+# The BSP's `fault-blink` fault handler is the image's to turn off (an application with its own
+# `rza1_cpu_fault_report`): the library crates over the BSP leave its default features alone, so
+# only an image's own defaults turn it on.
+for lib in deluge-sdk deluge-grid-toolkit; do
+  if cargo tree --locked -q -p "$lib" --no-default-features -e features --target armv7a-none-eabihf -i deluge-bsp 2>/dev/null \
+     | grep -q 'deluge-bsp feature "fault-blink"'; then
+    echo "error: $lib turns on deluge-bsp's fault-blink with its default features off; depend on deluge-bsp with default-features = false" >&2
+    exit 1
+  fi
+done
+
 # Board-agnostic crates (spec rule 3): usb/ and drivers/ never name the chip HAL, the board, or
 # any deluge-* crate in code. Their dependencies are checked against Cargo's graph at the end.
 AGNOSTIC_DIRS=(usb drivers)

@@ -3,7 +3,9 @@
 //! 2 SVC, 3 prefetch abort, 4 data abort, 5 anything else.
 //!
 //! It is the image's `rza1_cpu_fault_report`. An application with its own (a `#[rza1_rt::fault]`
-//! handler, or a C reporter) turns the feature off, or the link fails on the duplicate symbol.
+//! handler, or a C reporter) turns the feature off, or the link fails on the duplicate symbol: an
+//! SDK app turns `deluge`'s default features off (its `fault-blink` forwards here), any other
+//! image deluge-bsp's.
 
 use rza1_hal::gpio::{Level, Output};
 use rza1_rt::{FaultInfo, FaultKind};

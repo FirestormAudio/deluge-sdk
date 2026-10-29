@@ -606,7 +606,9 @@ _fault_report:
      * PROVIDE rather than a weak symbol, so a reporter in an archive member (a C library's,
      * say) is still pulled in to resolve the reference. */
     .pushsection .text.__rza1_rt_default_fault_report, "ax"
+    .code 32
     .global __rza1_rt_default_fault_report
+    .type __rza1_rt_default_fault_report, %function
 __rza1_rt_default_fault_report:
     wfi
     b    __rza1_rt_default_fault_report

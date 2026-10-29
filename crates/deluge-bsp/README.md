@@ -70,7 +70,8 @@ its USB identities, the SD-backed `SdBlock`, and the host-role supervisor.
 | `host-panel` | Host builds: `host_panel::install`, so a simulator can stand in for the front panel (`deluge-sdk`'s `sim` turns it on) |
 | `memory-x` (default) | Put the Deluge's `memory.x` on the linker search path; turn off to supply your own |
 | `rtt` | SEGGER RTT: the RTT memory layout and fault dumps to RTT channel 0 (turns on `rza1-rt/rtt`) |
-| `app-fault-reporter` | Hand CPU faults to the application's `rza1_cpu_fault_report` (turns on `rza1-rt/app-fault-reporter`) |
+| `fault-blink` (default) | The fault handler: a CPU fault blinks the SYNC LED (P6_7), 1 to 5 pulses by kind; turn off to define your own `rza1_cpu_fault_report` (an SDK app turns `deluge`'s defaults off instead) |
+| `app-fault-reporter` | No effect; kept until the Deluge firmware stops passing it |
 
 The crate's `build.rs` puts the Deluge's memory layout (`memory.x`, or `memory_rtt.x` with `rtt`) on the linker search path for `rza1-rt`'s `link.x`.
 

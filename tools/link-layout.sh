@@ -19,7 +19,8 @@ SYMS='(ABT|FIQ|IRQ|SVC|PROGRAM)_STACK_SIZE|(abt|fiq|irq|svc|program)_stack_(star
 PLAIN=(blinky oled_hello oled_menu oled_hmenu input_demo pad_paint midi_cv clock_jacks sd_demo
        audio_passthru audio_passthru_irq test_osc additive_osc button_leds usb_log
        demo-firmware deluge-controller msc-firmware app-loader
-       uac-host-firmware sd-bench vbus-probe wp-probe)
+       uac-host-firmware sd-bench vbus-probe wp-probe
+       fault-probe loopback-probe overbridge-device-firmware overbridge-host-firmware)
 RTT=(blinky demo-firmware app-loader uac-host-firmware)
 
 # Build one package and print the path of the executable it produced.
@@ -54,6 +55,8 @@ collect() {
     elf=$(build_elf "$p" --features rtt); python3 tools/check-boot-header.py --rtt "$elf"
     print_layout "$p+rtt" "$elf"
   done
+  # Flash images are release builds: check the boot header of the one the bootloader loads.
+  python3 tools/check-boot-header.py "$(build_elf app-loader --release)"
 }
 
 case "${1:-}" in

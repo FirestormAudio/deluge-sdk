@@ -33,8 +33,8 @@ impl FaultKind {
     }
 }
 
-/// A CPU fault, as the `#[fault]` handler receives it. The handler runs on the abort stack in
-/// abort mode, with IRQ and FIQ masked; it must not return.
+/// A CPU fault, as the `#[fault]` handler receives it. The handler runs on the abort stack in the
+/// exception's mode (undefined, SVC or abort), with IRQ and FIQ masked; it must not return.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FaultInfo {

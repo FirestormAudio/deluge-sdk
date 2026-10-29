@@ -11,7 +11,7 @@ name = "oled_hello"
 test = false
 
 [dependencies]
-deluge = { path = "../../../crates/deluge-sdk", package = "deluge-sdk", default-features = false }
+deluge = { path = "../../../crates/deluge-sdk", package = "deluge-sdk", default-features = false, features = ["fault-blink"] }
 embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
 embedded-graphics = "0.8"
 

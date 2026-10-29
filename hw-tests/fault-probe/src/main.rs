@@ -19,10 +19,18 @@ fn panic(_info: &PanicInfo) -> ! {
 
 #[deluge_bsp::entry]
 fn main() -> ! {
-    // Roughly two seconds at 400 MHz with the caches off, as the fault handler's own delays are.
-    for _ in 0..0x0800_0000u32 {
-        core::hint::spin_loop();
-    }
+    // A couple of seconds with the caches off, in the fault handler's two-instruction loop so the
+    // length doesn't depend on the build's optimisation level.
+    // SAFETY: a register-only countdown.
+    unsafe {
+        core::arch::asm!(
+            "1:",
+            "subs {0}, {0}, #1",
+            "bne 1b",
+            inout(reg) 0x0080_0000u32 => _,
+            options(nomem, nostack),
+        )
+    };
     // SAFETY: deliberately faults; the fault handler never returns here.
     unsafe { core::arch::asm!("udf #0", options(noreturn)) }
 }
