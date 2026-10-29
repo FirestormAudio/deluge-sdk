@@ -444,15 +444,13 @@ mod device {
             match run_protocol().await {
                 Ok(()) => {
                     CARD_READY.store(true, Ordering::Release);
-                    // Consume the card-detect edges accumulated up to here: they
-                    // describe the arrival of the card we have just identified, so
-                    // reporting them onward would ask a caller to redo this work.
-                    // `init_hw` ungated the SDHI module clock, so the INFO1 read is
-                    // valid here. If the card was pulled
-                    // mid-init this discards that removal edge too, which is what
-                    // `deluge_block_poll_card_event`'s level check is there to
-                    // catch.
-                    controller().take_card_detect_events();
+                    // Forget the insertion edges recorded up to here: they announced
+                    // the card just identified, so reporting them onward would ask a
+                    // caller to redo this work. A removal stays recorded: a card
+                    // pulled while this ran is reported by the next
+                    // `take_card_detect_events`. `init_hw` ungated the SDHI module
+                    // clock, so the INFO1 access is valid here.
+                    controller().clear_insertion_events();
                     log::debug!(
                         "sd: card ready on attempt {}/{} (HC={})",
                         attempt,

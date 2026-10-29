@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- SD card detect is interrupt-recorded:
+  - `rza1-hal`'s SDHI keeps card detect unmasked at all times: through every transfer, at idle
+    (`SD_INFO1_MASK` = `0xFFE7`, which was `0xFFFF`), after bring-up, resets and aborts. Its
+    interrupt records each insert/remove edge once, and takes only unmasked bits, so a masked
+    data-phase latch waits for its own waiter. The sticky-flag hand-off is gone.
+  - New `Sdhi::clear_insertion_events()` forgets the insertions an init answered. If a removal is
+    recorded too (the card was pulled, and perhaps put back or swapped, while the init ran), it
+    keeps both.
+  - `deluge_bsp::sd::init` uses it, so a card pulled during an init is reported afterwards; before,
+    init swallowed every edge.
+
 - DelugeFirmware is on the pre-0.1 API (phase 9 of the pass), so the paths kept for it go:
   - `rza1_hal::usb::pipe` and `rza1_hal::usb::regs` are crate-private, including
     `pipe_reset`, `pipe_enable`, `pipe_brdy_enable`, `pipe_iso_in_activate` and `regs::usb`.
