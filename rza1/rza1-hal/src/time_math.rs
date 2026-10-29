@@ -5,6 +5,12 @@
 //! and installs the `embassy_time_driver` impl), so that this arithmetic is always compiled and
 //! unit-tested on the host.
 
+// Only the time driver uses this arithmetic; its tests run everywhere.
+#![cfg_attr(
+    not(all(target_os = "none", feature = "time-driver-ostm")),
+    allow(dead_code, reason = "the time driver, its only user, is left out of this build")
+)]
+
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::clocks::ClockConfig;

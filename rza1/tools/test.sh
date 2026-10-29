@@ -56,6 +56,10 @@ cargo build "${BUILD_STD[@]}" -p rza1-hal --features rza1l,log
 cargo build "${BUILD_STD[@]}" -p rza1-hal --features rza1l,defmt
 # With no logging, every log argument must still be consumed: no unused-variable warnings.
 cargo rustc "${BUILD_STD[@]}" -p rza1-hal --lib --features rza1l -- -D unused
+# No dead code either with the time driver left out (the application brings its own).
+cargo rustc "${BUILD_STD[@]}" -p rza1-hal --lib --no-default-features --features rza1l,rt,critical-section-impl -- -D unused
+# Every public `unsafe fn` says what its caller must uphold.
+cargo clippy "${BUILD_STD[@]}" -p rza1-hal --features rza1l -- -A clippy::all -D clippy::missing_safety_doc
 
 echo "==> rza1: drivers document no steal() (it is behind the hidden unstable-driver-steal feature)"
 cargo doc "${BUILD_STD[@]}" -p rza1-hal --features rza1l --no-deps

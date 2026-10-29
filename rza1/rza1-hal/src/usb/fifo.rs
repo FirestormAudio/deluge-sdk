@@ -314,6 +314,7 @@ pub(crate) unsafe fn fifo_select_pipe(fifo: &FifoPort, pipe_num: usize, isel: bo
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
+    use std::vec::Vec;
     use super::*;
     use crate::mmio::test;
     use crate::usb::regs::usb;

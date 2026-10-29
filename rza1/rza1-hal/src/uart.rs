@@ -179,7 +179,7 @@ fn smr_for(config: &Config) -> u16 {
 
 // GIC base IDs for SCIF0; per RZ/A1L HW Manual §A.2:
 //   SCIFn: BRI = 221+n*4, ERI = 222+n*4, RXI = 223+n*4, TXI = 224+n*4
-const ERI_BASE: u16 = 222;
+#[cfg(test)]
 const RXI_BASE: u16 = 223;
 const TXI_BASE: u16 = 224;
 

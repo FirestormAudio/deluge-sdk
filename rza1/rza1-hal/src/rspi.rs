@@ -512,6 +512,10 @@ impl embedded_hal::spi::Error for Error {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Width {
     /// Not known: a stolen handle, until its first switch.
+    #[cfg_attr(
+        not(any(feature = "unstable-driver-steal", test)),
+        expect(dead_code, reason = "only `Rspi::steal` builds a handle of unknown width")
+    )]
     Unknown,
     Bits8,
     Bits32,

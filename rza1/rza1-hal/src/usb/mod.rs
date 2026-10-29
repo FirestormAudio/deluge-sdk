@@ -124,23 +124,6 @@ pub(crate) unsafe fn module_clock_enable(port: u8) {
     let _ = stbcr7.read();
 }
 
-/// Stop the clock for USB module `port` in CPG STBCR7.
-///
-/// # Safety
-/// Writes to memory-mapped CPG registers.
-pub(crate) unsafe fn module_clock_disable(port: u8) {
-    // Stop only this port's own channel.  Port 1 must NOT gate channel 0
-    // (MSTP71): channel 0 hosts the shared PLL and may still serve port 0.
-    let bit: u8 = if port == 0 {
-        STBCR7_MSTP71
-    } else {
-        STBCR7_MSTP70
-    };
-    let stbcr7 = CPG.stbcr7();
-    stbcr7.write_value(Stbcr7(stbcr7.read().0 | bit));
-    let _ = stbcr7.read();
-}
-
 /// Enable the GIC interrupt for USB module `port`. Its priority is the application's
 /// (`interrupt::typelevel::USB0`/`USB1`).
 ///

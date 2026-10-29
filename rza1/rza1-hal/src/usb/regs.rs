@@ -14,6 +14,10 @@
 //! Naming follows the C `usb_iobitmask.h` file with the `USB_` prefix removed
 //! and snake_case used for the shift variants.
 
+// The bit map is transcribed whole from the manual and `usb_iobitmask.h`, so the next driver
+// change finds the bit it needs; not every bit is used today.
+#![expect(dead_code, reason = "the RUSB1 bit map is complete; the drivers use a subset")]
+
 use crate::pac::common::{RW, Reg};
 use crate::pac::usb::Usb;
 use crate::pac::{USB200, USB201};

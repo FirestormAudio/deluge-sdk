@@ -140,6 +140,7 @@ pub(crate) enum SrcMode {
     Async,
     /// Synchronous — SCUX uses an external (SSI) clock reference.  The
     /// interpolation ratio is computed from INTIFS.
+    #[expect(dead_code, reason = "SRCCR's sync mode; no path builds a synchronous SRC yet")]
     Sync,
 }
 
@@ -196,14 +197,6 @@ pub(crate) struct DvuConfig {
 }
 
 impl DvuConfig {
-    /// Bypass mode — audio passes through unchanged.
-    pub const BYPASS: DvuConfig = DvuConfig {
-        audio: AudioInfo::STEREO_24,
-        bypass: true,
-        volumes: [0x0010_0000; 8],
-        ramp: None,
-        zero_cross_mute: false,
-    };
 }
 
 /// IPC input path selection (written to IPSLR_IPC0_n, TRM §37.3.2).
@@ -216,6 +209,7 @@ impl DvuConfig {
 /// - `101–111` = no operation
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(u32)]
+#[expect(dead_code, reason = "IPC_PASS_SEL's encodings, in full; the paths use only FFD→2SRC async")]
 pub(crate) enum IpcSel {
     /// Input path disabled.
     None = 0b000,
@@ -240,6 +234,7 @@ pub(crate) enum IpcSel {
 /// SRC+DVU, or SRC+DVU+MIX). DVU/MIX routing is configured separately.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(u32)]
+#[expect(dead_code, reason = "OPC_PASS_SEL's encodings, in full; no path disables the output")]
 pub(crate) enum OpcSel {
     /// Output path disabled.
     None = 0b000,
@@ -1173,6 +1168,7 @@ impl Drop for Control<'_> {
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
+    use std::vec::Vec;
     use super::*;
 
     #[test]

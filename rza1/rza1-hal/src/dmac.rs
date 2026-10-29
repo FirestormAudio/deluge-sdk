@@ -468,16 +468,8 @@ mod tests {
     // sequence tests below compare the PAC-driven writes against these.
     const DMAC_BASE: usize = 0xE820_0000;
     const DMARS_BASE: usize = 0xFCFE_1000;
-    const OFF_N0SA: usize = 0x00; // Next-0 source address
-    const OFF_N0DA: usize = 0x04; // Next-0 destination address
-    const OFF_N0TB: usize = 0x08; // Next-0 transfer byte count
-    const OFF_CRSA: usize = 0x18; // Current source address
-    const OFF_CRDA: usize = 0x1C; // Current destination address
     const OFF_CHCTRL: usize = 0x28; // Channel control
     const OFF_CHCFG: usize = 0x2C; // Channel config
-    const OFF_CHITVL: usize = 0x30; // Channel interval
-    const OFF_CHEXT: usize = 0x34; // Channel extension
-    const OFF_CHSTAT: usize = 0x24; // Channel status (TC = bit 6)
     const OFF_NXLA: usize = 0x38; // Next link-descriptor address
     const DCTRL_0_7: usize = DMAC_BASE + 0x300;
     const DCTRL_8_15: usize = DMAC_BASE + 0x700;

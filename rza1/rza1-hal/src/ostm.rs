@@ -11,6 +11,13 @@
 //! OSTM1 is the alarm. Code that needs a busy-wait (with interrupts masked, or before the
 //! executor runs) uses [`delay_ms`] or [`Delay`] on OSTM0's counter.
 
+// The start/stop/alarm half of this module is the time driver's; without it (on a host, or with
+// `time-driver-ostm` off) only the delays are used.
+#![cfg_attr(
+    not(all(target_os = "none", feature = "time-driver-ostm")),
+    allow(dead_code, reason = "the timer set-up is the time driver's, which this build leaves out")
+)]
+
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::pac::cpg::regs::Stbcr5;
@@ -19,7 +26,6 @@ use crate::pac::{CPG, ostm};
 
 // CTL mode values
 const CTL_INTERVAL: u8 = 0x00; // count-down interval timer, optional interrupt
-const CTL_FREE_RUN: u8 = 0x02; // free-running counter up, optional interrupt
 const CTL_FREE_RUN_INT: u8 = 0x03; // free-running with compare interrupt
 
 // ------- CPG standby control (clock gating) ----------------------------------
@@ -85,25 +91,6 @@ fn timer(n: u8) -> ostm::Ostm {
     } else {
         crate::pac::OSTM1
     }
-}
-
-/// Configure OSTM channel `n` (0 or 1) for free-running mode and start it.
-///
-/// The counter begins at 0 and increments at P0. No interrupt is generated. If the channel is
-/// running it is stopped first so CTL can be written.
-///
-/// # Safety
-/// Writes to memory-mapped OSTM registers. Must only be called after [`enable_clock`].
-pub(crate) unsafe fn start_free_running(n: u8) {
-    let t = timer(n);
-    // Stop the timer in case it is already running (CTL can only be written
-    // when the timer is stopped — TE must read 0 first).
-    t.tt().write_value(Tt(1));
-    // Wait for the hardware to confirm the timer has stopped.
-    while t.te().read().0 != 0 {}
-    // Free-running mode, compare interrupt disabled.
-    t.ctl().write_value(Ctl(CTL_FREE_RUN));
-    t.ts().write_value(Ts(1));
 }
 
 /// Read the current counter value of OSTM channel `n` (0 or 1). Wraps at `u32::MAX`.

@@ -3,9 +3,12 @@
 //!
 //! Peripheral base addresses are taken from the RZ/A1L Hardware Manual.
 
-#![cfg_attr(target_os = "none", no_std)]
-#![allow(dead_code)]
+#![no_std]
 #![deny(missing_docs)]
+
+#[cfg(test)]
+#[macro_use]
+extern crate std;
 
 // Logging macros (`trace!` … `error!`) over `log`, `defmt` or nothing: first, so every module sees
 // them.

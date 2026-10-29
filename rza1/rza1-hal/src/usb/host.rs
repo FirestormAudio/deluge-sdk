@@ -218,7 +218,13 @@ impl Drop for DrainGuard {
 
 /// A 1 KB, cache-line-aligned block buffer.
 #[repr(align(32))]
-struct Bounce([u32; 256]);
+struct Bounce(
+    #[cfg_attr(
+        target_os = "none",
+        expect(dead_code, reason = "the DMAC writes it and the CPU reads it by address, through the uncached alias")
+    )]
+    [u32; 256],
+);
 /// Per port: where the DMAC writes a received block. Only ever touched through its uncached
 /// alias ([`crate::uncached`]), so no cache maintenance is needed.
 static mut RX_BOUNCE: [Bounce; 2] = [const { Bounce([0; 256]) }; 2];
@@ -2954,6 +2960,7 @@ impl<T: pipe::Type, D: pipe::Direction> UsbPipe<T, D> for Rusb1Pipe<T, D> {
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
+    use std::{boxed::Box, vec::Vec};
     use super::*;
 
     /// The attach tests share the module's event statics; run them one at a time.

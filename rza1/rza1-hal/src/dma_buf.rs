@@ -79,11 +79,6 @@ impl<'a, W: Word> Uncached<'a, W> {
     pub fn len(&self) -> usize {
         self.0.len()
     }
-
-    /// The DMAC address of its first word (the mirror is a real bus alias).
-    pub(crate) fn bus_addr(&self) -> u32 {
-        self.0.as_ptr() as u32
-    }
 }
 
 /// A DMA destination: words (bytes by default) in uncached memory.

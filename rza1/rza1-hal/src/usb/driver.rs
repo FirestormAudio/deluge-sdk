@@ -651,7 +651,7 @@ static ENABLED_GEN: [[AtomicU32; PIPE_COUNT]; 2] =
 /// A SETUP packet arrived on `port`: start a new request generation.
 /// Generation 0 means "never", so a wrap skips it.
 fn next_setup_gen(port: usize) {
-    let _ = SETUP_GEN[port].fetch_update(Ordering::AcqRel, Ordering::Acquire, |g| {
+    let _ = SETUP_GEN[port].try_update(Ordering::AcqRel, Ordering::Acquire, |g| {
         Some(g.wrapping_add(1).max(1))
     });
 }
@@ -1859,6 +1859,7 @@ unsafe fn configure_all_pipes(port: u8) {
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
+    use std::boxed::Box;
     use super::*;
     use crate::mmio::test;
 

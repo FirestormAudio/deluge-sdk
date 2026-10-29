@@ -45,9 +45,11 @@ const ICCICR_ENABLES: u32 = 0x1;
 const ICCICR_ENABLENS: u32 = 0x2;
 /// ICCIAR bits [9:0]: ACKINTID — Interrupt Acknowledge ID field.
 /// BSP: INTC_ICCIAR_ACKINTID = 0x3FF
+#[cfg(target_os = "none")]
 const ICCIAR_ACKINTID: u32 = 0x3FF;
 /// ICCIAR spurious interrupt ID lower bound (IDs ≥ 0x3FE are spurious).
 /// 0x3FE = 1022 (spurious group IRQ), 0x3FF = 1023 (spurious FIQ).
+#[cfg(target_os = "none")]
 const ICCIAR_SPURIOUS: u32 = 0x3FE;
 
 // ---------------------------------------------------------------------------
@@ -349,6 +351,7 @@ pub(crate) fn set_handler(id: u16, handler: HandlerFn) {
 }
 
 /// The handler installed for `id`, if any.
+#[cfg(test)]
 pub(crate) fn handler(id: u16) -> Option<HandlerFn> {
     HANDLERS.get(id as usize).and_then(HandlerCell::get)
 }
