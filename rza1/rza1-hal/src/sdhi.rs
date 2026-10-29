@@ -260,9 +260,10 @@ const STBCR12_SDHI1_MASK: u8 = 0x03;
 // Interrupt-mask initialisation values (sd_init.c SD_INFO*_MASK constants)
 // ---------------------------------------------------------------------------
 
-/// INFO1_MASK init value: mask all INFO1 interrupts except card-detect.
-/// BSP: `SD_INFO1_MASK = 0x031D` (sd_init.c).
-const INFO1_MASK_INIT: u16 = 0x031D;
+/// INFO1_MASK init value (on bring-up, every reset and every abort): the Renesas BSP's
+/// `SD_INFO1_MASK = 0x031D` (sd_init.c) with the card-detect edges (bits 3, 4) left unmasked, as
+/// they are throughout.
+const INFO1_MASK_INIT: u16 = 0x031D & !INFO1_DET_CD;
 
 /// INFO1_MASK between transfers: everything masked except the card-detect edges, which the status
 /// interrupt records ([`take_card_detect_events`]).
@@ -431,12 +432,15 @@ unsafe fn set_clock_fast(port: u8) {
 unsafe fn interrupt_handler(port: u8) {
     let s = sdhi(port);
 
-    // Read status
-    let info1 = s.sd_info1().read();
-    let info2 = s.sd_info2().read();
+    // Take only what raised this interrupt: the unmasked bits, and the card-detect edges (always
+    // live). A masked latch (a data phase's BRE/BWE, an error, before its waiter unmasks it) stays
+    // in hardware for that waiter, which unmasks it and waits on the latch: taking it here, between
+    // a command's response and its data phase, would leave the transfer waiting forever.
+    let info1 = s.sd_info1().read() & (!s.sd_info1_mask().read() | INFO1_DET_CD);
+    let info2 = s.sd_info2().read() & !s.sd_info2_mask().read();
 
-    // Clear bits by writing 0 (write-0-to-clear per RZ/A1 HW manual).
-    // Only clear the bits we just read to avoid losing a racing edge.
+    // Clear what we took by writing 0 (write-0-to-clear per RZ/A1 HW manual); writing 1 leaves
+    // every other bit, including an edge that raced in after the read, alone.
     s.sd_info1().write_value(!info1);
     s.sd_info2().write_value(!info2);
 
@@ -705,7 +709,7 @@ async unsafe fn send_cmd(port: u8, cmd_val: u16) -> Result<(), SdhiError> {
 
         // Enable response-end and error interrupts.
         // Hardware polarity: 0 = enabled, 1 = masked → write bitwise complement.
-        // INFO1: enable RESP only  → ~0x0001 = 0xFFFE
+        // INFO1: enable RESP (and card detect, always) → 0xFFE6
         // INFO2: enable ERR_ALL (includes ILA) → ~INFO2_ERR_ALL = 0x7F80
         s.sd_info1_mask().write_value(info1_mask(INFO1_RESP));
         s.sd_info2_mask().write_value(!INFO2_ERR_ALL);
@@ -716,7 +720,7 @@ async unsafe fn send_cmd(port: u8, cmd_val: u16) -> Result<(), SdhiError> {
         // Async wait
         let result = wait_resp(port).await;
 
-        // Disable all interrupts (0 = enabled, 1 = masked → 0xFFFF masks all)
+        // Back to idle: everything masked but card detect (INFO1 0xFFE7, INFO2 0xFFFF)
         s.sd_info1_mask().write_value(INFO1_MASK_IDLE);
         s.sd_info2_mask().write_value(0xFFFF);
 
@@ -780,7 +784,7 @@ async unsafe fn read_blocks_sw(port: u8, buf: *mut u8, count: u32) -> Result<(),
 
         // Enable DATA_TRNS (access end), BRE, and all errors.
         // Hardware polarity: 0 = enabled, 1 = masked → write bitwise complement.
-        // INFO1: enable DATA_TRNS only  → ~INFO1_DATA_TRNS = 0xFFFB
+        // INFO1: enable DATA_TRNS (and card detect, always) → 0xFFE3
         // INFO2: enable ERR_ALL + BRE   → ~(INFO2_ERR_ALL | INFO2_BRE) = 0x7E80
         s.sd_info1_mask().write_value(info1_mask(INFO1_DATA_TRNS));
         s.sd_info2_mask().write_value(!(INFO2_ERR_ALL | INFO2_BRE));
@@ -803,7 +807,7 @@ async unsafe fn read_blocks_sw(port: u8, buf: *mut u8, count: u32) -> Result<(),
         // Wait for access end (DATA_TRNS)
         wait_access_end(port).await?;
 
-        // Disable all interrupts (0xFFFF = all masked)
+        // Back to idle: everything masked but card detect
         s.sd_info1_mask().write_value(INFO1_MASK_IDLE);
         s.sd_info2_mask().write_value(0xFFFF);
         clear_info(port);
@@ -824,7 +828,7 @@ async unsafe fn write_blocks_sw(port: u8, buf: *const u8, count: u32) -> Result<
 
         // Enable DATA_TRNS, BWE, and all errors.
         // Hardware polarity: 0 = enabled, 1 = masked → write bitwise complement.
-        // INFO1: enable DATA_TRNS only  → ~INFO1_DATA_TRNS = 0xFFFB
+        // INFO1: enable DATA_TRNS (and card detect, always) → 0xFFE3
         // INFO2: enable ERR_ALL + BWE   → ~(INFO2_ERR_ALL | INFO2_BWE) = 0x7D80
         s.sd_info1_mask().write_value(info1_mask(INFO1_DATA_TRNS));
         s.sd_info2_mask().write_value(!(INFO2_ERR_ALL | INFO2_BWE));
@@ -1542,16 +1546,24 @@ impl<'d> Sdhi<'d> {
         unsafe { card_write_protected(self.port) }
     }
 
-    /// Forget the insertion edges recorded so far, keeping a removal: for an init that has just
-    /// identified the card those insertions announced. A card pulled while it ran is still
-    /// reported by the next [`take_card_detect_events`](Self::take_card_detect_events).
+    /// Forget the insertion edges recorded so far, for an init that has just identified the card
+    /// those insertions announced. If a removal is recorded too, nothing is forgotten: the card was
+    /// pulled while the init ran (and perhaps put back, or swapped), and the next
+    /// [`take_card_detect_events`](Self::take_card_detect_events) reports it all.
     pub fn clear_insertion_events(&self) {
         let s = sdhi(self.port);
+        let st = &STATE[self.port as usize];
+        // A removal recorded too means the card went and one came back (or another) while the init
+        // ran: keep both, so the caller remounts rather than leaving a seated card ejected.
+        let latched = s.sd_info1().read();
+        if latched & INFO1_REM_CD != 0 || st.cd_events.load(Ordering::Acquire) & CD_REMOVED != 0 {
+            return;
+        }
         // Write-0-to-clear, the insertion latch only.
-        if s.sd_info1().read() & INFO1_INS_CD != 0 {
+        if latched & INFO1_INS_CD != 0 {
             s.sd_info1().write_value(!INFO1_INS_CD);
         }
-        STATE[self.port as usize].cd_events.fetch_and(!CD_INSERTED, Ordering::AcqRel);
+        st.cd_events.fetch_and(!CD_INSERTED, Ordering::AcqRel);
     }
 
     /// Card removal and insertion edges since the last call, as `(removed, inserted)`.
@@ -1888,15 +1900,69 @@ mod typed_tests {
         assert_eq!(test::peek16(r) & INFO1_DET_CD, 0, "the latch was cleared");
     }
 
+    /// A removal recorded during an init, and an insertion with it: the card came back (or was
+    /// swapped) while the init ran. Both stay, so the caller remounts rather than leaving a seated
+    /// card ejected.
     #[test]
-    fn clearing_insertions_keeps_a_removal() {
+    fn clearing_insertions_keeps_an_insertion_after_a_removal() {
         let _serial = serial();
         let sdhi = sdhi1();
         test::reset();
         let _ = sdhi.take_card_detect_events();
-        status_irq_with(INFO1_INS_CD | INFO1_REM_CD);
+        status_irq_with(INFO1_REM_CD);
+        status_irq_with(INFO1_INS_CD);
         sdhi.clear_insertion_events();
+        assert_eq!(sdhi.take_card_detect_events(), (true, true));
+    }
+
+    /// No removal: the insertions announced the card the init just identified, and go.
+    #[test]
+    fn clearing_insertions_drops_a_lone_insertion() {
+        let _serial = serial();
+        let sdhi = sdhi1();
+        test::reset();
+        let _ = sdhi.take_card_detect_events();
+        status_irq_with(INFO1_INS_CD);
+        sdhi.clear_insertion_events();
+        assert_eq!(sdhi.take_card_detect_events(), (false, false));
+    }
+
+    /// A card-detect interrupt between a command's response and its data phase must not take the
+    /// still-masked buffer-ready latch: the data phase unmasks it and waits on the hardware latch.
+    #[test]
+    fn a_card_detect_irq_leaves_masked_latches_alone() {
+        let _serial = serial();
+        let sdhi = sdhi1();
+        test::reset();
+        let _ = sdhi.take_card_detect_events();
+        let s = super::sdhi(1);
+        test::poke16(s.sd_info1_mask().addr(), INFO1_MASK_IDLE);
+        test::poke16(s.sd_info2_mask().addr(), 0xFFFF);
+        test::rcw0(s.sd_info2().addr());
+        test::poke16(s.sd_info2().addr(), INFO2_BRE);
+        STATE[1].info2.store(0, Ordering::Release);
+        status_irq_with(INFO1_REM_CD);
+        assert_ne!(test::peek16(s.sd_info2().addr()) & INFO2_BRE, 0, "BRE still latched");
+        assert_eq!(STATE[1].info2.load(Ordering::Acquire) & INFO2_BRE, 0, "not taken by the ISR");
         assert_eq!(sdhi.take_card_detect_events(), (true, false));
+    }
+
+    /// Card detect is live from the start, and again after an abort's controller reset.
+    #[test]
+    fn card_detect_is_unmasked_after_init_and_an_abort() {
+        let _serial = serial();
+        test::reset();
+        let sdhi = sdhi1();
+        assert_eq!(*info1_mask_writes().last().unwrap() as u16 & INFO1_DET_CD, 0, "after init");
+        let mut storage = [0u8; 512];
+        test::reset();
+        {
+            let read = sdhi.read_blocks_dma(17, crate::dma_buf::UncachedMut::new(&mut storage).unwrap());
+            let mut read = core::pin::pin!(read);
+            assert!(poll_once(read.as_mut()).is_pending());
+        }
+        assert!(sdhi.take_aborted(), "the drop aborted");
+        assert_eq!(*info1_mask_writes().last().unwrap() as u16 & INFO1_DET_CD, 0, "after the abort");
     }
 
     #[test]
