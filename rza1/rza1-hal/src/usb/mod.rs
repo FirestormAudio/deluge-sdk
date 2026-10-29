@@ -57,13 +57,8 @@ pub mod driver;
 pub(crate) mod fifo;
 pub mod host;
 pub mod iso;
-// The pipe and register internals are the drivers'. DelugeFirmware still reaches four pipe
-// functions and `regs::usb` directly until it moves to `iso` streams (phase 9); those stay
-// public and hidden, and everything else in both modules is crate-private.
-#[doc(hidden)]
-pub mod pipe;
-#[doc(hidden)]
-pub mod regs;
+pub(crate) mod pipe;
+pub(crate) mod regs;
 
 pub use driver::{Rusb1Bus, Rusb1ControlPipe, Rusb1Driver, Rusb1EndpointIn, Rusb1EndpointOut};
 pub use host::{Rusb1Allocator, Rusb1HostDriver, Rusb1Pipe};
