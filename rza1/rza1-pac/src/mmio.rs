@@ -195,6 +195,7 @@ mod shadow {
         pub write: bool,
         /// Access width in bytes (1, 2 or 4).
         pub width: u8,
+        /// The register's address.
         pub addr: usize,
         /// Value written, or value returned by the read.
         pub val: u32,

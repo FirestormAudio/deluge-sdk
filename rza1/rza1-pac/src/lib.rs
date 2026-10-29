@@ -5,9 +5,16 @@
 //! Every peripheral is a `Copy` handle (`CPG`, `SCIF0`, `INTC`, …); its methods return
 //! [`common::Reg`] handles whose reads and writes go through [`mmio`], so a host test can drive
 //! register sequences and inspect them.
-#![cfg_attr(target_os = "none", no_std)]
+#![no_std]
+#![deny(missing_docs)]
 #![allow(non_camel_case_types, non_snake_case, non_upper_case_globals)]
 #![allow(clippy::all)]
+
+// Host builds (the QEMU and host tests, here and downstream) back `mmio` with a shadow memory
+// built on std; the device build has none.
+#[cfg(not(target_os = "none"))]
+#[macro_use]
+extern crate std;
 
 #[cfg(all(feature = "rza1l", feature = "rza1h"))]
 compile_error!("rza1-pac: enable exactly one chip feature, `rza1l` or `rza1h`, not both");
@@ -17,14 +24,22 @@ compile_error!("rza1-pac: enable a chip feature, `rza1l` or `rza1h`");
 pub mod common;
 pub mod mmio;
 
-#[cfg(feature = "rza1l")]
-include!("chips/rza1l.rs");
-#[cfg(feature = "rza1h")]
-include!("chips/rza1h.rs");
+// The generated register blocks, re-exported at the crate root. chiptool documents what the SVD
+// describes, which is not every field accessor, and the files are regenerated rather than edited
+// (tools/check-pac.sh), so missing docs are allowed here and denied everywhere else.
+#[allow(missing_docs)]
+mod chip {
+    #[cfg(feature = "rza1l")]
+    include!("chips/rza1l.rs");
+    #[cfg(feature = "rza1h")]
+    include!("chips/rza1h.rs");
+}
+pub use chip::*;
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
     use super::*;
+    use std::vec::Vec;
 
     #[test]
     fn register_accesses_go_through_the_seam_at_their_width() {

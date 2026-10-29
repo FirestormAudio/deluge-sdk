@@ -7,10 +7,13 @@
 
 use core::marker::PhantomData;
 
+/// Access marker: the register can be read and written.
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct RW;
+/// Access marker: the register is read-only.
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct R;
+/// Access marker: the register is write-only.
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct W;
 
@@ -22,15 +25,18 @@ mod sealed {
     impl Access for RW {}
 }
 
+/// A register access marker: [`R`], [`W`] or [`RW`]. Sealed.
 pub trait Access: sealed::Access + Copy {}
 impl Access for R {}
 impl Access for W {}
 impl Access for RW {}
 
+/// An access marker that allows reads ([`R`], [`RW`]).
 pub trait Read: Access {}
 impl Read for RW {}
 impl Read for R {}
 
+/// An access marker that allows writes ([`W`], [`RW`]).
 pub trait Write: Access {}
 impl Write for RW {}
 impl Write for W {}
@@ -55,6 +61,7 @@ impl<T: Copy, A: Access> Reg<T, A> {
         }
     }
 
+    /// The register's address as a raw pointer.
     #[inline(always)]
     pub const fn as_ptr(&self) -> *mut T {
         self.ptr as _
@@ -74,6 +81,7 @@ impl<T: Copy, A: Access> Reg<T, A> {
 }
 
 impl<T: Copy, A: Read> Reg<T, A> {
+    /// Read the register.
     #[inline(always)]
     pub fn read(&self) -> T {
         let addr = self.ptr as usize;
@@ -91,6 +99,7 @@ impl<T: Copy, A: Read> Reg<T, A> {
 }
 
 impl<T: Copy, A: Write> Reg<T, A> {
+    /// Write `val` to the register.
     #[inline(always)]
     pub fn write_value(&self, val: T) {
         let addr = self.ptr as usize;
