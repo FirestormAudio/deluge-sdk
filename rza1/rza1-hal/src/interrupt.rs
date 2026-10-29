@@ -164,7 +164,20 @@ pub mod typelevel {
         ERI0 = 222, RXI0 = 223, TXI0 = 224, ERI1 = 226, RXI1 = 227, TXI1 = 228,
         ERI2 = 230, RXI2 = 231, TXI2 = 232, ERI3 = 234, RXI3 = 235, TXI3 = 236,
         ERI4 = 238, RXI4 = 239, TXI4 = 240,
+        // RSPI channel n's error, receive-buffer-full and transmit-buffer-empty.
+        SPEI0 = 270, SPRI0 = 271, SPTI0 = 272, SPEI1 = 273, SPRI1 = 274, SPTI1 = 275,
+        SPEI2 = 276, SPRI2 = 277, SPTI2 = 278,
     }
+
+    // The RZ/A1H's RSPI3 and RSPI4.
+    #[cfg(feature = "rza1h")]
+    mod rspi34 {
+        interrupts! {
+            SPEI3 = 279, SPRI3 = 280, SPTI3 = 281, SPEI4 = 282, SPRI4 = 283, SPTI4 = 284,
+        }
+    }
+    #[cfg(feature = "rza1h")]
+    pub use rspi34::*;
 
     // SDHI channel n's status (card detect), operation and SDIO interrupts. The RZ/A1H's PAC has
     // no SDHI block, so neither are these.
@@ -373,6 +386,17 @@ mod tests {
         typelevel::USB0::disable();
         // GICD_ICENABLER2 (0xE820_1180 + 2*4), bit 73 - 64 = 9.
         assert_eq!(test::writes(), [(0xE820_1188, 1 << 9)]);
+    }
+
+    #[test]
+    fn rspi_interrupt_ids_match_the_hardware_manual() {
+        // SPEIn/SPRIn/SPTIn = 270/271/272 + 3n (Table 7.3).
+        assert_eq!(
+            [typelevel::SPEI0::ID, typelevel::SPRI0::ID, typelevel::SPTI0::ID],
+            [270, 271, 272]
+        );
+        assert_eq!(typelevel::SPEI1::ID, 273);
+        assert_eq!(typelevel::SPTI2::ID, 278);
     }
 
     #[test]

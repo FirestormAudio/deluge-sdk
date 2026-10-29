@@ -49,6 +49,10 @@ const SPCR_SPE: u8 = 1 << 6;
 const SPCR_MSTR: u8 = 1 << 3;
 /// SPTIE — SPI transmit interrupt enable (used for DMA trigger; set here as C does)
 const SPCR_SPTIE: u8 = 1 << 5;
+/// SPRIE — SPI receive interrupt enable
+const SPCR_SPRIE: u8 = 1 << 7;
+/// SPEIE — SPI error interrupt enable
+const SPCR_SPEIE: u8 = 1 << 4;
 // ── SPSR bits (status) ────────────────────────────────────────────────────────
 /// SPTEF — transmit buffer empty (TX has room for 4 bytes)
 const SPSR_SPTEF: u8 = 1 << 5;
@@ -321,9 +325,14 @@ unsafe fn wait_end(ch: u8) {
 // ── Owned driver ──────────────────────────────────────────────────────────────
 
 use core::marker::PhantomData;
+use core::task::Poll;
+
+use embassy_hal_internal::drop::OnDrop;
 
 use crate::Peri;
-use crate::mode::{Blocking, Mode};
+use crate::interrupt::{self, Binding, Handler, Interrupt};
+use crate::mode::{Async, Blocking, Mode};
+use embassy_sync::waitqueue::AtomicWaker;
 
 mod sealed {
     pub trait Sealed {}
@@ -351,20 +360,93 @@ pin_trait!(
 pub trait Instance: crate::PeripheralType + sealed::Sealed + 'static {
     /// The channel number: 0–2 on the RZ/A1L, 0–4 on the RZ/A1H.
     const INDEX: u8;
+    /// Its error interrupt, SPEI<INDEX>.
+    type ErrorInterrupt: Interrupt;
+    /// Its receive-buffer-full interrupt, SPRI<INDEX>.
+    type RxInterrupt: Interrupt;
+    /// Its transmit-buffer-empty interrupt, SPTI<INDEX>.
+    type TxInterrupt: Interrupt;
 }
 
 macro_rules! instances {
-    ($($rspi:ident = $n:literal),* $(,)?) => {$(
+    ($($rspi:ident = $n:literal, $spei:ident, $spri:ident, $spti:ident;)*) => {$(
         impl sealed::Sealed for crate::peripherals::$rspi {}
         impl Instance for crate::peripherals::$rspi {
             const INDEX: u8 = $n;
+            type ErrorInterrupt = crate::interrupt::typelevel::$spei;
+            type RxInterrupt = crate::interrupt::typelevel::$spri;
+            type TxInterrupt = crate::interrupt::typelevel::$spti;
         }
     )*};
 }
 
-instances!(RSPI0 = 0, RSPI1 = 1, RSPI2 = 2);
+instances! {
+    RSPI0 = 0, SPEI0, SPRI0, SPTI0;
+    RSPI1 = 1, SPEI1, SPRI1, SPTI1;
+    RSPI2 = 2, SPEI2, SPRI2, SPTI2;
+}
 #[cfg(feature = "rza1h")]
-instances!(RSPI3 = 3, RSPI4 = 4);
+instances! {
+    RSPI3 = 3, SPEI3, SPRI3, SPTI3;
+    RSPI4 = 4, SPEI4, SPRI4, SPTI4;
+}
+
+/// RSPI n's waiting transfer, woken by any of its three interrupts.
+static WAKERS: [AtomicWaker; 5] = [const { AtomicWaker::new() }; 5];
+
+/// Clear `enables` in RSPI `ch`'s SPCR, interrupts masked (a handler also writes SPCR).
+fn spcr_clear(ch: u8, enables: u8) {
+    critical_section::with(|_| {
+        let r = rspi(ch);
+        let v = r.spcr().read();
+        r.spcr().write_value(v & !enables);
+    });
+}
+
+/// Set `enables` in RSPI `ch`'s SPCR.
+fn spcr_set(ch: u8, enables: u8) {
+    critical_section::with(|_| {
+        let r = rspi(ch);
+        let v = r.spcr().read();
+        r.spcr().write_value(v | enables);
+    });
+}
+
+/// RSPI `T`'s error interrupt (SPEI): masks itself and wakes the waiting transfer.
+pub struct ErrorInterruptHandler<T: Instance> {
+    _rspi: PhantomData<T>,
+}
+
+impl<T: Instance> Handler<T::ErrorInterrupt> for ErrorInterruptHandler<T> {
+    unsafe fn on_interrupt() {
+        spcr_clear(T::INDEX, SPCR_SPEIE);
+        WAKERS[T::INDEX as usize].wake();
+    }
+}
+
+/// RSPI `T`'s receive interrupt (SPRI): masks itself and wakes the waiting transfer.
+pub struct RxInterruptHandler<T: Instance> {
+    _rspi: PhantomData<T>,
+}
+
+impl<T: Instance> Handler<T::RxInterrupt> for RxInterruptHandler<T> {
+    unsafe fn on_interrupt() {
+        spcr_clear(T::INDEX, SPCR_SPRIE);
+        WAKERS[T::INDEX as usize].wake();
+    }
+}
+
+/// RSPI `T`'s transmit interrupt (SPTI): masks itself and wakes the waiting transfer.
+pub struct TxInterruptHandler<T: Instance> {
+    _rspi: PhantomData<T>,
+}
+
+impl<T: Instance> Handler<T::TxInterrupt> for TxInterruptHandler<T> {
+    unsafe fn on_interrupt() {
+        spcr_clear(T::INDEX, SPCR_SPTIE);
+        WAKERS[T::INDEX as usize].wake();
+    }
+}
 
 /// An RSPI master's settings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -696,6 +778,187 @@ macro_rules! blocking_spi_bus {
 
 blocking_spi_bus!(u8, u32);
 
+impl<'d> Rspi<'d, Async> {
+    /// Bring RSPI `T` up as a transmit-only SPI master with `config`, in 32-bit frames, on pins
+    /// `sck` and `mosi`; transfers wait on its SPRI/SPTI/SPEI interrupts.
+    ///
+    /// SPTIE stays clear except while a transfer waits on it, so no DMA channel can be fed from
+    /// this channel's transmit request; and SPRI reaches the GIC only while no DMA channel's DMARS
+    /// selects this channel's receive request.
+    ///
+    /// # Panics
+    /// If [`crate::clocks::init`] has not been called.
+    pub fn new_txonly<T: Instance>(
+        _rspi: Peri<'d, T>,
+        sck: Peri<'d, impl SckPin<T>>,
+        mosi: Peri<'d, impl MosiPin<T>>,
+        irq: impl Binding<T::ErrorInterrupt, ErrorInterruptHandler<T>>
+        + Binding<T::RxInterrupt, RxInterruptHandler<T>>
+        + Binding<T::TxInterrupt, TxInterruptHandler<T>>
+        + Copy
+        + 'd,
+        config: Config,
+    ) -> Self {
+        let (sck_alt, mosi_alt) = (sck.alternate(), mosi.alternate());
+        crate::gpio::mux(sck, sck_alt);
+        crate::gpio::mux(mosi, mosi_alt);
+        // SAFETY: RSPI T is owned, so nothing else drives it.
+        unsafe { init(T::INDEX, &config) };
+        spcr_clear(T::INDEX, SPCR_SPTIE);
+        interrupt::bind::<T::ErrorInterrupt, ErrorInterruptHandler<T>>(irq);
+        interrupt::bind::<T::RxInterrupt, RxInterruptHandler<T>>(irq);
+        interrupt::bind::<T::TxInterrupt, TxInterruptHandler<T>>(irq);
+        // SAFETY: RSPI T's own interrupts, each masked at SPCR until a transfer waits. Their
+        // priorities are the application's.
+        unsafe {
+            T::ErrorInterrupt::enable();
+            T::RxInterrupt::enable();
+            T::TxInterrupt::enable();
+        }
+        Self {
+            ch: T::INDEX,
+            width: Width::Bits32,
+            mode: Some(mode_bits(config.mode)),
+            _rspi: PhantomData,
+            _mode: PhantomData,
+        }
+    }
+
+    /// [`new_txonly`](Self::new_txonly), with `miso` for receiving too.
+    ///
+    /// # Panics
+    /// If [`crate::clocks::init`] has not been called.
+    pub fn new<T: Instance>(
+        rspi: Peri<'d, T>,
+        sck: Peri<'d, impl SckPin<T>>,
+        mosi: Peri<'d, impl MosiPin<T>>,
+        miso: Peri<'d, impl MisoPin<T>>,
+        irq: impl Binding<T::ErrorInterrupt, ErrorInterruptHandler<T>>
+        + Binding<T::RxInterrupt, RxInterruptHandler<T>>
+        + Binding<T::TxInterrupt, TxInterruptHandler<T>>
+        + Copy
+        + 'd,
+        config: Config,
+    ) -> Self {
+        let miso_alt = miso.alternate();
+        crate::gpio::mux(miso, miso_alt);
+        Self::new_txonly(rspi, sck, mosi, irq, config)
+    }
+
+    /// Wait until SPSR shows one of `flags`, with `enables` set in SPCR meanwhile; returns SPSR.
+    async fn wait_for(&mut self, flags: u8, enables: u8) -> u8 {
+        let ch = self.ch;
+        core::future::poll_fn(|cx| {
+            WAKERS[ch as usize].register(cx.waker());
+            let spsr = rspi(ch).spsr().read();
+            if spsr & flags != 0 {
+                spcr_clear(ch, enables);
+                return Poll::Ready(spsr);
+            }
+            spcr_set(ch, enables);
+            // A flag that rose before the enable raised no interrupt: look again.
+            let spsr = rspi(ch).spsr().read();
+            if spsr & flags != 0 {
+                spcr_clear(ch, enables);
+                return Poll::Ready(spsr);
+            }
+            Poll::Pending
+        })
+        .await
+    }
+
+    /// Send `word` and return the frame received with it, waiting on the interrupts.
+    async fn frame_async(&mut self, word: u32) -> Result<u32, Error> {
+        self.wait_for(SPSR_SPTEF, SPCR_SPTIE).await;
+        self.write_spdr(word);
+        let spsr = self
+            .wait_for(SPSR_SPRF | SPSR_OVRF | SPSR_MODF, SPCR_SPRIE | SPCR_SPEIE)
+            .await;
+        if let Some(e) = self.take_error(spsr) {
+            return Err(e);
+        }
+        Ok(self.read_spdr())
+    }
+
+    /// The async [`transfer_words`](Self::transfer_words). Dropped mid-flight, it leaves the bus
+    /// idle: interrupts masked, the last frame shifted out, the receive buffer reset.
+    async fn transfer_words_async<W: Word>(
+        &mut self,
+        read: &mut [W],
+        write: Option<&[W]>,
+    ) -> Result<(), Error> {
+        let ch = self.ch;
+        let guard = OnDrop::new(move || idle(ch));
+        self.begin(W::WIDTH);
+        let n = match write {
+            Some(write) => read.len().max(write.len()),
+            None => read.len(),
+        };
+        for i in 0..n {
+            let out = match write {
+                Some(write) => write.get(i).map_or(0, |w| w.to_u32()),
+                // In place: send the word being replaced.
+                None => read[i].to_u32(),
+            };
+            let got = self.frame_async(out).await;
+            let got = match got {
+                Ok(v) => v,
+                Err(e) => {
+                    guard.defuse();
+                    return Err(e);
+                }
+            };
+            if let Some(r) = read.get_mut(i) {
+                *r = W::from_u32(got);
+            }
+        }
+        guard.defuse();
+        Ok(())
+    }
+}
+
+/// Leave RSPI `ch` idle after a transfer dropped mid-flight.
+fn idle(ch: u8) {
+    spcr_clear(ch, SPCR_SPRIE | SPCR_SPTIE | SPCR_SPEIE);
+    // SAFETY: the channel this transfer owned.
+    unsafe { wait_end(ch) };
+    let r = rspi(ch);
+    let v = r.spbfcr().read();
+    r.spbfcr().write_value(v | SPBFCR_RX_RESET);
+    r.spbfcr().write_value(v & !SPBFCR_RX_RESET);
+}
+
+macro_rules! async_spi_bus {
+    ($($w:ty),*) => {$(
+        impl embedded_hal_async::spi::SpiBus<$w> for Rspi<'_, Async> {
+            async fn read(&mut self, words: &mut [$w]) -> Result<(), Error> {
+                self.transfer_words_async(words, Some(&[])).await
+            }
+
+            async fn write(&mut self, words: &[$w]) -> Result<(), Error> {
+                self.transfer_words_async::<$w>(&mut [], Some(words)).await
+            }
+
+            async fn transfer(&mut self, read: &mut [$w], write: &[$w]) -> Result<(), Error> {
+                self.transfer_words_async(read, Some(write)).await
+            }
+
+            async fn transfer_in_place(&mut self, words: &mut [$w]) -> Result<(), Error> {
+                self.transfer_words_async(words, None).await
+            }
+
+            /// Waits for TEND by polling: no interrupt reports it, and it follows the last frame
+            /// within a frame time.
+            async fn flush(&mut self) -> Result<(), Error> {
+                self.wait_end();
+                Ok(())
+            }
+        }
+    )*};
+}
+
+async_spi_bus!(u8, u32);
+
 // ── Address tests ─────────────────────────────────────────────────────────────
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
@@ -953,5 +1216,117 @@ mod tests {
                 "RSPI{ch}"
             );
         }
+    }
+}
+
+#[cfg(all(test, not(target_os = "none")))]
+mod async_tests {
+    use super::*;
+    use crate::mmio::test;
+    use crate::peripherals::RSPI0;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::{Context, Poll, Wake, Waker};
+
+    crate::bind_interrupts!(struct Irqs {
+        SPEI0 => ErrorInterruptHandler<RSPI0>;
+        SPRI0 => RxInterruptHandler<RSPI0>;
+        SPTI0 => TxInterruptHandler<RSPI0>;
+    });
+
+    const B0: usize = 0xE800_C800; // RSPI0
+    const SPCR: usize = B0;
+    const SPSR: usize = B0 + 0x03;
+    const SPDR: usize = B0 + 0x04;
+    const SPBFCR: usize = B0 + 0x20;
+    const SPCR_SPRIE: u8 = 1 << 7;
+    const SPCR_SPEIE: u8 = 1 << 4;
+
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    struct Count(AtomicUsize);
+    impl Wake for Count {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn rspi0() -> Rspi<'static, Async> {
+        crate::clocks::init(crate::clocks::TEST_CLOCKS);
+        test::reset();
+        unsafe {
+            Rspi::new(
+                RSPI0::steal(),
+                crate::peripherals::P6_0::steal(),
+                crate::peripherals::P6_2::steal(),
+                crate::peripherals::P6_3::steal(),
+                Irqs,
+                Config::default(),
+            )
+        }
+    }
+
+    #[test]
+    fn new_async_leaves_sptie_clear() {
+        let _serial = serial();
+        let _r = rspi0();
+        assert_eq!(test::peek8(SPCR) & SPCR_SPTIE, 0);
+        assert_eq!(test::peek8(SPCR) & SPCR_SPE, SPCR_SPE);
+        assert!(crate::gic::handler(271).is_some(), "SPRI0 bound");
+    }
+
+    #[test]
+    fn async_transfer_waits_on_spri() {
+        use embedded_hal_async::spi::SpiBus;
+        let _serial = serial();
+        let mut r = rspi0();
+        test::poke8(SPSR, SPSR_SPTEF | SPSR_TEND);
+        let count = Arc::new(Count(AtomicUsize::new(0)));
+        let waker = Waker::from(count.clone());
+        let mut cx = Context::from_waker(&waker);
+        let mut buf = [0u8; 1];
+        {
+            let mut fut = core::pin::pin!(SpiBus::<u8>::transfer(&mut r, &mut buf, &[0x22]));
+            assert!(fut.as_mut().poll(&mut cx).is_pending());
+            assert_eq!(test::peek8(SPCR) & SPCR_SPRIE, SPCR_SPRIE, "waiting on SPRI");
+            test::poke8(SPSR, SPSR_SPTEF | SPSR_TEND | SPSR_SPRF);
+            test::poke8(SPDR, 0x11);
+            unsafe {
+                <RxInterruptHandler<RSPI0> as crate::interrupt::Handler<
+                    crate::interrupt::typelevel::SPRI0,
+                >>::on_interrupt()
+            };
+            assert_eq!(test::peek8(SPCR) & SPCR_SPRIE, 0, "the handler masks SPRI");
+            assert_eq!(count.0.load(Ordering::SeqCst), 1, "the transfer was woken");
+            assert_eq!(fut.as_mut().poll(&mut cx), Poll::Ready(Ok(())));
+        }
+        assert_eq!(buf, [0x11]);
+    }
+
+    #[test]
+    fn dropped_async_transfer_leaves_the_bus_idle() {
+        use embedded_hal_async::spi::SpiBus;
+        let _serial = serial();
+        let mut r = rspi0();
+        test::poke8(SPSR, SPSR_SPTEF | SPSR_TEND);
+        let mut buf = [0u8; 4];
+        let start;
+        {
+            let mut fut = core::pin::pin!(SpiBus::<u8>::read(&mut r, &mut buf));
+            let mut cx = Context::from_waker(Waker::noop());
+            assert!(fut.as_mut().poll(&mut cx).is_pending());
+            start = test::log().len();
+        }
+        let spcr = test::peek8(SPCR);
+        assert_eq!(spcr & (SPCR_SPRIE | SPCR_SPTIE | SPCR_SPEIE), 0, "interrupts masked");
+        assert!(
+            test::log()[start..]
+                .iter()
+                .any(|a| a.write && a.addr == SPBFCR && a.val & SPBFCR_RX_RESET as u32 != 0),
+            "the receive buffer was reset after the drop"
+        );
     }
 }
