@@ -670,6 +670,178 @@ pub fn tx_dma_ch() -> u8 {
     TX_DMA.try_get().map_or(0, |d| d.number())
 }
 
+// ── Owned driver: configuration, instances, pins ─────────────────────────────
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// An SSIF channel with separate transmit and receive data pins: `peripherals::SSIF0`, `SSIF1`
+/// or `SSIF3`. (SSIF2 shares one data pin and one DMA request between directions and isn't
+/// supported yet.)
+pub trait Instance: crate::PeripheralType + sealed::Sealed + 'static {
+    /// The channel number.
+    const INDEX: u8;
+    /// Its transmit DMA request (DMARS: MID << 2 | RID).
+    const DMARS_TX: u32;
+    /// Its receive DMA request.
+    const DMARS_RX: u32;
+}
+
+macro_rules! instances {
+    ($($ssi:ident = $n:literal, $tx:literal, $rx:literal;)*) => {$(
+        impl sealed::Sealed for crate::peripherals::$ssi {}
+        impl Instance for crate::peripherals::$ssi {
+            const INDEX: u8 = $n;
+            const DMARS_TX: u32 = $tx;
+            const DMARS_RX: u32 = $rx;
+        }
+    )*};
+}
+
+// DMARS = MID << 2 | RID: MID 0x38 + n, RID 01 transmit, 10 receive (HW manual Table 9.4).
+instances! {
+    SSIF0 = 0, 0xE1, 0xE2;
+    SSIF1 = 1, 0xE5, 0xE6;
+    SSIF3 = 3, 0xED, 0xEE;
+}
+
+/// SSIF channel `n`'s registers.
+pub(crate) fn regs(n: u8) -> crate::pac::ssif::Ssif {
+    [crate::pac::SSIF0, crate::pac::SSIF1, crate::pac::SSIF2, crate::pac::SSIF3][n as usize]
+}
+
+pin_trait!(
+    /// A pin that can carry SSI `T`'s bit clock (SSISCKn).
+    SckPin, Instance
+);
+pin_trait!(
+    /// A pin that can carry SSI `T`'s word select (SSIWSn).
+    WsPin, Instance
+);
+pin_trait!(
+    /// A pin that can carry SSI `T`'s transmit data (SSITxDn).
+    TxdPin, Instance
+);
+pin_trait!(
+    /// A pin that can carry SSI `T`'s receive data (SSIRxDn).
+    RxdPin, Instance
+);
+
+/// The master clock divider (SSICR.CKDV): the bit clock is the master clock divided by this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[non_exhaustive]
+#[allow(missing_docs)]
+pub enum ClockDiv {
+    Div1,
+    Div2,
+    Div4,
+    Div8,
+    Div16,
+    Div32,
+    Div64,
+    Div128,
+    Div6,
+    Div12,
+    Div24,
+    Div48,
+    Div96,
+}
+
+/// Who drives the bit clock and word select.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum Role {
+    /// This SSI drives them, from the master clock divided by the divider.
+    Master(ClockDiv),
+    /// The codec drives them.
+    Slave,
+}
+
+/// Data bits per sample (SSICR.DWL).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[allow(missing_docs)]
+pub enum DataBits {
+    B8,
+    B16,
+    B18,
+    B20,
+    B22,
+    B24,
+    B32,
+}
+
+/// Bits per system word, the slot a sample sits in (SSICR.SWL).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[allow(missing_docs)]
+pub enum SystemWordBits {
+    B8,
+    B16,
+    B24,
+    B32,
+    B48,
+    B64,
+    B128,
+    B256,
+}
+
+/// The master clock (SSICR.CKS).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum ClockSource {
+    /// The AUDIO_X1 oscillator input.
+    AudioX1,
+    /// The AUDIO_CLK pin.
+    AudioClk,
+}
+
+/// An SSI's I²S settings: stereo, one-clock data delay, both polarities as I²S specifies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[non_exhaustive]
+pub struct Config {
+    /// Who drives the clocks.
+    pub role: Role,
+    /// Data bits per sample.
+    pub data_bits: DataBits,
+    /// Bits per system word.
+    pub system_word_bits: SystemWordBits,
+    /// The master clock.
+    pub clock_source: ClockSource,
+}
+
+impl Default for Config {
+    /// Master from AUDIO_X1 ÷ 4, 24-bit samples in 32-bit words.
+    fn default() -> Self {
+        Self {
+            role: Role::Master(ClockDiv::Div4),
+            data_bits: DataBits::B24,
+            system_word_bits: SystemWordBits::B32,
+            clock_source: ClockSource::AudioX1,
+        }
+    }
+}
+
+/// SSICR for `config`, with TEN and REN clear.
+#[doc(hidden)]
+pub fn ssicr(config: &Config) -> u32 {
+    let cks = match config.clock_source {
+        ClockSource::AudioX1 => 0,
+        ClockSource::AudioClk => 1 << 30,
+    };
+    let dwl = config.data_bits as u32;
+    let swl = config.system_word_bits as u32;
+    let role = match config.role {
+        // SCKD and SWSD: this SSI outputs the bit clock and word select.
+        Role::Master(div) => (1 << 15) | (1 << 14) | ((div as u32) << 4),
+        Role::Slave => 0,
+    };
+    cks | (dwl << 19) | (swl << 16) | role
+}
+
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
     use super::*;
@@ -819,5 +991,65 @@ mod typed_tests {
         let started_at = test::writes().iter().rposition(|w| *w == (0xE820_01E8, 1));
         assert!(enabled_at.is_some() && started_at.is_some() && enabled_at < started_at);
         assert!(crate::gic::handler(48).is_some(), "DMAINT7 bound");
+    }
+}
+
+#[cfg(all(test, not(target_os = "none")))]
+mod config_tests {
+    use super::*;
+
+    #[test]
+    fn the_deluge_codec_config_encodes_0x002b_c020() {
+        assert_eq!(ssicr(&Config::default()), 0x002B_C020);
+    }
+
+    #[test]
+    fn slave_mode_clears_sckd_and_swsd() {
+        let mut c = Config::default();
+        c.role = Role::Slave;
+        assert_eq!(ssicr(&c) & (3 << 14), 0);
+        assert_eq!(ssicr(&c) & (0xF << 4), 0, "no divider without a clock to divide");
+    }
+
+    #[test]
+    fn data_and_word_bits_land_in_dwl_and_swl() {
+        let mut c = Config::default();
+        c.data_bits = DataBits::B16;
+        c.system_word_bits = SystemWordBits::B16;
+        assert_eq!((ssicr(&c) >> 19) & 0b111, 0b001);
+        assert_eq!((ssicr(&c) >> 16) & 0b111, 0b001);
+        c.clock_source = ClockSource::AudioClk;
+        assert_eq!(ssicr(&c) & (1 << 30), 1 << 30);
+    }
+
+    #[test]
+    fn clock_dividers_follow_ckdv() {
+        let mut c = Config::default();
+        c.role = Role::Master(ClockDiv::Div96);
+        assert_eq!((ssicr(&c) >> 4) & 0xF, 0b1100);
+        c.role = Role::Master(ClockDiv::Div1);
+        assert_eq!((ssicr(&c) >> 4) & 0xF, 0);
+    }
+
+    #[test]
+    fn ssi_instances_know_their_dma_requests() {
+        use crate::peripherals::{SSIF0, SSIF1, SSIF3};
+        assert_eq!((SSIF0::INDEX, SSIF0::DMARS_TX, SSIF0::DMARS_RX), (0, 0xE1, 0xE2));
+        assert_eq!((SSIF1::INDEX, SSIF1::DMARS_TX, SSIF1::DMARS_RX), (1, 0xE5, 0xE6));
+        assert_eq!((SSIF3::INDEX, SSIF3::DMARS_TX, SSIF3::DMARS_RX), (3, 0xED, 0xEE));
+        assert_eq!(regs(3).ssicr().addr(), 0xE820_C800);
+    }
+
+    #[test]
+    fn ssi_pin_functions_are_generated() {
+        use crate::peripherals::{P6_8, P6_9, P6_10, P6_11, SSIF0};
+        fn sck<P: SckPin<SSIF0>>() {}
+        fn ws<P: WsPin<SSIF0>>() {}
+        fn txd<P: TxdPin<SSIF0>>() {}
+        fn rxd<P: RxdPin<SSIF0>>() {}
+        sck::<P6_8>();
+        ws::<P6_9>();
+        txd::<P6_10>();
+        rxd::<P6_11>();
     }
 }
