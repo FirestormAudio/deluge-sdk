@@ -192,23 +192,7 @@ const NO_DTLN: u16 = u16::MAX;
 /// in the FIFO until the next read drains it (the controller raises no second BRDY for it).
 static RX_DMA_DTLN: [AtomicU16; 2] = [const { AtomicU16::new(NO_DTLN) }; 2];
 
-/// Runs its closure when dropped unless [`defuse`](Self::defuse)d: undoes a step a cancelled
-/// future left half done.
-struct OnDrop<F: FnMut()>(Option<F>);
-
-impl<F: FnMut()> OnDrop<F> {
-    fn defuse(mut self) {
-        self.0 = None;
-    }
-}
-
-impl<F: FnMut()> Drop for OnDrop<F> {
-    fn drop(&mut self) {
-        if let Some(f) = self.0.as_mut() {
-            f();
-        }
-    }
-}
+use embassy_hal_internal::drop::OnDrop;
 
 /// Owns the receive channel while a drain runs, and hands it back however the drain ends.
 /// Dropped mid-transfer (the reading future was cancelled), it halts the DMA and clears the
@@ -257,7 +241,7 @@ const ISO_IN_SLOTS: usize = 8;
 const ISO_IN_SLOT_BYTES: usize = 1024;
 
 /// Received packets of one isochronous IN pipe, oldest at `head`.
-struct IsoInRing {
+pub(crate) struct IsoInRing {
     slots: [[u8; ISO_IN_SLOT_BYTES]; ISO_IN_SLOTS],
     lens: [u16; ISO_IN_SLOTS],
     head: usize,
@@ -273,18 +257,45 @@ impl IsoInRing {
     };
 }
 
-/// The rings of pipes 1 and 2, the only pipes that do isochronous transfers.
-static ISO_IN: [critical_section::Mutex<core::cell::UnsafeCell<IsoInRing>>; 2] = {
-    use core::cell::UnsafeCell;
-    use critical_section::Mutex;
-    #[allow(clippy::declare_interior_mutable_const)]
-    const EMPTY: Mutex<UnsafeCell<IsoInRing>> = Mutex::new(UnsafeCell::new(IsoInRing::EMPTY));
-    [EMPTY; 2]
-};
+/// The packet rings of a port's isochronous IN pipes (1 and 2, the only pipes that do
+/// isochronous transfers): 8 packets of up to 1024 bytes each, 16 KiB in all. A board lends one
+/// per host port with [`Rusb1HostDriver::lend_iso_in_buffers`], before it opens an isochronous IN
+/// endpoint. The CPU fills them from the FIFO, so they need no uncached memory.
+pub struct IsoInBuffers {
+    rings: [IsoInRing; 2],
+}
 
-/// The ring of isochronous pipe `pipe` (1 or 2), inside a critical section.
-fn iso_in_ring<R>(pipe: usize, f: impl FnOnce(&mut IsoInRing) -> R) -> R {
-    critical_section::with(|cs| f(unsafe { &mut *ISO_IN[pipe - 1].borrow(cs).get() }))
+impl IsoInBuffers {
+    /// Empty rings, for a `static`.
+    pub const fn new() -> Self {
+        Self { rings: [IsoInRing::EMPTY, IsoInRing::EMPTY] }
+    }
+}
+
+impl Default for IsoInBuffers {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Port n's lent rings; null until a board lends them.
+static ISO_IN: [core::sync::atomic::AtomicPtr<IsoInBuffers>; 2] =
+    [const { core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()) }; 2];
+
+/// The ring of isochronous pipe `pipe` (1 or 2) on `port`, inside a critical section; `None` if
+/// the port has no lent rings.
+fn iso_in_ring<R>(port: usize, pipe: usize, f: impl FnOnce(&mut IsoInRing) -> R) -> Option<R> {
+    critical_section::with(|_| {
+        let bufs = ISO_IN[port].load(Ordering::Acquire);
+        // SAFETY: a lent `&'static mut`, used only inside a critical section.
+        (!bufs.is_null()).then(|| f(unsafe { &mut (*bufs).rings[pipe - 1] }))
+    })
+}
+
+/// Forget port `port`'s lent rings (tests).
+#[cfg(test)]
+fn forget_iso_in_buffers(port: usize) {
+    ISO_IN[port].store(core::ptr::null_mut(), Ordering::Release);
 }
 
 static HCD_PIPE_WAKERS: [AtomicWaker; HCD_PIPE_COUNT] = {
@@ -889,12 +900,12 @@ impl<'d> Rusb1HostDriver<'d> {
         // Cancelled mid-reset (its caller raced it against something else), end the reset and
         // re-arm detection, or the port never reports an attach or a detach again.
         let port = self.port;
-        let unwind = OnDrop(Some(move || {
+        let unwind = OnDrop::new(move || {
             let u = usb(port);
             u.dvstctr0().modify(|r| *r &= !DVSTCTR0_USBRST);
             u.intsts(1).write_value(!(INTSTS1_ATTCH | INTSTS1_DTCH));
             u.intenb(1).modify(|r| *r |= detection);
-        }));
+        });
         unsafe {
             let u = usb(self.port);
 
@@ -1355,6 +1366,12 @@ impl<'d> Rusb1HostDriver<'d> {
         poll_pipe(0).await.map(|_| ())
     }
 
+    /// Lend this port the rings its isochronous IN pipes receive into (16 KiB), before opening
+    /// an isochronous IN endpoint: without them that open fails. Lending again replaces them.
+    pub fn lend_iso_in_buffers(&self, bufs: &'static mut IsoInBuffers) {
+        ISO_IN[self.port as usize].store(bufs, Ordering::Release);
+    }
+
     // --- Non-control endpoints ---
     /// Give the driver a DMAC channel to drain one receive pipe: the first interrupt-on-bulk
     /// IN pipe opened afterwards (an Overbridge audio stream) moves its data by DMA through
@@ -1524,6 +1541,14 @@ impl<'d> Rusb1HostDriver<'d> {
         let p = self.port as usize;
         let epn = (ep_addr & 0x0F) as usize;
         let dir_in = ep_addr & 0x80 != 0;
+        if ep_type == EndpointType::Isochronous
+            && dir_in
+            && ISO_IN[p].load(Ordering::Acquire).is_null()
+        {
+            return Err(HostError::Other(
+                "isochronous IN needs Rusb1HostDriver::lend_iso_in_buffers first",
+            ));
+        }
 
         critical_section::with(|cs| {
             let alloc = unsafe { &mut *HCD_ALLOC[p].borrow(cs).get() };
@@ -1700,9 +1725,11 @@ impl<'d> Rusb1HostDriver<'d> {
                     HCD_PIPE_ISO_OUT.fetch_and(!(1 << pipe), Ordering::Release);
                 }
                 if ep_type == EndpointType::Isochronous && dir_in {
-                    let ring = &mut *ISO_IN[pipe - 1].borrow(cs).get();
-                    ring.head = 0;
-                    ring.count = 0;
+                    // Lent before the open: checked at its top.
+                    let _ = iso_in_ring(p, pipe, |ring| {
+                        ring.head = 0;
+                        ring.count = 0;
+                    });
                     HCD_PIPE_ISO_IN.fetch_or(1 << pipe, Ordering::Release);
                 } else {
                     HCD_PIPE_ISO_IN.fetch_and(!(1 << pipe), Ordering::Release);
@@ -1780,7 +1807,7 @@ impl<'d> Rusb1HostDriver<'d> {
         }
         core::future::poll_fn(|cx| {
             HCD_PIPE_WAKERS[pipe].register(cx.waker());
-            let popped = iso_in_ring(pipe, |r| {
+            let popped = iso_in_ring(self.port as usize, pipe, |r| {
                 (r.count > 0).then(|| {
                     let n = (r.lens[r.head] as usize).min(buf.len());
                     buf[..n].copy_from_slice(&r.slots[r.head][..n]);
@@ -1788,7 +1815,8 @@ impl<'d> Rusb1HostDriver<'d> {
                     r.count -= 1;
                     n
                 })
-            });
+            })
+            .flatten();
             if let Some(n) = popped {
                 return core::task::Poll::Ready(Ok(n));
             }
@@ -1849,7 +1877,7 @@ impl<'d> Rusb1HostDriver<'d> {
         })?;
 
         let port = self.port;
-        let guard = OnDrop(Some(move || finish_shared_send(port, pipe, i, true)));
+        let guard = OnDrop::new(move || finish_shared_send(port, pipe, i, true));
         let send = async {
             let mut result = self.xfer_out_on(pipe, dev_addr, ep_addr, buf).await;
             if result.is_ok() {
@@ -2451,7 +2479,7 @@ unsafe fn iso_in_brdy(u: Usb, n: usize) {
             return;
         }
         let len = ((u.d0fifoctr().read() & FIFOCTR_DTLN_MASK) as usize).min(ISO_IN_SLOT_BYTES);
-        let kept = iso_in_ring(n, |r| {
+        let kept = iso_in_ring(crate::usb::iso::port_of(u), n, |r| {
             if r.count == ISO_IN_SLOTS {
                 return false;
             }
@@ -2460,7 +2488,9 @@ unsafe fn iso_in_brdy(u: Usb, n: usize) {
             r.lens[slot] = len as u16;
             r.count += 1;
             true
-        });
+        })
+        // No lent rings: drop the packet.
+        .unwrap_or(false);
         // PIPEMAXP is gated by PIPESEL, not by D0FIFOSEL.CURPIPE.
         u.pipesel().write_value(n as u16);
         let mps = (u.pipemaxp().read() & PIPEMAXP_MXPS_MASK) as usize;
@@ -2677,7 +2707,7 @@ impl<'d> UsbHostController<'d> for Rusb1HostDriver<'d> {
             if HCD_EVENTS.load(Ordering::Acquire) & EVT_DETACH == 0
                 && PROBE_PENDING[port].swap(false, Ordering::AcqRel)
             {
-                let rearm = OnDrop(Some(|| PROBE_PENDING[port].store(true, Ordering::Release)));
+                let rearm = OnDrop::new(|| PROBE_PENDING[port].store(true, Ordering::Release));
                 let speed = self.probe_present().await;
                 rearm.defuse();
                 if let Some(speed) = speed {
@@ -2702,9 +2732,9 @@ impl<'d> UsbHostController<'d> for Rusb1HostDriver<'d> {
 
             if ev & EVT_ATTACH != 0 {
                 // RHST only reports the device speed after a bus reset.
-                let rearm = OnDrop(Some(|| {
+                let rearm = OnDrop::new(|| {
                     HCD_EVENTS.fetch_or(EVT_ATTACH, Ordering::AcqRel);
-                }));
+                });
                 let speed = Rusb1HostDriver::bus_reset(&*self).await;
                 rearm.defuse();
                 match speed {
@@ -3095,8 +3125,25 @@ mod tests {
 
     /// An isochronous IN pipe is opened with its packet ring empty, then `packet` simulates one
     /// arriving (BRDY with `len` bytes of the repeated `word` in D0FIFO).
+    /// Lend fresh isochronous IN buffers to port 0, as a board would once.
+    fn lend_iso(h: &Rusb1HostDriver<'_>) {
+        h.lend_iso_in_buffers(Box::leak(Box::new(IsoInBuffers::new())));
+    }
+
+    #[test]
+    fn an_iso_in_pipe_without_buffers_fails_to_open() {
+        let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let h = unsafe { Rusb1HostDriver::new(0) };
+        forget_iso_in_buffers(0);
+        critical_section::with(|cs| unsafe { *HCD_ALLOC[0].borrow(cs).get() = HcdAlloc::new() });
+        assert!(h.edpt_open(1, 0x83, EndpointType::Isochronous, 56, 1).is_err());
+        // An isochronous OUT pipe needs no ring.
+        assert!(h.edpt_open(1, 0x03, EndpointType::Isochronous, 56, 1).is_ok());
+    }
+
     fn iso_in_pipe(h: &Rusb1HostDriver<'_>, ep: u8) -> usize {
         use crate::mmio::test;
+        lend_iso(h);
         let u = usb(0);
         test::rcw0(u.intsts(0).addr());
         test::rcw0(u.brdysts().addr());
@@ -3774,6 +3821,7 @@ mod tests {
             assert!((3..=5).contains(&h.ep_to_pipe(1, ep).unwrap()));
         }
 
+        lend_iso(&h);
         h.edpt_open(2, 0x84, EndpointType::Isochronous, 196, 1)
             .unwrap();
         h.edpt_open(2, 0x05, EndpointType::Isochronous, 196, 1)

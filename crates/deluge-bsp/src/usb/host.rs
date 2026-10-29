@@ -901,6 +901,11 @@ mod runtime {
     #[embassy_executor::task]
     pub async fn usb_host_supervisor(driver: Rusb1HostDriver<'static>, spawner: Spawner) {
         static BUS_STATE: BusState = BusState::new();
+        // The rings isochronous IN pipes (UAC capture) receive into; this task runs once.
+        static mut ISO_IN_BUFFERS: rza1_hal::usb::host::IsoInBuffers =
+            rza1_hal::usb::host::IsoInBuffers::new();
+        // SAFETY: lent once, here, before any endpoint opens.
+        driver.lend_iso_in_buffers(unsafe { &mut *core::ptr::addr_of_mut!(ISO_IN_BUFFERS) });
         let (mut controller, handle) = bus(driver, &BUS_STATE);
         let mut config_buf = [0u8; CONFIG_DESC_BUF];
 
