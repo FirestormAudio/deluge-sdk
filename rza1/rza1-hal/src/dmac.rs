@@ -92,6 +92,7 @@ fn interrupt_priority() -> Priority {
 
 /// The DMAC by channel number: `Dma`'s implementation.
 mod raw;
+pub(crate) mod ring;
 
 // The tests below call the channel-number functions by name.
 #[cfg(all(test, not(target_os = "none")))]
@@ -441,6 +442,8 @@ static DMAC_BLOCK_READY: [AtomicBool; 16] = [const { AtomicBool::new(false) }; 1
 fn on_block_int(ch: u8) {
     // CHCTRL bits are write-1-to-trigger; write a clean value (not RMW).
     DMAC.ch(ch as usize).chctrl().write_value(CHCTRL_CLRTC);
+    // Counted before the flag, so a waiter woken by it sees the block in the ring's position.
+    ring::BLOCKS_DONE[ch as usize].fetch_add(1, Ordering::AcqRel);
     DMAC_BLOCK_READY[ch as usize].store(true, Ordering::Release);
     DMAC_WAKERS[ch as usize].wake();
 }
