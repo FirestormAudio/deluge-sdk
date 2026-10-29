@@ -26,7 +26,8 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::{MappedMutexGuard, Mutex, MutexGuard};
 use rza1_hal::Peri;
 use rza1_hal::dmac::{self, Dma};
-use rza1_hal::rspi::Rspi;
+use rza1_hal::mode::Blocking;
+use rza1_hal::rspi::{self, Rspi};
 
 use crate::board::{OledDma, SharedSpi, SpiPins};
 
@@ -60,7 +61,7 @@ enum Mode {
 /// touch RSPI0.
 pub struct Rspi0 {
     mode: Mode,
-    rspi: Rspi<'static>,
+    rspi: Rspi<'static, Blocking>,
     oled_dma: Dma<'static>,
 }
 
@@ -148,7 +149,9 @@ pub type Rspi0Guard = MappedMutexGuard<'static, CriticalSectionRawMutex, Rspi0>;
 pub fn init(spi: Peri<'static, SharedSpi>, pins: SpiPins, oled_dma: Peri<'static, OledDma>) {
     // Before touching RSPI0: reconfiguring a live bus would corrupt its transfer in flight.
     assert!(!is_initialised(), "RSPI0's bus is already up: bus::init runs once");
-    let rspi = Rspi::new_txonly(spi, pins.sck, pins.mosi, RATE_HZ);
+    let mut config = rspi::Config::default();
+    config.frequency = RATE_HZ;
+    let rspi = Rspi::new_blocking_txonly(spi, pins.sck, pins.mosi, config);
     let mut oled_dma = Dma::new(oled_dma, Irqs);
     // SAFETY: every OLED transfer writes SPDR's low byte, the transmit register of the RSPI0
     // this bus owns.
