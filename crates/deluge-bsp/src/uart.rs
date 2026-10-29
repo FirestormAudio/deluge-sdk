@@ -115,7 +115,8 @@ fn install(
     }
 }
 
-/// The next byte, logging and skipping receive errors: a framing error on a MIDI cable is noise
+/// The next byte, logging (at debug: a fault path reads through here, and a full RTT ring blocks)
+/// and skipping receive errors: a framing error on a MIDI cable is noise
 /// to its readers, not a reason to stop.
 async fn read_byte(slot: &'static RxSlot, name: &str) -> u8 {
     let mut rx = slot.lock().await;
@@ -125,7 +126,7 @@ async fn read_byte(slot: &'static RxSlot, name: &str) -> u8 {
     loop {
         match rx.read_byte().await {
             Ok(byte) => return byte,
-            Err(e) => log::warn!("bsp uart: {name} receive error: {e:?}"),
+            Err(e) => log::debug!("bsp uart: {name} receive error: {e:?}"),
         }
     }
 }
@@ -136,7 +137,7 @@ fn try_read(slot: &'static RxSlot, name: &str) -> Option<u8> {
     loop {
         match rx.try_read() {
             Ok(byte) => return byte,
-            Err(e) => log::warn!("bsp uart: {name} receive error: {e:?}"),
+            Err(e) => log::debug!("bsp uart: {name} receive error: {e:?}"),
         }
     }
 }

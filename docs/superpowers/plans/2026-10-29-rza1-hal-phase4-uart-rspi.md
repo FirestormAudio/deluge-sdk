@@ -46,7 +46,7 @@
 ## Review Focus
 
 1. **A lent UART receive buffer outliving its driver.** If `UartRx<'d, Async>` (RXI mode) is dropped or `mem::forget`-free-dropped, the RXI ISR must never write the buffer again. Expected: `Drop` clears RIE, disables RXI at the GIC and nulls the ring pointer in a critical section. Test `irq_rx_drop_stops_the_isr_writing` (Task 4).
-2. **The receive ring filling while nobody reads.** A full lent ring must not overwrite unread bytes. Expected: the ISR drops the new byte and latches `Error::Overrun`, and the reader sees the bytes it already had, then the error. Test `irq_rx_full_ring_reports_overrun_and_keeps_old_bytes` (Task 4).
+2. **The receive ring filling while nobody reads.** A full lent ring must not overwrite unread bytes. Expected: the ISR drops the new byte and latches `Error::Overrun`, and the reader sees the error, then the bytes it already had. Test `irq_rx_full_ring_reports_overrun_and_keeps_old_bytes` (Task 4).
 3. **Several errors latched before one read.** Each is reported once, highest priority first (Overrun, Framing, Parity, Break), and then the bytes resume. Test `errors_are_reported_one_per_read_in_priority_order` (Task 2).
 4. **A full-duplex RSPI transfer after transmit-only traffic.** Stale bytes left in the receive buffer (the OLED/CV path never reads it) must not be returned as the first reads of a `transfer`. Expected: every `read`/`transfer` resets the RX buffer and clears OVRF first. Test `transfer_resets_the_rx_buffer_first` (Task 5).
 5. **An async RSPI transfer dropped mid-flight.** The next transfer on the same bus starts clean. Expected: an `OnDrop` masks SPRIE/SPTIE, waits for TEND and resets the RX buffer. Test `dropped_async_transfer_leaves_the_bus_idle` (Task 6).

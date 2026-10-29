@@ -19,9 +19,10 @@
 //!     RXI2 => uart::RxInterruptHandler<SCIF2>;
 //!     TXI2 => uart::TxInterruptHandler<SCIF2>;
 //! });
-//! let mut rx_buf = [0u8; 64];
+//! static RX_BUF: StaticCell<[u8; 64]> = StaticCell::new(); // the static_cell crate
+//! let rx_buf = RX_BUF.init([0; 64]);
 //! let (mut rx, tx) =
-//!     uart::Uart::new(p.SCIF2, p.P5_7, p.P1_10, Irqs, &mut rx_buf, None, uart::Config::default())
+//!     uart::Uart::new(p.SCIF2, p.P5_7, p.P1_10, Irqs, rx_buf, None, uart::Config::default())
 //!         .split();
 //! tx.write(b"hello").await;
 //! let b = rx.read_byte().await?;
@@ -57,7 +58,7 @@ use crate::pac::scif::regs::{Brr, Emr, Fcr, Fsr, Ftdr, Lsr, Scr, Smr, Sptr};
 // SCSCR bit masks
 const TE: u16 = 1 << 5; // Transmit Enable  (SCSCR bit 5, HW manual §14.3.7)
 const RE: u16 = 1 << 4; // Receive Enable   (SCSCR bit 4, HW manual §14.3.7)
-const RIE: u16 = 1 << 6; // Receive Interrupt Enable  (routes RX request to DMAC)
+const RIE: u16 = 1 << 6; // Receive Interrupt Enable (RXI/ERI/BRI; RXI goes to the DMAC while a DMARS selects it)
 const TIE: u16 = 1 << 7; // Transmit Interrupt Enable (enables TXI)
 
 // SCFSR bit masks
@@ -302,8 +303,19 @@ fn scif(ch: usize) -> crate::pac::scif::Scif {
 ///
 /// With BGDM=1 (double-speed mode): SCBRR = round(P1φ / (16 × baud)) − 1.
 /// Integer rounding: (P1φ + 8 × baud) / (16 × baud) − 1.
+///
+/// # Panics
+/// If `baud` is 0, or outside what SCBRR reaches (about P1φ/8 down to P1φ/4096).
 fn scbrr(p1_hz: u32, baud: u32) -> u8 {
-    (((p1_hz + 8 * baud) / (16 * baud)) - 1) as u8
+    assert!(baud > 0, "uart: the baud rate is 0");
+    let divisor = (p1_hz as u64 + 8 * baud as u64) / (16 * baud as u64);
+    assert!(
+        (1..=256).contains(&divisor),
+        "uart: baud rate {} is out of SCBRR's range at P1 = {} Hz",
+        baud,
+        p1_hz
+    );
+    (divisor - 1) as u8
 }
 
 // ---------------------------------------------------------------------------
@@ -381,6 +393,8 @@ unsafe fn configure(ch: usize, config: &Config) {
 unsafe fn set_baud_regs(ch: usize, config: &Config) {
     debug_assert!(ch < NUM_CHANNELS);
     let sc = scif(ch);
+    // A non-DMA writer waiting for FIFO space (`wait_tdfe`) has TIE set: keep it.
+    let tie_was_set = sc.scr().read().0 & TIE != 0;
     // Stop TE/RE so the change takes effect cleanly.
     sc.scr().write_value(Scr(0x0000));
     sc.smr().write_value(Smr(smr_for(config)));
@@ -400,7 +414,7 @@ unsafe fn set_baud_regs(ch: usize, config: &Config) {
     if RX_DMA_ACTIVE[ch].load(Ordering::Relaxed) || RX_IRQ_ACTIVE[ch].load(Ordering::Relaxed) {
         scscr |= RIE;
     }
-    if TX_DMA_ACTIVE[ch].load(Ordering::Relaxed) {
+    if TX_DMA_ACTIVE[ch].load(Ordering::Relaxed) || tie_was_set {
         scscr |= TIE;
     }
     sc.scr().write_value(Scr(scscr));
@@ -745,11 +759,12 @@ impl<'d> Uart<'d, Async> {
     /// RXI reaches the GIC only while no DMA channel's DMARS selects this SCIF's receive request:
     /// don't point one at it.
     ///
-    /// Dropping the receiver stops the interrupt writing `rx_buf`; leaking it (`mem::forget`)
-    /// leaves the interrupt writing a buffer whose borrow has ended.
+    /// `rx_buf` is `'static` because the interrupt writes it for as long as the receiver lives,
+    /// and a receiver can be leaked (`mem::forget`). Dropping the receiver stops the writes.
     ///
     /// # Panics
-    /// If `rx_buf` is empty, or [`crate::clocks::init`] has not been called.
+    /// If `rx_buf` is empty, [`crate::clocks::init`] has not been called, or `config`'s baud rate
+    /// is 0 or out of SCBRR's range.
     pub fn new<T: Instance>(
         _scif: Peri<'d, T>,
         tx: Peri<'d, impl TxPin<T>>,
@@ -760,7 +775,7 @@ impl<'d> Uart<'d, Async> {
         + Binding<T::TxInterrupt, TxInterruptHandler<T>>
         + Copy
         + 'd,
-        rx_buf: &'d mut [u8],
+        rx_buf: &'static mut [u8],
         tx_dma: Option<Dma<'d>>,
         config: Config,
     ) -> Self {
@@ -816,7 +831,8 @@ impl<'d> Uart<'d, Async> {
     /// pin.
     ///
     /// # Panics
-    /// If [`crate::clocks::init`] has not been called.
+    /// If [`crate::clocks::init`] has not been called, or `config`'s baud rate is 0 or out of
+    /// SCBRR's range.
     pub fn new_with_rx_dma<T: RxDmaInstance>(
         _scif: Peri<'d, T>,
         tx: Peri<'d, impl TxPin<T>>,
@@ -835,6 +851,8 @@ impl<'d> Uart<'d, Async> {
         crate::gpio::mux(rx, rx_alt);
         // SAFETY: SCIF T is owned.
         unsafe { configure(T::INDEX, &config) };
+        // Errors an earlier driver of this SCIF left latched aren't this one's.
+        RX_ERROR[T::INDEX].store(0, Ordering::Release);
         interrupt::bind::<T::BreakInterrupt, BreakInterruptHandler<T>>(irq);
         interrupt::bind::<T::ErrorInterrupt, ErrorInterruptHandler<T>>(irq);
         interrupt::bind::<T::TxInterrupt, TxInterruptHandler<T>>(irq);
@@ -860,8 +878,9 @@ impl<'d, M: Mode> Uart<'d, M> {
     }
 }
 
-/// A UART's receiver. An async one built by [`Uart::new`] reads a 256-byte ring the DMAC fills
-/// from the receive FIFO, with no interrupt; a blocking one reads the receive FIFO itself.
+/// A UART's receiver. An async one reads the buffer its receive interrupt fills ([`Uart::new`]) or
+/// a 256-byte ring the DMAC fills, polled ([`Uart::new_with_rx_dma`]); a blocking one reads the
+/// receive FIFO itself.
 pub struct UartRx<'d, M: Mode> {
     ch: usize,
     path: RxPath<'d>,
@@ -1015,7 +1034,7 @@ impl<'d> UartRx<'d, Async> {
     /// SCIF `T`'s receiver, read through its ring's DMA channel `C`, without the owner: for a
     /// fault or freeze path whose owner is suspended mid-read. It reads from the owner's position,
     /// so a byte it consumes isn't delivered to the owner again. `None` until T's ring has
-    /// started ([`Uart::new`]).
+    /// started ([`Uart::new_with_rx_dma`]).
     ///
     /// # Safety
     /// `C` is the channel T's ring runs on, and the owner doesn't read T's ring while the stolen
@@ -1178,7 +1197,8 @@ impl<'d> Uart<'d, Blocking> {
     /// SCIF; the receive FIFO holds 16 bytes, so read it often enough not to overrun.
     ///
     /// # Panics
-    /// If [`crate::clocks::init`] has not been called.
+    /// If [`crate::clocks::init`] has not been called, or `config`'s baud rate is 0 or out of
+    /// SCBRR's range.
     pub fn new_blocking<T: Instance>(
         _scif: Peri<'d, T>,
         tx: Peri<'d, impl TxPin<T>>,
@@ -1191,6 +1211,8 @@ impl<'d> Uart<'d, Blocking> {
         // SAFETY: SCIF T is owned.
         unsafe { configure(T::INDEX, &config) };
         let ch = T::INDEX;
+        // Errors an earlier driver of this SCIF left latched aren't this one's.
+        RX_ERROR[ch].store(0, Ordering::Release);
         Self {
             rx: UartRx { ch, path: RxPath::Fifo, _mode: PhantomData },
             tx: UartTx { ch, dma: Mutex::new(None), _mode: PhantomData },
@@ -1603,6 +1625,29 @@ mod typed_tests {
     }
 
     #[test]
+    fn new_with_rx_dma_drops_errors_left_by_an_earlier_driver() {
+        let _serial = serial();
+        RX_ERROR[1].store(LATCH_PARITY, Ordering::Release);
+        crate::clocks::init(crate::clocks::TEST_CLOCKS);
+        test::reset();
+        let rx_dma = Dma::new(unsafe { DMA_CH12::steal() }, Irqs);
+        let (mut rx, _tx) = unsafe {
+            Uart::new_with_rx_dma(
+                SCIF1::steal(),
+                crate::peripherals::P3_15::steal(),
+                crate::peripherals::P1_9::steal(),
+                rx_dma,
+                None,
+                Irqs,
+                Config::default(),
+            )
+        }
+        .split();
+        test::poke32(chreg(12, 0x1C), rx.ring_base());
+        assert_eq!(rx.try_read(), Ok(None));
+    }
+
+    #[test]
     fn eri_latches_framing_and_overrun() {
         let _serial = serial();
         test::reset();
@@ -1886,6 +1931,44 @@ mod blocking_tests {
     }
 
     #[test]
+    fn new_blocking_drops_errors_left_by_an_earlier_driver() {
+        let _serial = serial();
+        crate::clocks::init(crate::clocks::TEST_CLOCKS);
+        test::reset();
+        RX_ERROR[3].store(LATCH_FRAMING, Ordering::Release);
+        let (mut rx, _tx) = unsafe {
+            Uart::new_blocking(
+                crate::peripherals::SCIF3::steal(),
+                crate::peripherals::P3_9::steal(),
+                crate::peripherals::P3_10::steal(),
+                Config::default(),
+            )
+        }
+        .split();
+        assert_eq!(rx.nb_read(), Err(nb::Error::WouldBlock));
+    }
+
+    #[test]
+    #[should_panic(expected = "baud")]
+    fn a_zero_baud_rate_panics() {
+        let _serial = serial();
+        crate::clocks::init(crate::clocks::TEST_CLOCKS);
+        let mut c = Config::default();
+        c.baudrate = 0;
+        unsafe { configure(3, &c) };
+    }
+
+    #[test]
+    #[should_panic(expected = "baud")]
+    fn a_baud_rate_the_divider_cant_reach_panics() {
+        let _serial = serial();
+        crate::clocks::init(crate::clocks::TEST_CLOCKS);
+        let mut c = Config::default();
+        c.baudrate = 10_000_000;
+        unsafe { configure(3, &c) };
+    }
+
+    #[test]
     fn nb_read_would_block_on_an_empty_fifo() {
         let _serial = serial();
         let (mut rx, _tx) = scif3();
@@ -1999,7 +2082,12 @@ mod irq_tests {
         }
     }
 
-    fn scif2(buf: &mut [u8]) -> UartRx<'_, Async> {
+    /// A `'static` receive buffer of `len` bytes, leaked as `Uart::new` requires.
+    fn leaked(len: usize) -> &'static mut [u8] {
+        std::vec![0u8; len].leak()
+    }
+
+    fn scif2(buf: &'static mut [u8]) -> UartRx<'static, Async> {
         crate::clocks::init(crate::clocks::TEST_CLOCKS);
         test::reset();
         while take_error(2).is_some() {}
@@ -2029,8 +2117,7 @@ mod irq_tests {
     #[test]
     fn new_enables_the_receive_interrupt() {
         let _serial = serial();
-        let mut buf = [0u8; 8];
-        let _rx = scif2(&mut buf);
+        let _rx = scif2(leaked(8));
         assert_eq!(test::peek16(SCSCR) & (RIE | RE | TE), RIE | RE | TE);
         assert!(crate::gic::handler(231).is_some(), "RXI2 bound");
         assert!(crate::gic::handler(229).is_some(), "BRI2 bound");
@@ -2039,8 +2126,7 @@ mod irq_tests {
     #[test]
     fn irq_rx_delivers_bytes_without_polling() {
         let _serial = serial();
-        let mut buf = [0u8; 8];
-        let mut rx = scif2(&mut buf);
+        let mut rx = scif2(leaked(8));
         let count = Arc::new(Count(AtomicUsize::new(0)));
         let waker = Waker::from(count.clone());
         let mut cx = Context::from_waker(&waker);
@@ -2058,8 +2144,7 @@ mod irq_tests {
     #[test]
     fn irq_rx_full_ring_reports_overrun_and_keeps_old_bytes() {
         let _serial = serial();
-        let mut buf = [0u8; 2];
-        let mut rx = scif2(&mut buf);
+        let mut rx = scif2(leaked(2));
         for b in [1, 2, 3] {
             receive(b);
         }
@@ -2075,21 +2160,47 @@ mod irq_tests {
     #[test]
     fn irq_rx_drop_stops_the_isr_writing() {
         let _serial = serial();
-        let mut buf = [0u8; 4];
-        let rx = scif2(&mut buf);
+        let buf = leaked(4);
+        let view = buf.as_ptr();
+        let rx = scif2(buf);
         drop(rx);
         assert_eq!(test::peek16(SCSCR) & RIE, 0, "RIE cleared");
         // GICD_ICENABLER7 (0xE820_119C): RXI2 = 231 is bit 7.
         assert!(test::writes().contains(&(0xE820_119C, 1 << 7)), "RXI2 masked");
         receive(0x99);
-        assert_eq!(buf, [0; 4]);
+        // SAFETY: the leaked buffer outlives the test; nothing writes it now.
+        assert_eq!(unsafe { core::slice::from_raw_parts(view, 4) }, [0; 4]);
+    }
+
+    /// A non-DMA writer waiting for FIFO space has TIE set; a line-settings change keeps it, or
+    /// the writer is never woken.
+    #[test]
+    fn set_config_keeps_a_waiting_writers_tie() {
+        let _serial = serial();
+        crate::clocks::init(crate::clocks::TEST_CLOCKS);
+        test::reset();
+        let (_rx, tx) = unsafe {
+            Uart::new(
+                SCIF2::steal(),
+                crate::peripherals::P5_7::steal(),
+                crate::peripherals::P1_10::steal(),
+                Irqs,
+                leaked(4),
+                None,
+                Config::default(),
+            )
+        }
+        .split();
+        let scscr = test::peek16(SCSCR);
+        test::poke16(SCSCR, scscr | TIE);
+        tx.set_config(&Config::default());
+        assert_eq!(test::peek16(SCSCR) & (TIE | RIE), TIE | RIE);
     }
 
     #[test]
     #[should_panic]
     fn an_empty_receive_buffer_panics() {
         let _serial = serial();
-        let mut buf = [0u8; 0];
-        let _rx = scif2(&mut buf);
+        let _rx = scif2(leaked(0));
     }
 }

@@ -72,7 +72,7 @@ const SPDCR_32BIT: u8 = 0x60;
 // ── SPBFCR values ─────────────────────────────────────────────────────────────
 /// 8-bit OLED mode: TX trigger = 4 bytes free, RX trigger = 1 byte
 const SPBFCR_8BIT: u8 = 0b0110_0000;
-/// Initial value: TX trigger = 4 bytes free, RX trigger = 2 bytes available
+/// Initial value: TX trigger = 4 bytes free, RX trigger = 4 bytes (RXTRG = 010)
 const SPBFCR_INIT_32BIT: u8 = 0b0010_0010;
 /// Reset RX buffer (bit 6 = RXRST)
 const SPBFCR_RX_RESET: u8 = 1 << 6;
@@ -101,8 +101,19 @@ const SPCMD0_32BIT: u16 = 0b0000_0011_0000_0000;
 
 /// SPBR for `bit_rate` at `p1_hz`: `ceil(P1 / (2 × bit_rate)) - 1`, so the actual rate
 /// `P1 / (2 × (SPBR + 1))` never exceeds the request.
+///
+/// # Panics
+/// If `bit_rate` is 0, or below the slowest rate SPBR reaches (`P1 / 512`).
 fn spbr_for(p1_hz: u32, bit_rate: u32) -> u8 {
-    p1_hz.div_ceil(bit_rate * 2).saturating_sub(1) as u8
+    assert!(bit_rate > 0, "rspi: the frequency is 0");
+    let spbr = (p1_hz as u64).div_ceil(2 * bit_rate as u64).saturating_sub(1);
+    assert!(
+        spbr <= 255,
+        "rspi: frequency {} Hz is below the slowest divider at P1 = {} Hz",
+        bit_rate,
+        p1_hz
+    );
+    spbr as u8
 }
 
 /// SPCMD0's CPOL (bit 1) and CPHA (bit 0) for `mode`.
@@ -527,7 +538,8 @@ impl<'d> Rspi<'d, Blocking> {
     /// channel that feeds SPDR. Reads return whatever the unconnected MISO samples.
     ///
     /// # Panics
-    /// If [`crate::clocks::init`] has not been called.
+    /// If [`crate::clocks::init`] has not been called, or `config.frequency` is 0 or below
+    /// `P1 / 512`.
     pub fn new_blocking_txonly<T: Instance>(
         _rspi: Peri<'d, T>,
         sck: Peri<'d, impl SckPin<T>>,
@@ -551,7 +563,8 @@ impl<'d> Rspi<'d, Blocking> {
     /// [`new_blocking_txonly`](Self::new_blocking_txonly), with `miso` for receiving too.
     ///
     /// # Panics
-    /// If [`crate::clocks::init`] has not been called.
+    /// If [`crate::clocks::init`] has not been called, or `config.frequency` is 0 or below
+    /// `P1 / 512`.
     pub fn new_blocking<T: Instance>(
         rspi: Peri<'d, T>,
         sck: Peri<'d, impl SckPin<T>>,
@@ -790,7 +803,8 @@ impl<'d> Rspi<'d, Async> {
     /// selects this channel's receive request.
     ///
     /// # Panics
-    /// If [`crate::clocks::init`] has not been called.
+    /// If [`crate::clocks::init`] has not been called, or `config.frequency` is 0 or below
+    /// `P1 / 512`.
     pub fn new_txonly<T: Instance>(
         _rspi: Peri<'d, T>,
         sck: Peri<'d, impl SckPin<T>>,
@@ -830,7 +844,8 @@ impl<'d> Rspi<'d, Async> {
     /// [`new_txonly`](Self::new_txonly), with `miso` for receiving too.
     ///
     /// # Panics
-    /// If [`crate::clocks::init`] has not been called.
+    /// If [`crate::clocks::init`] has not been called, or `config.frequency` is 0 or below
+    /// `P1 / 512`.
     pub fn new<T: Instance>(
         rspi: Peri<'d, T>,
         sck: Peri<'d, impl SckPin<T>>,
@@ -966,6 +981,24 @@ async_spi_bus!(u8, u32);
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rate_above_half_p1_takes_the_fastest_divider() {
+        assert_eq!(spbr_for(crate::clocks::TEST_CLOCKS.p1_hz(), u32::MAX), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "frequency")]
+    fn a_zero_rate_panics() {
+        spbr_for(crate::clocks::TEST_CLOCKS.p1_hz(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "frequency")]
+    fn a_rate_below_the_slowest_divider_panics() {
+        // SPBR = 255 is the slowest: P1 / 512 ≈ 129 kHz.
+        spbr_for(crate::clocks::TEST_CLOCKS.p1_hz(), 100_000);
+    }
 
     #[test]
     fn spbr_matches_the_old_hardcoded_p1() {
