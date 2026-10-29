@@ -34,9 +34,9 @@ peripheral as `Peri<'d, T>`.
 | `mmu`         | Flat-map L1 Translation Table (VA = PA, 1 MB sections) covering the full 4 GB address space with correct cache attributes per region (SRAM cached, I/O strongly-ordered, uncached mirror at +0x4000_0000). |
 | `cache`       | L1 D/I-cache + Cortex-A9 branch predictor enable; PL310 L2 cache init. Call `mmu::init_and_enable` first. |
 | `clocks`      | The clock tree, from the board's EXTAL crystal: `clocks::init(ClockConfig::new(extal_hz))` once at boot (`rza1_hal::init` does it), then P0φ/P1φ (and the exact P0 ticks-per-µs ratio) are derived for every driver. |
-| `stb`         | CPG Standby Control Register (STBCR2–STBCR12) init — ungate module clocks for all required peripherals via a `StbConfig` struct (`rza1_hal::init` applies `Config::stb`). |
-| `gic`         | ARM GIC-400 (GICD/GICC) driver. `rza1_hal::init` runs `gic::init`; drivers install handlers through `interrupt::bind` (a `bind_interrupts!` binding) and unmask with `gic::enable(id)`. The IRQ assembly shim calls `gic_dispatch`. |
-| `interrupt`   | Typed GIC interrupts (`interrupt::typelevel`), `Handler`/`Binding` and `bind_interrupts!`: a driver's constructor takes the binding and installs its handler. |
+| `Config`      | `rza1_hal::init`'s configuration: the crystal, `CpgConfig` (FRQCR), `ModuleClocks` (which STBCR2–STBCR12 module clocks run, named after the manual's MSTP bits) and the DMAC and time-driver interrupt priorities. `Config::new(clocks)` with `const` builders; no `Default`, since the chip has no internal oscillator. |
+| `gic`         | ARM GIC-400 (GICD/GICC) driver. `rza1_hal::init` runs `gic::init`, which starts every interrupt at `Priority::DEFAULT` (P16). The IRQ assembly shim calls `gic_dispatch` (the `rt` feature). |
+| `interrupt`   | Typed GIC interrupts (`interrupt::typelevel`), `Priority`, `Handler`/`Binding` and `bind_interrupts!`. Each interrupt type has `enable`/`disable`/`pend`/`unpend`/`set_priority`/`get_priority`. A driver's constructor takes the binding, installs its handler and enables it; its priority is the application's. |
 | `bsc`         | Bus State Controller CS0/CS1 timing (NOR flash). |
 | `memmap`      | Pure memory-map and cache-line arithmetic shared by `mmu` and `cache` (host-testable). |
 | `mmio`        | Memory-mapped I/O seam: `Reg8` / `Reg16` / `Reg32` handles and `read32` / `write32`; volatile on the device, a shadow memory with an access log in host tests. |
@@ -166,7 +166,7 @@ Nearly all functions in this crate are `unsafe`. The caller is responsible for:
 This crate is board-agnostic — it does not hard-code DMA channel numbers,
 GPIO pin assignments, or clock configurations. Those belong in a board
 support layer (BSP). Peripheral drivers accept configuration by
-value (e.g. an SSICR value, `StbConfig`) so the same HAL binary can target
+value (e.g. an SSICR value, `ModuleClocks`) so the same HAL binary can target
 different board layouts.
 
 [Embassy]: https://embassy.dev

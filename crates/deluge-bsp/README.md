@@ -13,7 +13,7 @@ testing.
 
 | Module | Description |
 |---|---|
-| [`system`] | Clock gating (`StbConfig`), the DMA channel map, and `BOARD_CONFIG`, the chip configuration `rza1_hal::init` takes |
+| [`system`] | `BOARD_CONFIG`, the chip configuration `rza1_hal::init` takes (crystal, `CPG`, `MODULE_CLOCKS`, DMAC and time-driver priorities), and the DMA channel map |
 | [`sdram`] | 64 MB SDRAM (Micron MT48LC16M16A2P-75) — pin-mux, BSC registers, JEDEC init |
 | [`audio`] | SSI0 stereo codec interface; codec power sequencing and master-clock enable |
 | [`scux_dvu_path`] | SCUX DVU path — CPU SRAM → DMA → SCUX → SSIF0 TX (2048-frame buffer, software volume / fade); [`rza1_hal::scux::dvu_path`] bound to the Deluge's SSI0 config and DMA channel |
