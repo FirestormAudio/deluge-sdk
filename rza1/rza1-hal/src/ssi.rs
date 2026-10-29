@@ -39,6 +39,8 @@
 
 use embassy_sync::once_lock::OnceLock;
 
+use core::marker::PhantomData;
+
 use crate::Peri;
 use crate::dmac::{BlockDma, Dma};
 use crate::pac::cpg::regs::Swrstcr1;
@@ -842,6 +844,221 @@ pub fn ssicr(config: &Config) -> u32 {
     cks | (dwl << 19) | (swl << 16) | role
 }
 
+// ── Owned driver ──────────────────────────────────────────────────────────────
+
+use crate::dmac::ring::{Dir, RingDma};
+use crate::ring_buffer::{ReadableRing, RingBuf, WritableRing};
+
+/// Read-modify-write SSIF `n`'s SSICR with interrupts masked: the two directions share it.
+fn ssicr_update(n: u8, f: impl FnOnce(u32) -> u32) {
+    critical_section::with(|_| {
+        let cr = regs(n).ssicr();
+        cr.write_value(f(cr.read()));
+    });
+}
+
+/// Read-modify-write SSIF `n`'s SSIFCR with interrupts masked.
+fn ssifcr_update(n: u8, f: impl FnOnce(u32) -> u32) {
+    critical_section::with(|_| {
+        let fcr = regs(n).ssifcr();
+        fcr.write_value(f(fcr.read()));
+    });
+}
+
+/// Pulse SSIF `n`'s software reset (CPG SWRSTCR1 bit 6 − n), then program its modes: continuous
+/// transmit, `config`, both FIFOs held in reset with 4-word triggers.
+fn reset_and_configure(n: u8, config: &Config) {
+    let swrstcr = CPG.swrstcr1();
+    let bit = 1u8 << (6 - n);
+    swrstcr.write_value(Swrstcr1(swrstcr.read().0 | bit));
+    let _ = swrstcr.read();
+    swrstcr.write_value(Swrstcr1(swrstcr.read().0 & !bit));
+    let _ = swrstcr.read();
+    let r = regs(n);
+    r.ssitdmr().write_value(SSITDMR_CONT);
+    r.ssicr().write_value(ssicr(config));
+    r.ssifcr().write_value(SSIFCR_INIT);
+}
+
+/// Start SSIF `T`'s transmit ring on `tx` (SSIFTDR as the destination).
+fn start_tx<T: Instance>(tx: RingBuf<'_>) -> RingDma<'_> {
+    let ch = tx.dma.number();
+    let dst = regs(T::INDEX).ssiftdr().addr() as u32;
+    RingDma::start(tx.dma, tx.buf, tx.blocks, 2, tx_chcfg(ch), Dir::MemToPeriph { dst }, T::DMARS_TX)
+}
+
+/// Start SSIF `T`'s receive ring on `rx` (SSIFRDR as the source).
+fn start_rx<T: Instance>(rx: RingBuf<'_>) -> RingDma<'_> {
+    let ch = rx.dma.number();
+    let src = regs(T::INDEX).ssifrdr().addr() as u32;
+    RingDma::start(rx.dma, rx.buf, rx.blocks, 2, rx_chcfg(ch), Dir::PeriphToMem { src }, T::DMARS_RX)
+}
+
+/// Release the transmit FIFO and route its request to the DMAC.
+fn enable_tx_fifo(n: u8) {
+    ssifcr_update(n, |v| v & !SSIFCR_TFRST);
+    ssifcr_update(n, |v| v | SSIFCR_TIE);
+}
+
+/// Release the receive FIFO and route its request to the DMAC.
+fn enable_rx_fifo(n: u8) {
+    ssifcr_update(n, |v| v & !SSIFCR_RFRST);
+    ssifcr_update(n, |v| v | SSIFCR_RIE);
+}
+
+/// The SSI constructors. Each takes an SSIF channel, its pins (put on the SSI's functions here),
+/// a [`RingBuf`] per DMA direction and a [`Config`]; frames are stereo, two words each.
+///
+/// The master clock pin (AUDIO_XOUT) and the codec's power are the board's.
+pub struct Ssi;
+
+impl Ssi {
+    /// Full duplex: transmit from `tx`, receive into `rx`, started together.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new<'d, T: Instance>(
+        _ssi: Peri<'d, T>,
+        sck: Peri<'d, impl SckPin<T>>,
+        ws: Peri<'d, impl WsPin<T>>,
+        txd: Peri<'d, impl TxdPin<T>>,
+        rxd: Peri<'d, impl RxdPin<T>>,
+        tx: RingBuf<'d>,
+        rx: RingBuf<'d>,
+        config: Config,
+    ) -> (SsiTx<'d>, SsiRx<'d>) {
+        mux_clocks(sck, ws);
+        let txd_alt = txd.alternate();
+        crate::gpio::mux(txd, txd_alt);
+        let rxd_alt = rxd.alternate();
+        crate::gpio::mux(rxd, rxd_alt);
+        let n = T::INDEX;
+        reset_and_configure(n, &config);
+        let tx = start_tx::<T>(tx);
+        let rx = start_rx::<T>(rx);
+        enable_tx_fifo(n);
+        enable_rx_fifo(n);
+        ssicr_update(n, |v| v | SSICR_TEN | SSICR_REN);
+        debug!("ssi{}: full duplex streaming", n);
+        (SsiTx { ring: WritableRing::new(tx), n }, SsiRx { ring: ReadableRing::new(rx), n })
+    }
+
+    /// Receive only, into `rx`.
+    pub fn new_rx_only<'d, T: Instance>(
+        _ssi: Peri<'d, T>,
+        sck: Peri<'d, impl SckPin<T>>,
+        ws: Peri<'d, impl WsPin<T>>,
+        rxd: Peri<'d, impl RxdPin<T>>,
+        rx: RingBuf<'d>,
+        config: Config,
+    ) -> SsiRx<'d> {
+        mux_clocks(sck, ws);
+        let rxd_alt = rxd.alternate();
+        crate::gpio::mux(rxd, rxd_alt);
+        let n = T::INDEX;
+        reset_and_configure(n, &config);
+        let rx = start_rx::<T>(rx);
+        enable_rx_fifo(n);
+        ssicr_update(n, |v| v | SSICR_REN);
+        SsiRx { ring: ReadableRing::new(rx), n }
+    }
+
+    /// Receive into `rx`; transmit is fed by a SCUX path, which takes the [`ScuxOutput`] and
+    /// enables it once its route is up.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_scux_tx<'d, T: Instance>(
+        ssi: Peri<'d, T>,
+        sck: Peri<'d, impl SckPin<T>>,
+        ws: Peri<'d, impl WsPin<T>>,
+        txd: Peri<'d, impl TxdPin<T>>,
+        rxd: Peri<'d, impl RxdPin<T>>,
+        rx: RingBuf<'d>,
+        config: Config,
+    ) -> (ScuxOutput<'d, T>, SsiRx<'d>) {
+        let txd_alt = txd.alternate();
+        crate::gpio::mux(txd, txd_alt);
+        let rx = Self::new_rx_only(ssi, sck, ws, rxd, rx, config);
+        (ScuxOutput { _ssi: PhantomData }, rx)
+    }
+}
+
+/// Put the bit clock and word select pins on their functions.
+fn mux_clocks<T: Instance>(sck: Peri<'_, impl SckPin<T>>, ws: Peri<'_, impl WsPin<T>>) {
+    let (sck_alt, ws_alt) = (sck.alternate(), ws.alternate());
+    crate::gpio::mux(sck, sck_alt);
+    crate::gpio::mux(ws, ws_alt);
+}
+
+/// An SSI's transmit ring: a [`WritableRing`] (it derefs to one). Dropping it stops transmit
+/// (TEN), then halts its DMA.
+pub struct SsiTx<'d> {
+    ring: WritableRing<'d>,
+    n: u8,
+}
+
+/// An SSI's receive ring: a [`ReadableRing`] (it derefs to one). Dropping it stops receive (REN),
+/// then halts its DMA.
+pub struct SsiRx<'d> {
+    ring: ReadableRing<'d>,
+    n: u8,
+}
+
+impl<'d> core::ops::Deref for SsiTx<'d> {
+    type Target = WritableRing<'d>;
+    fn deref(&self) -> &WritableRing<'d> {
+        &self.ring
+    }
+}
+
+impl<'d> core::ops::DerefMut for SsiTx<'d> {
+    fn deref_mut(&mut self) -> &mut WritableRing<'d> {
+        &mut self.ring
+    }
+}
+
+impl<'d> core::ops::Deref for SsiRx<'d> {
+    type Target = ReadableRing<'d>;
+    fn deref(&self) -> &ReadableRing<'d> {
+        &self.ring
+    }
+}
+
+impl<'d> core::ops::DerefMut for SsiRx<'d> {
+    fn deref_mut(&mut self) -> &mut ReadableRing<'d> {
+        &mut self.ring
+    }
+}
+
+impl Drop for SsiTx<'_> {
+    fn drop(&mut self) {
+        // The ring (a field) halts its DMA after this.
+        ssicr_update(self.n, |v| v & !SSICR_TEN);
+    }
+}
+
+impl Drop for SsiRx<'_> {
+    fn drop(&mut self) {
+        ssicr_update(self.n, |v| v & !SSICR_REN);
+    }
+}
+
+/// SSI `T`'s transmit, fed by a SCUX path instead of a DMA ring. Dropping it stops transmit.
+pub struct ScuxOutput<'d, T: Instance> {
+    _ssi: PhantomData<(&'d mut (), T)>,
+}
+
+impl<T: Instance> ScuxOutput<'_, T> {
+    /// Release the transmit FIFO and start transmitting: the SCUX path's route must be up.
+    pub(crate) fn enable(&self) {
+        ssifcr_update(T::INDEX, |v| v & !SSIFCR_TFRST);
+        ssicr_update(T::INDEX, |v| v | SSICR_TEN);
+    }
+}
+
+impl<T: Instance> Drop for ScuxOutput<'_, T> {
+    fn drop(&mut self) {
+        ssicr_update(T::INDEX, |v| v & !SSICR_TEN);
+    }
+}
+
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
     use super::*;
@@ -1051,5 +1268,138 @@ mod config_tests {
         ws::<P6_9>();
         txd::<P6_10>();
         rxd::<P6_11>();
+    }
+}
+
+#[cfg(all(test, not(target_os = "none")))]
+mod driver_tests {
+    use super::*;
+    use crate::dma_buf::UncachedMut;
+    use crate::dmac::BlockInterruptHandler;
+    use crate::mmio::test;
+    use crate::peripherals::{DMA_CH6, DMA_CH7, P6_8, P6_9, P6_10, P6_11};
+    use crate::ring_buffer::RingBuf;
+
+    crate::bind_interrupts!(struct Irqs {
+        DMAINT6 => BlockInterruptHandler<DMA_CH6>;
+        DMAINT7 => BlockInterruptHandler<DMA_CH7>;
+    });
+
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn ring_on<C: crate::dmac::Channel>(ch: crate::Peri<'static, C>) -> RingBuf<'static>
+    where
+        Irqs: crate::interrupt::Binding<C::Interrupt, BlockInterruptHandler<C>>,
+    {
+        RingBuf {
+            dma: BlockDma::new(ch, Irqs),
+            buf: UncachedMut::new(std::vec![0u32; 256].leak()).unwrap(),
+            blocks: 4,
+        }
+    }
+
+    fn duplex() -> (SsiTx<'static>, SsiRx<'static>) {
+        test::reset();
+        unsafe {
+            Ssi::new(
+                crate::peripherals::SSIF0::steal(),
+                P6_8::steal(),
+                P6_9::steal(),
+                P6_10::steal(),
+                P6_11::steal(),
+                ring_on(DMA_CH6::steal()),
+                ring_on(DMA_CH7::steal()),
+                Config::default(),
+            )
+        }
+    }
+
+    fn ssicr_addr() -> usize {
+        crate::pac::SSIF0.ssicr().addr()
+    }
+
+    #[test]
+    fn ssi_new_programs_the_codec_config_and_starts_both_rings() {
+        let _serial = serial();
+        let (_tx, _rx) = duplex();
+        assert_eq!(test::peek32(ssicr_addr()), 0x002B_C020 | SSICR_TEN | SSICR_REN);
+        assert_eq!(test::peek32(0xFCFE_100C), 0x00E2_00E1, "DMARS3: ch7 receive, ch6 transmit");
+        let fcr = test::peek32(crate::pac::SSIF0.ssifcr().addr());
+        assert_eq!(fcr & (SSIFCR_TFRST | SSIFCR_RFRST), 0, "FIFOs out of reset");
+        assert_eq!(fcr & (SSIFCR_TIE | SSIFCR_RIE), SSIFCR_TIE | SSIFCR_RIE);
+        let log = test::log();
+        let cr = log.iter().position(|a| a.write && a.addr == ssicr_addr()).unwrap();
+        for ch in [6, 7] {
+            let chctrl = crate::pac::DMAC.ch(ch).chctrl().addr();
+            let seten = log.iter().position(|a| a.write && a.addr == chctrl && a.val & 1 != 0);
+            assert!(matches!(seten, Some(s) if s > cr), "ch{ch} started after SSICR");
+        }
+    }
+
+    #[test]
+    fn rx_only_leaves_ten_clear() {
+        let _serial = serial();
+        test::reset();
+        let _rx = unsafe {
+            Ssi::new_rx_only(
+                crate::peripherals::SSIF0::steal(),
+                P6_8::steal(),
+                P6_9::steal(),
+                P6_11::steal(),
+                ring_on(DMA_CH7::steal()),
+                Config::default(),
+            )
+        };
+        assert_eq!(test::peek32(ssicr_addr()) & (SSICR_TEN | SSICR_REN), SSICR_REN);
+    }
+
+    #[test]
+    fn dropping_ssi_tx_clears_ten_then_halts() {
+        let _serial = serial();
+        let (tx, _rx) = duplex();
+        let start = test::log().len();
+        drop(tx);
+        let log = test::log()[start..].to_vec();
+        let ten_off = log
+            .iter()
+            .position(|a| a.write && a.addr == ssicr_addr() && a.val & SSICR_TEN == 0)
+            .expect("TEN cleared");
+        let chctrl6 = crate::pac::DMAC.ch(6).chctrl().addr();
+        let clren = log.iter().position(|a| a.write && a.addr == chctrl6 && a.val & 2 != 0);
+        assert!(matches!(clren, Some(c) if c > ten_off), "TEN off, then the channel halts");
+        assert_eq!(test::peek32(ssicr_addr()) & SSICR_REN, SSICR_REN, "RX keeps running");
+    }
+
+    #[test]
+    fn ssi_tx_is_a_writable_ring() {
+        let _serial = serial();
+        let (tx, rx) = duplex();
+        assert_eq!((tx.len(), tx.frame_words()), (256, 2));
+        assert_eq!(rx.len(), 256);
+    }
+
+    #[test]
+    fn the_scux_tx_variant_starts_rx_only() {
+        let _serial = serial();
+        test::reset();
+        let (out, _rx) = unsafe {
+            Ssi::new_with_scux_tx(
+                crate::peripherals::SSIF0::steal(),
+                P6_8::steal(),
+                P6_9::steal(),
+                P6_10::steal(),
+                P6_11::steal(),
+                ring_on(DMA_CH7::steal()),
+                Config::default(),
+            )
+        };
+        assert_eq!(test::peek32(ssicr_addr()) & SSICR_TEN, 0);
+        out.enable();
+        assert_eq!(test::peek32(ssicr_addr()) & SSICR_TEN, SSICR_TEN);
+        drop(out);
+        assert_eq!(test::peek32(ssicr_addr()) & SSICR_TEN, 0);
     }
 }
