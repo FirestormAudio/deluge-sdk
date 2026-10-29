@@ -1143,14 +1143,19 @@ impl ControlPipe for Rusb1ControlPipe {
 /// endpoints become streams with [`into_iso_stream`](Self::into_iso_stream).
 pub struct Rusb1EndpointOut {
     /// The USB port (0 or 1).
-    pub port: u8,
+    pub(crate) port: u8,
     /// The RUSB1 pipe the endpoint runs on (1-15).
-    pub pipe: u8,
+    pub(crate) pipe: u8,
     /// The endpoint's address, type, max packet size and interval.
-    pub info: EndpointInfo,
+    pub(crate) info: EndpointInfo,
 }
 
 impl Rusb1EndpointOut {
+    /// The RUSB1 pipe the endpoint runs on (1-15).
+    pub fn pipe(&self) -> u8 {
+        self.pipe
+    }
+
     /// Stall (halt) this endpoint's pipe.
     ///
     /// Used by class code to signal a protocol error without access to the
@@ -1312,17 +1317,22 @@ impl EndpointOut for Rusb1EndpointOut {
 /// endpoints become streams with [`into_iso_stream`](Self::into_iso_stream).
 pub struct Rusb1EndpointIn {
     /// The USB port (0 or 1).
-    pub port: u8,
+    pub(crate) port: u8,
     /// The RUSB1 pipe the endpoint runs on (1-15).
-    pub pipe: u8,
+    pub(crate) pipe: u8,
     /// The endpoint's address, type, max packet size and interval.
-    pub info: EndpointInfo,
+    pub(crate) info: EndpointInfo,
     /// Bytes committed to the FIFO per fill (= `mps`, or the whole multi-packet
     /// buffer for a continuous-mode bulk IN pipe).
-    pub buf_bytes: u16,
+    pub(crate) buf_bytes: u16,
 }
 
 impl Rusb1EndpointIn {
+    /// The RUSB1 pipe the endpoint runs on (1-15).
+    pub fn pipe(&self) -> u8 {
+        self.pipe
+    }
+
     /// Stall (halt) this endpoint's pipe.  See [`Rusb1EndpointOut::stall`].
     pub fn stall(&mut self) {
         unsafe { pipe_stall(usb(self.port), self.pipe as usize) };
@@ -1861,6 +1871,7 @@ unsafe fn configure_all_pipes(port: u8) {
 mod tests {
     use std::boxed::Box;
     use super::*;
+    use embassy_usb_driver::Endpoint as _;
     use crate::mmio::test;
 
     /// A one-packet control read: the host's status-stage OUT follows the IN data so closely that
@@ -2171,6 +2182,23 @@ mod tests {
             .unwrap();
         assert!(matches!(ep.pipe, 1..=2), "pipe {}", ep.pipe);
         assert_eq!(pipe_cfg(ep.pipe).mps, 1012);
+    }
+
+    #[test]
+    fn endpoint_pipe_accessor_matches_the_allocated_pipe() {
+        let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut d = fresh_port1();
+        let ep_in = d
+            .alloc_endpoint_in(EndpointType::Isochronous, None, 288, 1)
+            .unwrap();
+        assert!(matches!(ep_in.pipe(), 1..=2), "pipe {}", ep_in.pipe());
+        assert_eq!(pipe_cfg(ep_in.pipe()).mps, 288);
+        assert_eq!(ep_in.info().max_packet_size, 288);
+        let ep_out = d
+            .alloc_endpoint_out(EndpointType::Bulk, None, 512, 0)
+            .unwrap();
+        assert_eq!(pipe_cfg(ep_out.pipe()).mps, 512);
+        assert_eq!(ep_out.info().max_packet_size, 512);
     }
 
     #[test]

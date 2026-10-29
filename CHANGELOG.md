@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `rza1-hal`'s `Rusb1EndpointIn` and `Rusb1EndpointOut` keep their fields private. The new
+  `pipe()` reads the RUSB1 pipe; the endpoint's info comes through embassy-usb-driver's
+  `Endpoint::info()`.
 - SD card detect is interrupt-recorded:
   - `rza1-hal`'s SDHI keeps card detect unmasked at all times: through every transfer, at idle
     (`SD_INFO1_MASK` = `0xFFE7`, which was `0xFFFF`), after bring-up, resets and aborts. Its

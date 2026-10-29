@@ -1,5 +1,6 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use deluge_bsp::audio;
+use embassy_usb_driver::Endpoint as _;
 use log::info;
 
 use rza1_hal::usb::iso::{IsoInProducer, IsoOutConsumer};
@@ -346,7 +347,7 @@ impl IsoInProducer for MicSource {
 /// from a task cannot keep up with the microframe cadence.
 #[embassy_executor::task]
 pub(crate) async fn uac2_mic_task(ep_in: rza1_hal::usb::Rusb1EndpointIn) {
-    let (pipe, mps) = (ep_in.pipe, ep_in.info.max_packet_size);
+    let (pipe, mps) = (ep_in.pipe(), ep_in.info().max_packet_size);
     // Bind before the host enables capture; `endpoint_set_enabled` arms BRDY and
     // primes both buffers for a bound pipe.  The stream lives as long as this task.
     // SAFETY: MIC is lent once, here; only the stream's interrupt uses it after.
