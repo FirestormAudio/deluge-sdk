@@ -489,6 +489,22 @@ pub unsafe fn set_irq_falling_edge(irq_num: u8) {
     icr1.write_value(Icr1(cleared | (0b01u16 << shift)));
 }
 
+/// Set external interrupt `irq_num` (0–7)'s ICR1 sense to `sense` (`0b00` level low, `0b01`
+/// falling, `0b10` rising, `0b11` both edges), through level-low first as the TRM requires.
+///
+/// # Safety
+/// Writes to MMIO. Call with the interrupt masked in the GIC.
+pub(crate) unsafe fn set_irq_sense(irq_num: u8, sense: u16) {
+    let shift = (irq_num * 2) as u32;
+    let mask = 0b11u16 << shift;
+    let icr1 = INTC.icr1();
+    let cleared = icr1.read().0 & !mask;
+    icr1.write_value(Icr1(cleared));
+    if sense != 0 {
+        icr1.write_value(Icr1(cleared | ((sense & 0b11) << shift)));
+    }
+}
+
 /// Clear the pending flag for external interrupt `irq_num` (0–7) in IRQRR.
 ///
 /// Must be called inside the IRQ handler body before returning; otherwise the

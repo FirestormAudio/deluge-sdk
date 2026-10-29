@@ -76,6 +76,8 @@ embassy_hal_internal::peripherals! {
     DMA_CH8, DMA_CH9, DMA_CH10, DMA_CH11, DMA_CH12, DMA_CH13, DMA_CH14, DMA_CH15,
     MTU2_0, MTU2_1, MTU2_2, MTU2_3, MTU2_4,
     SPIBSC0, SCUX, ADC,
+    // External pin interrupts IRQ0–IRQ7 (`exti`).
+    EXTI0, EXTI1, EXTI2, EXTI3, EXTI4, EXTI5, EXTI6, EXTI7,
     // The pins (Table 41.8); P8 and P9 exist only on the 208- and 233-pin packages.
     P0_0, P0_1, P0_2, P0_3, P1_0, P1_1, P1_2, P1_3,
     P1_4, P1_5, P1_6, P1_7, P1_8, P1_9, P1_10, P1_11,
@@ -156,6 +158,7 @@ pub use config::{ClockOutput, ClockOutputOnChange, Config, CpgConfig, CpuClockRa
 mod cpg;
 pub mod dma_buf;
 pub mod dmac;
+pub mod exti;
 pub mod gic;
 pub mod interrupt;
 /// Pure memory-system math (cache-line ranges + MMU section table) used by the

@@ -4,7 +4,7 @@
 Reads the per-port "Pin Function (Pn)" tables (Tables 41.11-41.29) of
 vendor/docs/rza1/rza1l-hw-manual/ch41-ports.md and writes
 rza1-hal/src/gpio/rza1l_functions.rs: one `pin_function!` per (pin, signal) for the signals the
-HAL's drivers take pins for (SCIF, RSPI, SDHI). Also checks that rza1-hal/src/gpio/pins.rs marks
+HAL's drivers take pins for (SCIF, RSPI, SDHI, IRQ0-7). Also checks that rza1-hal/src/gpio/pins.rs marks
 exactly the pins with a port-mode output as `out`.
 
 Each table's Input/Output header row gives its column layout (port mode, then alternative 1..N,
@@ -31,7 +31,7 @@ OVERRIDES = ROOT / "rza1-hal/pins/rza1l-overrides.yaml"
 OUT = ROOT / "rza1-hal/src/gpio/rza1l_functions.rs"
 PINS_RS = ROOT / "rza1-hal/src/gpio/pins.rs"
 
-# The instances the RZ/A1L has: SCIF0-4, RSPI0-2, SDHI0-1.
+# The instances the RZ/A1L has: SCIF0-4, RSPI0-2, SDHI0-1, IRQ0-7.
 SIGNALS = [
     (re.compile(r"^TxD([0-4])$"), lambda m: ("crate::uart::TxPin", f"SCIF{m[1]}")),
     (re.compile(r"^RxD([0-4])$"), lambda m: ("crate::uart::RxPin", f"SCIF{m[1]}")),
@@ -44,6 +44,7 @@ SIGNALS = [
     (re.compile(r"^SD_D([0-3])_([01])$"), lambda m: (f"crate::sdhi::D{m[1]}Pin", f"SDHI{m[2]}")),
     (re.compile(r"^SD_CD_([01])$"), lambda m: ("crate::sdhi::CdPin", f"SDHI{m[1]}")),
     (re.compile(r"^SD_WP_([01])$"), lambda m: ("crate::sdhi::WpPin", f"SDHI{m[1]}")),
+    (re.compile(r"^IRQ([0-7])$"), lambda m: ("crate::exti::IrqPin", f"EXTI{m[1]}")),
 ]
 
 HEADER = """\
