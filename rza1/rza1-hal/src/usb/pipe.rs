@@ -64,94 +64,6 @@ pub static PIPE_NRDY: AtomicU16 = AtomicU16::new(0);
 /// conditions.
 pub static PIPE_IS_IN: AtomicU16 = AtomicU16::new(0);
 
-// ---------------------------------------------------------------------------
-// ISO OUT packet hook
-// ---------------------------------------------------------------------------
-
-/// Pipe number for which the ISO OUT hook is registered.  [`usize::MAX`] means
-/// no hook is registered.
-static mut ISO_OUT_HOOK_PIPE: usize = usize::MAX;
-
-/// Optional callback invoked by the BRDY ISR immediately after an ISO OUT packet
-/// is fully received, before the task waker is signalled.
-///
-/// `buf` points to the start of the received bytes; `len` is the byte count.
-///
-/// # Safety
-/// Called from IRQ context on single-core ARMv7-A (IRQs already disabled).
-static mut ISO_OUT_HOOK: Option<unsafe fn(*const u8, usize)> = None;
-
-/// Scratch buffer used to drain an ISO OUT packet from the hardware FIFO when no
-/// task-side `read()` is pending, before handing it to the registered hook.
-/// Sized for the largest ISO packet this module configures (288 B), rounded up
-/// to a block boundary.  Touched only by the BRDY ISR, which cannot reenter on
-/// single-core ARMv7-A.
-const ISO_DRAIN_LEN: usize = 512;
-static mut ISO_DRAIN_BUF: [u8; ISO_DRAIN_LEN] = [0; ISO_DRAIN_LEN];
-
-/// Register an ISO OUT packet callback for `pipe`.
-///
-/// The callback is invoked from the BRDY ISR with a pointer to the fully
-/// received packet and its byte count, before the task waker is signalled.
-/// This lets audio conversion run with zero scheduling latency.
-///
-/// # Safety
-/// Must be called before the pipe is armed and before BRDY interrupts are
-/// enabled for it.  Not interrupt-safe — call from task context only.
-pub unsafe fn register_iso_out_hook(pipe: usize, cb: unsafe fn(*const u8, usize)) {
-    unsafe {
-        core::ptr::addr_of_mut!(ISO_OUT_HOOK_PIPE).write(pipe);
-        core::ptr::addr_of_mut!(ISO_OUT_HOOK).write(Some(cb));
-    }
-}
-
-// ---------------------------------------------------------------------------
-// ISO IN packet hook (continuous BRDY-driven TX)
-// ---------------------------------------------------------------------------
-
-/// Pipe number for which the ISO IN hook is registered.  [`usize::MAX`] = none.
-static mut ISO_IN_HOOK_PIPE: usize = usize::MAX;
-/// Max bytes to request from the hook per packet (the pipe's max packet size).
-static mut ISO_IN_HOOK_MPS: usize = 0;
-/// Callback that FILLS the next ISO IN packet.  `buf` is a scratch buffer of at
-/// least `max` bytes; the hook writes up to `max` bytes and returns the packet
-/// length (may be 0 for an empty microframe).
-///
-/// # Safety
-/// Called from IRQ context on single-core ARMv7-A (IRQs already disabled), and
-/// once at enable time from task context.
-static mut ISO_IN_HOOK: Option<unsafe fn(*mut u8, usize) -> usize> = None;
-/// Scratch buffer the hook fills before it is copied into the hardware FIFO.
-static mut ISO_IN_BUF: [u8; ISO_DRAIN_LEN] = [0; ISO_DRAIN_LEN];
-
-/// Register an ISO IN packet callback for `pipe` carrying `mps`-byte packets.
-///
-/// Unlike the blocking `EndpointIn::write()` path, this drives the ISO IN pipe
-/// in continuous BUF mode: the pipe stays armed and the BRDY ISR calls the hook
-/// to stage each packet, as TinyUSB does (the counterpart of
-/// [`register_iso_out_hook`]).  Enable BRDY for the pipe (done by
-/// `endpoint_set_enabled` for the hook pipe) after registering.
-///
-/// # Safety
-/// Call from task context before the pipe is enabled.  Not interrupt-safe.
-pub unsafe fn register_iso_in_hook(
-    pipe: usize,
-    mps: usize,
-    cb: unsafe fn(*mut u8, usize) -> usize,
-) {
-    unsafe {
-        core::ptr::addr_of_mut!(ISO_IN_HOOK_PIPE).write(pipe);
-        core::ptr::addr_of_mut!(ISO_IN_HOOK_MPS).write(mps);
-        core::ptr::addr_of_mut!(ISO_IN_HOOK).write(Some(cb));
-    }
-}
-
-/// True if `pipe` is the registered ISO IN hook pipe.
-#[inline]
-pub unsafe fn is_iso_in_hook_pipe(pipe: usize) -> bool {
-    unsafe { pipe == core::ptr::addr_of!(ISO_IN_HOOK_PIPE).read() }
-}
-
 /// Activate an ISO IN pipe for continuous BRDY-driven streaming.
 ///
 /// Sequence: reset FIFO+toggle (leaves PID=NAK), prime both double-buffer
@@ -160,9 +72,15 @@ pub unsafe fn is_iso_in_hook_pipe(pipe: usize) -> bool {
 /// [`pipe_configure`].)
 ///
 /// # Safety
-/// Task context (no transfer in flight on this pipe).
+/// No transfer in flight on this pipe. Runs in a critical section.
+/// For DelugeFirmware's alt-setting workaround until phase 9; not part of the API.
+#[doc(hidden)]
 pub unsafe fn pipe_iso_in_activate(u: Usb, n: usize) {
-    unsafe {
+    // All of it with interrupts masked: pipes 1 and 2 share D0FIFO, so another pipe's BRDY (the
+    // speaker's, every microframe) would re-select the FIFO port under the prime, and this pipe's
+    // own BRDY, left enabled by a skipped disable, would call the producer while it fills.
+    critical_section::with(|_| unsafe {
+        pipe_brdy_disable(u, n);
         // pipe_reset quiesces (PID=NAK, deselect) and pulses ACLRM|SQCLR.
         pipe_reset(u, n);
         // Prime BOTH double-buffer planes while PID is still NAK.  TRM §28.4
@@ -177,43 +95,19 @@ pub unsafe fn pipe_iso_in_activate(u: Usb, n: usize) {
         u.brdysts().write_value(!(1u16 << n));
         pipe_brdy_enable(u, n);
         pipe_enable(u, n); // PID=BUF
-    }
+    })
 }
 
-/// Stage the next ISO IN packet for the hook pipe: ask the hook to fill a
-/// packet, copy it into the hardware FIFO, and commit it, leaving the pipe
-/// armed (PID stays BUF).  Called from the BRDY ISR (a buffer freed up) and once
-/// at enable time to prime the first buffer.  No-op if no hook is registered or
+/// Stage pipe `n`'s next ISO IN packet from its bound [`IsoInProducer`](super::iso::IsoInProducer)
+/// and commit it, leaving the pipe armed (PID stays BUF). Called from the BRDY ISR (a buffer
+/// freed up) and twice at enable time to prime both planes. Nothing if no producer is bound or
 /// the FIFO port is not ready.
 ///
 /// # Safety
-/// Single-core IRQ or task context (never both at once —
-/// the enable-time prime runs with BRDY disabled).
-pub unsafe fn pipe_xfer_in_brdy(u: Usb, n: usize) {
-    unsafe {
-        let Some(hook) = core::ptr::addr_of!(ISO_IN_HOOK).read() else {
-            return;
-        };
-        let mps = core::ptr::addr_of!(ISO_IN_HOOK_MPS)
-            .read()
-            .min(ISO_DRAIN_LEN);
-        let fifo = fifo_for_pipe(u, n);
-        fifo_select_pipe(&fifo, n, true); // ISEL=1 for IN (ignored on DnFIFO)
-        if !fifo_is_ready(&fifo, n) {
-            return;
-        }
-        let scratch = core::ptr::addr_of_mut!(ISO_IN_BUF) as *mut u8;
-        let len = hook(scratch, mps).min(mps);
-        if len > 0 {
-            sw_to_hw_fifo(&fifo, scratch as *const u8, len);
-        }
-        // ISO packets are always < mps (a fraction of a full buffer), so commit
-        // every packet with BVAL — including a 0-length one (empty microframe).
-        // See fill_in_packet: a fill short of the buffer plane needs BVAL to send.
-        if len < mps {
-            fifo_bval(&fifo);
-        }
-    }
+/// The port's USB interrupt, or in a critical section (the enable-time prime).
+pub(crate) unsafe fn pipe_xfer_in_brdy(u: Usb, n: usize) {
+    // SAFETY: the caller's contract.
+    unsafe { super::iso::in_brdy(u, n) }
 }
 
 // ---------------------------------------------------------------------------
@@ -628,41 +522,17 @@ pub unsafe fn pipe_xfer_out_brdy(u: Usb, n: usize, speculative: bool) -> bool {
         if state.remaining == 0 {
             // No task-side read() is pending for this pipe.
             //
-            // If an ISO OUT hook is registered for this pipe, drain the packet
-            // from the FIFO into the scratch buffer and hand it to the hook here,
-            // in ISR context.  This is the audio fast path: it decouples ISO OUT
-            // servicing from executor scheduling latency.  A packet left in the
-            // double-buffered FIFO for more than ~2 microframes makes the SIE
-            // drop the next one (TRM §28.4.9 / Table 28.26: OVRN set, NRDY
-            // raised, "no data packet is received in response to OUT token").
-            //
-            // A hook is only ever installed on the ISO OUT pipe, so matching the
-            // pipe number is sufficient; `state.xfer_type` is not reliable here
-            // because only `read()` sets it.
-            if n == core::ptr::addr_of!(ISO_OUT_HOOK_PIPE).read()
-                && let Some(hook) = core::ptr::addr_of!(ISO_OUT_HOOK).read()
-            {
-                let fifo = fifo_for_pipe(u, n);
-                fifo_select_pipe(&fifo, n, false);
-                if fifo_is_ready(&fifo, n) {
-                    let vld = fifo_dtln(&fifo) as usize;
-                    let scratch = core::ptr::addr_of_mut!(ISO_DRAIN_BUF) as *mut u8;
-                    let len = vld.min(ISO_DRAIN_LEN);
-                    if len > 0 {
-                        hw_to_sw_fifo(&fifo, scratch, len);
-                    }
-                    // Always BCLR to release the double-buffer bank so the SIE can
-                    // accept the next packet.
-                    fifo_bclr(&fifo);
-                    if len > 0 {
-                        hook(scratch as *const u8, len);
-                    }
-                }
+            // A bound iso stream takes the packet here, in ISR context: drain, BCLR, consumer.
+            // This is the audio fast path: it decouples ISO OUT servicing from executor
+            // scheduling latency. A packet left in the double-buffered FIFO for more than ~2
+            // microframes makes the SIE drop the next one (TRM §28.4.9 / Table 28.26: OVRN set,
+            // NRDY raised, "no data packet is received in response to OUT token").
+            if super::iso::out_brdy(u, n) {
                 return false;
             }
 
-            // No hook (bulk/interrupt-style OUT, or ISO before the hook is
-            // installed): do NOT BCLR — leave the packet in the FIFO so the
+            // No stream (bulk/interrupt-style OUT, or ISO before a stream is
+            // bound): do NOT BCLR — leave the packet in the FIFO so the
             // task's read() re-arm path can drain it without missing it.
             return false;
         }
@@ -719,15 +589,15 @@ pub unsafe fn pipe_xfer_out_brdy(u: Usb, n: usize, speculative: bool) -> bool {
         let real_packet = len > 0 || is_iso || !speculative;
         let done = real_packet && (len < mps || state.remaining == 0);
         if done {
-            // Invoke the ISO OUT hook (if registered for this pipe) before
-            // resetting state.  `state.buf` has advanced by `transferred` bytes
-            // since the transfer started; rewind to recover the packet start.
-            if n == core::ptr::addr_of!(ISO_OUT_HOOK_PIPE).read()
-                && let Some(hook) = core::ptr::addr_of!(ISO_OUT_HOOK).read()
-            {
-                let start = state.buf.as_ptr().sub(state.transferred as usize);
-                hook(start, state.transferred as usize);
-            }
+            // A bound iso stream sees the read's packet too, before the state resets.
+            // `state.buf` has advanced by `transferred` bytes since the transfer started;
+            // rewind to recover the packet start.
+            let start = state.buf.as_ptr().sub(state.transferred as usize);
+            super::iso::out_after_read(
+                u,
+                n,
+                core::slice::from_raw_parts(start, state.transferred as usize),
+            );
             state.buf = core::ptr::NonNull::dangling();
             // Force remaining to 0 so the no-pending-read path at the top of
             // this function handles a BRDY that arrives before the next read().
@@ -802,6 +672,8 @@ fn pid_nak_if_stall(ctr: Reg<u16, RW>) {
 ///
 /// # Safety
 /// The caller owns USB port `u`: no other context reconfigures pipe `n` meanwhile.
+/// For DelugeFirmware's alt-setting workaround until phase 9; not part of the API.
+#[doc(hidden)]
 pub unsafe fn pipe_enable(u: Usb, n: usize) {
     let ctr = pipectr(u, n);
     // Clear any residual STALL first (matches Linux usbhs_pipe_enable).
@@ -842,6 +714,8 @@ pub unsafe fn pipe_stall(u: Usb, n: usize) {
 ///
 /// # Safety
 /// The caller owns USB port `u`: no other context reconfigures pipe `n` meanwhile.
+/// For DelugeFirmware's alt-setting workaround until phase 9; not part of the API.
+#[doc(hidden)]
 pub unsafe fn pipe_reset(u: Usb, n: usize) {
     unsafe {
         // ACLRM and SQCLR require PID=NAK with the pipe idle (PBUSY=0).
@@ -913,6 +787,8 @@ unsafe fn pipe_quiesce(u: Usb, n: usize) {
 ///
 /// # Safety
 /// The caller owns USB port `u`: no other context reconfigures pipe `n` meanwhile.
+/// For DelugeFirmware's alt-setting workaround until phase 9; not part of the API.
+#[doc(hidden)]
 pub unsafe fn pipe_brdy_enable(u: Usb, n: usize) {
     let brdysts = u.brdysts();
     let brdyenb = u.brdyenb();

@@ -36,7 +36,7 @@
 //! This driver enables them inside `Rusb1Bus::enable()` which is called after
 //! `Driver::start()` once embassy-usb has confirmed VBUS.
 
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, Ordering};
 use core::task::Poll;
 
 use embassy_sync::waitqueue::AtomicWaker;
@@ -52,7 +52,7 @@ use super::fifo::{
 };
 use super::pipe::{
     BufAllocator, PIPE_COUNT, PIPE_DONE, PIPE_IS_IN, PIPE_NRDY, PIPE_WAKERS, PIPE_XFER, PipeConfig,
-    XferType, is_iso_in_hook_pipe, pipe_bemp_disable, pipe_bemp_enable, pipe_brdy_disable,
+    XferType, pipe_bemp_disable, pipe_bemp_enable, pipe_brdy_disable,
     pipe_brdy_enable, pipe_configure, pipe_disable, pipe_enable, pipe_iso_in_activate, pipe_reset,
     pipe_stall, pipe_xfer_in_bemp, pipe_xfer_in_brdy, pipe_xfer_in_start, pipe_xfer_out_brdy,
 };
@@ -640,6 +640,29 @@ impl<'d> Driver<'d> for Rusb1Driver<'d> {
 // Rusb1Bus
 // ---------------------------------------------------------------------------
 
+/// SETUP packets port n has received: each starts a new control request.
+static SETUP_GEN: [AtomicU32; 2] = [const { AtomicU32::new(0) }; 2];
+
+/// Per port and pipe: the `SETUP_GEN` in which `endpoint_set_enabled(.., true)` last enabled
+/// the pipe (0: never, or forgotten by a bus reset).
+static ENABLED_GEN: [[AtomicU32; PIPE_COUNT]; 2] =
+    [const { [const { AtomicU32::new(0) }; PIPE_COUNT] }; 2];
+
+/// A SETUP packet arrived on `port`: start a new request generation.
+/// Generation 0 means "never", so a wrap skips it.
+fn next_setup_gen(port: usize) {
+    let _ = SETUP_GEN[port].fetch_update(Ordering::AcqRel, Ordering::Acquire, |g| {
+        Some(g.wrapping_add(1).max(1))
+    });
+}
+
+/// Forget which pipes the current request enabled (a bus reset).
+fn forget_enables(port: usize) {
+    for g in &ENABLED_GEN[port] {
+        g.store(0, Ordering::Release);
+    }
+}
+
 pub struct Rusb1Bus {
     port: u8,
     /// Whether we currently believe VBUS is present.
@@ -766,6 +789,21 @@ impl Bus for Rusb1Bus {
     fn endpoint_set_enabled(&mut self, ep_addr: EndpointAddress, enabled: bool) {
         let pipe = ep_addr_to_pipe(self.port, ep_addr);
         if let Some(p) = pipe {
+            let port = self.port as usize;
+            let generation = SETUP_GEN[port].load(Ordering::Acquire);
+            // One SET_INTERFACE walks every alt's endpoints in descriptor order. Alts that share
+            // an endpoint address share its pipe (UAC2 streaming alts 1 and 2), so an unselected
+            // alt's disable can follow the selected alt's enable: keep the enable.
+            if !enabled
+                && generation != 0
+                && ENABLED_GEN[port][p].load(Ordering::Acquire) == generation
+            {
+                debug!("usb{} P{} disable skipped: this request's selected alt enabled it", port, p);
+                return;
+            }
+            if enabled {
+                ENABLED_GEN[port][p].store(generation, Ordering::Release);
+            }
             debug!(
                 "usb{} P{} endpoint_set_enabled({}) ep={:#04x} dir={:?} — resets FIFO+toggle (SQCLR)",
                 self.port,
@@ -783,7 +821,7 @@ impl Bus for Rusb1Bus {
                     // device must do the same or every IN packet goes out with
                     // the wrong DATAx phase and the host ACKs but discards it as
                     // a duplicate.  pipe_reset leaves PID=NAK.
-                    if is_iso_in_hook_pipe(p) && ep_addr.direction() == Direction::In {
+                    if super::iso::in_bound(self.port, p) && ep_addr.direction() == Direction::In {
                         // Continuous ISO IN (mic/capture): activate in IFIS mode so
                         // the SIE flushes the IN buffer each microframe, generating
                         // the BRDY that drives the hook refill (as TinyUSB's
@@ -1510,6 +1548,8 @@ pub unsafe fn dcd_int_handler(port: u8) {
                 ];
                 let cs = critical_section::CriticalSection::new();
                 *SETUP_PKT[p].borrow(cs).get() = pkt;
+                // A new control request: a disable from it may undo only its own enables.
+                next_setup_gen(p);
 
                 // Clear VALID now that the setup packet has been latched.
                 u.intsts(0).write_value(!INTSTS0_VALID);
@@ -1565,7 +1605,7 @@ pub unsafe fn dcd_int_handler(port: u8) {
                     // Signal data_out() which is waiting on PIPE0_BRDY.
                     PIPE0_BRDY[p].store(1, Ordering::Release);
                     CTRL_WAKERS[p].wake();
-                } else if is_iso_in_hook_pipe(n) {
+                } else if super::iso::in_bound(port, n) {
                     // Continuous ISO IN (mic): a transmit buffer freed up — stage
                     // the next packet from the hook and keep the pipe armed.
                     pipe_xfer_in_brdy(u, n);
@@ -1683,6 +1723,7 @@ fn ep_addr_to_pipe(port: u8, ep_addr: EndpointAddress) -> Option<usize> {
 /// - Aborts any in-progress transfers (wakes waiters with NRDY error).
 /// - Then reconfigures all pipes so they are ready for the re-enumeration.
 unsafe fn process_bus_reset(port: u8) {
+    forget_enables(port as usize);
     unsafe {
         debug!("usb{}: bus reset — reconfiguring", port);
         let u = usb(port);
@@ -1884,6 +1925,161 @@ mod tests {
 
     fn pipes_used() -> u16 {
         critical_section::with(|cs| unsafe { (*PORT_ALLOC[1].borrow(cs).get()).pipes_used })
+    }
+
+    /// Re-selecting alt 1 skips the disable (Task 2), so the mic pipe's own BRDY can still be
+    /// enabled when the next enable primes it: the prime must run with that BRDY masked, or the
+    /// ISR refills the same producer mid-fill.
+    #[test]
+    fn priming_masks_the_pipes_own_brdy() {
+        use std::sync::atomic::{AtomicU16, Ordering};
+        static SEEN: AtomicU16 = AtomicU16::new(0xFFFF);
+        struct Watch;
+        impl super::super::iso::IsoInProducer for Watch {
+            fn fill_packet(&mut self, buf: &mut [u8]) -> usize {
+                SEEN.fetch_and(test::peek16(usb(1).brdyenb().addr()), Ordering::SeqCst);
+                buf.len()
+            }
+        }
+        let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut d = fresh_port1();
+        let ep = d.alloc_endpoint_in(EndpointType::Isochronous, None, 294, 1).unwrap();
+        let (addr, pipe) = (ep.info.addr, ep.pipe as usize);
+        let stream = ep.into_iso_stream(Box::leak(Box::new(Watch)));
+        let u = usb(1);
+        test::poke16(crate::usb::fifo::fifo_for_pipe(u, pipe).ctr.addr(), crate::usb::regs::FIFOCTR_FRDY);
+        test::poke16(u.brdyenb().addr(), 1 << pipe); // left enabled by a skipped disable
+        SEEN.store(0xFFFF, Ordering::SeqCst);
+        let mut bus = Rusb1Bus { port: 1, connected: true };
+        bus.endpoint_set_enabled(addr, true);
+        assert_eq!(SEEN.load(Ordering::SeqCst) & (1 << pipe), 0, "BRDY masked while priming");
+        assert_ne!(test::peek16(u.brdyenb().addr()) & (1 << pipe), 0, "re-armed after");
+        drop(stream);
+    }
+
+    /// Binding a producer to an IN endpoint the host has already enabled starts it at once.
+    #[test]
+    fn binding_an_enabled_in_endpoint_primes_it() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static FILLS: AtomicU32 = AtomicU32::new(0);
+        struct Count;
+        impl super::super::iso::IsoInProducer for Count {
+            fn fill_packet(&mut self, buf: &mut [u8]) -> usize {
+                FILLS.fetch_add(1, Ordering::SeqCst);
+                buf.len()
+            }
+        }
+        let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut d = fresh_port1();
+        let ep = d.alloc_endpoint_in(EndpointType::Isochronous, None, 294, 1).unwrap();
+        let pipe = ep.pipe as usize;
+        let u = usb(1);
+        test::poke16(crate::usb::fifo::fifo_for_pipe(u, pipe).ctr.addr(), crate::usb::regs::FIFOCTR_FRDY);
+        test::poke16(pipectr(u, pipe).addr(), 0b01); // the host already enabled it: PID = BUF
+        FILLS.store(0, Ordering::SeqCst);
+        let stream = ep.into_iso_stream(Box::leak(Box::new(Count)));
+        assert_eq!(FILLS.load(Ordering::SeqCst), 2, "both planes primed on bind");
+        drop(stream);
+    }
+
+    #[test]
+    fn a_wrapping_setup_generation_skips_zero() {
+        SETUP_GEN[0].store(u32::MAX, Ordering::Release);
+        next_setup_gen(0);
+        assert_eq!(SETUP_GEN[0].load(Ordering::Acquire), 1);
+    }
+
+    /// UAC2's streaming alts 1 and 2 share their endpoint addresses, so they share a pipe.
+    fn shared_alt_out_endpoint(d: &mut Rusb1Driver<'static>) -> EndpointAddress {
+        let alt1 = d.alloc_endpoint_out(EndpointType::Isochronous, None, 288, 1).unwrap();
+        let alt2 = d
+            .alloc_endpoint_out(EndpointType::Isochronous, Some(alt1.info.addr), 288, 1)
+            .unwrap();
+        assert_eq!(alt1.pipe, alt2.pipe);
+        alt1.info.addr
+    }
+
+    /// A SETUP packet arrives (here: a SET_INTERFACE).
+    fn next_setup(port: usize) {
+        SETUP_GEN[port].fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn pid(port: u8, addr: EndpointAddress) -> u16 {
+        test::peek16(pipectr(usb(port), ep_addr_to_pipe(port, addr).unwrap()).addr()) & 0b11
+    }
+
+    /// embassy-usb walks every alt's endpoints for one SET_INTERFACE, in descriptor order: alt 1
+    /// (selected) enables the address, then alt 2 (not selected) disables the same address.
+    #[test]
+    fn selecting_alt_1_keeps_its_shared_endpoint_enabled() {
+        let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut d = fresh_port1();
+        let addr = shared_alt_out_endpoint(&mut d);
+        let mut bus = Rusb1Bus { port: 1, connected: true };
+        next_setup(1);
+        bus.endpoint_set_enabled(addr, true);
+        bus.endpoint_set_enabled(addr, false);
+        assert_eq!(pid(1, addr), 0b01, "PID stays BUF");
+        let pipe = ep_addr_to_pipe(1, addr).unwrap();
+        assert_ne!(test::peek16(usb(1).brdyenb().addr()) & (1 << pipe), 0, "BRDY stays enabled");
+    }
+
+    #[test]
+    fn a_later_request_can_disable_it() {
+        let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut d = fresh_port1();
+        let addr = shared_alt_out_endpoint(&mut d);
+        let mut bus = Rusb1Bus { port: 1, connected: true };
+        next_setup(1);
+        bus.endpoint_set_enabled(addr, true);
+        next_setup(1); // SET_INTERFACE to alt 0
+        bus.endpoint_set_enabled(addr, false);
+        assert_eq!(pid(1, addr), 0b00, "PID NAK");
+    }
+
+    #[test]
+    fn a_bus_reset_forgets_the_enables() {
+        let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut d = fresh_port1();
+        let addr = shared_alt_out_endpoint(&mut d);
+        let mut bus = Rusb1Bus { port: 1, connected: true };
+        next_setup(1);
+        bus.endpoint_set_enabled(addr, true);
+        forget_enables(1);
+        bus.endpoint_set_enabled(addr, false);
+        assert_eq!(pid(1, addr), 0b00, "PID NAK");
+    }
+
+    /// Enabling an iso IN endpoint with a bound producer (SET_INTERFACE, or again after a bus
+    /// reset) primes both FIFO planes before releasing the pipe to BUF, or BRDY never fires for
+    /// the second plane (TRM §28.4, BRDY transmitting condition 4).
+    #[test]
+    fn re_enabling_a_bound_in_pipe_primes_both_planes() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static FILLS: AtomicU32 = AtomicU32::new(0);
+        struct Count;
+        impl super::super::iso::IsoInProducer for Count {
+            // Full packets: a short one's BVAL write would clear FRDY in the shadow's single
+            // FIFOCTR cell (the hardware keeps it), hiding the second plane.
+            fn fill_packet(&mut self, buf: &mut [u8]) -> usize {
+                FILLS.fetch_add(1, Ordering::SeqCst);
+                buf.len()
+            }
+        }
+        let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut d = fresh_port1();
+        let ep = d.alloc_endpoint_in(EndpointType::Isochronous, None, 294, 1).unwrap();
+        let (addr, pipe) = (ep.info.addr, ep.pipe as usize);
+        let stream = ep.into_iso_stream(Box::leak(Box::new(Count)));
+        let u = usb(1);
+        let fifo = crate::usb::fifo::fifo_for_pipe(u, pipe);
+        test::poke16(fifo.ctr.addr(), crate::usb::regs::FIFOCTR_FRDY);
+        FILLS.store(0, Ordering::SeqCst);
+        let mut bus = Rusb1Bus { port: 1, connected: true };
+        bus.endpoint_set_enabled(addr, true);
+        assert_eq!(FILLS.load(Ordering::SeqCst), 2, "both planes primed");
+        assert_eq!(test::peek16(pipectr(u, pipe).addr()) & 0b11, 0b01, "PID = BUF");
+        drop(stream);
     }
 
     #[test]

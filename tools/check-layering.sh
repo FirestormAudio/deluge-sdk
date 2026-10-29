@@ -63,6 +63,15 @@ if [ -n "$hal_asm_hits" ]; then
   echo "error: rza1-hal contains global_asm!; startup and exception entry belong in rza1-rt" >&2
   exit 1
 fi
+# The USB iso hooks are gone (spec decision 3): iso endpoints become `usb::iso` streams.
+iso_hook_hits="$(grep -rnE --include='*.rs' --exclude-dir=target 'register_iso_(in|out)_hook' rza1 crates firmwares hw-tests examples \
+  | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)"
+if [ -n "$iso_hook_hits" ]; then
+  printf '%s\n' "$iso_hook_hits"
+  echo "error: a USB iso hook is still registered; bind an iso stream (rza1_hal::usb::iso) instead" >&2
+  exit 1
+fi
+
 # Board-agnostic crates (spec rule 3): usb/ and drivers/ never name the chip HAL, the board, or
 # any deluge-* crate in code. Their dependencies are checked against Cargo's graph at the end.
 AGNOSTIC_DIRS=(usb drivers)
