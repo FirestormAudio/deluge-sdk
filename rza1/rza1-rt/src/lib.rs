@@ -10,3 +10,7 @@
 // ARM-mode assembly; nothing to build for a host target.
 #[cfg(target_os = "none")]
 mod startup;
+
+mod fault;
+pub use fault::{FaultInfo, FaultKind};
+pub use rza1_rt_macros::{entry, fault, irq};

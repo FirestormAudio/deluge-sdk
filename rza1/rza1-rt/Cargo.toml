@@ -17,9 +17,8 @@ links = "rza1-rt"
 [package.metadata.docs.rs]
 default-target = "armv7a-none-eabihf"
 
-[lib]
-# Assembly only; nothing to unit-test.
-test = false
+[dependencies]
+rza1-rt-macros = { version = "0.1.0", path = "../rza1-rt-macros" }
 
 [features]
 ## Each fault handler first dumps the fault registers to SEGGER RTT channel 0, and the linker
