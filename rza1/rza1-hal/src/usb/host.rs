@@ -3275,6 +3275,8 @@ mod tests {
     fn isochronous_pipes_raise_no_nrdy_interrupts() {
         let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let h = host_with_bus(0b00, DVSTCTR0_RHST_HS | DVSTCTR0_UACT);
+        // Its own rings: another test's may be gone (`an_iso_in_pipe_without_buffers_fails_to_open`).
+        lend_iso(&h);
         critical_section::with(|cs| unsafe { *HCD_ALLOC[0].borrow(cs).get() = HcdAlloc::new() });
         h.edpt_open(1, 0x03, EndpointType::Isochronous, 56, 1)
             .unwrap();
