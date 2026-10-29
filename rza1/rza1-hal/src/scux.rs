@@ -415,7 +415,7 @@ static mut FFU3_DESC: LinkDesc = LinkDesc([
 ///
 /// # Safety
 /// Writes to CIM memory-mapped registers.  Call from a single-threaded init
-/// context after `stb::init()` has enabled the SCUX module clock.
+/// context after [`init`](crate::init) has started the SCUX module clock.
 pub unsafe fn reset() {
     SCUX.swrsr_cim().write_value(SWRSR_RESET);
     let _ = SCUX.swrsr_cim().read(); // mandatory dummy read

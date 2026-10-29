@@ -141,8 +141,8 @@ fn tpsc(ch: u8, prescaler: u16) -> Option<u8> {
 /// counters; channels 0–2 have none. It is open at reset (RZ/A1L hardware manual
 /// §10.3.15), but earlier code may have closed it, so call this once during
 /// startup before configuring either channel. The MTU2 clock must already be
-/// running (STBCR3 bit 3, MSTP33, = 0, §42.2.3; normally set through
-/// [`crate::stb::init`]).
+/// running (STBCR3 bit 3, MSTP33, = 0, §42.2.3: [`ModuleClock::Mtu2`](crate::ModuleClock::Mtu2)
+/// in [`Config::module_clocks`](crate::Config::module_clocks)).
 ///
 /// # Safety
 /// Writes to the memory-mapped TRWER register.

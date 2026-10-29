@@ -15,7 +15,7 @@
 //! | RSPI2   | `0xE800_D800` | (unused)              |
 //!
 //! ## Clock gating
-//! RSPI0–2 (the RZ/A1L has three channels) are clocked by `stb::init()` via STBCR10.
+//! RSPI0–2 (the RZ/A1L has three channels) are clocked through `Config::module_clocks` (STBCR10).
 //!
 //! ## Register offsets inside `struct st_rspi`
 //! | Register | Offset | Width | Description                     |

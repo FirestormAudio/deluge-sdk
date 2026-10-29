@@ -76,7 +76,7 @@ const SRC_PAIR: u8 = 0;
 /// them, with their completion interrupts masked, for [`tx_current_ptr`] and [`rx_current_ptr`].
 ///
 /// # Safety
-/// Must be called from a single-threaded context after `crate::stb::init()`.
+/// Must be called from a single-threaded context after [`init`](crate::init) (with the module clock in `Config::module_clocks`).
 pub unsafe fn init(ffd: Dma<'static>, ffu: Dma<'static>, fin_hz: u32, fout_hz: u32) {
     unsafe {
         debug!(

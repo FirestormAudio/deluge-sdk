@@ -96,7 +96,7 @@ const TSEL_SSIF0_WS: u32 = FDTSEL_DIVEN | FDTSEL_SCKSEL_SSIF0_WS;
 ///
 /// # Safety
 /// Must be called once from a single-threaded boot context after
-/// `crate::stb::init()` and SSI0 pin-mux setup.
+/// [`init`](crate::init) (with the module clock in `Config::module_clocks`) and SSI0 pin-mux setup.
 pub unsafe fn init(ssi: Peri<'static, SSIF0>, ssi_rx: Dma<'static>, ssicr: u32, ffd: Dma<'static>) {
     unsafe {
         debug!("scux_dvu_path: init DVU output path (FFD0→IPC0→2SRC0→DVU0→OPC0→SSIF0)");
@@ -217,7 +217,7 @@ pub unsafe fn init(ssi: Peri<'static, SSIF0>, ssi_rx: Dma<'static>, ssicr: u32, 
 ///
 /// # Safety
 /// Must be called once from a single-threaded boot context after
-/// `crate::stb::init()` and SSI0 pin-mux setup.
+/// [`init`](crate::init) (with the module clock in `Config::module_clocks`) and SSI0 pin-mux setup.
 pub unsafe fn init_with_src(
     ssi: Peri<'static, SSIF0>,
     ssi_rx: Dma<'static>,

@@ -286,7 +286,8 @@ static mut RX_DESC: LinkDesc = LinkDesc([
 /// indefinitely. The rings are polled (see [`tx_current_ptr`]), so their completion interrupts
 /// stay masked.
 ///
-/// **Call order:** the SSIF0 module clock is running ([`crate::stb::init`]) and the board's I²S
+/// **Call order:** the SSIF0 module clock is running ([`ModuleClock::Ssif0`](crate::ModuleClock::Ssif0)
+/// in [`Config::module_clocks`](crate::Config::module_clocks)) and the board's I²S
 /// pins are muxed; the codec is powered after this returns.
 pub fn init(_ssi: Peri<'static, SSIF0>, mut tx: Dma<'static>, mut rx: Dma<'static>, ssicr: u32) {
     tx.mask_interrupt();
@@ -337,7 +338,7 @@ pub async fn wait_rx_block() {
 /// and captures the codec's output into the RX sample buffer, indefinitely.
 ///
 /// **Call order requirements:**
-/// 1. [`crate::stb::init`] — enables the SSIF0 module clock.
+/// 1. [`init`](crate::init) — starts the SSIF0 module clock ([`ModuleClock::Ssif0`](crate::ModuleClock::Ssif0)).
 /// 2. Board audio pin-mux setup (done by `deluge_bsp::audio::init`).
 /// 3. `ssi::init()` — this function.
 /// 4. 5 ms hardware delay for codec power-on (done by `deluge_bsp::audio::init`).

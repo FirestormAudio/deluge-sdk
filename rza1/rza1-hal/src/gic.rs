@@ -8,8 +8,8 @@
 //!
 //! ## Initialization sequence
 //! Call [`init`] once before enabling global IRQ (`cpsie i`).
-//! Drivers install handlers through [`crate::interrupt::bind`], and enable individual sources via
-//! [`enable`].
+//! Drivers install handlers through [`crate::interrupt::bind`], and enable individual sources
+//! through [`Interrupt::enable`](crate::interrupt::Interrupt::enable).
 //!
 //! ## IRQ dispatch
 //! The assembly IRQ handler in `startup.rs` calls `gic_dispatch` with the raw
@@ -197,16 +197,14 @@ static ICDICFR_INIT: [u32; 34] = [
 /// Initialise the GIC distributor and CPU interface.
 ///
 /// Mirrors `R_INTC_Init()` from `intc.c`. Must be called once, with global
-/// IRQ disabled, before any handler is bound or [`enable`] is called.
+/// IRQ disabled, before any handler is bound or any interrupt is enabled.
 ///
 /// ## Priority filter (PMR)
 ///
-/// This function sets `GICC_PMR = 0xF8` (priority threshold = 31).  The GIC
-/// forwards an interrupt to the CPU **only if its programmed priority is
-/// strictly less than PMR**.  Because this function sets every interrupt's
-/// priority to 31, an interrupt whose priority has *not* been explicitly
-/// lowered via [`set_priority`] will **never fire** even after [`enable`] is
-/// called.  Always call `set_priority(id, n)` with `n < 31` before `enable`.
+/// This function sets `GICC_PMR = 0xF8` (priority threshold = 31). The GIC forwards an
+/// interrupt to the CPU only if its programmed priority is strictly less than PMR. Every
+/// interrupt starts at [`Priority::DEFAULT`](crate::interrupt::Priority::DEFAULT) (16), so an
+/// enabled interrupt reaches the CPU whether or not anyone set its priority.
 ///
 /// # Safety
 /// Writes to memory-mapped GIC registers. Must run exactly once before
@@ -356,11 +354,6 @@ pub(crate) fn handler(id: u16) -> Option<HandlerFn> {
 }
 
 /// Enable (unmask) interrupt `id` in the GIC distributor.
-///
-/// **Requires prior `set_priority` call:** `GICC_PMR` is set to priority 31
-/// by [`init`].  An interrupt left at the initial priority of 31 will not
-/// reach the CPU even after being enabled here.  Always call
-/// [`set_priority`]`(id, n)` with `n < 31` before this function.
 ///
 /// # Safety
 /// Writes to memory-mapped peripheral registers.
