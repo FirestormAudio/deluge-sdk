@@ -48,7 +48,9 @@ pub(crate) use rza1_pac as pac;
 pub use rza1_pac::mmio;
 
 embassy_hal_internal::peripherals! {
-    OSTM0, OSTM1,
+    // With `time-driver-ostm`, the time driver owns OSTM0 and OSTM1.
+    #[cfg(not(feature = "time-driver-ostm"))] OSTM0,
+    #[cfg(not(feature = "time-driver-ostm"))] OSTM1,
     RSPI0, RSPI1, RSPI2,
     #[cfg(feature = "rza1h")] RSPI3,
     #[cfg(feature = "rza1h")] RSPI4,
@@ -64,8 +66,8 @@ embassy_hal_internal::peripherals! {
 }
 
 /// Bring up the chip and hand out its peripherals: record the clock tree, program the CPG,
-/// start the module clocks, put back what a warm start left running (the `warm_start` module), and
-/// initialise the GIC, in that order.
+/// start the module clocks, put back what a warm start left running (the `warm_start` module),
+/// initialise the GIC and, with `time-driver-ostm`, start the time driver, in that order.
 ///
 /// Device-only: the GIC bring-up writes real registers, which a host build doesn't have.
 ///
@@ -75,7 +77,22 @@ embassy_hal_internal::peripherals! {
 pub fn init(config: Config) -> Peripherals {
     // Take first: a second call must panic here, before it reprograms any clock or the GIC.
     let peripherals = Peripherals::take();
+    #[cfg(feature = "time-driver-ostm")]
+    let start_time_driver = time_driver::start;
+    #[cfg(not(feature = "time-driver-ostm"))]
+    let start_time_driver = |_| {};
     // SAFETY: `take` succeeded, so this is the one bring-up.
+    unsafe { bring_up(&config, start_time_driver) };
+    peripherals
+}
+
+/// [`init`]'s bring-up, with the time driver's start passed in so the order is host-testable
+/// (the driver itself is device-only).
+///
+/// # Safety
+/// Reprograms the clocks, the GIC and every module clock: once, at boot.
+#[cfg(any(target_os = "none", test))]
+unsafe fn bring_up(config: &Config, start_time_driver: impl FnOnce(interrupt::Priority)) {
     unsafe {
         clocks::init(config.clocks);
         cpg_then_stb(config.cpg.frqcr(), &config.module_clocks.stbcr_all());
@@ -83,7 +100,7 @@ pub fn init(config: Config) -> Peripherals {
         warm_start::quiesce();
         gic::init();
     }
-    peripherals
+    start_time_driver(config.time_interrupt_priority);
 }
 
 /// CPG, then the module clocks: a module clock must not start before the bus clocks it runs from
@@ -169,6 +186,26 @@ mod init_tests {
             [(0x3FFF_FF80, 1), (0xFCFE_0010, 0x1035), (0xFCFE_0408, 0x0F)]
         );
         assert_eq!(writes[3..], stb_writes[..]);
+    }
+
+    #[test]
+    fn init_starts_the_time_driver_after_the_gic() {
+        test::reset();
+        let config = Config::new(clocks::ClockConfig::new(13_225_625))
+            .with_time_interrupt_priority(interrupt::Priority::P14);
+        let mut started = None;
+        unsafe {
+            bring_up(&config, |priority| {
+                // The GIC is up by now: its priority words hold the default.
+                let last_ipr = 0xE820_1400 + (gic::INT_ID_TOTAL / 4) * 4;
+                assert!(
+                    test::writes().iter().any(|&(a, _)| a == last_ipr),
+                    "the GIC is initialised before the time driver starts"
+                );
+                started = Some(priority);
+            })
+        };
+        assert_eq!(started, Some(interrupt::Priority::P14));
     }
 
     #[test]

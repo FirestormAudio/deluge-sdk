@@ -39,14 +39,10 @@ use embassy_time_driver::Driver;
 use crate::time_math::{AtomicTickRatio, TickRatio, extend};
 use embassy_time_queue_utils::Queue;
 
-use crate::Peri;
 use crate::gic;
 use crate::interrupt::typelevel::{OSTMI0, OSTMI1};
-use crate::interrupt::{self, Binding, Handler, Interrupt};
+use crate::interrupt::{Interrupt, Priority};
 use crate::ostm;
-use crate::peripherals::{OSTM0, OSTM1};
-
-const OSTM_IRQ_PRIORITY: u8 = 14;
 
 /// Last value [`OstmDriver::raw_ostm_ticks`] published, as `(epoch << 32) | CNT`.
 ///
@@ -130,7 +126,7 @@ impl OstmDriver {
         let ratio = RATIO.load();
         assert!(
             ratio.is_set(),
-            "embassy-time alarm armed before rza1_hal::time_driver::init"
+            "embassy-time alarm armed before rza1_hal::init started the time driver"
         );
         // Clamp to max_arm_ticks; a farther alarm is re-armed when that intermediate ISR
         // fires, so capping only costs wakeups, never accuracy.
@@ -182,33 +178,25 @@ embassy_time_driver::time_driver_impl!(static DRIVER: OstmDriver = OstmDriver::n
 /// is detected in software by [`OstmDriver::raw_ostm_ticks`]; this only guarantees the "read at
 /// least once per wrap period" requirement [`LAST_RAW`] documents, so its latency is not a
 /// correctness concern.
-pub struct OverflowHandler;
-
-impl Handler<OSTMI0> for OverflowHandler {
-    unsafe fn on_interrupt() {
-        let _ = OstmDriver::raw_ostm_ticks();
-    }
+fn on_overflow() {
+    let _ = OstmDriver::raw_ostm_ticks();
 }
 
 /// OSTM1's interval interrupt: the one-shot alarm expired.
-pub struct AlarmHandler;
-
-impl Handler<OSTMI1> for AlarmHandler {
-    unsafe fn on_interrupt() {
-        // Stop OSTM1 at once (interval mode would reload), and mask it until the next alarm.
-        unsafe {
-            ostm::stop(1);
-            OSTMI1::disable();
-        }
-        let now = DRIVER.now();
-        critical_section::with(|cs| {
-            let mut queue = DRIVER.queue.borrow_ref_mut(cs);
-            let mut next = queue.next_expiration(now);
-            while !DRIVER.try_set_alarm(&cs, next) {
-                next = queue.next_expiration(DRIVER.now());
-            }
-        });
+fn on_alarm() {
+    // Stop OSTM1 at once (interval mode would reload), and mask it until the next alarm.
+    unsafe {
+        ostm::stop(1);
+        OSTMI1::disable();
     }
+    let now = DRIVER.now();
+    critical_section::with(|cs| {
+        let mut queue = DRIVER.queue.borrow_ref_mut(cs);
+        let mut next = queue.next_expiration(now);
+        while !DRIVER.try_set_alarm(&cs, next) {
+            next = queue.next_expiration(DRIVER.now());
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -216,15 +204,13 @@ impl Handler<OSTMI1> for AlarmHandler {
 // ---------------------------------------------------------------------------
 
 /// Start the Embassy time driver on OSTM0 (free-running clock, interrupting at each wrap) and
-/// OSTM1 (the alarm, dormant until a timer is scheduled).
+/// OSTM1 (the alarm, dormant until a timer is scheduled), both interrupts at `priority`.
+/// [`init`](crate::init) calls it, after the GIC is up; the driver owns both channels and their
+/// interrupts from then on.
 ///
 /// # Panics
 /// If [`crate::clocks::init`] has not been called.
-pub fn init(
-    _ostm0: Peri<'static, OSTM0>,
-    _ostm1: Peri<'static, OSTM1>,
-    irq: impl Binding<OSTMI0, OverflowHandler> + Binding<OSTMI1, AlarmHandler> + Copy + 'static,
-) {
+pub(crate) fn start(priority: Priority) {
     RATIO.store(TickRatio::from_clocks(&crate::clocks::get()));
     // SAFETY: both channels are owned. CMP=0 makes OSTM0 interrupt as it wraps to 0.
     unsafe {
@@ -232,15 +218,13 @@ pub fn init(
         ostm::start_free_running_cmp(0, 0);
     }
     ostm::set_running(true);
-    interrupt::bind::<OSTMI0, OverflowHandler>(irq);
-    interrupt::bind::<OSTMI1, AlarmHandler>(irq);
-    // SAFETY: the two channels' own interrupts, below PMR so they reach the CPU. OSTM1 is
-    // unmasked by `try_set_alarm` when an alarm is armed.
-    unsafe {
-        gic::set_priority(OSTMI0::ID, OSTM_IRQ_PRIORITY);
-        gic::set_priority(OSTMI1::ID, OSTM_IRQ_PRIORITY);
-        OSTMI0::enable();
-    }
+    gic::set_handler(OSTMI0::ID, on_overflow);
+    gic::set_handler(OSTMI1::ID, on_alarm);
+    OSTMI0::set_priority(priority);
+    OSTMI1::set_priority(priority);
+    // SAFETY: OSTM0's own interrupt, its handler installed above. OSTM1 is unmasked by
+    // `try_set_alarm` when an alarm is armed.
+    unsafe { OSTMI0::enable() };
 }
 
 /// Stop the clock and the alarm: OSTM0 and OSTM1 halt and their interrupts are masked. For a

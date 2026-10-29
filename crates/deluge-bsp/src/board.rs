@@ -101,12 +101,6 @@ pub struct Board {
     pub dma: BoardDma,
 }
 
-#[cfg(target_os = "none")]
-rza1_hal::bind_interrupts!(struct TimeIrqs {
-    OSTMI0 => rza1_hal::time_driver::OverflowHandler;
-    OSTMI1 => rza1_hal::time_driver::AlarmHandler;
-});
-
 /// The priority of the interrupts of USB, the MIDI and PIC UARTs and the SD card: one level, as
 /// the drivers set them before priorities became the board's.
 const DRIVER_PRIORITY: rza1_hal::interrupt::Priority = rza1_hal::interrupt::Priority::P10;
@@ -157,8 +151,8 @@ pub(crate) fn apply_irq_priorities() {
 
 impl Board {
     /// Finish the bring-up `rza1_hal::init(system::BOARD_CONFIG)` started (the GIC's SDRAM code
-    /// window, MMU, L1/L2 caches, SDRAM controller, the Embassy time driver on OSTM0/OSTM1),
-    /// then hand out the peripherals.
+    /// window, MMU, L1/L2 caches, SDRAM controller, the board's interrupt priorities), then hand
+    /// out the peripherals. The HAL's `init` has already started the time driver.
     ///
     /// Safe: only the one `Peripherals` from `rza1_hal::init` can reach it.
     #[cfg(target_os = "none")]
@@ -172,7 +166,6 @@ impl Board {
             crate::sdram::init();
         }
         apply_irq_priorities();
-        rza1_hal::time_driver::init(p.OSTM0, p.OSTM1, TimeIrqs);
         Self {
             usb0: p.USB0,
             usb1: p.USB1,

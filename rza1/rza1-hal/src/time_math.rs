@@ -13,7 +13,7 @@ use crate::clocks::ClockConfig;
 ///
 /// Taken from [`ClockConfig::p0_ticks_per_us`]: 21161/640 on the Deluge (P0φ = 33,064,062.5 Hz),
 /// which avoids the ~0.2% drift of truncating to 33 ticks/µs. `num` < 2^27 and `den` < 2^21.
-/// The all-zero value means "not set yet" (before `time_driver::init`).
+/// The all-zero value means "not set yet" (before `init` starts the time driver).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct TickRatio {
     num: u64,
@@ -238,7 +238,7 @@ mod tests {
 
     #[test]
     fn unset_ratio_reads_zero_time() {
-        // `Instant::now()` before `time_driver::init` reads 0 instead of dividing by zero.
+        // `Instant::now()` before `init` starts the time driver reads 0 instead of dividing by zero.
         assert_eq!(AtomicTickRatio::unset().load().ticks_to_us(123_456), 0);
     }
 

@@ -48,6 +48,8 @@ done
 for chip in rza1l rza1h; do
   cargo build "${BUILD_STD[@]}" -p rza1-hal --features "$chip"
 done
+# Without the OSTM time driver (an application bringing its own): OSTM0/OSTM1 are its to use.
+cargo build "${BUILD_STD[@]}" -p rza1-hal --no-default-features --features rza1l,rt,critical-section-impl
 
 echo "==> rza1: logging builds (log, defmt, neither)"
 cargo build "${BUILD_STD[@]}" -p rza1-hal --features rza1l,log

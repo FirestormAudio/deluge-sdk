@@ -158,8 +158,6 @@ pub mod typelevel {
         DMAINT8 = 49, DMAINT9 = 50, DMAINT10 = 51, DMAINT11 = 52,
         DMAINT12 = 53, DMAINT13 = 54, DMAINT14 = 55, DMAINT15 = 56,
         USB0 = 73, USB1 = 74,
-        // OSTM channel n's interrupt.
-        OSTMI0 = 134, OSTMI1 = 135,
         // MTU2 channel n's compare-match A.
         TGI0A = 139, TGI1A = 146, TGI2A = 150, TGI3A = 154, TGI4A = 159,
         // SCIF channel n's receive error and transmit-FIFO-empty.
@@ -178,6 +176,16 @@ pub mod typelevel {
     }
     #[cfg(feature = "rza1l")]
     pub use sdhi::*;
+
+    // OSTM channel n's interrupt. With `time-driver-ostm` the time driver owns both, so they are
+    // the HAL's own.
+    mod ostm {
+        interrupts! { OSTMI0 = 134, OSTMI1 = 135 }
+    }
+    #[cfg(feature = "time-driver-ostm")]
+    pub(crate) use ostm::*;
+    #[cfg(not(feature = "time-driver-ostm"))]
+    pub use ostm::*;
 }
 
 /// Declare which handler serves which interrupt:

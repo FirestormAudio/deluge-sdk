@@ -56,7 +56,7 @@ without explicit cache maintenance.
 | Module        | Description |
 |---------------|-------------|
 | `ostm`        | OS Timer — two 32-bit channels clocked from P0φ = EXTAL × 2.5 (see `clocks`; 33.064 MHz on the Deluge). Owned by the time driver; `delay_ms`/`Delay` busy-wait on OSTM0's counter. |
-| `time_driver`  | Embassy `time-driver` implementation backed by OSTM0 (free-running) + OSTM1 (alarm). Behind the `time-driver-ostm` feature (on by default). `time_driver::init(p.OSTM0, p.OSTM1, Irqs)` with `OverflowHandler`/`AlarmHandler` bound. |
+| `time_driver`  | Embassy `time-driver` implementation backed by OSTM0 (free-running) + OSTM1 (alarm). Behind the `time-driver-ostm` feature (on by default). `init` starts it, and OSTM0/OSTM1 are then not in `Peripherals`. |
 | `time_math`   | Pure tick/µs conversion and wrap arithmetic behind `time_driver` (host-testable). |
 | `mtu2`        | Multi-Function Timer Pulse Unit 2: five 16-bit channels. `OneShot::new(Peri<MTU2_n>, prescaler, priority, Irqs)` for compare-match one-shots and periodic ticks. |
 
@@ -104,28 +104,28 @@ embassy-time    = "0.5"
 Minimal bare-metal init sequence:
 
 ```rust,ignore
-rza1_hal::bind_interrupts!(struct TimeIrqs {
-    OSTMI0 => rza1_hal::time_driver::OverflowHandler;
-    OSTMI1 => rza1_hal::time_driver::AlarmHandler;
-});
+use rza1_hal::{Config, ModuleClock, ModuleClocks, clocks::ClockConfig};
+
+const MY_CONFIG: Config = Config::new(ClockConfig::new(13_333_333))
+    .with_module_clocks(ModuleClocks::new().with(ModuleClock::Rspi0));
 
 fn main() -> ! {
-    // The crystal's clock tree, the CPG, module clocks and the GIC; the singletons, once.
+    // The crystal's clock tree, the CPG, module clocks, the GIC and (with `time-driver-ostm`)
+    // the Embassy time driver on OSTM0/OSTM1; the singletons, once.
     let p = rza1_hal::init(MY_CONFIG);
     unsafe {
         rza1_hal::mmu::init_and_enable();
         rza1_hal::cache::l1_enable();
         rza1_hal::cache::l2_init();
     }
-    // Embassy time driver: OSTM0 free-runs, OSTM1 is the alarm.
-    rza1_hal::time_driver::init(p.OSTM0, p.OSTM1, TimeIrqs);
+    // Drivers leave interrupt priorities to you; every interrupt starts at Priority::DEFAULT.
     // Hand the rest of `p` to your drivers, e.g. `rspi::Rspi::new(p.RSPI0, 4_000_000)`.
     // …
 }
 ```
 
 Drivers take their peripheral singleton (`Peri<'d, T>`) and the interrupt binding they need, so
-`Rspi::new`, `Uart::new`, `OneShot::new` and `time_driver::init` are safe. Every driver takes its
+`Rspi::new`, `Uart::new` and `OneShot::new` are safe. Every driver takes its
 singleton and binding; the SCUX path inits stay `unsafe` because the paths share the block (each
 must claim distinct SRC units).
 
