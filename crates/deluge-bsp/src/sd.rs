@@ -114,6 +114,22 @@ pub use host::{
 // Device: real SDHI1 hardware driver
 // ---------------------------------------------------------------------------
 
+/// Whether the card can be used for an operation: an aborted transfer (the controller stopped and
+/// reset after a dropped command or transfer, `aborted`) makes it unusable until `init` runs again,
+/// as does a card `init` hasn't readied.
+#[cfg_attr(not(any(target_os = "none", test)), allow(dead_code))]
+fn card_usable(aborted: bool, ready: &core::sync::atomic::AtomicBool) -> Result<(), SdError> {
+    use core::sync::atomic::Ordering;
+    if aborted {
+        ready.store(false, Ordering::Release);
+    }
+    if ready.load(Ordering::Acquire) {
+        Ok(())
+    } else {
+        Err(SdError::NotInitialized)
+    }
+}
+
 #[cfg(target_os = "none")]
 mod device {
     use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
@@ -185,6 +201,12 @@ mod device {
     /// Before [`init_hw`].
     pub fn controller() -> &'static Sdhi<'static> {
         SDHI.try_get().expect("deluge_bsp::sd::init_hw hasn't run")
+    }
+
+    /// Whether a command or transfer was dropped mid-flight since the last check (false before
+    /// `init_hw`, when there is no controller to have aborted).
+    fn aborted() -> bool {
+        SDHI.try_get().is_some_and(|c| c.take_aborted())
     }
 
     // ---------------------------------------------------------------------------
@@ -386,6 +408,8 @@ mod device {
         // identification state each time: the previous card may have left SD_CLK at 16.7 or
         // 33.3 MHz (identification allows 400 kHz), or the controller wedged by a pull
         // mid-transfer.
+        // Re-identifying is what an aborted transfer asks for: drop its flag.
+        let _ = controller().take_aborted();
         controller().reset();
         unsafe {
             // Clean-invalidate the DMA bounce buffer's cacheable alias.  BSS
@@ -634,9 +658,7 @@ mod device {
     }
 
     async fn read_sector_unlocked(lba: u32, buf: &mut [u8; 512]) -> Result<(), SdError> {
-        if !CARD_READY.load(Ordering::Acquire) {
-            return Err(SdError::NotInitialized);
-        }
+        super::card_usable(aborted(), &CARD_READY)?;
 
         let addr = lba_to_addr(lba);
         let cmd = CMD17;
@@ -661,9 +683,7 @@ mod device {
     }
 
     async fn write_sector_unlocked(lba: u32, buf: &[u8; 512]) -> Result<(), SdError> {
-        if !CARD_READY.load(Ordering::Acquire) {
-            return Err(SdError::NotInitialized);
-        }
+        super::card_usable(aborted(), &CARD_READY)?;
 
         let addr = lba_to_addr(lba);
         let cmd = CMD24;
@@ -691,9 +711,7 @@ mod device {
     }
 
     async fn read_sectors_unlocked(lba: u32, count: u32, buf: &mut [u8]) -> Result<(), SdError> {
-        if !CARD_READY.load(Ordering::Acquire) {
-            return Err(SdError::NotInitialized);
-        }
+        super::card_usable(aborted(), &CARD_READY)?;
         if buf.len() < (count as usize) * 512 {
             return Err(SdError::Protocol);
         }
@@ -754,9 +772,7 @@ mod device {
     }
 
     async fn write_sectors_unlocked(lba: u32, count: u32, buf: &[u8]) -> Result<(), SdError> {
-        if !CARD_READY.load(Ordering::Acquire) {
-            return Err(SdError::NotInitialized);
-        }
+        super::card_usable(aborted(), &CARD_READY)?;
         if buf.len() < (count as usize) * 512 {
             return Err(SdError::Protocol);
         }
@@ -917,9 +933,7 @@ mod device {
             blocks: &mut [embedded_sdmmc::Block],
             start_block_idx: embedded_sdmmc::BlockIdx,
         ) -> Result<(), SdError> {
-            if !CARD_READY.load(Ordering::Acquire) {
-                return Err(SdError::NotInitialized);
-            }
+            super::card_usable(aborted(), &CARD_READY)?;
             let count = blocks.len() as u32;
             if count == 0 {
                 return Ok(());
@@ -968,9 +982,7 @@ mod device {
             blocks: &[embedded_sdmmc::Block],
             start_block_idx: embedded_sdmmc::BlockIdx,
         ) -> Result<(), SdError> {
-            if !CARD_READY.load(Ordering::Acquire) {
-                return Err(SdError::NotInitialized);
-            }
+            super::card_usable(aborted(), &CARD_READY)?;
             let count = blocks.len() as u32;
             if count == 0 {
                 return Ok(());
@@ -997,9 +1009,7 @@ mod device {
         }
 
         fn num_blocks(&self) -> Result<embedded_sdmmc::BlockCount, SdError> {
-            if !CARD_READY.load(Ordering::Acquire) {
-                return Err(SdError::NotInitialized);
-            }
+            super::card_usable(aborted(), &CARD_READY)?;
             let n = controller().card_size_blocks();
             Ok(embedded_sdmmc::BlockCount(n))
         }
@@ -1521,6 +1531,21 @@ mod host {
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
+    #[test]
+    fn an_aborted_transfer_requires_reinit() {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        let ready = AtomicBool::new(true);
+        assert_eq!(super::card_usable(true, &ready), Err(super::SdError::NotInitialized));
+        assert!(!ready.load(Ordering::Relaxed));
+        assert_eq!(
+            super::card_usable(false, &ready),
+            Err(super::SdError::NotInitialized),
+            "still, until init"
+        );
+        ready.store(true, Ordering::Relaxed);
+        assert_eq!(super::card_usable(false, &ready), Ok(()));
+    }
+
     use super::*;
 
     #[test]
