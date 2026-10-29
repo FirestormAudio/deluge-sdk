@@ -35,19 +35,23 @@
   - IN: the producer fills up to MPS, then BVAL if short (a zero-length packet included). Never BCLR.
   - IN enable (`endpoint_set_enabled(true)`) on a bound pipe: `pipe_iso_in_activate` primes both planes (TRM §28.4 BRDY condition 4).
 - **Scratch buffers grow from 512 to 1024 B,** the largest high-speed iso packet. `AudioClass<6>`'s 882 B capture packet must not be clamped.
-- **Out of scope, recorded only:** embassy-usb disables a shared-address alt's endpoint after enabling it, so alt 1 of UAC2 streaming ends disabled. DelugeFirmware works around this in its handler; hosts using alt 2 (24-bit) are unaffected.
-- **Lockstep:** BSP, firmwares and hw-tests migrate here. DelugeFirmware waits for phase 9: it uses `register_iso_*` and `pipe_reset`/`pipe_enable`/`pipe_brdy_enable`/`pipe_iso_in_activate`, and its `set_alternate_setting` workaround needs public re-enable calls. This phase keeps those three pipe functions public, `#[doc(hidden)]`.
+- **Alt settings sharing an endpoint address** (user decision 2026-10-30: fix in this phase, Task 2).
+  - Within one SET_INTERFACE, embassy-usb 0.6 calls `endpoint_set_enabled` once per alt's endpoint, in descriptor order.
+  - UAC2's alt 1 and alt 2 share their endpoint addresses, so alt 2's disable lands after alt 1's enable and wins. Selecting alt 1 (16-bit) leaves the stream disabled.
+  - The driver now ignores a disable for a pipe it has enabled since the port's latest SETUP packet.
+  - DelugeFirmware's `set_alternate_setting` re-enable becomes unnecessary. It is removed in phase 9.
+- **Lockstep:** BSP, firmwares and hw-tests migrate here. DelugeFirmware waits for phase 9: it uses `register_iso_*` and `pipe_reset`/`pipe_enable`/`pipe_brdy_enable`/`pipe_iso_in_activate`, and its `set_alternate_setting` workaround needs public re-enable calls. This phase keeps those three pipe functions public, `#[doc(hidden)]`, until phase 9 drops the workaround (Task 2 makes it unnecessary).
 - **Done when:**
   - `verify.sh` (`…/scratchpad/verify.sh`) prints PASS for every line;
   - HAL tests pass: `ht.sh rza1l`;
-  - the Task 4 bench check passes.
+  - the Task 5 bench check passes.
 
 ## Review Focus
 
 1. **A stream dropped while its pipe's BRDY is pending or in flight.** The ISR must never call a consumer whose `drop` has returned. Expected: unbinding in a critical section, after masking the pipe's BRDYENB. Test `a_dropped_out_stream_is_never_called_again` (Task 1).
 2. **An OUT packet longer than the 1024 B scratch** (a misbehaving host). Expected: the packet is drained and dropped, `bad_packets` is bumped, and nothing writes past the scratch. Test `an_oversized_out_packet_is_dropped_not_overflowed` (Task 1).
 3. **A producer returning more than it was given, or than MPS.** Expected: clamped to `min(returned, mps)`. Test `a_producer_overlong_return_is_clamped` (Task 1).
-4. **Opening a host iso IN pipe without lent buffers.** Expected: the open fails with an error and doesn't panic. Test `an_iso_in_pipe_without_buffers_fails_to_open` (Task 3).
+4. **Opening a host iso IN pipe without lent buffers.** Expected: the open fails with an error and doesn't panic. Test `an_iso_in_pipe_without_buffers_fails_to_open` (Task 4).
 5. **A bus reset, or an alt re-select, while an IN stream is bound.** Expected: re-enabling primes both planes again, as the hook did. Test `re_enabling_a_bound_in_pipe_primes_both_planes` (Task 1).
 
 ---
@@ -98,7 +102,33 @@
   Expected: PASS, with the firmwares still building on the adapters.
 - [ ] **Step 5: Commit** `rza1-hal: usb iso streams bound to an interrupt-context consumer`
 
-### Task 2: Firmwares on iso streams; the hooks go
+### Task 2: Shared-address alt endpoints stay enabled
+
+**Files:**
+- Modify: `rza1/rza1-hal/src/usb/driver.rs` (the SETUP path in `dcd_int_handler`, `Bus::endpoint_set_enabled`).
+
+**Interfaces:**
+- Consumes: nothing from Task 1. It touches the same `endpoint_set_enabled`, so take Task 1's version.
+- Produces (crate-internal):
+  - `static SETUP_GEN: [AtomicU32; 2]`, bumped by the ISR on every SETUP packet (where `SETUP_PKT` is stored).
+  - `static ENABLED_GEN: [[AtomicU32; PIPE_COUNT]; 2]`, holding the generation in which each pipe was last enabled through `endpoint_set_enabled(true)`. 0 means never.
+  - `endpoint_set_enabled(addr, false)` does nothing for a pipe whose `ENABLED_GEN` equals the port's current `SETUP_GEN`, because an alt selected by this request uses it.
+  - Every other disable is unchanged: bus reset, unconfigure, an alt whose endpoints differ.
+  - Bus reset clears `ENABLED_GEN` for the port.
+- [ ] **Step 1: Write the failing tests** in driver.rs's test module, using the existing device-layout helpers. Allocate the UAC2 pattern: two alts on one OUT address and one IN address, so they map to the same pipes.
+  - `selecting_alt_1_keeps_its_shared_endpoint_enabled`: bump `SETUP_GEN` (as a SETUP packet would), then `endpoint_set_enabled(addr, true)` followed by `endpoint_set_enabled(addr, false)`. PIPECTR PID ends BUF and BRDYENB stays set.
+  - `a_later_request_can_disable_it`: after that, bump `SETUP_GEN` (a new SET_INTERFACE to alt 0), then `endpoint_set_enabled(addr, false)`. PID ends NAK.
+  - `a_bus_reset_forgets_the_enables`: after a bus reset, a disable in the same generation disables.
+- [ ] **Step 2: Run them to verify they fail**
+  Run: `ht.sh rza1l usb::driver`
+  Expected: `selecting_alt_1_keeps_its_shared_endpoint_enabled` fails (PID ends NAK).
+- [ ] **Step 3: Implement** as in Interfaces.
+- [ ] **Step 4: Run the tests and verify**
+  Run: `ht.sh rza1l`, then `verify.sh`.
+  Expected: PASS.
+- [ ] **Step 5: Commit** `rza1-hal: an alt setting's shared endpoint stays enabled through SET_INTERFACE`
+
+### Task 3: Firmwares on iso streams; the hooks go
 
 **Files:**
 - Modify:
@@ -126,7 +156,7 @@
   Expected: every line PASS.
 - [ ] **Step 5: Commit** `firmwares: USB audio through iso streams; the iso hooks are gone`
 
-### Task 3: Caller-lent host iso IN rings; embassy `OnDrop`
+### Task 4: Caller-lent host iso IN rings; embassy `OnDrop`
 
 **Files:**
 - Modify:
@@ -156,7 +186,7 @@
   Expected: PASS.
 - [ ] **Step 5: Commit** `rza1-hal: host iso IN rings are caller-lent; embassy OnDrop`
 
-### Task 4: Docs, CHANGELOG, bench
+### Task 5: Docs, CHANGELOG, bench
 
 **Files:**
 - Modify:
@@ -172,7 +202,8 @@
   Run: `verify.sh`.
   Expected: all PASS.
 - [ ] **Step 4: Bench**
-  - demo-firmware: `speaker-test -D plughw:Deluge` exits 0 at real time, and a 3-second `arecord -D hw:Deluge -f S24_3LE -c 2 -r 44100` gives exactly 793,844 bytes with non-zero samples.
+  - demo-firmware alt 2 (24-bit): `speaker-test -D plughw:Deluge` exits 0 at real time, and a 3-second `arecord -D hw:Deluge -f S24_3LE -c 2 -r 44100` gives exactly 793,844 bytes with non-zero samples.
+  - demo-firmware alt 1 (16-bit), the Task 2 fix: `speaker-test -D hw:Deluge -F S16_LE -c 2 -r 44100` exits 0 at real time, and `arecord -D hw:Deluge -f S16_LE -c 2 -r 44100 -d 3` gives exactly 529,244 bytes (3 × 44100 × 4 + 44) with non-zero samples. Before the fix these stall.
   - controller-firmware boots and `speaker-test` works.
   - Digitakt host streaming (uac-host-firmware) and the Overbridge soak need the Digitakt cabled to the Deluge's USB port. Ask the user then, or list them as open.
   Expected: the device checks pass.
