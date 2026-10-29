@@ -163,6 +163,7 @@ pub mod interrupt;
 pub mod memmap;
 #[cfg(target_os = "none")]
 pub mod mmu;
+pub mod mode;
 pub mod mtu2;
 pub mod ostm;
 pub mod rspi;

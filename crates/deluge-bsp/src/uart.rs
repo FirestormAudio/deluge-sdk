@@ -16,6 +16,7 @@ use embassy_sync::mutex::Mutex;
 use embassy_sync::once_lock::OnceLock;
 use rza1_hal::Peri;
 use rza1_hal::dmac::{self, Dma};
+use rza1_hal::mode::Async;
 use rza1_hal::uart::{self, Uart, UartRx, UartTx};
 
 use crate::board::{MidiPins, MidiRxDma, MidiScif, PicPins, PicRxDma, PicScif, PicTxDma};
@@ -40,12 +41,12 @@ rza1_hal::bind_interrupts!(struct PicIrqs {
 });
 
 /// A UART's receiver, async-locked because a read holds it across `.await`.
-type RxSlot = Mutex<CriticalSectionRawMutex, Option<UartRx<'static>>>;
+type RxSlot = Mutex<CriticalSectionRawMutex, Option<UartRx<'static, Async>>>;
 
 static MIDI_RX: RxSlot = Mutex::new(None);
-static MIDI_TX: OnceLock<UartTx<'static>> = OnceLock::new();
+static MIDI_TX: OnceLock<UartTx<'static, Async>> = OnceLock::new();
 static PIC_RX: RxSlot = Mutex::new(None);
-static PIC_TX: OnceLock<UartTx<'static>> = OnceLock::new();
+static PIC_TX: OnceLock<UartTx<'static, Async>> = OnceLock::new();
 
 /// Bring up the MIDI DIN UART (SCIF0): receive by DMA, transmit through the FIFO and TXI
 /// (MIDI messages are short).
@@ -57,7 +58,7 @@ pub fn init_midi(
 ) {
     log::debug!("bsp uart: MIDI SCIF{} @ {} bps", MIDI_CH, baud);
     let rx_dma = Dma::new(rx_dma, MidiIrqs);
-    let (rx, tx) = Uart::new(scif, pins.tx, pins.rx, rx_dma, None, MidiIrqs, baud).split();
+    let (rx, tx) = Uart::new(scif, pins.tx, pins.rx, rx_dma, None, MidiIrqs, config(baud)).split();
     install(&MIDI_RX, &MIDI_TX, rx, tx);
 }
 
@@ -78,15 +79,23 @@ pub fn init_pic(
     log::debug!("bsp uart: PIC SCIF{} @ {} bps", PIC_CH, baud);
     let rx_dma = Dma::new(rx_dma, PicIrqs);
     let tx_dma = Dma::new(tx_dma, PicIrqs);
-    let (rx, tx) = Uart::new(scif, pins.tx, pins.rx, rx_dma, Some(tx_dma), PicIrqs, baud).split();
+    let (rx, tx) =
+        Uart::new(scif, pins.tx, pins.rx, rx_dma, Some(tx_dma), PicIrqs, config(baud)).split();
     install(&PIC_RX, &PIC_TX, rx, tx);
+}
+
+/// 8N1 at `baud`: both links' line settings.
+fn config(baud: u32) -> uart::Config {
+    let mut config = uart::Config::default();
+    config.baudrate = baud;
+    config
 }
 
 fn install(
     rx_slot: &'static RxSlot,
-    tx_slot: &'static OnceLock<UartTx<'static>>,
-    rx: UartRx<'static>,
-    tx: UartTx<'static>,
+    tx_slot: &'static OnceLock<UartTx<'static, Async>>,
+    rx: UartRx<'static, Async>,
+    tx: UartTx<'static, Async>,
 ) {
     // Each SCIF is owned once, so both slots are empty.
     match rx_slot.try_lock() {
@@ -110,7 +119,7 @@ fn try_read(slot: &'static RxSlot) -> Option<u8> {
     slot.try_lock().ok()?.as_mut()?.try_read()
 }
 
-fn tx(slot: &'static OnceLock<UartTx<'static>>, name: &str) -> &'static UartTx<'static> {
+fn tx(slot: &'static OnceLock<UartTx<'static, Async>>, name: &str) -> &'static UartTx<'static, Async> {
     slot.try_get()
         .unwrap_or_else(|| panic!("the {name} UART isn't initialised"))
 }
@@ -180,7 +189,7 @@ pub fn try_read_pic() -> Option<u8> {
 /// The PIC task doesn't read the ring while the receiver is in use: interrupts are masked, the
 /// executor that runs the PIC task is blocked in the caller, or the caller is an interrupt (an
 /// interrupt-priority executor) that preempted it.
-pub unsafe fn steal_pic_rx() -> Option<UartRx<'static>> {
+pub unsafe fn steal_pic_rx() -> Option<UartRx<'static, Async>> {
     // SAFETY: the PIC ring runs on PicRxDma; the caller's contract covers the rest.
     unsafe { UartRx::steal::<PicScif, PicRxDma>() }
 }
@@ -197,7 +206,7 @@ pub fn try_write_pic(data: &[u8]) -> usize {
 /// # Panics
 /// Before [`init_pic`].
 pub fn set_pic_baud(baud: u32) {
-    tx(&PIC_TX, "PIC").set_baud(baud);
+    tx(&PIC_TX, "PIC").set_config(&config(baud));
 }
 
 #[cfg(all(test, not(target_os = "none")))]

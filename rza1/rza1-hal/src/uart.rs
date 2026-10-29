@@ -37,6 +37,7 @@ use crate::Peri;
 use crate::dmac::Dma;
 use crate::gic;
 use crate::interrupt::{self, Binding, Handler, Interrupt};
+use crate::mode::{Async, Mode};
 
 use crate::pac::scif::regs::{Brr, Emr, Fcr, Fsr, Ftdr, Lsr, Scr, Smr, Sptr};
 
@@ -68,6 +69,99 @@ const TX_FIFO_SIZE: usize = 16;
 
 /// Number of SCIF channels on RZ/A1L.
 pub const NUM_CHANNELS: usize = 5;
+
+/// Parity bit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum Parity {
+    /// No parity bit.
+    None,
+    /// Even parity.
+    Even,
+    /// Odd parity.
+    Odd,
+}
+
+/// Stop bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum StopBits {
+    /// One stop bit.
+    One,
+    /// Two stop bits.
+    Two,
+}
+
+/// A UART's line settings: always 8 data bits, asynchronous mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[non_exhaustive]
+pub struct Config {
+    /// Baud rate, in bits per second.
+    pub baudrate: u32,
+    /// Parity bit.
+    pub parity: Parity,
+    /// Stop bits.
+    pub stop_bits: StopBits,
+}
+
+impl Default for Config {
+    /// 115 200 bps, 8N1.
+    fn default() -> Self {
+        Self { baudrate: 115_200, parity: Parity::None, stop_bits: StopBits::One }
+    }
+}
+
+/// A receive error. The SCIF has no noise flag, so there is no noise error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[non_exhaustive]
+pub enum Error {
+    /// A byte arrived with the receive FIFO (or the receive buffer) full, and was lost.
+    Overrun,
+    /// A byte's stop bit was 0.
+    Framing,
+    /// A byte's parity bit was wrong.
+    Parity,
+    /// The line was held low for longer than a frame.
+    Break,
+}
+
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Error::Overrun => "receive overrun",
+            Error::Framing => "framing error",
+            Error::Parity => "parity error",
+            Error::Break => "break",
+        })
+    }
+}
+
+impl core::error::Error for Error {}
+
+impl embedded_io::Error for Error {
+    fn kind(&self) -> embedded_io::ErrorKind {
+        match self {
+            Error::Overrun => embedded_io::ErrorKind::Other,
+            _ => embedded_io::ErrorKind::InvalidData,
+        }
+    }
+}
+
+/// SCSMR for `config`: asynchronous, 8 data bits (CHR = 0), CKS = P1φ/1.
+fn smr_for(config: &Config) -> u16 {
+    let parity = match config.parity {
+        Parity::None => 0,
+        Parity::Even => 1 << 5,
+        Parity::Odd => (1 << 5) | (1 << 4),
+    };
+    let stop = match config.stop_bits {
+        StopBits::One => 0,
+        StopBits::Two => 1 << 3,
+    };
+    parity | stop
+}
 
 // GIC base IDs for SCIF0; per RZ/A1L HW Manual §A.2:
 //   SCIFn: BRI = 221+n*4, ERI = 222+n*4, RXI = 223+n*4, TXI = 224+n*4
@@ -205,7 +299,7 @@ fn scbrr(p1_hz: u32, baud: u32) -> u8 {
 // Initialisation
 // ---------------------------------------------------------------------------
 
-/// Initialise SCIF channel `ch` (`0`–`4`) at `baud_rate` bps.
+/// Initialise SCIF channel `ch` (`0`–`4`) with `config`.
 ///
 /// This function only programmes the SCIF peripheral registers; [`Uart::new`] muxes the pins.
 ///
@@ -214,10 +308,10 @@ fn scbrr(p1_hz: u32, baud: u32) -> u8 {
 ///
 /// # Safety
 /// Writes to memory-mapped SCIF registers. Caller must ensure `ch` < [`NUM_CHANNELS`].
-unsafe fn configure(ch: usize, baud_rate: u32) {
+unsafe fn configure(ch: usize, config: &Config) {
     debug_assert!(ch < NUM_CHANNELS);
-    let brr = scbrr(crate::clocks::get().p1_hz(), baud_rate);
-    debug!("uart: ch{} init at {} bps (SCBRR={})", ch, baud_rate, brr);
+    let brr = scbrr(crate::clocks::get().p1_hz(), config.baudrate);
+    debug!("uart: ch{} init at {} bps (SCBRR={})", ch, config.baudrate, brr);
     let sc = scif(ch);
 
     // 1. Stop all SCIF operations.
@@ -236,8 +330,8 @@ unsafe fn configure(ch: usize, baud_rate: u32) {
 
     // 5. Internal clock source: CKE[1:0] = 00 (already 0 from step 1).
 
-    // 6. Async 8N1, CKS=00 (P_CLK/1).
-    sc.smr().write_value(Smr(0x0000));
+    // 6. Async, 8 data bits, the config's parity and stop bits, CKS=00 (P_CLK/1).
+    sc.smr().write_value(Smr(smr_for(config)));
 
     // 7. Double-speed mode: BGDM = bit 7.
     sc.emr().write_value(Emr(0x0080));
@@ -273,13 +367,14 @@ unsafe fn configure(ch: usize, baud_rate: u32) {
 ///
 /// # Safety
 /// Writes to memory-mapped SCIF registers. Caller must ensure `ch` < [`NUM_CHANNELS`].
-unsafe fn set_baud_regs(ch: usize, baud_rate: u32) {
+unsafe fn set_baud_regs(ch: usize, config: &Config) {
     debug_assert!(ch < NUM_CHANNELS);
     let sc = scif(ch);
-    // Stop TE/RE so the baud rate change takes effect cleanly.
+    // Stop TE/RE so the change takes effect cleanly.
     sc.scr().write_value(Scr(0x0000));
+    sc.smr().write_value(Smr(smr_for(config)));
     sc.brr()
-        .write_value(Brr(scbrr(crate::clocks::get().p1_hz(), baud_rate)));
+        .write_value(Brr(scbrr(crate::clocks::get().p1_hz(), config.baudrate)));
     // Clear any accumulated error flags from the previous baud rate.  The TRM
     // states that ORER (overrun) is NOT cleared by toggling RE, so stale errors
     // from e.g. the baud-switch transition window must be cleared explicitly;
@@ -473,13 +568,13 @@ impl<T: Instance> Handler<T::TxInterrupt> for TxInterruptHandler<T> {
 
 /// A SCIF UART, 8N1: it receives into a DMA ring and transmits by DMA or through the FIFO.
 /// [`split`](Self::split) it into its halves.
-pub struct Uart<'d> {
-    rx: UartRx<'d>,
-    tx: UartTx<'d>,
+pub struct Uart<'d, M: Mode> {
+    rx: UartRx<'d, M>,
+    tx: UartTx<'d, M>,
 }
 
-impl<'d> Uart<'d> {
-    /// Bring SCIF `T` up at `baud` on pins `tx` and `rx`: receive into a ring on `rx_dma`;
+impl<'d> Uart<'d, Async> {
+    /// Bring SCIF `T` up with `config` on pins `tx` and `rx`: receive into a ring on `rx_dma`;
     /// transmit by DMA on `tx_dma`, or through the FIFO and TXI without one.
     ///
     /// The pins are put on the SCIF's function first, so the ring never samples an unconnected
@@ -497,13 +592,13 @@ impl<'d> Uart<'d> {
         + Binding<T::TxInterrupt, TxInterruptHandler<T>>
         + Copy
         + 'd,
-        baud: u32,
+        config: Config,
     ) -> Self {
         let (tx_alt, rx_alt) = (tx.alternate(), rx.alternate());
         crate::gpio::mux(tx, tx_alt);
         crate::gpio::mux(rx, rx_alt);
         // SAFETY: SCIF T is owned.
-        unsafe { configure(T::INDEX, baud) };
+        unsafe { configure(T::INDEX, &config) };
         interrupt::bind::<T::ErrorInterrupt, ErrorInterruptHandler<T>>(irq);
         interrupt::bind::<T::TxInterrupt, TxInterruptHandler<T>>(irq);
         // SAFETY: SCIF T's own interrupts. ERI is enabled although reception is by DMA: receive
@@ -518,14 +613,17 @@ impl<'d> Uart<'d> {
         Self { rx, tx }
     }
 
+}
+
+impl<'d, M: Mode> Uart<'d, M> {
     /// The receive and transmit halves.
-    pub fn split(self) -> (UartRx<'d>, UartTx<'d>) {
+    pub fn split(self) -> (UartRx<'d, M>, UartTx<'d, M>) {
         (self.rx, self.tx)
     }
 }
 
 /// A UART's receiver: a 256-byte ring the DMAC fills from the receive FIFO, with no interrupt.
-pub struct UartRx<'d> {
+pub struct UartRx<'d, M: Mode> {
     ch: usize,
     /// Its ring, which indexes `DMA_RX_BUF` and [`RX_READ`].
     ring: usize,
@@ -533,9 +631,10 @@ pub struct UartRx<'d> {
     /// The ring's start as the DMAC addresses it (cached, as CRDA reports it): compared with CRDA,
     /// never dereferenced (that is [`rx_ring`]'s).
     base: u32,
+    _mode: PhantomData<M>,
 }
 
-impl<'d> UartRx<'d> {
+impl<'d> UartRx<'d, Async> {
     /// Start the circular receive DMA for SCIF `T` on `dma`.
     fn start<T: RxDmaInstance>(mut dma: Dma<'d>) -> Self {
         let ch = T::INDEX;
@@ -578,7 +677,7 @@ impl<'d> UartRx<'d> {
                 dma_ch,
                 buf_base
             );
-            Self { ch, ring: T::RING, dma, base: buf_base }
+            Self { ch, ring: T::RING, dma, base: buf_base, _mode: PhantomData }
         }
     }
 
@@ -615,7 +714,7 @@ impl<'d> UartRx<'d> {
     /// it never rewinds what the stolen receiver consumed.
     #[doc(hidden)]
     #[cfg(any(feature = "unstable-driver-steal", test))]
-    pub unsafe fn steal<T: RxDmaInstance, C: crate::dmac::Channel>() -> Option<UartRx<'static>> {
+    pub unsafe fn steal<T: RxDmaInstance, C: crate::dmac::Channel>() -> Option<UartRx<'static, Async>> {
         if !RX_DMA_ACTIVE[T::INDEX].load(Ordering::Acquire) {
             return None;
         }
@@ -628,6 +727,7 @@ impl<'d> UartRx<'d> {
             // only reads CRDA.
             dma: unsafe { Dma::steal::<C>() },
             base,
+            _mode: PhantomData,
         })
     }
 
@@ -644,13 +744,14 @@ impl<'d> UartRx<'d> {
 }
 
 /// A UART's transmitter. Its methods take `&self`; whole writes don't interleave.
-pub struct UartTx<'d> {
+pub struct UartTx<'d, M: Mode> {
     ch: usize,
     /// The transmit DMA channel, if any. The lock also keeps two writers' bytes apart.
     dma: Mutex<CriticalSectionRawMutex, Option<Dma<'d>>>,
+    _mode: PhantomData<M>,
 }
 
-impl<'d> UartTx<'d> {
+impl<'d> UartTx<'d, Async> {
     fn new(ch: usize, mut dma: Option<Dma<'d>>) -> Self {
         if let Some(dma) = dma.as_mut() {
             let sc = scif(ch);
@@ -670,7 +771,7 @@ impl<'d> UartTx<'d> {
             }
             info!("uart: ch{} DMA TX active (dma_ch={})", ch, dma.number());
         }
-        Self { ch, dma: Mutex::new(dma) }
+        Self { ch, dma: Mutex::new(dma), _mode: PhantomData }
     }
 
     /// Send `buf`: by DMA, one transfer per 64 bytes, waking once per transfer; or without a DMA
@@ -704,7 +805,7 @@ impl<'d> UartTx<'d> {
     }
 
     /// Wait until everything written so far has left the shift register (TEND), so a
-    /// [`set_baud`](Self::set_baud) after it can't garble the tail. No interrupt reports TEND,
+    /// [`set_config`](Self::set_config) after it can't garble the tail. No interrupt reports TEND,
     /// so this polls it every 100 µs; it holds the writer lock meanwhile, so no write starts.
     pub async fn flush(&self) {
         let _writer = self.dma.lock().await;
@@ -732,11 +833,12 @@ impl<'d> UartTx<'d> {
         TX_FIFO_SIZE.saturating_sub(in_fifo)
     }
 
-    /// Change the baud rate. TX and RX stop briefly: wait for the FIFO to drain first, or its
-    /// bytes go out at the wrong rate. The DMA request enables are kept.
-    pub fn set_baud(&self, baud: u32) {
+    /// Change the line settings (baud rate, parity, stop bits). TX and RX stop briefly: wait for
+    /// the FIFO to drain first ([`flush`](Self::flush)), or its bytes go out wrong. The DMA
+    /// request enables are kept.
+    pub fn set_config(&self, config: &Config) {
         // SAFETY: the owned SCIF.
-        unsafe { set_baud_regs(self.ch, baud) }
+        unsafe { set_baud_regs(self.ch, config) }
     }
 }
 
@@ -744,11 +846,11 @@ impl<'d> UartTx<'d> {
 
 use core::convert::Infallible;
 
-impl embedded_io_async::ErrorType for UartRx<'_> {
+impl embedded_io_async::ErrorType for UartRx<'_, Async> {
     type Error = Infallible;
 }
 
-impl embedded_io_async::Read for UartRx<'_> {
+impl embedded_io_async::Read for UartRx<'_, Async> {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Infallible> {
         if buf.is_empty() {
             return Ok(0);
@@ -769,11 +871,11 @@ impl embedded_io_async::Read for UartRx<'_> {
     }
 }
 
-impl embedded_io_async::ErrorType for UartTx<'_> {
+impl embedded_io_async::ErrorType for UartTx<'_, Async> {
     type Error = Infallible;
 }
 
-impl embedded_io_async::Write for UartTx<'_> {
+impl embedded_io_async::Write for UartTx<'_, Async> {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, Infallible> {
         UartTx::write(self, buf).await;
         Ok(buf.len())
@@ -824,6 +926,42 @@ mod tests {
             error_ppm.abs() < 20_000,
             "MIDI baud error {error_ppm} ppm exceeds 2%"
         );
+    }
+
+    #[test]
+    fn config_default_is_115200_8n1() {
+        let c = super::Config::default();
+        assert_eq!(c.baudrate, 115_200);
+        assert_eq!(c.parity, super::Parity::None);
+        assert_eq!(c.stop_bits, super::StopBits::One);
+    }
+
+    /// SCSMR: CHR (bit 6) clear for 8 data bits; PE (bit 5), O/E (bit 4) and STOP (bit 3) from
+    /// the config.
+    #[test]
+    fn configure_programs_smr_for_parity_and_stop_bits() {
+        use crate::mmio::test;
+        crate::clocks::init(TEST_CLOCKS);
+        let smr = scif(2).smr().addr();
+        let mut cfg = super::Config::default();
+        cfg.parity = super::Parity::Odd;
+        cfg.stop_bits = super::StopBits::Two;
+        test::reset();
+        unsafe { super::configure(2, &cfg) };
+        assert_eq!(test::peek16(smr) & 0x78, (1 << 5) | (1 << 4) | (1 << 3));
+        cfg.parity = super::Parity::Even;
+        cfg.stop_bits = super::StopBits::One;
+        unsafe { super::configure(2, &cfg) };
+        assert_eq!(test::peek16(smr) & 0x78, 1 << 5);
+    }
+
+    #[test]
+    fn uart_error_kinds() {
+        use embedded_io::{Error as _, ErrorKind};
+        assert_eq!(super::Error::Overrun.kind(), ErrorKind::Other);
+        assert_eq!(super::Error::Framing.kind(), ErrorKind::InvalidData);
+        assert_eq!(super::Error::Parity.kind(), ErrorKind::InvalidData);
+        assert_eq!(super::Error::Break.kind(), ErrorKind::InvalidData);
     }
 
     /// GIC interrupt IDs follow the pattern: RXI_n = RXI_BASE + n*4.
@@ -911,7 +1049,7 @@ mod typed_tests {
                 rx_dma,
                 Some(tx_dma),
                 Irqs,
-                31_250,
+                Config { baudrate: 31_250, ..Config::default() },
             )
         }
         .split();
@@ -981,7 +1119,7 @@ mod typed_tests {
         assert!(scfsr_reads() > before, "flush checked TEND");
 
         // A baud change keeps both DMA requests enabled.
-        tx.set_baud(200_000);
+        tx.set_config(&Config { baudrate: 200_000, ..Config::default() });
         assert_eq!(
             test::peek8(b + 0x04),
             scbrr(crate::clocks::TEST_CLOCKS.p1_hz(), 200_000)
@@ -1002,7 +1140,7 @@ mod typed_tests {
                 rx_dma,
                 None,
                 Irqs,
-                31_250,
+                Config { baudrate: 31_250, ..Config::default() },
             )
         }
         .split();
