@@ -38,3 +38,6 @@ examples/linux/*/Cargo.lock
 
 # Python bytecode from tools/ helpers (tools/gen-pac.sh imports tools/pac_manual.py)
 __pycache__/
+
+# QEMU core dumps from a crashed host test run (qemu-arm writes them to the cwd).
+*.core
