@@ -475,11 +475,11 @@ pub(crate) async fn cdc_task(class: CdcAcmClass<'static, Rusb1Driver<'static>>) 
 /// The SYNC LED (P6_7), which the host drives over CDC; `main` hands it over at boot.
 static SYNC_LED: embassy_sync::blocking_mutex::Mutex<
     embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-    core::cell::RefCell<Option<rza1_hal::gpio::Output<'static>>>,
+    core::cell::RefCell<Option<rza1_hal::gpio::Flex<'static>>>,
 > = embassy_sync::blocking_mutex::Mutex::new(core::cell::RefCell::new(None));
 
 /// Give the CDC handler the SYNC LED.
-pub(crate) fn set_sync_led(led: rza1_hal::gpio::Output<'static>) {
+pub(crate) fn set_sync_led(led: rza1_hal::gpio::Flex<'static>) {
     SYNC_LED.lock(|cell| cell.replace(Some(led)));
 }
 

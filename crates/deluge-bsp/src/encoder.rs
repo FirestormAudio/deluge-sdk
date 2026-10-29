@@ -243,11 +243,14 @@ pub unsafe fn irq_init(
     poll_timer: rza1_hal::Peri<'static, crate::board::EncoderPollTimer>,
     pins: crate::board::EncoderPins,
 ) {
-    use rza1_hal::gpio::{Alternate, Flex, Input, Pin};
+    use rza1_hal::gpio::{Alternate, Flex, Input, Pin, Port};
     unsafe {
         let crate::board::EncoderPins { irq, comp } = pins;
         for ((w, irq), comp) in WIRING.iter().zip(irq).zip(comp) {
-            debug_assert_eq!((irq.bit(), comp.bit()), (w.irq_pin, w.comp_pin));
+            debug_assert_eq!(
+                (irq.port(), irq.bit(), comp.port(), comp.bit()),
+                (Port::P1, w.irq_pin, Port::P1, w.comp_pin)
+            );
             // IRQn on alternative 2, its input buffer on so the ISR can read the level too.
             let mut irq = Flex::new(irq);
             irq.set_as_alternate(Alternate::Alt2);

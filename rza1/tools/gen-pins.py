@@ -94,6 +94,13 @@ def parse_manual(text):
                     groups[-1].append(cell)
                 elif cell:
                     ok = False
+        # A signal name split across two cells (`SD_D0|_1`) would be dropped silently: two adjacent
+        # cells that only together name a wanted signal refuse the row.
+        if ok and any(
+            a and b and wanted(a + b) and not wanted(a) and not wanted(b)
+            for a, b in zip(cells, cells[1:])
+        ):
+            ok = False
         if not ok:
             refused[pin] = cells
             pins[pin] = (has_output, None)
@@ -111,7 +118,8 @@ def generate(text, overrides):
             table = {int(k): [v] for k, v in overrides[pin]["alternates"].items()}
         elif table is None:
             raw = refused[pin]
-            if any(wanted(c) for c in raw if c):
+            joined = [a + b for a, b in zip(raw, raw[1:]) if a and b]
+            if any(wanted(c) for c in raw + joined if c):
                 errors.append(f"{pin}: {len(raw)} cells, names a wanted signal: {raw}")
             continue
         for alt, names in table.items():

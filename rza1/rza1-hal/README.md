@@ -80,10 +80,10 @@ documented in each peripheral module.
 
 | Module  | Description |
 |---------|-------------|
-| `sdhi`  | SD Host Interface — two ports (SDHI0/SDHI1). `Sdhi::new(Peri<SDHIn>, tx: Dma, rx: Dma, Irqs, sd_option)` binds the status and operation interrupts; its methods give async `send_cmd`, `read_blocks_sw` / `write_blocks_sw` (PIO with `AtomicWaker`) and `read_blocks_dma` / `write_blocks_dma` (DMAC-backed); `reset` returns it to the identification clock before a card is re-identified. |
-| `uart`  | SCIF async serial, five channels (SCIF0–4). `Uart::new(Peri<SCIFn>, rx_dma, tx_dma, Irqs, baud)` receives into a DMA ring (SCIF0/1) and transmits by DMA or through the FIFO; `split()` gives `UartRx`/`UartTx`. |
-| `rspi`  | SPI master (RSPI0–2, the RZ/A1L's three): `Rspi::new(Peri<RSPIn>, bit_rate)`, 32-bit or 8-bit frames, blocking sends. Used for CV DAC and OLED. |
-| `gpio`  | GPIO port registers (the RZ/A1L's ports: P1–P9, PMC0–PMC9). `set_pin_mux`, `set_as_output` / `set_as_input`, `write`, `read_pin`, plus a const-generic `Pin` type (`Pin::steal()`) implementing the `embedded-hal` `InputPin` / `OutputPin` traits. |
+| `sdhi`  | SD Host Interface — two ports (SDHI0/SDHI1). `Sdhi::new(Peri<SDHIn>, clk, cmd, d0, d1, d2, d3, cd, wp, tx: Dma, rx: Dma, Irqs, sd_option)` takes its eight pins (`sdhi::{ClkPin, CmdPin, D0Pin…D3Pin, CdPin, WpPin}`), muxes them and binds the status and operation interrupts; its methods give async `send_cmd`, `read_blocks_sw` / `write_blocks_sw` (PIO with `AtomicWaker`) and `read_blocks_dma` / `write_blocks_dma` (DMAC-backed); `reset` returns it to the identification clock before a card is re-identified. |
+| `uart`  | SCIF async serial, five channels (SCIF0–4). `Uart::new(Peri<SCIFn>, tx: TxPin, rx: RxPin, rx_dma, tx_dma, Irqs, baud)` muxes its pins and receives into a DMA ring (SCIF0/1) and transmits by DMA or through the FIFO; `split()` gives `UartRx`/`UartTx`. |
+| `rspi`  | SPI master (RSPI0–2, the RZ/A1L's three): `Rspi::new_txonly(Peri<RSPIn>, sck, mosi, bit_rate)` or `Rspi::new(.., sck, mosi, miso, bit_rate)` (pins by `SckPin`/`MosiPin`/`MisoPin`), 32-bit or 8-bit frames, blocking sends. Used for CV DAC and OLED. |
+| `gpio`  | Owned pins: every pin is a `Peripherals` singleton (`P0_0`…`P9_5`), taken into `Input`, `Output` (`OutputCapable` pins only) or `Flex`, which implement the `embedded-hal` digital traits. Levels go through PSRn/PNOTn; `Flex::set_as_alternate` selects a function for pins no driver takes. Pin-function traits (`uart::TxPin<T>` …) are generated from the manual by `rza1/tools/gen-pins.py`. `read_port(Port)` reads a whole port. |
 | `adc`   | 12-bit A/D converter, single-scan polled. |
 | `spibsc` | SPI Multi-I/O Bus Controller — manual-command NOR-flash erase/program/read, with erase and program refused outside the board's writable windows. |
 | `usb` | RUSB1 USB 2.0 dual-role driver: chip plumbing (bases, IRQs, STBCR7 clock gates) plus full `embassy-usb-driver` **device** (`usb::driver`) and **host** (`usb::host`) implementations over shared `regs`/`fifo`/`pipe` layers. `usb::init_device_mode(Peri<USBn>, Irqs)` / `usb::init_host_mode(Peri<USBn>, Irqs)` are the entry points, bound to a `DeviceInterruptHandler`, `HostInterruptHandler` or `DualRoleInterruptHandler`; the drivers borrow the port (`Rusb1Driver<'d>`). USB *class* code (UAC2/MIDI/MSC/BOT) lives in `deluge_bsp::usb`. |
@@ -119,7 +119,7 @@ fn main() -> ! {
         rza1_hal::cache::l2_init();
     }
     // Drivers leave interrupt priorities to you; every interrupt starts at Priority::DEFAULT.
-    // Hand the rest of `p` to your drivers, e.g. `rspi::Rspi::new(p.RSPI0, 4_000_000)`.
+    // Hand the rest of `p` to your drivers, e.g. `rspi::Rspi::new_txonly(p.RSPI0, p.P6_0, p.P6_2, 4_000_000)`.
     // …
 }
 ```

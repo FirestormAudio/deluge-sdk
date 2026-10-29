@@ -44,7 +44,7 @@ struct Lines {
 static LINES: Mutex<RefCell<Option<Lines>>> = Mutex::new(RefCell::new(None));
 
 /// Make the five jack-detect pins inputs and the speaker-enable pin an output, leaving the
-/// amplifier disabled. Runs once; a second call replaces nothing (its pins are already owned).
+/// amplifier disabled. Runs once: the pins are owned, so only `Board`'s one set can reach it.
 pub fn init(pins: JackPins) {
     let lines = Lines {
         headphone: Input::new(pins.headphone),

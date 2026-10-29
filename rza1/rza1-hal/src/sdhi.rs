@@ -30,7 +30,9 @@
 //! });
 //! let tx = dmac::Dma::new_without_interrupt(p.DMA_CH11);
 //! let rx = dmac::Dma::new(p.DMA_CH14, Irqs);
-//! let sdhi = sdhi::Sdhi::new(p.SDHI1, tx, rx, Irqs, sd_option);
+//! let sdhi = sdhi::Sdhi::new(
+//!     p.SDHI1, p.P7_4, p.P7_5, p.P7_3, p.P7_2, p.P7_7, p.P7_6, p.P7_0, p.P7_1, tx, rx, Irqs, sd_option,
+//! );
 //! // In an async task — SD card protocol:
 //! sdhi.set_arg(0);
 //! sdhi.send_cmd(0 /* CMD0: reset */).await?;

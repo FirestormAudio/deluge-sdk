@@ -70,7 +70,6 @@ impl Handler<typelevel::TGI2A> for ShotHandler {
         let gate_ch = GATE_CH.swap(NO_ACTION, Ordering::Acquire);
         // 3. Do it.
         if gate_ch != NO_ACTION {
-            // SAFETY: a gate GPIO, configured by cv_gate::init.
             crate::cv_gate::gate_set(gate_ch, false); // de-assert: gate OFF
         }
         // 4. Disarm. The GIC mask takes effect after the assembly IRQ stub writes ICCEOIR.

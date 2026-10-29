@@ -61,7 +61,7 @@ pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame]) + Send 
 }
 
 /// The SYNC LED (P6_7), from the board's pins.
-pub(crate) type SyncLedPin = rza1_hal::gpio::Output<'static>;
+pub(crate) type SyncLedPin = rza1_hal::gpio::Flex<'static>;
 
 /// Bring up RSPI0, which the OLED and the CV DAC share, the first time either needs it, unless
 /// the app already did.
@@ -162,7 +162,11 @@ async fn pic_pump() {
 
 pub(crate) fn sync_led_init() -> SyncLedPin {
     let pin = crate::parts::take("the SYNC LED (P6_7)", |p| p.sync_led.take());
-    rza1_hal::gpio::Output::new(pin, rza1_hal::gpio::Level::Low)
+    let mut led = rza1_hal::gpio::Flex::new(pin);
+    // Keep whatever level the LED's output latch already holds: only the direction changes.
+    let level = led.is_set_high().into();
+    led.set_as_output(level);
+    led
 }
 pub(crate) fn sync_led_set_high(pin: &mut SyncLedPin) -> Result<(), Infallible> {
     OutputPin::set_high(pin)

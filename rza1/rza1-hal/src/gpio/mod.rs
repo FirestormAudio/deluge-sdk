@@ -225,15 +225,19 @@ impl<'d> Flex<'d> {
     /// # Panics
     /// If the pin has no port-mode output (P0_0–P0_3, P1_8–P1_15).
     pub fn set_as_output(&mut self, initial: Level) {
-        let (port, bit) = (self.pin.port() as u8, self.pin.bit());
-        if !has_port_output(port, bit) {
-            panic!("P{}_{} has no port-mode output", port, bit);
-        }
+        self.assert_can_output();
         let (n, m) = (self.n(), self.mask());
         GPIO.psr(n).write_value(set_reset(m, initial.into()));
         modify_bit(GPIO.pmc(n), m, false);
         modify_bit(GPIO.pipc(n), m, false);
         modify_bit(GPIO.pm(n), m, false);
+    }
+
+    fn assert_can_output(&self) {
+        let (port, bit) = (self.pin.port() as u8, self.pin.bit());
+        if !has_port_output(port, bit) {
+            panic!("P{}_{} has no port-mode output", port, bit);
+        }
     }
 
     fn select_alternate(&mut self, alt: Alternate) {
@@ -258,7 +262,13 @@ impl<'d> Flex<'d> {
 
     /// Alternative function `alt` with its I/O direction set by PM, as HW manual Table 41.7
     /// requires for TIOCnx, SSITxD0/1/3 and WDTOVF (PIPC = 0; PM = 0 for `output`).
+    ///
+    /// # Panics
+    /// If `output` and the pin has no port-mode output (P0_0–P0_3, P1_8–P1_15).
     pub fn set_as_alternate_software_io(&mut self, alt: Alternate, output: bool) {
+        if output {
+            self.assert_can_output();
+        }
         self.select_alternate(alt);
         let (n, m) = (self.n(), self.mask());
         if n != 0 {
@@ -596,6 +606,13 @@ mod owned_pin_tests {
     fn an_input_only_pin_refuses_to_become_an_output() {
         let mut pin = Flex::new(unsafe { P1_8::steal() });
         pin.set_as_output(Level::Low);
+    }
+
+    #[test]
+    #[should_panic(expected = "P1_8 has no port-mode output")]
+    fn an_input_only_pin_refuses_a_software_io_output() {
+        let mut pin = Flex::new(unsafe { P1_8::steal() });
+        pin.set_as_alternate_software_io(Alternate::Alt1, true);
     }
 
     #[test]

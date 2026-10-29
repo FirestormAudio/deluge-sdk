@@ -139,7 +139,10 @@ pub extern "C" fn main() -> ! {
     info!("SDRAM heap: initialised (64 MB)");
 
     info!("GPIO: configuring heartbeat LED...");
-    tasks::cdc::set_sync_led(rza1_hal::gpio::Output::new(board.pins.sync_led, rza1_hal::gpio::Level::Low));
+    // The SYNC LED as an output at the level its latch already holds; the host drives it over CDC.
+    let mut sync_led = rza1_hal::gpio::Flex::new(board.pins.sync_led);
+    sync_led.set_as_output(sync_led.is_set_high().into());
+    tasks::cdc::set_sync_led(sync_led);
     let jack_pins = board.pins.jacks;
     info!("GPIO: heartbeat LED P6_7 configured");
 
