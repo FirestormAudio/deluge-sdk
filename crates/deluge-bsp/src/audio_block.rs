@@ -28,7 +28,7 @@ const TX_WRITE_AHEAD_FRAMES: usize = 512;
 #[cfg(feature = "audio-irq")]
 const TX_WRITE_AHEAD_FRAMES: usize = 256;
 
-/// Overrun margin: if available input exceeds `RX_FRAMES - GUARD_FRAMES` the
+/// Overrun margin: if available input exceeds the ring's frames minus `GUARD_FRAMES`, the
 /// read head has been lapped by the DMA, so re-anchor.
 const GUARD_FRAMES: usize = BLOCK_FRAMES;
 
@@ -50,12 +50,7 @@ use crate::sample_fmt::{dither_sample, f32_to_i32, i32_to_f32};
 /// Fill the whole transmit ring with dither, so the codec never sees a run of identical samples
 /// (it would auto-mute). Nothing before `audio::init`.
 pub fn prime_tx() {
-    with_tx(|tx| {
-        let mut lfsr: u32 = 0xACE1;
-        for w in tx.ring_mut() {
-            *w = dither_sample(&mut lfsr) as u32;
-        }
-    });
+    crate::audio::fill_tx_with_dither();
 }
 
 /// The block loop's ring positions, in words (two per stereo frame).

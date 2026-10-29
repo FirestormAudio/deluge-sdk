@@ -734,10 +734,13 @@ pub(crate) unsafe fn stop_path(
         }
     }
 
-    // Read-modify-write DMACR: clear only the stopped channels.
-    let existing = SCUX.dmacr_cim().read();
+    // Read-modify-write DMACR, interrupts masked as `enable_units` does: clear only the stopped
+    // channels.
     let clear_mask = (ffd_mask as u32) | ((ffu_mask as u32) << 4);
-    SCUX.dmacr_cim().write_value(existing & !clear_mask);
+    critical_section::with(|_| {
+        let existing = SCUX.dmacr_cim().read();
+        SCUX.dmacr_cim().write_value(existing & !clear_mask);
+    });
 }
 
 
@@ -966,7 +969,7 @@ impl<'d, C: ChannelId> Channel<'d, C> {
         let tx = start_ffd(n, ffd, format.channels as usize);
         let ws = FDTSEL_DIVEN | (0b1000 + S::INDEX as u32);
         // SAFETY: channel n's units are this path's; the shared registers are read-modify-written.
-        let mut control = unsafe {
+        let mut control: Control<'d> = unsafe {
             configure_ipc(n, IpcSel::FfdToSrcAsync);
             configure_opc(n, OpcSel::ToSsi);
             configure_ffd(n, format, 8);
@@ -991,7 +994,7 @@ impl<'d, C: ChannelId> Channel<'d, C> {
         };
         out.enable();
         // The control stops the SSI's transmit when it drops.
-        control.ssi = Some(S::INDEX);
+        control.route = Some(SsiRoute { ssi: S::INDEX, sosel_shift: C::SOSEL_SHIFT });
         core::mem::forget(out);
         Path { control, tx: WritableRing::new(tx), rx: None }
     }
@@ -1016,7 +1019,13 @@ fn start_ffd<'d>(n: u8, ffd: RingBuf<'d>, frame: usize) -> RingDma<'d> {
 ///
 /// # Safety
 /// Writes channel `n`'s SCUX registers.
-unsafe fn configure_src_dvu(n: u8, format: AudioInfo, src: Src, dvu: Dvu, ffu: bool) -> Control {
+unsafe fn configure_src_dvu<'d>(
+    n: u8,
+    format: AudioInfo,
+    src: Src,
+    dvu: Dvu,
+    ffu: bool,
+) -> Control<'d> {
     let bit = 1u8 << n;
     let (bypass, intifs, output_hz) = match src {
         Src::Bypass => (true, INTIFS_44100_TO_44100, None),
@@ -1047,7 +1056,8 @@ unsafe fn configure_src_dvu(n: u8, format: AudioInfo, src: Src, dvu: Dvu, ffu: b
         channels: format.channels,
         output_hz,
         dvu: dvu_cfg,
-        ssi: None,
+        route: None,
+        _borrow: PhantomData,
         units: Units {
             ffd: bit,
             ffu: if ffu { bit } else { 0 },
@@ -1061,7 +1071,7 @@ unsafe fn configure_src_dvu(n: u8, format: AudioInfo, src: Src, dvu: Dvu, ffu: b
 
 /// A running SCUX path: [`split`](Self::split) it into its control and its rings.
 pub struct Path<'d> {
-    control: Control,
+    control: Control<'d>,
     tx: WritableRing<'d>,
     rx: Option<ReadableRing<'d>>,
 }
@@ -1069,23 +1079,31 @@ pub struct Path<'d> {
 impl<'d> Path<'d> {
     /// The path's control, its FFD ring, and its FFU ring if it has one. Dropping the control
     /// stops the path; dropping a ring halts its DMA.
-    pub fn split(self) -> (Control, WritableRing<'d>, Option<ReadableRing<'d>>) {
+    pub fn split(self) -> (Control<'d>, WritableRing<'d>, Option<ReadableRing<'d>>) {
         (self.control, self.tx, self.rx)
     }
 }
 
 /// A running path's volume and rate. Dropping it stops the path's units (and its SSI's
 /// transmit, on a path into an SSI).
-pub struct Control {
+pub struct Control<'d> {
     n: u8,
     channels: u8,
     output_hz: Option<u32>,
     dvu: Option<DvuConfig>,
-    ssi: Option<u8>,
+    route: Option<SsiRoute>,
+    _borrow: PhantomData<&'d mut ()>,
     units: Units,
 }
 
-impl Control {
+/// A path into an SSI: what dropping its control undoes.
+#[derive(Debug, Clone, Copy)]
+struct SsiRoute {
+    ssi: u8,
+    sosel_shift: u32,
+}
+
+impl Control<'_> {
     /// Apply the DVU settings that must follow DVUIR.INIT = 0.
     ///
     /// # Safety
@@ -1118,6 +1136,12 @@ impl Control {
         }
     }
 
+    /// Whether the path's SRC converts (not bypassed): what [`set_input_rate`](Self::set_input_rate)
+    /// needs.
+    pub fn converts(&self) -> bool {
+        self.output_hz.is_some()
+    }
+
     /// Change the converter's input rate.
     ///
     /// # Panics
@@ -1129,14 +1153,21 @@ impl Control {
     }
 }
 
-impl Drop for Control {
+impl Drop for Control<'_> {
     fn drop(&mut self) {
-        if let Some(ssi) = self.ssi {
-            crate::ssi::stop_tx(ssi);
+        if let Some(route) = self.route {
+            crate::ssi::stop_tx(route.ssi);
         }
         let u = self.units;
         // SAFETY: this path's units.
         unsafe { stop_path(u.ffd, u.ffu, u.src, u.dvu, false, u.ipc, u.opc) };
+        if let Some(route) = self.route {
+            // Undo the route, so a later plain SSI driver on that SSIF isn't fed from SCUX.
+            shared_update(SCUX.ssictrl_cim(), |v| v & !ssictrl_tx_bit(route.ssi));
+            shared_update(SCUX.ssirsel_cim(), |v| v & !(0b11 << route.sosel_shift));
+            SCUX.fdtsel(self.n as usize).write_value(0);
+            SCUX.futsel(self.n as usize).write_value(0);
+        }
     }
 }
 
@@ -1426,11 +1457,12 @@ mod ssi_path_tests {
     use crate::dma_buf::UncachedMut;
     use crate::dmac::{BlockDma, BlockInterruptHandler};
     use crate::mmio::test;
-    use crate::peripherals::{DMA_CH0, DMA_CH7, P6_8, P6_9, P6_10, P6_11, SSIF0};
+    use crate::peripherals::{DMA_CH0, DMA_CH3, DMA_CH7, P6_8, P6_9, P6_10, P6_11, SSIF0};
     use crate::ring_buffer::RingBuf;
 
     crate::bind_interrupts!(struct Irqs {
         DMAINT0 => BlockInterruptHandler<DMA_CH0>;
+        DMAINT3 => BlockInterruptHandler<DMA_CH3>;
         DMAINT7 => BlockInterruptHandler<DMA_CH7>;
     });
 
@@ -1496,8 +1528,33 @@ mod ssi_path_tests {
         assert!(ten > opc_start, "SSI transmit starts after the route is up");
         let (control, _tx, rx) = path.split();
         assert!(rx.is_none());
+        assert!(!control.converts(), "a bypassed SRC converts nothing");
         drop(control);
         assert_eq!(test::peek32(SSICR) & SSICR_TEN, 0, "dropping the control stops transmit");
+        assert_eq!(test::peek32(SCUX.ssictrl_cim().addr()) & SSICTRL_SSI0TX, 0, "direct TX off");
+        assert_eq!(test::peek32(SCUX.fdtsel(0).addr()), 0, "FDTSEL0 back to its reset value");
+        assert_eq!(test::peek32(SCUX.futsel(0).addr()), 0, "FUTSEL0 back to its reset value");
+    }
+
+    #[test]
+    fn dropping_a_ch1_to_ssif0_control_restores_sosel0() {
+        let _serial = super::path_tests::serial();
+        crate::clocks::init(crate::clocks::TEST_CLOCKS);
+        test::reset();
+        let (out, _rx) = scux_output();
+        let chs = Scux::new(unsafe { crate::peripherals::SCUX::steal() });
+        let path = chs.ch1.into_ssi_path(
+            AudioInfo::STEREO_24,
+            ring(unsafe { DMA_CH3::steal() }),
+            Src::Async { input_hz: 48_000, output_hz: 44_100 },
+            Dvu::Bypass,
+            out,
+        );
+        assert_eq!(test::peek32(SCUX.ssirsel_cim().addr()) & 0b11, 0b01, "SOSEL0: SRC1");
+        let (control, _tx, _) = path.split();
+        assert!(control.converts());
+        drop(control);
+        assert_eq!(test::peek32(SCUX.ssirsel_cim().addr()) & 0b11, 0b00, "SOSEL0 back to SRC0");
     }
 
     #[test]

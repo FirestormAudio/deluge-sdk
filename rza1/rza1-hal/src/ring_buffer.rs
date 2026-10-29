@@ -18,8 +18,12 @@
 //! The copy cursor doesn't see window writes: use one or the other on a ring.
 //!
 //! The ring is lent for `'d` and the DMAC runs over it until the ring is dropped, which halts the
-//! channel first. Leaking a ring (`mem::forget`) leaves the DMAC running over memory whose borrow
-//! has ended.
+//! channel first. Leaking a ring (`mem::forget`, reachable from safe code) leaves the DMAC running
+//! over memory whose borrow has ended: the same gap as embassy's ring-buffered drivers. A
+//! `'static` buffer, as a board crate usually lends, can't be freed under it.
+//!
+//! Each ring has one waker: wait on it from one task at a time (one [`BlockSignal`], or the copy
+//! API's `write`/`read`), or the waiters steal each other's wake.
 
 use crate::dma_buf::UncachedMut;
 use crate::dmac::BlockDma;
@@ -58,7 +62,8 @@ pub struct RingBuf<'d> {
     pub blocks: usize,
 }
 
-/// Waits for a ring's next block without borrowing the ring.
+/// Waits for a ring's next block without borrowing the ring. One waiter per ring at a time: the
+/// channel has one waker.
 #[derive(Debug, Clone, Copy)]
 pub struct BlockSignal {
     ch: u8,
@@ -208,7 +213,7 @@ impl<'d> ReadableRing<'d> {
 
     /// Copy as many whole frames as have arrived into `out` and return how many words that was.
     /// The first call starts at the DMAC, so it returns 0. [`Error::Overrun`] once if the DMAC
-    /// lapped the reader.
+    /// lapped the reader, or is about to (less than a frame of margin).
     pub fn read_immediate(&mut self, out: &mut [u32]) -> Result<usize, Error> {
         let hw = self.ring.absolute();
         let len = self.len();
@@ -217,7 +222,8 @@ impl<'d> ReadableRing<'d> {
                 self.cursor = Some(hw);
                 return Ok(0);
             }
-            Some(c) if hw - c > len as u64 => {
+            // A whole ring behind, the oldest frame is being overwritten as it's copied.
+            Some(c) if hw - c > (len - self.frame_words()) as u64 => {
                 self.cursor = Some(hw);
                 return Err(Error::Overrun);
             }
@@ -369,6 +375,18 @@ mod tests {
         assert_eq!(rx.read_immediate(&mut out), Err(Error::Overrun));
         dma_at(base, 20, 0);
         assert_eq!(rx.read_immediate(&mut out), Ok(4));
+    }
+
+    /// A reader exactly a ring behind would copy its oldest frame while the DMAC overwrites it.
+    #[test]
+    fn a_reader_a_whole_ring_behind_reports_overrun() {
+        let _serial = serial();
+        let (mut rx, base) = readable();
+        dma_at(base, 0, 0);
+        let mut out = [0u32; 8];
+        assert_eq!(rx.read_immediate(&mut out), Ok(0));
+        dma_at(base, 0, 4); // absolute 64: exactly one ring
+        assert_eq!(rx.read_immediate(&mut out), Err(Error::Overrun));
     }
 
     #[test]

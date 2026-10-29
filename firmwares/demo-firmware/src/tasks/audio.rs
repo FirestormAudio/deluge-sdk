@@ -68,12 +68,7 @@ fn dither_sample(lfsr: &mut u32) -> i32 {
 /// Called once at startup and after the USB stream ends to ensure the codec
 /// never sees a burst of identical samples.
 pub(crate) fn fill_tx_with_dither() {
-    audio::with_tx(|tx| {
-        let mut lfsr: u32 = 0xACE1;
-        for w in tx.ring_mut() {
-            *w = dither_sample(&mut lfsr) as u32;
-        }
-    });
+    audio::fill_tx_with_dither();
 }
 
 /// ISO OUT BRDY hook — runs in **IRQ context** for every speaker packet.

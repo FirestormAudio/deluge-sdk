@@ -7,7 +7,7 @@
 //!
 //! The descriptors live in a per-channel table here: DMA-controller state, not the caller's ring.
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::BlockDma;
 use crate::dma_buf::UncachedMut;
@@ -15,7 +15,8 @@ use crate::dma_buf::UncachedMut;
 /// The most blocks a ring can have.
 pub(crate) const MAX_RING_BLOCKS: usize = 16;
 
-/// Link descriptor header: LV (valid), LE (the next is a descriptor), WBD (write back), NXA.
+/// Link descriptor header (HW manual Table 9.15): LV = 1 (valid), LE = 0 (the link continues),
+/// WBD = 1 (no write-back), DIM = 1.
 const DESC_HEADER: u32 = 0b1101;
 
 /// One 8-word link descriptor.
@@ -27,8 +28,10 @@ struct LinkDesc([u32; 8]);
 static mut RING_DESC: [[LinkDesc; MAX_RING_BLOCKS]; 16] =
     [const { [const { LinkDesc([0; 8]) }; MAX_RING_BLOCKS] }; 16];
 
-/// Blocks channel n has completed since its ring started: bumped by the block interrupt.
-pub(crate) static BLOCKS_DONE: [AtomicU32; 16] = [const { AtomicU32::new(0) }; 16];
+/// Block interrupts channel n has taken since its ring started. An edge-triggered interrupt can
+/// cover two block ends, and a stale one can land after a restart, so this is only a hint:
+/// [`RingDma::absolute`] reconciles it with where the DMAC is.
+pub(crate) static BLOCKS_DONE: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
 
 /// Which way a ring moves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,8 +57,9 @@ impl<'d> RingDma<'d> {
     /// bits 2:0) and request `dmars`, then start the channel.
     ///
     /// # Panics
-    /// If `blocks` is 0 or more than [`MAX_RING_BLOCKS`], or `buf` isn't whole blocks of whole
-    /// `frame_words`-word frames.
+    /// If `blocks` is less than 2 or more than [`MAX_RING_BLOCKS`] (one block gives no position
+    /// to check the count against), or `buf` isn't whole blocks of whole `frame_words`-word
+    /// frames.
     pub(crate) fn start(
         mut dma: BlockDma<'d>,
         buf: UncachedMut<'d, u32>,
@@ -66,8 +70,8 @@ impl<'d> RingDma<'d> {
         dmars: u32,
     ) -> Self {
         assert!(
-            (1..=MAX_RING_BLOCKS).contains(&blocks),
-            "dmac ring: {} blocks (1 to {})",
+            (2..=MAX_RING_BLOCKS).contains(&blocks),
+            "dmac ring: {} blocks (2 to {})",
             blocks,
             MAX_RING_BLOCKS
         );
@@ -98,7 +102,8 @@ impl<'d> RingDma<'d> {
                 d.add(1).write_volatile(src);
                 d.add(2).write_volatile(dst);
                 d.add(3).write_volatile(block_bytes);
-                d.add(4).write_volatile(chcfg);
+                // DEM clear: every block's end raises the interrupt that counts it.
+                d.add(4).write_volatile(chcfg & !super::CHCFG_DEM);
                 d.add(5).write_volatile(0);
                 d.add(6).write_volatile(0);
                 d.add(7).write_volatile(desc((i + 1) % blocks) as u32);
@@ -135,9 +140,10 @@ impl<'d> RingDma<'d> {
         word - word % self.frame_words
     }
 
-    /// Words moved since the ring started, never decreasing. The block count lags the DMAC by
-    /// the block interrupt's latency, so a position in the block after the counted one counts
-    /// that block too: right while the latency stays under one block.
+    /// Words moved since the ring started, never decreasing. The block count is a hint (see
+    /// [`BLOCKS_DONE`]); the block the DMAC is in decides: the count is moved to the nearest
+    /// count with that block, forward or back. Right while the count is off by at most half the
+    /// ring's blocks, so an interrupt can be late, lost or doubled by that much.
     pub(crate) fn absolute(&self) -> u64 {
         let ch = self.dma.number() as usize;
         let block_words = self.len() / self.blocks;
@@ -148,9 +154,16 @@ impl<'d> RingDma<'d> {
             if c1 != c2 {
                 continue;
             }
-            let in_block = (p / block_words) as u32;
-            let counted = if in_block == c1 % self.blocks as u32 { c1 } else { c1.wrapping_add(1) };
-            return counted as u64 * block_words as u64 + (p % block_words) as u64;
+            let blocks = self.blocks as u64;
+            let in_block = (p / block_words) as u64;
+            // How far ahead of the count's block the DMAC is, modulo the ring.
+            let ahead = (in_block + blocks - c1 % blocks) % blocks;
+            let counted = if ahead <= blocks / 2 {
+                c1 + ahead
+            } else {
+                c1.saturating_sub(blocks - ahead)
+            };
+            return counted * block_words as u64 + (p % block_words) as u64;
         }
     }
 
@@ -281,6 +294,62 @@ mod tests {
         }
         test::poke32(crsa(), r.buf.bus_addr() + 4 * 20);
         assert_eq!(r.absolute(), 5 * 16 + 4);
+    }
+
+    /// Two block ends inside one masked-interrupt window raise one (edge-triggered) interrupt,
+    /// so the count can lag by more than a block: the position still never goes back.
+    #[test]
+    fn a_lost_block_count_never_moves_the_position_back() {
+        let _serial = serial();
+        let r = ring();
+        block_end(); // counted 1; the DMAC has really finished 2 blocks
+        test::poke32(crsa(), r.buf.bus_addr() + 4 * 40); // block 2, word 8
+        let first = r.absolute();
+        test::poke32(crsa(), r.buf.bus_addr() + 4 * 50); // block 3, word 2: still no interrupt
+        assert!(r.absolute() > first, "{} then {}", first, r.absolute());
+        assert_eq!(r.absolute(), 50);
+    }
+
+    /// A stale pending block end from the channel's previous ring counts once too many: the
+    /// position comes from where the DMAC is, not from the count alone.
+    #[test]
+    fn an_extra_block_count_is_resolved_by_the_position() {
+        let _serial = serial();
+        let r = ring();
+        block_end();
+        block_end(); // counted 2, but the DMAC is only in block 1
+        test::poke32(crsa(), r.buf.bus_addr() + 4 * 20);
+        assert_eq!(r.absolute(), 20);
+    }
+
+    #[test]
+    #[should_panic(expected = "blocks")]
+    fn a_one_block_ring_is_refused() {
+        let _serial = serial();
+        test::reset();
+        let buf = UncachedMut::new(std::vec![0u32; 64].leak()).unwrap();
+        let dma = BlockDma::new(unsafe { DMA_CH11::steal() }, Irqs);
+        let _ = RingDma::start(dma, buf, 1, 2, CHCFG, Dir::MemToPeriph { dst: 0xE820_B018 }, 0xE1);
+    }
+
+    #[test]
+    fn start_clears_dem_so_every_block_interrupts() {
+        let _serial = serial();
+        test::reset();
+        let buf = UncachedMut::new(std::vec![0u32; 64].leak()).unwrap();
+        let dma = BlockDma::new(unsafe { DMA_CH11::steal() }, Irqs);
+        let _r = RingDma::start(
+            dma,
+            buf,
+            4,
+            2,
+            CHCFG | (1 << 24),
+            Dir::MemToPeriph { dst: 0xE820_B018 },
+            0xE1,
+        );
+        for i in 0..4 {
+            assert_eq!(unsafe { &*core::ptr::addr_of!(RING_DESC[11][i]) }.0[4] & (1 << 24), 0);
+        }
     }
 
     #[test]

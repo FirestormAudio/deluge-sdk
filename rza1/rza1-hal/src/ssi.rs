@@ -12,6 +12,9 @@
 //! checked by [`crate::dma_buf::UncachedMut`]); each DMA block ends with an interrupt, which the
 //! ring's [`BlockInterruptHandler`](crate::dmac::BlockInterruptHandler) binding services.
 //!
+//! The data pins use the plain alternate function (PIPC = 1), which runs on hardware; HW manual
+//! Table 41.7 asks PIPC = 0 for SSITxD0/1/3, which no bench run has tried yet.
+//!
 //! The master clock pin (AUDIO_XOUT) and a codec's power are the board's. SSIF2, which shares
 //! one data pin and one DMA request between directions, isn't supported yet.
 //!
@@ -49,8 +52,8 @@ use crate::dmac::{
 //   - SCKP=SWSP=SPDP=SDTA=PDTA=DEL=0 (all defaults)
 //   - CKDV=0010 (7:4)  : AUDIO_X1 ÷ 4 = 5.6448 MHz BCLK
 //
-// The Deluge value is 0x002B_C020 (DWL bits [21:19] = 0b101 = 24-bit; DWL=0b111
-// is prohibited), held in `deluge_bsp::system::SSICR`.
+// [`Config::default`] encodes 0x002B_C020 (DWL bits [21:19] = 0b101 = 24-bit; DWL=0b111 is
+// prohibited).
 
 /// SSIFCR bit positions (verified against vendor/rbsp ssif.h SSIF_FCR_SHIFT_*).
 const SSIFCR_RFRST: u32 = 1 << 0; // RX FIFO reset (active high)
@@ -115,7 +118,7 @@ pub(crate) unsafe fn reset_all() {
 /// Compute CHCFG word for an SSI TX DMA channel (SRAM → SSIFTDR).
 /// Source address increments (SAD=0); destination is fixed SSIFTDR (DAD=1).
 /// Trigger: destination-select (REQD=1) — SSI TX FIFO drives the request.
-/// DEM is cleared so DMAINT fires once per full buffer pass (enables interrupt).
+/// DEM is cleared, so DMAINT fires once per ring block.
 #[inline(always)]
 const fn tx_chcfg(dma_ch: u8) -> u32 {
     CHCFG_DMS
@@ -132,7 +135,7 @@ const fn tx_chcfg(dma_ch: u8) -> u32 {
 /// Compute CHCFG word for an SSI RX DMA channel (SSIFRDR → SRAM).
 /// Source is fixed SSIFRDR (SAD=1); destination address increments (DAD=0).
 /// Trigger: source-select (REQD=0) — SSI RX FIFO drives the request.
-/// DEM is cleared so DMAINT fires once per full buffer pass (enables interrupt).
+/// DEM is cleared, so DMAINT fires once per ring block.
 #[inline(always)]
 const fn rx_chcfg(dma_ch: u8) -> u32 {
     CHCFG_DMS

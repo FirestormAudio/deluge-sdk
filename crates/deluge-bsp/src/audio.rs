@@ -49,7 +49,8 @@ static mut SSI_RX_BUF: Ring<SSI_RX_WORDS> = Ring([0; SSI_RX_WORDS]);
 static mut DVU_BUF: Ring<DVU_WORDS> = Ring([0; DVU_WORDS]);
 
 /// `buf` through its uncached mirror, as a DMA ring. Its cached alias is cleaned and invalidated
-/// first: zeroing the BSS left dirty lines there that an eviction would write over the DMA's data.
+/// first, defensively: no line of it may be dirty when the DMAC owns the memory (rza1-rt zeroes
+/// the BSS with the D-cache off, so none should be).
 ///
 /// # Safety
 /// Called once per buffer; nothing else touches it afterwards.
@@ -119,6 +120,22 @@ pub fn with_tx<R>(f: impl FnOnce(&mut WritableRing<'static>) -> R) -> Option<R> 
 /// Run `f` on the SSI receive ring (what the codec records). `None` before an `init`.
 pub fn with_rx<R>(f: impl FnOnce(&mut ReadableRing<'static>) -> R) -> Option<R> {
     with_slot(&RX, |rx| f(rx))
+}
+
+/// Fill the transmit ring with dither, 256 words per critical section (the USB interrupt
+/// stays serviceable between chunks).
+/// Nothing before an `init`.
+pub fn fill_tx_with_dither() {
+    const CHUNK: usize = 256;
+    let len = with_tx(|tx| tx.len()).unwrap_or(0);
+    let mut lfsr: u32 = 0xACE1;
+    for start in (0..len).step_by(CHUNK) {
+        with_tx(|tx| {
+            for w in &mut tx.ring_mut()[start..(start + CHUNK).min(len)] {
+                *w = crate::sample_fmt::dither_sample(&mut lfsr) as u32;
+            }
+        });
+    }
 }
 
 /// Waits for the receive ring's next 128-frame block, without holding it. `None` before an

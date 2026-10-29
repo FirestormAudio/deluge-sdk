@@ -8,13 +8,13 @@ use core::cell::RefCell;
 use critical_section::Mutex;
 use rza1_hal::scux::{Control, RampConfig};
 
-static CONTROL: Mutex<RefCell<Option<Control>>> = Mutex::new(RefCell::new(None));
+static CONTROL: Mutex<RefCell<Option<Control<'static>>>> = Mutex::new(RefCell::new(None));
 
-pub(crate) fn install(control: Control) {
+pub(crate) fn install(control: Control<'static>) {
     critical_section::with(|cs| *CONTROL.borrow(cs).borrow_mut() = Some(control));
 }
 
-fn with_control(f: impl FnOnce(&mut Control)) {
+fn with_control(f: impl FnOnce(&mut Control<'static>)) {
     crate::audio::with_slot(&CONTROL, f);
 }
 
@@ -33,7 +33,12 @@ pub fn fade_to(vol: u32, ramp: RampConfig) {
     with_control(|c| c.fade_to(vol, ramp));
 }
 
-/// Change the engine rate the SRC converts from ([`crate::audio::init_with_scux_src`] only).
+/// Change the engine rate the SRC converts from. Nothing on a path without a converter
+/// ([`crate::audio::init_with_scux`]), as before; only [`crate::audio::init_with_scux_src`] has one.
 pub fn update_engine_rate(engine_hz: u32) {
-    with_control(|c| c.set_input_rate(engine_hz));
+    with_control(|c| {
+        if c.converts() {
+            c.set_input_rate(engine_hz);
+        }
+    });
 }

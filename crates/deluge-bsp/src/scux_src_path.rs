@@ -26,7 +26,7 @@ pub const RX_WORDS: usize = 4096;
 static mut TX_BUF: Ring<TX_WORDS> = Ring([0; TX_WORDS]);
 static mut RX_BUF: Ring<RX_WORDS> = Ring([0; RX_WORDS]);
 
-static CONTROL: Mutex<RefCell<Option<Control>>> = Mutex::new(RefCell::new(None));
+static CONTROL: Mutex<RefCell<Option<Control<'static>>>> = Mutex::new(RefCell::new(None));
 static TX: Mutex<RefCell<Option<WritableRing<'static>>>> = Mutex::new(RefCell::new(None));
 static RX: Mutex<RefCell<Option<ReadableRing<'static>>>> = Mutex::new(RefCell::new(None));
 
