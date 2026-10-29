@@ -107,16 +107,30 @@ fn install(
     }
 }
 
+/// The next byte, logging and skipping receive errors: a framing error on a MIDI cable is noise
+/// to its readers, not a reason to stop.
 async fn read_byte(slot: &'static RxSlot, name: &str) -> u8 {
     let mut rx = slot.lock().await;
-    match rx.as_mut() {
-        Some(rx) => rx.read_byte().await,
-        None => panic!("the {name} UART isn't initialised"),
+    let Some(rx) = rx.as_mut() else {
+        panic!("the {name} UART isn't initialised");
+    };
+    loop {
+        match rx.read_byte().await {
+            Ok(byte) => return byte,
+            Err(e) => log::warn!("bsp uart: {name} receive error: {e:?}"),
+        }
     }
 }
 
-fn try_read(slot: &'static RxSlot) -> Option<u8> {
-    slot.try_lock().ok()?.as_mut()?.try_read()
+fn try_read(slot: &'static RxSlot, name: &str) -> Option<u8> {
+    let mut slot = slot.try_lock().ok()?;
+    let rx = slot.as_mut()?;
+    loop {
+        match rx.try_read() {
+            Ok(byte) => return byte,
+            Err(e) => log::warn!("bsp uart: {name} receive error: {e:?}"),
+        }
+    }
 }
 
 fn tx(slot: &'static OnceLock<UartTx<'static, Async>>, name: &str) -> &'static UartTx<'static, Async> {
@@ -143,7 +157,7 @@ pub async fn read_midi_byte() -> u8 {
 /// The next raw byte from the MIDI DIN ring, without waiting. `None` if the ring is empty, if
 /// [`init_midi`] hasn't run, or while a [`read_midi_byte`] is waiting (it drains the ring).
 pub fn try_read_midi() -> Option<u8> {
-    try_read(&MIDI_RX)
+    try_read(&MIDI_RX, "MIDI")
 }
 
 /// Put as much of `data` in the MIDI DIN transmit FIFO as fits now; returns how much. Enough for
@@ -177,7 +191,7 @@ pub async fn read_pic_byte() -> u8 {
 /// The next raw byte from the PIC ring, without waiting; see [`try_read_midi`] for `None`. A fault
 /// path, where the PIC task may hold the receiver, uses [`steal_pic_rx`].
 pub fn try_read_pic() -> Option<u8> {
-    try_read(&PIC_RX)
+    try_read(&PIC_RX, "PIC")
 }
 
 /// The PIC UART's receiver without its lock, for a fault or freeze path: the PIC task may be

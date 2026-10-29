@@ -31,7 +31,7 @@ use embassy_sync::mutex::Mutex;
 use embassy_sync::waitqueue::AtomicWaker;
 
 use core::marker::PhantomData;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
 use crate::Peri;
 use crate::dmac::Dma;
@@ -426,8 +426,56 @@ fn clear_rx_errors(ch: usize) {
 /// Clears the receive-error flags so the SCIF can resume forwarding bytes —
 /// without this a single framing error permanently stalls RX. Wakes the RX task.
 fn on_eri(ch: usize) {
+    latch_rx_errors(ch);
     clear_rx_errors(ch);
     UART_STATE[ch].rx_waker.wake();
+}
+
+// Latched receive errors, one bit each, lowest reported first.
+const LATCH_OVERRUN: u8 = 1 << 0;
+const LATCH_FRAMING: u8 = 1 << 1;
+const LATCH_PARITY: u8 = 1 << 2;
+const LATCH_BREAK: u8 = 1 << 3;
+
+/// SCIF n's receive errors seen by its error interrupt and not yet returned by a read.
+static RX_ERROR: [AtomicU8; NUM_CHANNELS] = [const { AtomicU8::new(0) }; NUM_CHANNELS];
+
+/// Record SCIF `ch`'s receive-error flags (SCFSR PER/FER/BRK, SCLSR ORER) for its reader.
+fn latch_rx_errors(ch: usize) {
+    let sc = scif(ch);
+    let scfsr = sc.fsr().read().0;
+    let mut bits = 0;
+    if sc.lsr().read().0 & 1 != 0 {
+        bits |= LATCH_OVERRUN;
+    }
+    if scfsr & FER != 0 {
+        bits |= LATCH_FRAMING;
+    }
+    if scfsr & PER != 0 {
+        bits |= LATCH_PARITY;
+    }
+    if scfsr & BRK != 0 {
+        bits |= LATCH_BREAK;
+    }
+    if bits != 0 {
+        RX_ERROR[ch].fetch_or(bits, Ordering::AcqRel);
+    }
+}
+
+/// Take SCIF `ch`'s highest-priority latched receive error: overrun, framing, parity, then break.
+fn take_error(ch: usize) -> Option<Error> {
+    let bits = RX_ERROR[ch].load(Ordering::Acquire);
+    if bits == 0 {
+        return None;
+    }
+    let bit = bits & bits.wrapping_neg();
+    RX_ERROR[ch].fetch_and(!bit, Ordering::AcqRel);
+    Some(match bit {
+        LATCH_OVERRUN => Error::Overrun,
+        LATCH_FRAMING => Error::Framing,
+        LATCH_PARITY => Error::Parity,
+        _ => Error::Break,
+    })
 }
 
 /// Called from GIC dispatch when TXI fires for SCIF `ch`.
@@ -681,8 +729,18 @@ impl<'d> UartRx<'d, Async> {
         }
     }
 
-    /// The next received byte, or `None` if the ring is empty.
-    pub fn try_read(&mut self) -> Option<u8> {
+    /// The next received byte, or `None` if the ring is empty. A receive error the error
+    /// interrupt latched since the last read comes first, once; the bytes received around it stay
+    /// readable after it.
+    pub fn try_read(&mut self) -> Result<Option<u8>, Error> {
+        if let Some(e) = take_error(self.ch) {
+            return Err(e);
+        }
+        Ok(self.try_read_ring())
+    }
+
+    /// The next byte from the ring, ignoring latched errors.
+    fn try_read_ring(&mut self) -> Option<u8> {
         // One step, interrupts masked: a stolen reader running in an interrupt (a freeze raised
         // from an interrupt-priority executor) must not land between this load and store, or
         // the store would rewind past the bytes it consumed and they'd be delivered again.
@@ -731,12 +789,12 @@ impl<'d> UartRx<'d, Async> {
         })
     }
 
-    /// Wait for the next received byte. The ring raises no interrupt, so this polls it every
-    /// 100 µs.
-    pub async fn read_byte(&mut self) -> u8 {
+    /// Wait for the next received byte, or a receive error ([`try_read`](Self::try_read)). The
+    /// ring raises no interrupt, so this polls it every 100 µs.
+    pub async fn read_byte(&mut self) -> Result<u8, Error> {
         loop {
-            if let Some(byte) = self.try_read() {
-                return byte;
+            if let Some(byte) = self.try_read()? {
+                return Ok(byte);
             }
             embassy_time::Timer::after_micros(100).await;
         }
@@ -847,19 +905,20 @@ impl<'d> UartTx<'d, Async> {
 use core::convert::Infallible;
 
 impl embedded_io_async::ErrorType for UartRx<'_, Async> {
-    type Error = Infallible;
+    type Error = Error;
 }
 
 impl embedded_io_async::Read for UartRx<'_, Async> {
-    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Infallible> {
+    /// At least one byte, then whatever else has arrived; or a latched receive error, if one is
+    /// pending before the first byte. An error latched later waits for the next call.
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
         if buf.is_empty() {
             return Ok(0);
         }
-        // At least one byte, then whatever else the ring already holds.
-        buf[0] = self.read_byte().await;
+        buf[0] = self.read_byte().await?;
         let mut n = 1;
         while n < buf.len() {
-            match self.try_read() {
+            match self.try_read_ring() {
                 Some(byte) => {
                     buf[n] = byte;
                     n += 1;
@@ -1035,8 +1094,95 @@ mod typed_tests {
         0xE820_0000 + ch as usize * 64 + (if ch >= 8 { 0x200 } else { 0 }) + off
     }
 
+    /// The receive state (rings, read positions, latched errors) is shared between test threads.
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// SCIF1 up on its DMA ring, as the PIC link runs, with nothing received yet.
+    fn scif1_rx() -> UartRx<'static, Async> {
+        crate::clocks::init(crate::clocks::TEST_CLOCKS);
+        test::reset();
+        let rx_dma = Dma::new(unsafe { DMA_CH12::steal() }, Irqs);
+        let (rx, _tx) = unsafe {
+            Uart::new(
+                SCIF1::steal(),
+                crate::peripherals::P3_15::steal(),
+                crate::peripherals::P1_9::steal(),
+                rx_dma,
+                None,
+                Irqs,
+                Config::default(),
+            )
+        }
+        .split();
+        while take_error(1).is_some() {}
+        test::poke32(chreg(12, 0x1C), rx.base);
+        rx
+    }
+
+    #[test]
+    fn eri_latches_framing_and_overrun() {
+        let _serial = serial();
+        test::reset();
+        let b = 0xE800_8000usize; // SCIF2
+        test::poke16(b + 0x10, FER | ER);
+        test::poke16(b + 0x24, 1);
+        on_eri(2);
+        assert_eq!(test::peek16(b + 0x10) & (FER | ER), 0, "SCFSR errors cleared");
+        assert_eq!(test::peek16(b + 0x24) & 1, 0, "ORER cleared");
+        assert_eq!(take_error(2), Some(Error::Overrun));
+        assert_eq!(take_error(2), Some(Error::Framing));
+        assert_eq!(take_error(2), None);
+    }
+
+    #[test]
+    fn errors_are_reported_one_per_read_in_priority_order() {
+        let _serial = serial();
+        let mut rx = scif1_rx();
+        let b = 0xE800_7800usize; // SCIF1
+        test::poke16(b + 0x10, PER | BRK | ER);
+        on_eri(1);
+        assert_eq!(rx.try_read(), Err(Error::Parity));
+        assert_eq!(rx.try_read(), Err(Error::Break));
+        assert_eq!(rx.try_read(), Ok(None));
+    }
+
+    #[test]
+    fn try_read_returns_ring_bytes_after_the_error() {
+        let _serial = serial();
+        let mut rx = scif1_rx();
+        let b = 0xE800_7800usize; // SCIF1
+        unsafe { rx_ring(1).write(0x5A) };
+        test::poke32(chreg(12, 0x1C), rx.base + 1);
+        test::poke16(b + 0x10, FER | ER);
+        on_eri(1);
+        assert_eq!(rx.try_read(), Err(Error::Framing));
+        assert_eq!(rx.try_read(), Ok(Some(0x5A)));
+        assert_eq!(rx.try_read(), Ok(None));
+    }
+
+    #[test]
+    fn an_async_read_returns_a_pending_error_before_any_byte() {
+        let _serial = serial();
+        let mut rx = scif1_rx();
+        let b = 0xE800_7800usize; // SCIF1
+        unsafe { rx_ring(1).write(0x33) };
+        test::poke32(chreg(12, 0x1C), rx.base + 1);
+        test::poke16(b + 0x10, PER | ER);
+        on_eri(1);
+        let mut buf = [0u8; 4];
+        let r = embassy_futures::block_on(embedded_io_async::Read::read(&mut rx, &mut buf));
+        assert_eq!(r, Err(Error::Parity));
+        let r = embassy_futures::block_on(embedded_io_async::Read::read(&mut rx, &mut buf));
+        assert_eq!(r, Ok(1));
+        assert_eq!(buf[0], 0x33);
+    }
+
     #[test]
     fn a_uart_is_configured_bound_and_moves_both_directions_by_dma() {
+        let _serial = serial();
         crate::clocks::init(crate::clocks::TEST_CLOCKS);
         test::reset();
         let rx_dma = Dma::new(unsafe { DMA_CH13::steal() }, Irqs);
@@ -1129,6 +1275,7 @@ mod typed_tests {
 
     #[test]
     fn a_stolen_receiver_shares_the_owners_read_position_across_the_ring_wrap() {
+        let _serial = serial();
         crate::clocks::init(crate::clocks::TEST_CLOCKS);
         test::reset();
         let rx_dma = Dma::new(unsafe { DMA_CH12::steal() }, Irqs);
@@ -1149,7 +1296,7 @@ mod typed_tests {
 
         // Nothing received: the DMAC's write position is still the ring's start.
         test::poke32(crda, rx.base);
-        assert_eq!(rx.try_read(), None);
+        assert_eq!(rx.try_read(), Ok(None));
 
         // The DMAC fills the ring up to its last byte...
         for i in 0..DMA_RX_BUF_SIZE {
@@ -1157,16 +1304,16 @@ mod typed_tests {
         }
         test::poke32(crda, rx.base + DMA_RX_BUF_SIZE as u32 - 1);
         for i in 0..DMA_RX_BUF_SIZE - 1 {
-            assert_eq!(rx.try_read(), Some(i as u8));
+            assert_eq!(rx.try_read(), Ok(Some(i as u8)));
         }
-        assert_eq!(rx.try_read(), None);
+        assert_eq!(rx.try_read(), Ok(None));
 
         // ...then writes the last byte and wraps round to overwrite the first.
         unsafe { ring.write(0xAA) };
         test::poke32(crda, rx.base + 1);
-        assert_eq!(rx.try_read(), Some(0xFF));
-        assert_eq!(rx.try_read(), Some(0xAA));
-        assert_eq!(rx.try_read(), None);
+        assert_eq!(rx.try_read(), Ok(Some(0xFF)));
+        assert_eq!(rx.try_read(), Ok(Some(0xAA)));
+        assert_eq!(rx.try_read(), Ok(None));
 
         // A stolen receiver (a fault path's, while the owner is suspended) reads from the same
         // position: what it consumes, the owner doesn't deliver again.
@@ -1176,8 +1323,8 @@ mod typed_tests {
         }
         test::poke32(crda, rx.base + 3);
         let mut stolen = unsafe { UartRx::steal::<SCIF1, DMA_CH12>() }.expect("SCIF1's ring runs");
-        assert_eq!(stolen.try_read(), Some(0x11));
-        assert_eq!(rx.try_read(), Some(0x22));
-        assert_eq!(stolen.try_read(), None);
+        assert_eq!(stolen.try_read(), Ok(Some(0x11)));
+        assert_eq!(rx.try_read(), Ok(Some(0x22)));
+        assert_eq!(stolen.try_read(), Ok(None));
     }
 }
