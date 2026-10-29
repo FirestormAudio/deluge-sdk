@@ -13,9 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Every RZ/A1L pin is a `Peripherals` singleton (`P0_0` … `P9_5`; P8/P9 only on the 208/233-pin
     packages). `gpio::{Input, Output, Flex}` take one; they implement the embedded-hal 1.0
     digital traits, and dropping one changes no register.
-  - Level, direction and mode go through the set/reset registers (PSRn, PMSRn, PMCSRn; toggles
-    through PNOTn), so a write never undoes another pin's; an output's level is written before it
-    becomes an output. Only `OutputCapable` pins can be an `Output` (not P0_x or P1_8–P1_15).
+  - An output's level goes through PSRn and toggles through PNOTn; mode, direction and the rest
+    are read-modify-written in a critical section (PMCSR1/PMSR1 have no bits for P1_8–P1_15), so
+    a write never undoes another pin's. An output's level is written before it becomes an output.
+    Only `OutputCapable` pins can be an `Output` (not P0_x or P1_8–P1_15).
   - Pin-function traits (`uart::{TxPin, RxPin}`, `rspi::{SckPin, MosiPin, MisoPin, SslPin}`,
     `sdhi::{ClkPin, CmdPin, D0Pin..D3Pin, CdPin, WpPin}`) are generated from the manual's port
     tables by `rza1/tools/gen-pins.py` (`--check` in `rza1/tools/test.sh`). `Uart::new`,
