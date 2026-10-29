@@ -2173,7 +2173,7 @@ async fn poll_pipe(n: usize) -> Result<usize, PipeError> {
 /// # Safety
 ///
 /// Must be called from the hardware IRQ handler for the corresponding port.
-pub unsafe fn hcd_int_handler(port: u8) {
+pub(crate) unsafe fn hcd_int_handler(port: u8) {
     unsafe {
         let u = usb(port);
 

@@ -35,14 +35,14 @@ use crate::pac::usb::Usb;
 // ---------------------------------------------------------------------------
 
 /// Total number of hardware pipes (DCP + pipes 1-15).
-pub const PIPE_COUNT: usize = 16;
+pub(crate) const PIPE_COUNT: usize = 16;
 
 // ---------------------------------------------------------------------------
 // Per-pipe async wakers
 // ---------------------------------------------------------------------------
 
 /// One waker per pipe.  The ISR calls `wake()` when a transfer finishes.
-pub static PIPE_WAKERS: [AtomicWaker; PIPE_COUNT] = {
+pub(crate) static PIPE_WAKERS: [AtomicWaker; PIPE_COUNT] = {
     #[allow(clippy::declare_interior_mutable_const)]
     const W: AtomicWaker = AtomicWaker::new();
     [W; PIPE_COUNT]
@@ -53,16 +53,16 @@ pub static PIPE_WAKERS: [AtomicWaker; PIPE_COUNT] = {
 // ---------------------------------------------------------------------------
 
 /// Bitmask: bit N = pipe N transfer has completed (BRDY/BEMP fired).
-pub static PIPE_DONE: AtomicU16 = AtomicU16::new(0);
+pub(crate) static PIPE_DONE: AtomicU16 = AtomicU16::new(0);
 
 /// Bitmask: bit N = pipe N encountered a NRDY error.
-pub static PIPE_NRDY: AtomicU16 = AtomicU16::new(0);
+pub(crate) static PIPE_NRDY: AtomicU16 = AtomicU16::new(0);
 
 /// Bitmask: bit N = pipe N is an IN (device→host) pipe.  Set by
 /// [`pipe_configure`].  The BEMP ISR uses this to distinguish non-zero IN pipes
 /// from OUT pipes because BEMP is also reported for receive-side overflow/error
 /// conditions.
-pub static PIPE_IS_IN: AtomicU16 = AtomicU16::new(0);
+pub(crate) static PIPE_IS_IN: AtomicU16 = AtomicU16::new(0);
 
 /// Activate an ISO IN pipe for continuous BRDY-driven streaming.
 ///
@@ -120,7 +120,7 @@ pub(crate) unsafe fn pipe_xfer_in_brdy(u: Usb, n: usize) {
 /// read and mutated by the ISR during BRDY/BEMP handling.
 ///
 /// Guarded by `critical_section` whenever ISR and task must both access it.
-pub struct PipeXferState {
+pub(crate) struct PipeXferState {
     /// Current position in the user buffer.  `NonNull::dangling()` when idle.
     pub buf: core::ptr::NonNull<u8>,
     /// Total transfer length in bytes.
@@ -161,7 +161,7 @@ impl PipeXferState {
 }
 
 /// Per-port array of transfer states.  Index 0 = DCP (pipe 0).
-pub static PIPE_XFER: [critical_section::Mutex<core::cell::UnsafeCell<PipeXferState>>; PIPE_COUNT] = {
+pub(crate) static PIPE_XFER: [critical_section::Mutex<core::cell::UnsafeCell<PipeXferState>>; PIPE_COUNT] = {
     use core::cell::UnsafeCell;
     use critical_section::Mutex;
     #[allow(clippy::declare_interior_mutable_const)]
@@ -175,7 +175,7 @@ pub static PIPE_XFER: [critical_section::Mutex<core::cell::UnsafeCell<PipeXferSt
 
 /// Transfer type tag for a pipe.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum XferType {
+pub(crate) enum XferType {
     Control,
     Bulk,
     Interrupt,
@@ -196,7 +196,7 @@ impl XferType {
 
 /// Static configuration for one pipe.
 #[derive(Clone, Copy)]
-pub struct PipeConfig {
+pub(crate) struct PipeConfig {
     /// Endpoint number (1-15; 0 = DCP is special).
     pub ep_num: u8,
     /// True if IN (device → host).
@@ -233,7 +233,7 @@ pub struct PipeConfig {
 ///   were handed to another pipe while an interrupt pipe is in use the two
 ///   buffers would silently overlap.  Other pipes' valid BUFNMB range starts
 ///   at H'07.
-pub struct BufAllocator {
+pub(crate) struct BufAllocator {
     /// Bitmask: 1 = allocated.
     bits: u128,
 }
@@ -293,7 +293,7 @@ impl Default for BufAllocator {
 /// # Safety
 /// USB port `u` must be running (USBE=1).
 /// Caller must ensure no transfer is active on this pipe.
-pub unsafe fn pipe_configure(u: Usb, n: usize, cfg: &PipeConfig) {
+pub(crate) unsafe fn pipe_configure(u: Usb, n: usize, cfg: &PipeConfig) {
     unsafe {
         debug_assert!((1..=15).contains(&n), "pipe_configure: invalid pipe number");
 
@@ -407,7 +407,7 @@ pub unsafe fn pipe_configure(u: Usb, n: usize, cfg: &PipeConfig) {
 ///
 /// # Safety
 /// The caller owns USB port `u`: no other context reconfigures pipe `n` meanwhile.
-pub unsafe fn pipe_xfer_in_start(u: Usb, n: usize, mps: u16) -> bool {
+pub(crate) unsafe fn pipe_xfer_in_start(u: Usb, n: usize, mps: u16) -> bool {
     unsafe {
         critical_section::with(|cs| {
             let state = &mut *PIPE_XFER[n].borrow(cs).get();
@@ -507,7 +507,7 @@ unsafe fn fill_in_packet(u: Usb, n: usize, mps: usize, state: &mut PipeXferState
 /// When called from ISR context no critical section is
 /// needed (single-core Cortex-A9 with IRQ disabled); the speculative call site
 /// wraps it in one.
-pub unsafe fn pipe_xfer_out_brdy(u: Usb, n: usize, speculative: bool) -> bool {
+pub(crate) unsafe fn pipe_xfer_out_brdy(u: Usb, n: usize, speculative: bool) -> bool {
     unsafe {
         let state = &mut *{
             // No critical section: the ISR caller cannot be preempted by the
@@ -624,7 +624,7 @@ pub unsafe fn pipe_xfer_out_brdy(u: Usb, n: usize, speculative: bool) -> bool {
 ///
 /// # Safety
 /// Called from ISR context.
-pub unsafe fn pipe_xfer_in_bemp(u: Usb, n: usize) -> bool {
+pub(crate) unsafe fn pipe_xfer_in_bemp(u: Usb, n: usize) -> bool {
     unsafe {
         let state = &mut *{
             PIPE_XFER[n]
@@ -686,7 +686,7 @@ pub unsafe fn pipe_enable(u: Usb, n: usize) {
 ///
 /// # Safety
 /// The caller owns USB port `u`: no other context reconfigures pipe `n` meanwhile.
-pub unsafe fn pipe_disable(u: Usb, n: usize) {
+pub(crate) unsafe fn pipe_disable(u: Usb, n: usize) {
     let ctr = pipectr(u, n);
     // Step down through STALL(10) so a hardware STALL(11) actually clears.
     pid_nak_if_stall(ctr);
@@ -700,7 +700,7 @@ pub unsafe fn pipe_disable(u: Usb, n: usize) {
 ///
 /// # Safety
 /// The caller owns USB port `u`: no other context reconfigures pipe `n` meanwhile.
-pub unsafe fn pipe_stall(u: Usb, n: usize) {
+pub(crate) unsafe fn pipe_stall(u: Usb, n: usize) {
     let ctr = pipectr(u, n);
     let stall = match ctr.read() & PIPECTR_PID_MASK {
         PIPECTR_PID_NAK => PIPECTR_PID_STALL10,
@@ -802,7 +802,7 @@ pub unsafe fn pipe_brdy_enable(u: Usb, n: usize) {
 ///
 /// # Safety
 /// The caller owns USB port `u`: no other context reconfigures pipe `n` meanwhile.
-pub unsafe fn pipe_brdy_disable(u: Usb, n: usize) {
+pub(crate) unsafe fn pipe_brdy_disable(u: Usb, n: usize) {
     let brdyenb = u.brdyenb();
     let cur = brdyenb.read();
     brdyenb.write_value(cur & !(1u16 << n));
@@ -812,7 +812,7 @@ pub unsafe fn pipe_brdy_disable(u: Usb, n: usize) {
 ///
 /// # Safety
 /// The caller owns USB port `u`: no other context reconfigures pipe `n` meanwhile.
-pub unsafe fn pipe_bemp_enable(u: Usb, n: usize) {
+pub(crate) unsafe fn pipe_bemp_enable(u: Usb, n: usize) {
     let bempsts = u.bempsts();
     let bempenb = u.bempenb();
     bempsts.write_value(!((1u16) << n));
@@ -824,7 +824,7 @@ pub unsafe fn pipe_bemp_enable(u: Usb, n: usize) {
 ///
 /// # Safety
 /// The caller owns USB port `u`: no other context reconfigures pipe `n` meanwhile.
-pub unsafe fn pipe_bemp_disable(u: Usb, n: usize) {
+pub(crate) unsafe fn pipe_bemp_disable(u: Usb, n: usize) {
     let bempenb = u.bempenb();
     let cur = bempenb.read();
     bempenb.write_value(cur & !(1u16 << n));

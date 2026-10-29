@@ -27,7 +27,7 @@ use crate::pac::common::{RW, Reg};
 use crate::pac::usb::Usb;
 
 /// Hardware FIFO port: data register, its byte lanes, SEL register and CTR register.
-pub struct FifoPort {
+pub(crate) struct FifoPort {
     /// The 32-bit data register (CFIFO / D0FIFO / D1FIFO).
     pub data: Reg<u32, RW>,
     /// The data register's four byte lanes, at byte addresses `data + 0` … `data + 3`.
@@ -77,7 +77,7 @@ impl FifoPort {
 /// Return the correct [`FifoPort`] for `pipe_num`.
 ///
 /// Routing: pipe 0 → CFIFO, pipes 1-2 → D0FIFO, pipes 3+ → D1FIFO.
-pub fn fifo_for_pipe(u: Usb, pipe_num: usize) -> FifoPort {
+pub(crate) fn fifo_for_pipe(u: Usb, pipe_num: usize) -> FifoPort {
     match pipe_num {
         0 => FifoPort::cfifo(u),
         1 | 2 => FifoPort::d0fifo(u),
@@ -107,7 +107,7 @@ fn set_mbw(sel: Reg<u16, RW>, mbw: u16) {
 ///
 /// # Safety
 /// `fifo` fields must be valid register pointers.
-pub unsafe fn fifo_is_ready(fifo: &FifoPort, pipe_num: usize) -> bool {
+pub(crate) unsafe fn fifo_is_ready(fifo: &FifoPort, pipe_num: usize) -> bool {
     // Confirm CURPIPE has latched to the requested pipe (TRM §28: after a
     // CURPIPE write, read it back to confirm it updated), then poll FRDY.
     // Correct selection — including the deselect-first dance the TRM mandates
@@ -136,7 +136,7 @@ pub unsafe fn fifo_is_ready(fifo: &FifoPort, pipe_num: usize) -> bool {
 ///
 /// # Safety
 /// `fifo` must be a valid DnFIFO port; `pipe_num` must be a DnFIFO pipe (≥ 1).
-pub unsafe fn fifo_select_recv(fifo: &FifoPort, pipe_num: usize) {
+pub(crate) unsafe fn fifo_select_recv(fifo: &FifoPort, pipe_num: usize) {
     unsafe {
         // Step 1: deselect (CURPIPE = 0 → "no pipe" on D0/D1FIFO) and confirm.
         fifo_select_pipe(fifo, 0, false);
@@ -154,7 +154,7 @@ pub unsafe fn fifo_select_recv(fifo: &FifoPort, pipe_num: usize) {
 ///
 /// # Safety
 /// `fifo` must be valid.
-pub unsafe fn fifo_dtln(fifo: &FifoPort) -> u16 {
+pub(crate) unsafe fn fifo_dtln(fifo: &FifoPort) -> u16 {
     fifo.ctr.read() & FIFOCTR_DTLN_MASK
 }
 
@@ -162,7 +162,7 @@ pub unsafe fn fifo_dtln(fifo: &FifoPort) -> u16 {
 ///
 /// # Safety
 /// `fifo` must be valid.
-pub unsafe fn fifo_bclr(fifo: &FifoPort) {
+pub(crate) unsafe fn fifo_bclr(fifo: &FifoPort) {
     fifo.ctr.write_value(FIFOCTR_BCLR);
 }
 
@@ -170,7 +170,7 @@ pub unsafe fn fifo_bclr(fifo: &FifoPort) {
 ///
 /// # Safety
 /// `fifo` must be valid.
-pub unsafe fn fifo_bval(fifo: &FifoPort) {
+pub(crate) unsafe fn fifo_bval(fifo: &FifoPort) {
     fifo.ctr.write_value(FIFOCTR_BVAL);
 }
 
@@ -189,7 +189,7 @@ pub unsafe fn fifo_bval(fifo: &FifoPort) {
 /// - `buf` must be valid for `len` byte reads.
 /// - The FIFO must have been selected via [`fifo_select_pipe`] (CURPIPE + MBW=32)
 ///   before calling.
-pub unsafe fn sw_to_hw_fifo(fifo: &FifoPort, buf: *const u8, len: usize) {
+pub(crate) unsafe fn sw_to_hw_fifo(fifo: &FifoPort, buf: *const u8, len: usize) {
     unsafe {
         // 32-bit FIFO access for the body.  With BIGEND=0 (the reset default,
         // never overridden) Table 28.7 maps byte N+0 → bits[7:0], i.e. little
@@ -245,7 +245,7 @@ pub unsafe fn sw_to_hw_fifo(fifo: &FifoPort, buf: *const u8, len: usize) {
 /// - `buf` must be valid for `len` byte writes.
 /// - The FIFO must have been selected with [`fifo_select_pipe`] (CURPIPE +
 ///   MBW=32) before calling.
-pub unsafe fn hw_to_sw_fifo(fifo: &FifoPort, buf: *mut u8, len: usize) {
+pub(crate) unsafe fn hw_to_sw_fifo(fifo: &FifoPort, buf: *mut u8, len: usize) {
     unsafe {
         if len == 0 {
             return;
@@ -296,7 +296,7 @@ pub unsafe fn hw_to_sw_fifo(fifo: &FifoPort, buf: *mut u8, len: usize) {
 ///
 /// # Safety
 /// `fifo.sel` must be valid.
-pub unsafe fn fifo_select_pipe(fifo: &FifoPort, pipe_num: usize, isel: bool) {
+pub(crate) unsafe fn fifo_select_pipe(fifo: &FifoPort, pipe_num: usize, isel: bool) {
     // ISEL selects the access direction for the *bidirectional* DCP buffer
     // only (CFIFO / pipe 0); see TRM §28.3 "The ISEL bit determines this only
     // for the DCP", and regs `FIFOSEL_ISEL` ("CFIFOSEL only").  For D0/D1FIFO

@@ -5,6 +5,7 @@
 
 #![cfg_attr(target_os = "none", no_std)]
 #![allow(dead_code)]
+#![deny(missing_docs)]
 
 // Logging macros (`trace!` … `error!`) over `log`, `defmt` or nothing: first, so every module sees
 // them.

@@ -598,6 +598,7 @@ unsafe fn wait_clk_stable(port: u8) {
 // Async command issue
 // ---------------------------------------------------------------------------
 
+/// An SD host error: what went wrong with a command or a data transfer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
