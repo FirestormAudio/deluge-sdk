@@ -360,11 +360,11 @@ pin_trait!(
 pub trait Instance: crate::PeripheralType + sealed::Sealed + 'static {
     /// The channel number: 0–2 on the RZ/A1L, 0–4 on the RZ/A1H.
     const INDEX: u8;
-    /// Its error interrupt, SPEI<INDEX>.
+    /// Its error interrupt, `SPEI<INDEX>`.
     type ErrorInterrupt: Interrupt;
-    /// Its receive-buffer-full interrupt, SPRI<INDEX>.
+    /// Its receive-buffer-full interrupt, `SPRI<INDEX>`.
     type RxInterrupt: Interrupt;
-    /// Its transmit-buffer-empty interrupt, SPTI<INDEX>.
+    /// Its transmit-buffer-empty interrupt, `SPTI<INDEX>`.
     type TxInterrupt: Interrupt;
 }
 

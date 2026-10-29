@@ -3142,6 +3142,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "loopback-probe"
+version = "0.1.0"
+dependencies = [
+ "cortex-ar",
+ "deluge-bsp",
+ "embassy-executor",
+ "embassy-futures",
+ "embassy-sync",
+ "embassy-time",
+ "embedded-hal-async",
+ "log",
+ "rtt-target",
+ "rza1-alloc",
+ "rza1-hal",
+]
+
+[[package]]
 name = "lru"
 version = "0.16.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

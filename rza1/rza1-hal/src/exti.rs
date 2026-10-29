@@ -32,7 +32,7 @@ mod sealed {
 pub trait Channel: crate::PeripheralType + sealed::Sealed + 'static {
     /// The line number, 0–7.
     const NUMBER: u8;
-    /// Its GIC interrupt, IRQ<NUMBER>.
+    /// Its GIC interrupt, `IRQ<NUMBER>`.
     type Interrupt: Interrupt;
 }
 

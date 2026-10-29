@@ -625,11 +625,11 @@ pin_trait!(
 pub trait Instance: crate::PeripheralType + sealed::Sealed + 'static {
     /// The channel number, 0–4.
     const INDEX: usize;
-    /// Its receive-error interrupt, ERI<INDEX>.
+    /// Its receive-error interrupt, `ERI<INDEX>`.
     type ErrorInterrupt: Interrupt;
-    /// Its receive-FIFO-full interrupt, RXI<INDEX>.
+    /// Its receive-FIFO-full interrupt, `RXI<INDEX>`.
     type RxInterrupt: Interrupt;
-    /// Its transmit-FIFO-empty interrupt, TXI<INDEX>.
+    /// Its transmit-FIFO-empty interrupt, `TXI<INDEX>`.
     type TxInterrupt: Interrupt;
 }
 
