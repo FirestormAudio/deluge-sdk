@@ -5,12 +5,14 @@
 //! ([`BlockInterruptHandler`](super::BlockInterruptHandler)), which counts the block; the count
 //! and the DMAC's current address give [`RingDma::absolute`], the words moved since the start.
 //!
-//! The descriptors live in a per-channel table here: DMA-controller state, not the caller's ring.
+//! The descriptors live in a table the caller lends with the ring ([`RingDescs`]), and the ring
+//! holds it while the DMAC runs.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::BlockDma;
 use crate::dma_buf::UncachedMut;
+use crate::ring_buffer::RingDescs;
 
 /// The most blocks a ring can have.
 pub(crate) const MAX_RING_BLOCKS: usize = 16;
@@ -18,15 +20,6 @@ pub(crate) const MAX_RING_BLOCKS: usize = 16;
 /// Link descriptor header (HW manual Table 9.15): LV = 1 (valid), LE = 0 (the link continues),
 /// WBD = 1 (no write-back), DIM = 1.
 const DESC_HEADER: u32 = 0b1101;
-
-/// One 8-word link descriptor.
-#[repr(C, align(32))]
-struct LinkDesc([u32; 8]);
-
-/// Channel n's descriptor table. SAFETY: written only by the [`RingDma::start`] of the channel's
-/// owner, through the uncached alias the DMAC reads it by.
-static mut RING_DESC: [[LinkDesc; MAX_RING_BLOCKS]; 16] =
-    [const { [const { LinkDesc([0; 8]) }; MAX_RING_BLOCKS] }; 16];
 
 /// Block interrupts channel n has taken since its ring started. An edge-triggered interrupt can
 /// cover two block ends, and a stale one can land after a restart, so this is only a hint:
@@ -54,22 +47,26 @@ fn wrap(x: usize, n: usize) -> usize {
 pub(crate) struct RingDma<'d> {
     dma: BlockDma<'d>,
     buf: UncachedMut<'d, u32>,
+    /// Read by the DMAC until the channel halts.
+    _descs: RingDescs<'d>,
     blocks: usize,
     frame_words: usize,
     dir: Dir,
 }
 
 impl<'d> RingDma<'d> {
-    /// Program `blocks` descriptors over `buf` with `chcfg` (DEM clear, the channel's index in
+    /// Program `blocks` of `descs` over `buf` with `chcfg` (DEM clear, the channel's index in
     /// bits 2:0) and request `dmars`, then start the channel.
     ///
     /// # Panics
     /// If `blocks` is less than 2 or more than [`MAX_RING_BLOCKS`] (one block gives no position
-    /// to check the count against), or `buf` isn't whole blocks of whole `frame_words`-word
-    /// frames.
+    /// to check the count against), `descs` holds fewer than `blocks`, or `buf` isn't whole blocks
+    /// of whole `frame_words`-word frames.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn start(
         mut dma: BlockDma<'d>,
         buf: UncachedMut<'d, u32>,
+        mut descs: RingDescs<'d>,
         blocks: usize,
         frame_words: usize,
         chcfg: u32,
@@ -83,6 +80,12 @@ impl<'d> RingDma<'d> {
             MAX_RING_BLOCKS
         );
         assert!(
+            descs.len() >= blocks,
+            "dmac ring: {} blocks but {} descriptors",
+            blocks,
+            descs.len()
+        );
+        assert!(
             frame_words > 0 && buf.len() % (blocks * frame_words) == 0,
             "dmac ring: {} words isn't {} blocks of {}-word frames",
             buf.len(),
@@ -92,12 +95,10 @@ impl<'d> RingDma<'d> {
         let ch = dma.number() as usize;
         let block_bytes = (buf.len() / blocks * 4) as u32;
         let base = buf.bus_addr();
-        // SAFETY: channel ch's table, ch owned through `dma`; written through the uncached alias
-        // the DMAC fetches descriptors by.
+        // SAFETY: the lent table, held by this ring. `RingDescs::new` checked it is uncached
+        // memory, so these writes are what the DMAC fetches, and its addresses are bus addresses.
         let head = unsafe {
-            let desc = |i: usize| {
-                crate::uncached(core::ptr::addr_of_mut!(RING_DESC[ch][i]) as *mut u32)
-            };
+            let mut desc = |i: usize| descs.word_ptr(i);
             for i in 0..blocks {
                 let d = desc(i);
                 let mem = base + i as u32 * block_bytes;
@@ -123,7 +124,7 @@ impl<'d> RingDma<'d> {
             dma.init_with_link_descriptor(head, dmars);
             dma.channel_start();
         }
-        Self { dma, buf, blocks, frame_words, dir }
+        Self { dma, buf, _descs: descs, blocks, frame_words, dir }
     }
 
     /// The ring's length in words.
@@ -216,6 +217,7 @@ mod tests {
     use crate::interrupt::Handler;
     use crate::mmio::test;
     use crate::peripherals::DMA_CH11;
+    use crate::ring_buffer::{RingDesc, RingDescs};
 
     crate::bind_interrupts!(struct Irqs {
         DMAINT11 => BlockInterruptHandler<DMA_CH11>;
@@ -228,12 +230,22 @@ mod tests {
         LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// A 64-word ring in 4 blocks of 2-word frames, feeding 0xE820_B018.
-    fn ring() -> RingDma<'static> {
+    /// A leaked table of `n` descriptors.
+    fn table(n: usize) -> &'static mut [RingDesc] {
+        (0..n).map(|_| RingDesc::NEW).collect::<std::vec::Vec<_>>().leak()
+    }
+
+    /// A 64-word ring in 4 blocks of 2-word frames, feeding 0xE820_B018, on `descs`.
+    fn ring_on(descs: &'static mut [RingDesc]) -> RingDma<'static> {
         test::reset();
         let buf = UncachedMut::new(std::vec![0u32; 64].leak()).unwrap();
         let dma = BlockDma::new(unsafe { DMA_CH11::steal() }, Irqs);
-        RingDma::start(dma, buf, 4, 2, CHCFG, Dir::MemToPeriph { dst: 0xE820_B018 }, 0xE1)
+        let descs = RingDescs::new(descs).unwrap();
+        RingDma::start(dma, buf, descs, 4, 2, CHCFG, Dir::MemToPeriph { dst: 0xE820_B018 }, 0xE1)
+    }
+
+    fn ring() -> RingDma<'static> {
+        ring_on(table(4))
     }
 
     fn crsa() -> usize {
@@ -245,24 +257,32 @@ mod tests {
     }
 
     #[test]
-    fn a_ring_links_its_blocks_in_a_loop() {
+    fn ring_descriptors_live_in_the_lent_table() {
         let _serial = serial();
-        let r = ring();
+        let t = table(4);
+        let at = t.as_ptr() as usize;
+        let r = ring_on(t);
         let base = r.buf.bus_addr();
-        let desc = |i: usize| unsafe { &*core::ptr::addr_of!(RING_DESC[11][i]) }.0;
+        // The lent table is the uncached memory the DMAC reads: descriptor i is at its 32 * i.
+        let addr = |i: usize| at + i * 32;
+        let word = |i: usize, w: usize| unsafe { (addr(i) as *const u32).add(w).read_volatile() };
         for i in 0..4 {
-            let d = desc(i);
-            assert_eq!(d[0], DESC_HEADER);
-            assert_eq!(d[1], base + i as u32 * 64, "src of block {i}");
-            assert_eq!(d[2], 0xE820_B018);
-            assert_eq!(d[3], 64);
-            assert_eq!(d[4] & (1 << 24), 0, "DEM clear: an END interrupt per block");
-            let next = unsafe { core::ptr::addr_of!(RING_DESC[11][(i + 1) % 4]) } as u32;
-            assert_eq!(d[7], next);
+            assert_eq!(word(i, 0), DESC_HEADER);
+            assert_eq!(word(i, 1), base + i as u32 * 64, "src of block {i}");
+            assert_eq!(word(i, 2), 0xE820_B018);
+            assert_eq!(word(i, 3), 64);
+            assert_eq!(word(i, 4) & (1 << 24), 0, "DEM clear: an END interrupt per block");
+            assert_eq!(word(i, 7), addr((i + 1) % 4) as u32, "block {i} links to the next");
         }
         let nxla = crate::pac::DMAC.ch(11).nxla().addr();
-        let head = unsafe { core::ptr::addr_of!(RING_DESC[11][0]) } as u32;
-        assert_eq!(test::peek32(nxla), head);
+        assert_eq!(test::peek32(nxla), addr(0) as u32);
+    }
+
+    #[test]
+    #[should_panic(expected = "4 blocks but 3 descriptors")]
+    fn a_short_descriptor_table_is_refused() {
+        let _serial = serial();
+        let _ = ring_on(table(3));
     }
 
     #[test]
@@ -336,7 +356,9 @@ mod tests {
         test::reset();
         let buf = UncachedMut::new(std::vec![0u32; 64].leak()).unwrap();
         let dma = BlockDma::new(unsafe { DMA_CH11::steal() }, Irqs);
-        let _ = RingDma::start(dma, buf, 1, 2, CHCFG, Dir::MemToPeriph { dst: 0xE820_B018 }, 0xE1);
+        let descs = RingDescs::new(table(4)).unwrap();
+        let dir = Dir::MemToPeriph { dst: 0xE820_B018 };
+        let _ = RingDma::start(dma, buf, descs, 1, 2, CHCFG, dir, 0xE1);
     }
 
     #[test]
@@ -345,9 +367,12 @@ mod tests {
         test::reset();
         let buf = UncachedMut::new(std::vec![0u32; 64].leak()).unwrap();
         let dma = BlockDma::new(unsafe { DMA_CH11::steal() }, Irqs);
+        let t = table(4);
+        let at = t.as_ptr() as usize;
         let _r = RingDma::start(
             dma,
             buf,
+            RingDescs::new(t).unwrap(),
             4,
             2,
             CHCFG | (1 << 24),
@@ -355,7 +380,8 @@ mod tests {
             0xE1,
         );
         for i in 0..4 {
-            assert_eq!(unsafe { &*core::ptr::addr_of!(RING_DESC[11][i]) }.0[4] & (1 << 24), 0);
+            let chcfg = (at + i * 32 + 16) as *const u32;
+            assert_eq!(unsafe { chcfg.read_volatile() } & (1 << 24), 0);
         }
     }
 

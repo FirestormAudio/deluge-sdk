@@ -6,10 +6,10 @@ use core::cell::RefCell;
 use critical_section::Mutex;
 use rza1_hal::Peri;
 use rza1_hal::dmac::{BlockDma, BlockInterruptHandler};
-use rza1_hal::ring_buffer::{ReadableRing, RingBuf, WritableRing};
+use rza1_hal::ring_buffer::{ReadableRing, RingBuf, RingDesc, WritableRing};
 use rza1_hal::scux::{AudioInfo, Ch2, Channel, Control, Dvu, Src};
 
-use crate::audio::{Ring, lend, with_slot};
+use crate::audio::{Ring, lend, lend_descs, with_slot};
 use crate::board::{ScuxFfd2Dma, ScuxFfu2Dma};
 
 rza1_hal::bind_interrupts!(struct Irqs {
@@ -25,6 +25,9 @@ pub const RX_WORDS: usize = 4096;
 // SAFETY: lent once, by `init`.
 static mut TX_BUF: Ring<TX_WORDS> = Ring([0; TX_WORDS]);
 static mut RX_BUF: Ring<RX_WORDS> = Ring([0; RX_WORDS]);
+// SAFETY: lent once, by `init`; one descriptor per block.
+static mut TX_DESCS: [RingDesc; 8] = [RingDesc::NEW; 8];
+static mut RX_DESCS: [RingDesc; 16] = [RingDesc::NEW; 16];
 
 static CONTROL: Mutex<RefCell<Option<Control<'static>>>> = Mutex::new(RefCell::new(None));
 static TX: Mutex<RefCell<Option<WritableRing<'static>>>> = Mutex::new(RefCell::new(None));
@@ -41,12 +44,19 @@ pub fn init(
     // SAFETY: each buffer is lent once, here.
     let (tx_buf, rx_buf) =
         unsafe { (lend(core::ptr::addr_of_mut!(TX_BUF)), lend(core::ptr::addr_of_mut!(RX_BUF))) };
+    // SAFETY: each table is lent once, here.
+    let (tx_descs, rx_descs) = unsafe {
+        (
+            lend_descs(core::ptr::addr_of_mut!(TX_DESCS)),
+            lend_descs(core::ptr::addr_of_mut!(RX_DESCS)),
+        )
+    };
     let path = ch2.into_ffu_path(
         AudioInfo::STEREO_24,
-        RingBuf { dma: BlockDma::new(ffd, Irqs), buf: tx_buf, blocks: 8 },
+        RingBuf { dma: BlockDma::new(ffd, Irqs), buf: tx_buf, descs: tx_descs, blocks: 8 },
         Src::Async { input_hz: fin_hz, output_hz: fout_hz },
         Dvu::Bypass,
-        RingBuf { dma: BlockDma::new(ffu, Irqs), buf: rx_buf, blocks: 16 },
+        RingBuf { dma: BlockDma::new(ffu, Irqs), buf: rx_buf, descs: rx_descs, blocks: 16 },
     );
     let (control, tx, rx) = path.split();
     critical_section::with(|cs| {

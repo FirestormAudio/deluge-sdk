@@ -875,6 +875,7 @@ impl<'d, C: ChannelId> Channel<'d, C> {
         let rx = RingDma::start(
             ffu.dma,
             ffu.buf,
+            ffu.descs,
             ffu.blocks,
             frame,
             ffu_chcfg(ffu_ch) & !crate::dmac::CHCFG_DEM,
@@ -998,6 +999,7 @@ fn start_ffd<'d>(n: u8, ffd: RingBuf<'d>, frame: usize) -> RingDma<'d> {
     RingDma::start(
         ffd.dma,
         ffd.buf,
+        ffd.descs,
         ffd.blocks,
         frame,
         ffd_chcfg(ch),
@@ -1305,6 +1307,7 @@ mod path_tests {
         RingBuf {
             dma: BlockDma::new(ch, Irqs),
             buf: UncachedMut::new(std::vec![0u32; words].leak()).unwrap(),
+            descs: crate::ring_buffer::test_descs(4),
             blocks: 4,
         }
     }
@@ -1473,6 +1476,7 @@ mod ssi_path_tests {
         RingBuf {
             dma: BlockDma::new(ch, Irqs),
             buf: UncachedMut::new(std::vec![0u32; 512].leak()).unwrap(),
+            descs: crate::ring_buffer::test_descs(4),
             blocks: 4,
         }
     }

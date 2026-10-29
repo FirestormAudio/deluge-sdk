@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The ring DMA descriptors are the caller's**, lent with the ring as the ring is:
+  - `rza1_hal::ring_buffer::RingDesc` is one 32-byte-aligned DMAC link descriptor
+    (`RingDesc::NEW` to initialize a table).
+  - `RingDescs::new(&mut [RingDesc])` checks the table is uncached memory, as `UncachedMut::new`
+    does, and `RingBuf` gains `descs: RingDescs`, which must hold at least `blocks`; a ring start
+    with fewer panics.
+  - The HAL's own 8 KiB per-channel table is gone. `deluge-bsp` lends one table per ring, sized to
+    its blocks, through the uncached mirror.
 - Every rza1 crate's README and crate docs say it needs a nightly Rust toolchain (the workspace's
   `rust-toolchain.toml` pins one); `check-readme-features.py` keeps them saying so.
 - `rza1h` is documented as experimental: it compiles, is not validated on hardware, and its pin

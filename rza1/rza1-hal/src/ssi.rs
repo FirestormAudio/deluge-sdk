@@ -21,8 +21,8 @@
 //! ```ignore
 //! let (tx, rx) = ssi::Ssi::new(
 //!     p.SSIF0, p.P6_8, p.P6_9, p.P6_10, p.P6_11,
-//!     RingBuf { dma: BlockDma::new(p.DMA_CH6, Irqs), buf: tx_ring, blocks: 8 },
-//!     RingBuf { dma: BlockDma::new(p.DMA_CH7, Irqs), buf: rx_ring, blocks: 16 },
+//!     RingBuf { dma: BlockDma::new(p.DMA_CH6, Irqs), buf: tx_ring, descs: tx_descs, blocks: 8 },
+//!     RingBuf { dma: BlockDma::new(p.DMA_CH7, Irqs), buf: rx_ring, descs: rx_descs, blocks: 16 },
 //!     ssi::Config::default(),
 //! );
 //! ```
@@ -362,14 +362,14 @@ fn reset_and_configure(n: u8, config: &Config) {
 fn start_tx<T: Instance>(tx: RingBuf<'_>) -> RingDma<'_> {
     let ch = tx.dma.number();
     let dst = regs(T::INDEX).ssiftdr().addr() as u32;
-    RingDma::start(tx.dma, tx.buf, tx.blocks, 2, tx_chcfg(ch), Dir::MemToPeriph { dst }, T::DMARS_TX)
+    RingDma::start(tx.dma, tx.buf, tx.descs, tx.blocks, 2, tx_chcfg(ch), Dir::MemToPeriph { dst }, T::DMARS_TX)
 }
 
 /// Start SSIF `T`'s receive ring on `rx` (SSIFRDR as the source).
 fn start_rx<T: Instance>(rx: RingBuf<'_>) -> RingDma<'_> {
     let ch = rx.dma.number();
     let src = regs(T::INDEX).ssifrdr().addr() as u32;
-    RingDma::start(rx.dma, rx.buf, rx.blocks, 2, rx_chcfg(ch), Dir::PeriphToMem { src }, T::DMARS_RX)
+    RingDma::start(rx.dma, rx.buf, rx.descs, rx.blocks, 2, rx_chcfg(ch), Dir::PeriphToMem { src }, T::DMARS_RX)
 }
 
 /// Release the transmit FIFO and route its request to the DMAC.
@@ -699,6 +699,7 @@ mod driver_tests {
         RingBuf {
             dma: BlockDma::new(ch, Irqs),
             buf: UncachedMut::new(std::vec![0u32; 256].leak()).unwrap(),
+            descs: crate::ring_buffer::test_descs(4),
             blocks: 4,
         }
     }
