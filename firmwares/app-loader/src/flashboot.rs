@@ -9,7 +9,7 @@
 //! The on-flash image is a **raw `.bin`** (e.g. produced by `cargo build-fw-bin`)
 //! linked to load and run from SRAM at `0x2002_0000`.  Byte 0 of the image is the
 //! vector table / `_start`, and the standard FSB metadata words sit just past the
-//! eight vector entries (see `rza1-hal/src/startup.rs`):
+//! eight vector entries (see `deluge-bsp/src/boot_header.rs`):
 //!
 //! | Image offset | Word |
 //! |--------------|------|
@@ -34,7 +34,7 @@ const META_CODE_END: u32 = 0x24;
 const META_CODE_EXECUTE: u32 = 0x28;
 const META_SIGNATURE: u32 = 0x2C;
 
-/// Signature string the FSB metadata carries (`.asciz` in `startup.rs`).
+/// Signature string the FSB metadata carries (`.asciz` in `deluge-bsp/src/boot_header.rs`).
 const SIGNATURE: &[u8] = b".BootLoad_ValidProgramTest.";
 
 /// Lowest legal SRAM load address (retention RAM below this is reserved).

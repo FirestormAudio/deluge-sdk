@@ -1,0 +1,14 @@
+[package]
+publish = false  # binary crate — not for crates.io
+name = "fault-probe"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[[bin]]
+name = "fault-probe"
+test = false
+
+[dependencies]
+deluge-bsp = { path = "../../crates/deluge-bsp" }
+rza1-hal = { path = "../../rza1/rza1-hal", features = ["rza1l"] }

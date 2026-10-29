@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `rza1-rt` attribute macros and board-supplied boot header (phase 7 of the pre-0.1 API pass):
+  - New crate `rza1-rt-macros`, re-exported as `rza1_rt::{entry, fault, irq}`.
+    - `#[entry] fn main() -> !` exports `main`.
+    - `#[fault] fn f(&FaultInfo) -> !` exports `rza1_cpu_fault_report`; `FaultInfo` and
+      `FaultKind` are in `rza1_rt`.
+    - `#[irq] unsafe fn f(u32)` exports `gic_dispatch`.
+    - Each attribute rejects any other signature with a compile error.
+    - Every firmware and hw-test now uses `#[deluge_bsp::entry]`, and `#[deluge::app]` generates
+      one.
+  - The vector table is 8 branches.
+    - The Deluge's bootloader words and its `.BootLoad_ValidProgramTest.` signature moved to
+      `deluge-bsp` (`boot_header.rs`), in a `.boot_header` section that link.x places at
+      `_start + 0x20`.
+    - `tools/check-boot-header.py` checks every image built by `tools/link-layout.sh`.
+  - Every fault now goes to `rza1_cpu_fault_report`. With none defined, the core parks.
+    - `deluge-bsp`'s `fault-blink` feature, on by default, is the handler that blinks the SYNC
+      LED (P6_7). The pulse counts are unchanged: 1 undefined instruction, 2 SVC, 3 prefetch
+      abort, 4 data abort, 5 reserved.
+    - Removed: rza1-rt's `app-fault-reporter` feature.
+    - Removed: memory.x's `RZA1_STATUS_LED_PORT`/`_PIN`, and with them the `__rza1_status_led_*`
+      symbols. The reset handler no longer drives the LED.
+  - Fixed: with `rtt`, a prefetch abort skipped the fault handler and blinked the LED instead.
+  - New hw-test `fault-probe`: executes an undefined instruction two seconds after reset.
+  - For DelugeFirmware (phase 9):
+    - Its `extern "C" fn main` can become `#[deluge_bsp::entry]`; `bl main` still works as is.
+    - Its C `rza1_cpu_fault_report` still links and is called on every fault. It already turns
+      default features off, so `fault-blink` stays out.
+    - `deluge-bsp`'s `app-fault-reporter` has no effect now; drop it.
+    - The `RZA1_STATUS_LED_*` lines in its memory.x are unused.
+
 - `rza1-hal` USB iso streams (phase 6 of the pre-0.1 API pass):
   - `usb::iso`: `Rusb1EndpointOut::into_iso_stream(&'static mut dyn IsoOutConsumer)` and
     `Rusb1EndpointIn::into_iso_stream(&'static mut dyn IsoInProducer)` bind an isochronous
