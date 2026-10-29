@@ -1,4 +1,5 @@
-//! SD High-Speed bench: throughput at P1/4 vs P1/2, then a CRC soak.
+//! SD High-Speed bench: throughput at P1/4 vs P1/2, a CRC soak, then a cancel probe (a read dropped
+//! mid-transfer must stop its DMA and leave the card recoverable by `sd::init`).
 //!
 //! All results go to the RTT log.  Reads are non-destructive (LBA 0 upward);
 //! the optional write soak targets a scratch region near the end of the card
@@ -143,7 +144,73 @@ pub async fn bench_task() {
         write_soak().await;
     }
 
+    cancel_probe().await;
+
     info!("sd-bench: done");
+}
+
+/// Drop a DMA read mid-transfer: the SD receive DMA channel must be stopped, the next read must
+/// report `NotInitialized`, and after `sd::init` the same sectors must read back unchanged.
+async fn cancel_probe() {
+    use embassy_futures::select::{Either, select};
+    use embassy_time::Timer;
+    use rza1_hal::dmac::Channel;
+    const BASE: u32 = 0;
+    const SECTORS: u32 = 64;
+
+    let reference = match read_region(BASE, SECTORS).await {
+        Ok(h) => h,
+        Err(e) => {
+            error!("cancel: FAIL reading the reference sectors: {:?}", e);
+            return;
+        }
+    };
+    #[allow(static_mut_refs)]
+    let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
+
+    let mut cancelled = false;
+    for (sectors, after_us) in [(64u32, 400u64), (128, 200), (128, 100)] {
+        buf.fill(0xA5);
+        let read = sd::read_sectors(BASE, sectors, &mut buf[..(sectors as usize) * 512]);
+        match select(read, Timer::after_micros(after_us)).await {
+            Either::First(r) => {
+                info!("cancel: the {}-sector read finished first ({:?}); trying sooner", sectors, r)
+            }
+            Either::Second(()) => {
+                info!("cancel: dropped a {}-sector read after {} us", sectors, after_us);
+                cancelled = true;
+                break;
+            }
+        }
+    }
+    if !cancelled {
+        error!("cancel: FAIL the read always finished before the timer");
+        return;
+    }
+
+    let ch = <deluge_bsp::board::SdRxDma as Channel>::NUMBER as usize;
+    let chstat = rza1_hal::pac::DMAC.ch(ch).chstat().read();
+    if chstat & 1 != 0 {
+        error!("cancel: FAIL DMA channel {} still enabled after the drop (CHSTAT {:#010x})", ch, chstat);
+        return;
+    }
+
+    match sd::read_sectors(BASE, 1, &mut buf[..512]).await {
+        Err(sd::SdError::NotInitialized) => {}
+        other => {
+            error!("cancel: FAIL the read after an abort returned {:?}, not NotInitialized", other);
+            return;
+        }
+    }
+    if let Err(e) = sd::init().await {
+        error!("cancel: FAIL sd::init after the abort: {:?}", e);
+        return;
+    }
+    match read_region(BASE, SECTORS).await {
+        Ok(h) if h == reference => info!("cancel: PASS (DMA channel {} stopped, card re-initialised, data intact)", ch),
+        Ok(h) => error!("cancel: FAIL re-read checksum {:016x} != {:016x}", h, reference),
+        Err(e) => error!("cancel: FAIL re-read after init: {:?}", e),
+    }
 }
 
 /// Destructive write/read-back verify against a scratch region near the end

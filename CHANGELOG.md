@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `rza1-hal` DMA buffers and cancel-safe SD (phase 3 of the pre-0.1 API pass):
+  - `dma_buf::{Uncached, UncachedMut}` wrap a byte slice that lies wholly in a normal
+    non-cacheable section of the HAL's MMU table (the `+0x4000_0000` mirrors;
+    `memmap::is_uncached_range`), so a DMA driver can't be handed cached memory. No per-transfer
+    cache maintenance.
+  - `Sdhi::read_blocks_dma`/`write_blocks_dma` take those types, and `read_blocks_sw`/
+    `write_blocks_sw` take slices; the block count is the buffer's length. None is `unsafe` now.
+    A length that isn't whole 512-byte blocks is the new `SdhiError::BufferLength`; `SdhiError`
+    is `#[non_exhaustive]`.
+  - A dropped SD command or transfer halts its DMA channel, stops the transfer (SD_STOP.STP) and
+    resets the controller to identification mode before the drop returns, and
+    `Sdhi::take_aborted` reports it. `deluge-bsp`'s SD layer then returns `NotInitialized` until
+    `sd::init` re-identifies the card.
+  - `Dma` itself has no `Drop`: the SSI, SCUX and UART rings keep running after their handle is
+    gone, so the stop-on-drop lives on each transfer (as embassy-stm32's `Transfer`).
 - `rza1-hal` GPIO is owned, embassy-style (phase 2 of the pre-0.1 API pass):
   - Every RZ/A1L pin is a `Peripherals` singleton (`P0_0` … `P9_5`; P8/P9 only on the 208/233-pin
     packages). `gpio::{Input, Output, Flex}` take one; they implement the embedded-hal 1.0
