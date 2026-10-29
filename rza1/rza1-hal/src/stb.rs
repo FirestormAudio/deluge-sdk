@@ -33,6 +33,7 @@
 ///
 /// # Safety
 /// Writes to memory-mapped CPG registers.
+#[cfg(any(target_os = "none", test))]
 pub(crate) unsafe fn init(stbcr: &[u8; 11]) {
     use crate::mmio;
     use crate::pac::CPG;

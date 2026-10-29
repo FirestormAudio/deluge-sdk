@@ -8,7 +8,7 @@
 //!   [`Rusb1Driver`], [`Rusb1Bus`], [`Rusb1ControlPipe`], endpoints.
 //! - [`host`] — host mode (`embassy_usb_driver::host::UsbHostController`):
 //!   [`Rusb1HostDriver`], [`Rusb1Allocator`], [`Rusb1Pipe`].
-//! - [`pipe`], [`fifo`], [`regs`] — shared pipe/FIFO/register layers.
+//! - `pipe`, `fifo`, `regs` — the shared pipe/FIFO/register layers (crate-private).
 //!
 //! USB *class* implementations (UAC2 audio, MIDI, MSC) and the Bulk-Only
 //! Transport engine live in the board-support crate (`deluge_bsp::usb`),
@@ -54,16 +54,21 @@
 //! which dispatches to the mode the port was last brought up in.
 
 pub mod driver;
-pub mod fifo;
+pub(crate) mod fifo;
 pub mod host;
 pub mod iso;
+// The pipe and register internals are the drivers'. DelugeFirmware still reaches four pipe
+// functions and `regs::usb` directly until it moves to `iso` streams (phase 9); those stay
+// public and hidden, and everything else in both modules is crate-private.
+#[doc(hidden)]
 pub mod pipe;
+#[doc(hidden)]
 pub mod regs;
 
-pub use driver::{
-    Rusb1Bus, Rusb1ControlPipe, Rusb1Driver, Rusb1EndpointIn, Rusb1EndpointOut, dcd_int_handler,
-};
-pub use host::{Rusb1Allocator, Rusb1HostDriver, Rusb1Pipe, hcd_int_handler};
+pub use driver::{Rusb1Bus, Rusb1ControlPipe, Rusb1Driver, Rusb1EndpointIn, Rusb1EndpointOut};
+pub use host::{Rusb1Allocator, Rusb1HostDriver, Rusb1Pipe};
+use driver::dcd_int_handler;
+use host::hcd_int_handler;
 
 use core::marker::PhantomData;
 
@@ -107,7 +112,7 @@ const STBCR7_MSTP70: u8 = 1 << 0; // channel 1
 /// # Safety
 /// Writes to memory-mapped CPG registers. Must not be called concurrently
 /// with other STBCR7 writers.
-pub unsafe fn module_clock_enable(port: u8) {
+pub(crate) unsafe fn module_clock_enable(port: u8) {
     let bits: u8 = if port == 0 {
         STBCR7_MSTP71 // ch0 only
     } else {
@@ -119,29 +124,12 @@ pub unsafe fn module_clock_enable(port: u8) {
     let _ = stbcr7.read();
 }
 
-/// Stop the clock for USB module `port` in CPG STBCR7.
-///
-/// # Safety
-/// Writes to memory-mapped CPG registers.
-pub unsafe fn module_clock_disable(port: u8) {
-    // Stop only this port's own channel.  Port 1 must NOT gate channel 0
-    // (MSTP71): channel 0 hosts the shared PLL and may still serve port 0.
-    let bit: u8 = if port == 0 {
-        STBCR7_MSTP71
-    } else {
-        STBCR7_MSTP70
-    };
-    let stbcr7 = CPG.stbcr7();
-    stbcr7.write_value(Stbcr7(stbcr7.read().0 | bit));
-    let _ = stbcr7.read();
-}
-
 /// Enable the GIC interrupt for USB module `port`. Its priority is the application's
 /// (`interrupt::typelevel::USB0`/`USB1`).
 ///
 /// # Safety
 /// Writes to GIC distributor registers.
-pub unsafe fn int_enable(port: u8) {
+pub(crate) unsafe fn int_enable(port: u8) {
     unsafe {
         crate::gic::enable(irq(port));
     }
@@ -151,7 +139,7 @@ pub unsafe fn int_enable(port: u8) {
 ///
 /// # Safety
 /// Writes to GIC distributor registers.
-pub unsafe fn int_disable(port: u8) {
+pub(crate) unsafe fn int_disable(port: u8) {
     unsafe {
         crate::gic::disable(irq(port));
     }

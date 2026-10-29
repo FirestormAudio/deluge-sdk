@@ -239,11 +239,12 @@ static STATE: [SdhiState; NUM_PORTS] = [
 // GIC IRQ IDs
 // ---------------------------------------------------------------------------
 
-/// GIC IDs for SDHI0: status-change, operation, SDIO.
+/// GIC IDs for SDHI0 and SDHI1: status-change, operation, SDIO. (The bindings name them; the
+/// tests pin the numbers against the manual.)
+#[cfg(test)]
 const SDHI0_IRQS: [u16; 3] = [302, 303, 304];
-/// GIC IDs for SDHI1: status-change, operation, SDIO.
+#[cfg(test)]
 const SDHI1_IRQS: [u16; 3] = [305, 306, 307];
-
 
 // ---------------------------------------------------------------------------
 // STBCR12 clock-gate bit masks
@@ -598,6 +599,7 @@ unsafe fn wait_clk_stable(port: u8) {
 // Async command issue
 // ---------------------------------------------------------------------------
 
+/// An SD host error: what went wrong with a command or a data transfer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
@@ -1250,199 +1252,6 @@ fn card_size_blocks(port: u8) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
-// Polling (synchronous, executor-free) data transfer
-// ---------------------------------------------------------------------------
-//
-// These functions mirror the async read_blocks_sw / write_blocks_sw paths
-// but spin on hardware register bits instead of using AtomicWaker.  They are
-// safe to call outside of an Embassy executor (e.g. from embedded-sdmmc's
-// synchronous BlockDevice trait impl).
-//
-// A spin-iteration bound guards against a hardware hang.  It is far above the
-// time a 512-byte block needs even at the fast SD clock (~120 µs at 33 MHz),
-// leaving room for card back-off without spinning forever.
-
-const POLL_TIMEOUT: u32 = 10_000_000;
-
-/// Issue an SD command using register polling (no IRQ / no executor).
-///
-/// Equivalent to [`send_cmd`] but spins on INFO1_RESP / INFO2_ERR_ALL.
-///
-/// # Safety
-/// Must not be called concurrently on the same port.  Writes SDHI registers.
-unsafe fn send_cmd_poll(port: u8, cmd_val: u16) -> Result<(), SdhiError> {
-    unsafe {
-        let s = sdhi(port);
-
-        wait_clk_stable(port);
-        clear_info(port);
-
-        // Mask all interrupts (we poll instead).
-        s.sd_info1_mask().write_value(0xFFFF);
-        s.sd_info2_mask().write_value(0xFFFF);
-
-        // Clear any *hardware* INFO2 status/error bits latched by the previous
-        // polled transfer. clear_info() only resets the software-side
-        // accumulators used by the interrupt-driven path; the polling path
-        // reads INFO2 directly, so a stale bit here (notably ERR3/DTO, which
-        // the TRM notes "halts the command sequence" until cleared) would be
-        // picked up the instant we issue the next command and fail it.
-        // Status bits clear on a 0 write and retain on a 1 write, so write the
-        // complement (matches interrupt_handler): clears exactly the currently
-        // set bits and writes 1 back to reserved/unset bits (INFO2 bit 11 must
-        // always be written as 1).
-        let info2 = s.sd_info2().read();
-        s.sd_info2().write_value(!info2);
-
-        // Issue command.
-        s.sd_cmd().write_value(cmd_val);
-
-        // Spin until RESP or error.
-        for _ in 0..POLL_TIMEOUT {
-            let info1 = s.sd_info1().read();
-            let info2 = s.sd_info2().read();
-
-            if info2 & INFO2_ERR_ALL != 0 {
-                // Clear before returning.
-                s.sd_info1().write_value(!info1);
-                s.sd_info2().write_value(!info2);
-                clear_info(port);
-                return check_info2_errors(info2);
-            }
-            if info1 & INFO1_RESP != 0 {
-                s.sd_info1().write_value(!info1);
-                s.sd_info2().write_value(!info2);
-                clear_info(port);
-                return Ok(());
-            }
-        }
-
-        clear_info(port);
-        Err(SdhiError::ResponseTimeout)
-    }
-}
-
-/// Read `count` 512-byte blocks from the card using register polling.
-///
-/// The caller must have already:
-///   1. Set block count via [`set_block_count`].
-///   2. Issued the read command via [`send_cmd_poll`].
-///
-/// # Safety
-/// Must not be called concurrently on the same port.
-unsafe fn read_blocks_poll(port: u8, buf: *mut u8, count: u32) -> Result<(), SdhiError> {
-    unsafe {
-        let s = sdhi(port);
-
-        let mut dst = buf;
-        for _block in 0..count {
-            // Wait for Buffer Read Enable (INFO2_BRE).
-            let mut ready = false;
-            for _ in 0..POLL_TIMEOUT {
-                let info2 = s.sd_info2().read();
-                if info2 & INFO2_ERR_ALL != 0 {
-                    s.sd_info2().write_value(!info2);
-                    return check_info2_errors(info2);
-                }
-                if info2 & INFO2_BRE != 0 {
-                    // Clear only BRE.
-                    s.sd_info2().write_value(!(INFO2_BRE));
-                    ready = true;
-                    break;
-                }
-            }
-            if !ready {
-                return Err(SdhiError::DataTimeout);
-            }
-
-            // Drain 512 bytes from 32-bit FIFO (128 × 32-bit reads).
-            let fifo = s.sd_buf0();
-            for w in 0..128usize {
-                let word = fifo.read();
-                let p = dst.add(w * 4) as *mut u32;
-                p.write_unaligned(word);
-            }
-            dst = dst.add(512);
-        }
-
-        // Wait for access end (INFO1_DATA_TRNS).
-        for _ in 0..POLL_TIMEOUT {
-            let info2 = s.sd_info2().read();
-            if info2 & INFO2_ERR_ALL != 0 {
-                s.sd_info2().write_value(!info2);
-                return check_info2_errors(info2);
-            }
-            let info1 = s.sd_info1().read();
-            if info1 & INFO1_DATA_TRNS != 0 {
-                s.sd_info1().write_value(!info1);
-                s.sd_info2().write_value(!info2);
-                return Ok(());
-            }
-        }
-
-        Err(SdhiError::DataTimeout)
-    }
-}
-
-/// Write `count` 512-byte blocks to the card using register polling.
-///
-/// The caller must have already set block count and issued the write command.
-///
-/// # Safety
-/// Must not be called concurrently on the same port.
-unsafe fn write_blocks_poll(port: u8, buf: *const u8, count: u32) -> Result<(), SdhiError> {
-    unsafe {
-        let s = sdhi(port);
-
-        let mut src = buf;
-        for _block in 0..count {
-            // Wait for Buffer Write Enable (INFO2_BWE).
-            let mut ready = false;
-            for _ in 0..POLL_TIMEOUT {
-                let info2 = s.sd_info2().read();
-                if info2 & INFO2_ERR_ALL != 0 {
-                    s.sd_info2().write_value(!info2);
-                    return check_info2_errors(info2);
-                }
-                if info2 & INFO2_BWE != 0 {
-                    s.sd_info2().write_value(!(INFO2_BWE));
-                    ready = true;
-                    break;
-                }
-            }
-            if !ready {
-                return Err(SdhiError::DataTimeout);
-            }
-
-            // Fill 512 bytes into 32-bit FIFO (128 × 32-bit writes).
-            let fifo = s.sd_buf0();
-            for w in 0..128usize {
-                let p = src.add(w * 4) as *const u32;
-                fifo.write_value(p.read_unaligned());
-            }
-            src = src.add(512);
-        }
-
-        // Wait for access end.
-        for _ in 0..POLL_TIMEOUT {
-            let info2 = s.sd_info2().read();
-            if info2 & INFO2_ERR_ALL != 0 {
-                s.sd_info2().write_value(!info2);
-                return check_info2_errors(info2);
-            }
-            let info1 = s.sd_info1().read();
-            if info1 & INFO1_DATA_TRNS != 0 {
-                s.sd_info1().write_value(!info1);
-                s.sd_info2().write_value(!info2);
-                return Ok(());
-            }
-        }
-
-        Err(SdhiError::DataTimeout)
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Owned typed wrapper
 // ---------------------------------------------------------------------------
 
@@ -1897,6 +1706,11 @@ mod tests {
     #[test]
     fn gic_ids_for_sdhi1() {
         assert_eq!(SDHI1_IRQS, [305, 306, 307]);
+    }
+
+    #[test]
+    fn gic_ids_for_sdhi0() {
+        assert_eq!(SDHI0_IRQS, [302, 303, 304]);
     }
 
     #[test]

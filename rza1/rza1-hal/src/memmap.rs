@@ -72,6 +72,7 @@ pub struct DmaInvPlan {
     ///
     /// [`inv_lines`]: DmaInvPlan::inv_lines
     pub inv_first: usize,
+    /// One past the last line to plain-invalidate.
     pub inv_last: usize,
 }
 

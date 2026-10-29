@@ -10,7 +10,8 @@ use log::info;
 
 use deluge_bsp::oled::{self, text};
 use deluge_bsp::pic;
-use rza1_hal::usb::regs::INTSTS0_VBSTS;
+/// INTSTS0.VBSTS (bit 7): the RUSB1 VBUS-pin monitor (RZ/A1L hardware manual, ch. 28).
+const INTSTS0_VBSTS: u16 = 0x0080;
 
 /// First on-screen pixel row (the top rows sit off the visible panel area).
 const TOP: usize = 10;

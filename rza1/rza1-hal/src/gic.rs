@@ -45,9 +45,11 @@ const ICCICR_ENABLES: u32 = 0x1;
 const ICCICR_ENABLENS: u32 = 0x2;
 /// ICCIAR bits [9:0]: ACKINTID — Interrupt Acknowledge ID field.
 /// BSP: INTC_ICCIAR_ACKINTID = 0x3FF
+#[cfg(target_os = "none")]
 const ICCIAR_ACKINTID: u32 = 0x3FF;
 /// ICCIAR spurious interrupt ID lower bound (IDs ≥ 0x3FE are spurious).
 /// 0x3FE = 1022 (spurious group IRQ), 0x3FF = 1023 (spurious FIQ).
+#[cfg(target_os = "none")]
 const ICCIAR_SPURIOUS: u32 = 0x3FE;
 
 // ---------------------------------------------------------------------------
@@ -74,6 +76,7 @@ impl HandlerCell {
     fn set(&self, h: HandlerFn) {
         self.0.store(h as usize, core::sync::atomic::Ordering::Release);
     }
+    #[cfg(any(target_os = "none", test))]
     fn get(&self) -> Option<HandlerFn> {
         match self.0.load(core::sync::atomic::Ordering::Acquire) {
             0 => None,
@@ -123,12 +126,14 @@ pub fn set_sdram_code_window(window: core::ops::Range<usize>) {
 /// 2-byte aligned, so the check strips bit 0 and requires only 2-byte alignment, which both ISAs
 /// satisfy. Requiring 4-byte alignment would reject every handler in a Thumb build. Bit 0 is not
 /// treated as evidence either way; the range test is what rejects a corrupted slot.
+#[cfg(any(target_os = "none", test))]
 fn is_plausible_code_address(addr: usize) -> bool {
     let sdram = SDRAM_CODE_START.load(Ordering::Relaxed)..SDRAM_CODE_END.load(Ordering::Relaxed);
     is_plausible_in(addr, sdram)
 }
 
 /// [`is_plausible_code_address`] against an explicit SDRAM window.
+#[cfg(any(target_os = "none", test))]
 fn is_plausible_in(addr: usize, sdram: core::ops::Range<usize>) -> bool {
     const SRAM: core::ops::Range<usize> = 0x2000_0000..0x2030_0000;
     let target = addr & !1; // drop the Thumb interworking bit
@@ -279,6 +284,7 @@ pub unsafe fn init() {
 /// active bit registers hold them), by `priority` (a lower value is more urgent; the lower ID on a
 /// tie), or `None` when none is active. Bits past the last interrupt ID (`INT_ID_TOTAL`) name no
 /// interrupt and are ignored: the last active word covers IDs the chip doesn't have.
+#[cfg(any(target_os = "none", test))]
 fn most_urgent_active(active: &[u32], priority: impl Fn(usize) -> u8) -> Option<usize> {
     let mut best: Option<(u8, usize)> = None;
     for (word, &bits) in active.iter().enumerate() {
@@ -349,6 +355,7 @@ pub(crate) fn set_handler(id: u16, handler: HandlerFn) {
 }
 
 /// The handler installed for `id`, if any.
+#[cfg(test)]
 pub(crate) fn handler(id: u16) -> Option<HandlerFn> {
     HANDLERS.get(id as usize).and_then(HandlerCell::get)
 }

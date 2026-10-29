@@ -1,4 +1,5 @@
 //! Attribute macros for `rza1-rt`. Use them through `rza1_rt::{entry, irq, fault}`.
+#![deny(missing_docs)]
 
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
@@ -122,16 +123,25 @@ fn expand_fault(attr: TokenStream2, item: TokenStream2) -> TokenStream2 {
     }
 }
 
+/// The image's entry, on `fn() -> !`: exports it as `main`, which the reset handler calls once
+/// BSS is zeroed (System mode, interrupts masked, MMU and caches off). Any other signature is a
+/// compile error.
 #[proc_macro_attribute]
 pub fn entry(attr: TokenStream, item: TokenStream) -> TokenStream {
     expand_entry(attr.into(), item.into()).into()
 }
 
+/// The IRQ dispatcher, on `unsafe fn(u32)`: exports it as `gic_dispatch`, which the IRQ entry
+/// stub calls with each interrupt's ICCIAR value. For an image that turns off `rza1-hal`'s `rt`
+/// feature, which otherwise provides it. Any other signature is a compile error.
 #[proc_macro_attribute]
 pub fn irq(attr: TokenStream, item: TokenStream) -> TokenStream {
     expand_irq(attr.into(), item.into()).into()
 }
 
+/// The fault handler, on `fn(&rza1_rt::FaultInfo) -> !`: exports it as
+/// `rza1_cpu_fault_report`, which every fault vector calls on the abort stack. The crate using it
+/// depends on `rza1-rt`. Any other signature is a compile error.
 #[proc_macro_attribute]
 pub fn fault(attr: TokenStream, item: TokenStream) -> TokenStream {
     expand_fault(attr.into(), item.into()).into()

@@ -179,7 +179,9 @@ fn smr_for(config: &Config) -> u16 {
 
 // GIC base IDs for SCIF0; per RZ/A1L HW Manual §A.2:
 //   SCIFn: BRI = 221+n*4, ERI = 222+n*4, RXI = 223+n*4, TXI = 224+n*4
+#[cfg(test)]
 const ERI_BASE: u16 = 222;
+#[cfg(test)]
 const RXI_BASE: u16 = 223;
 const TXI_BASE: u16 = 224;
 
@@ -1448,7 +1450,7 @@ impl embedded_io_async::Write for UartTx<'_, Async> {
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
-    use super::{NUM_CHANNELS, RXI_BASE, TXI_BASE, scbrr, scif};
+    use super::{ERI_BASE, NUM_CHANNELS, RXI_BASE, TXI_BASE, scbrr, scif};
     use crate::clocks::TEST_CLOCKS;
 
     #[test]
@@ -1528,6 +1530,7 @@ mod tests {
     #[test]
     fn scif_irq_ids() {
         for ch in 0..NUM_CHANNELS as u16 {
+            assert_eq!(ERI_BASE + ch * 4, 222 + ch * 4);
             assert_eq!(RXI_BASE + ch * 4, 223 + ch * 4);
             assert_eq!(TXI_BASE + ch * 4, 224 + ch * 4);
         }

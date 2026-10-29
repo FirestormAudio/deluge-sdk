@@ -283,6 +283,7 @@ impl Rusb1EndpointIn {
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
+    use std::boxed::Box;
     use super::*;
     use crate::mmio::test;
     use crate::usb::driver::{Rusb1EndpointIn, Rusb1EndpointOut};

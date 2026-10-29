@@ -11,7 +11,7 @@
 //!
 //! OSTM0 runs at P0φ (see [`crate::clocks`]). The Embassy tick rate is 1 MHz (1 µs per tick);
 //! `now()` converts OSTM0 ticks with the exact ticks-per-µs rational from
-//! [`crate::time_math::TickRatio`] (21161/640 on the Deluge).
+//! `time_math::TickRatio` (21161/640 on the Deluge).
 //!
 //! ## Overflow handling for `now()`
 //!

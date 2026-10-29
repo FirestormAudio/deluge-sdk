@@ -651,7 +651,7 @@ static ENABLED_GEN: [[AtomicU32; PIPE_COUNT]; 2] =
 /// A SETUP packet arrived on `port`: start a new request generation.
 /// Generation 0 means "never", so a wrap skips it.
 fn next_setup_gen(port: usize) {
-    let _ = SETUP_GEN[port].fetch_update(Ordering::AcqRel, Ordering::Acquire, |g| {
+    let _ = SETUP_GEN[port].try_update(Ordering::AcqRel, Ordering::Acquire, |g| {
         Some(g.wrapping_add(1).max(1))
     });
 }
@@ -663,6 +663,7 @@ fn forget_enables(port: usize) {
     }
 }
 
+/// The USB port's bus, as embassy-usb's `Bus`: enabling, resets, suspend/resume and VBUS events.
 pub struct Rusb1Bus {
     port: u8,
     /// Whether we currently believe VBUS is present.
@@ -895,6 +896,7 @@ impl Bus for Rusb1Bus {
 // Rusb1ControlPipe
 // ---------------------------------------------------------------------------
 
+/// The default control pipe (DCP, endpoint 0), as embassy-usb's `ControlPipe`.
 pub struct Rusb1ControlPipe {
     port: u8,
     mps: u16,
@@ -1137,9 +1139,14 @@ impl ControlPipe for Rusb1ControlPipe {
 // Rusb1EndpointOut
 // ---------------------------------------------------------------------------
 
+/// An OUT endpoint on one of the port's pipes, as embassy-usb's `EndpointOut`; isochronous
+/// endpoints become streams with [`into_iso_stream`](Self::into_iso_stream).
 pub struct Rusb1EndpointOut {
+    /// The USB port (0 or 1).
     pub port: u8,
+    /// The RUSB1 pipe the endpoint runs on (1-15).
     pub pipe: u8,
+    /// The endpoint's address, type, max packet size and interval.
     pub info: EndpointInfo,
 }
 
@@ -1301,9 +1308,14 @@ impl EndpointOut for Rusb1EndpointOut {
 // Rusb1EndpointIn
 // ---------------------------------------------------------------------------
 
+/// An IN endpoint on one of the port's pipes, as embassy-usb's `EndpointIn`; isochronous
+/// endpoints become streams with [`into_iso_stream`](Self::into_iso_stream).
 pub struct Rusb1EndpointIn {
+    /// The USB port (0 or 1).
     pub port: u8,
+    /// The RUSB1 pipe the endpoint runs on (1-15).
     pub pipe: u8,
+    /// The endpoint's address, type, max packet size and interval.
     pub info: EndpointInfo,
     /// Bytes committed to the FIFO per fill (= `mps`, or the whole multi-packet
     /// buffer for a continuous-mode bulk IN pipe).
@@ -1440,7 +1452,7 @@ impl EndpointIn for Rusb1EndpointIn {
 /// # Safety
 /// Must only be called from an interrupt context matching the port's GIC IRQ.
 /// Single-core bare-metal only.
-pub unsafe fn dcd_int_handler(port: u8) {
+pub(crate) unsafe fn dcd_int_handler(port: u8) {
     unsafe {
         let u = usb(port);
         let p = port as usize;
@@ -1847,6 +1859,7 @@ unsafe fn configure_all_pipes(port: u8) {
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
+    use std::boxed::Box;
     use super::*;
     use crate::mmio::test;
 

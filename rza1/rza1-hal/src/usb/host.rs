@@ -218,7 +218,13 @@ impl Drop for DrainGuard {
 
 /// A 1 KB, cache-line-aligned block buffer.
 #[repr(align(32))]
-struct Bounce([u32; 256]);
+struct Bounce(
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the DMAC writes it and the CPU reads it by address, through the uncached alias")
+    )]
+    [u32; 256],
+);
 /// Per port: where the DMAC writes a received block. Only ever touched through its uncached
 /// alias ([`crate::uncached`]), so no cache maintenance is needed.
 static mut RX_BOUNCE: [Bounce; 2] = [const { Bounce([0; 256]) }; 2];
@@ -1839,7 +1845,7 @@ impl<'d> Rusb1HostDriver<'d> {
     ///
     /// A bulk endpoint's sends go through the port's shared send pipe, one at a time: each
     /// re-points the pipe at its endpoint if another one last used it. Each may take at most
-    /// [`SHARED_SEND_TIMEOUT_MS`], or fails with [`PipeError::Timeout`].
+    /// `SHARED_SEND_TIMEOUT_MS` (100 ms), or fails with [`PipeError::Timeout`].
     pub async fn xfer_out(&self, dev_addr: u8, ep_addr: u8, buf: &[u8]) -> Result<(), PipeError> {
         let pipe = self
             .ep_to_pipe(dev_addr, ep_addr)
@@ -2173,7 +2179,7 @@ async fn poll_pipe(n: usize) -> Result<usize, PipeError> {
 /// # Safety
 ///
 /// Must be called from the hardware IRQ handler for the corresponding port.
-pub unsafe fn hcd_int_handler(port: u8) {
+pub(crate) unsafe fn hcd_int_handler(port: u8) {
     unsafe {
         let u = usb(port);
 
@@ -2954,6 +2960,7 @@ impl<T: pipe::Type, D: pipe::Direction> UsbPipe<T, D> for Rusb1Pipe<T, D> {
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
+    use std::{boxed::Box, vec::Vec};
     use super::*;
 
     /// The attach tests share the module's event statics; run them one at a time.
@@ -3268,6 +3275,8 @@ mod tests {
     fn isochronous_pipes_raise_no_nrdy_interrupts() {
         let _g = ATTACH_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let h = host_with_bus(0b00, DVSTCTR0_RHST_HS | DVSTCTR0_UACT);
+        // Its own rings: another test's may be gone (`an_iso_in_pipe_without_buffers_fails_to_open`).
+        lend_iso(&h);
         critical_section::with(|cs| unsafe { *HCD_ALLOC[0].borrow(cs).get() = HcdAlloc::new() });
         h.edpt_open(1, 0x03, EndpointType::Isochronous, 56, 1)
             .unwrap();

@@ -156,10 +156,7 @@ fn chip_capacity() -> u32 {
 ///
 /// The chip-size bound is what prevents an out-of-range offset from wrapping
 /// (modulo the chip size) onto a reserved low sector such as the FSB.  It is
-/// combined with [`within_windows`] on the normal write path and
-/// is the *only* guard kept on the `unlock-bootloader` forced path (which
-/// deliberately drops the window restriction so a recovery tool can rewrite the
-/// FSB / settings / SSB).  Reads only the cache, so it is safe inside a
+/// combined with [`within_windows`] on the write path.  Reads only the cache, so it is safe inside a
 /// manual-mode window; an unknown capacity (`0`) refuses every write.
 #[inline]
 fn in_chip(offset: u32, len: u32) -> bool {
@@ -306,6 +303,7 @@ unsafe fn to_read_mode() {
 ///
 /// # Safety
 /// Bring-up only: nothing may be mid-transfer in manual mode.
+#[cfg(any(target_os = "none", test))]
 pub(crate) unsafe fn restore_read_mode() {
     unsafe { to_read_mode() }
 }
@@ -625,65 +623,6 @@ impl FlashMap {
             to_read_mode();
         });
     }
-}
-
-// ---------------------------------------------------------------------------
-// Forced (unlocked) writes — recovery tooling only
-// ---------------------------------------------------------------------------
-//
-// These bypass the writable-window guard so a JTAG-loaded recovery program can
-// (re)write the protected low regions — the FSB, the device-settings sector, and
-// the SSB — which the normal API refuses.  They are gated behind the
-// `unlock-bootloader` cargo feature so the capability cannot be linked into normal
-// firmware (or the app-loader) by accident.  The anti-aliasing chip-bounds check
-// ([`in_chip`]) is retained: that is what prevents an out-of-range offset from
-// wrapping onto a low sector such as the FSB.  The caller passes the geometry
-// (which lives in the BSP profile, e.g. `deluge-bsp::flash`).
-
-/// Erase every `sector_size`-byte block touched by `[offset, offset+len)`
-/// (flash-relative), **including the protected FSB / settings / SSB regions**.
-///
-/// # Safety
-/// See [`FlashMap::erase_sector`].  In addition, this can erase the first-stage
-/// bootloader and brick the device until reflashed over JTAG/SPI — only call from
-/// a recovery tool that is itself running from SRAM (never from flash).
-#[cfg(feature = "unlock-bootloader")]
-pub unsafe fn force_erase_range(offset: u32, len: u32, sector_size: u32) {
-    chip_capacity(); // probe chip size before manual mode
-    critical_section::with(|_| unsafe {
-        let mut addr = offset & !(sector_size - 1);
-        let end = offset + len;
-        to_manual();
-        while addr < end {
-            erase_sector_at(addr, sector_size, None);
-            addr += sector_size;
-        }
-        to_read_mode();
-    });
-}
-
-/// Program an arbitrary-length buffer at `offset` (flash-relative), splitting it
-/// into `page`-bounded writes, **including the protected FSB / settings / SSB
-/// regions**.  The target range must already be erased.
-///
-/// # Safety
-/// See [`force_erase_range`].
-#[cfg(feature = "unlock-bootloader")]
-pub unsafe fn force_program(offset: u32, data: &[u8], page: usize) {
-    chip_capacity(); // probe chip size before manual mode
-    critical_section::with(|_| unsafe {
-        to_manual();
-        let mut addr = offset;
-        let mut rest = data;
-        while !rest.is_empty() {
-            let page_room = page - (addr as usize & (page - 1));
-            let chunk = core::cmp::min(page_room, rest.len());
-            program_page_manual(addr, &rest[..chunk], None);
-            addr += chunk as u32;
-            rest = &rest[chunk..];
-        }
-        to_read_mode();
-    });
 }
 
 #[cfg(all(test, not(target_os = "none")))]

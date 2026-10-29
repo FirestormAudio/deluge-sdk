@@ -10,6 +10,7 @@
 //! section, labelled `__rza1_boot_header`; link.x places it at `_start + 0x20`, straight after
 //! the vector table.
 #![no_std]
+#![deny(missing_docs)]
 
 // ARM-mode assembly; nothing to build for a host target.
 #[cfg(target_os = "none")]

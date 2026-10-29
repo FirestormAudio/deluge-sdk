@@ -3,8 +3,12 @@
 //!
 //! Peripheral base addresses are taken from the RZ/A1L Hardware Manual.
 
-#![cfg_attr(target_os = "none", no_std)]
-#![allow(dead_code)]
+#![no_std]
+#![deny(missing_docs)]
+
+#[cfg(test)]
+#[macro_use]
+extern crate std;
 
 // Logging macros (`trace!` … `error!`) over `log`, `defmt` or nothing: first, so every module sees
 // them.
@@ -136,6 +140,7 @@ unsafe fn bring_up(config: &Config, start_time_driver: impl FnOnce(interrupt::Pr
 
 /// CPG, then the module clocks: a module clock must not start before the bus clocks it runs from
 /// are programmed.
+#[cfg(any(target_os = "none", test))]
 unsafe fn cpg_then_stb(frqcr: u16, stbcr: &[u8; 11]) {
     unsafe {
         cpg::init(frqcr);
@@ -155,6 +160,8 @@ pub mod cache;
 pub mod clocks;
 mod config;
 pub use config::{ClockOutput, ClockOutputOnChange, Config, CpgConfig, CpuClockRatio, ModuleClock, ModuleClocks};
+// Clock bring-up, which only the device `init` (and the tests) run.
+#[cfg(any(target_os = "none", test))]
 mod cpg;
 pub mod dma_buf;
 pub mod dmac;

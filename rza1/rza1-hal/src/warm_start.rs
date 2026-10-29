@@ -15,6 +15,7 @@
 ///
 /// # Safety
 /// Runs once at bring-up, after the module clocks are running and before any driver starts.
+#[cfg(any(target_os = "none", test))]
 pub(crate) unsafe fn quiesce() {
     unsafe {
         crate::dmac::stop_all();

@@ -1,7 +1,7 @@
 //! RUSB1 peripheral register map for Renesas RZ/A1L.
 //!
 //! The registers themselves come from `crate::pac::USB200` / `USB201`, through [`usb`]
-//! (and [`pipectr`] for the DCPCTR / PIPEnCTR family); every access goes through the
+//! (and `pipectr` for the DCPCTR / PIPEnCTR family); every access goes through the
 //! PAC's `Reg` and so through the MMIO seam.
 //!
 //! ## Usage
@@ -10,9 +10,13 @@
 //! ```
 //!
 //! ## Bit constants
-//! All bitmask constants are declared in this module as `pub const u16`.
+//! All bitmask constants are declared in this module as `pub(crate) const u16`.
 //! Naming follows the C `usb_iobitmask.h` file with the `USB_` prefix removed
 //! and snake_case used for the shift variants.
+
+// The bit map is transcribed whole from the manual and `usb_iobitmask.h`, so the next driver
+// change finds the bit it needs; not every bit is used today.
+#![expect(dead_code, reason = "the RUSB1 bit map is complete; the drivers use a subset")]
 
 use crate::pac::common::{RW, Reg};
 use crate::pac::usb::Usb;
@@ -21,21 +25,21 @@ use crate::pac::{USB200, USB201};
 // ---------------------------------------------------------------------------
 // SYSCFG0
 // ---------------------------------------------------------------------------
-pub const SYSCFG_USBE: u16 = 0x0001;
-pub const SYSCFG_UPLLE: u16 = 0x0002;
-pub const SYSCFG_UCKSEL: u16 = 0x0004;
-pub const SYSCFG_DPRPU: u16 = 0x0010;
-pub const SYSCFG_DRPD: u16 = 0x0020;
-pub const SYSCFG_DCFM: u16 = 0x0040;
-pub const SYSCFG_HSE: u16 = 0x0080;
+pub(crate) const SYSCFG_USBE: u16 = 0x0001;
+pub(crate) const SYSCFG_UPLLE: u16 = 0x0002;
+pub(crate) const SYSCFG_UCKSEL: u16 = 0x0004;
+pub(crate) const SYSCFG_DPRPU: u16 = 0x0010;
+pub(crate) const SYSCFG_DRPD: u16 = 0x0020;
+pub(crate) const SYSCFG_DCFM: u16 = 0x0040;
+pub(crate) const SYSCFG_HSE: u16 = 0x0080;
 
-pub const SYSCFG_UCKSEL_SHIFT: u16 = 2;
-pub const SYSCFG_DCFM_SHIFT: u16 = 6;
+pub(crate) const SYSCFG_UCKSEL_SHIFT: u16 = 2;
+pub(crate) const SYSCFG_DCFM_SHIFT: u16 = 6;
 
 // ---------------------------------------------------------------------------
 // SYSSTS0
 // ---------------------------------------------------------------------------
-pub const SYSSTS0_LNST: u16 = 0x0003;
+pub(crate) const SYSSTS0_LNST: u16 = 0x0003;
 
 // ---------------------------------------------------------------------------
 // DVSTCTR0
@@ -44,177 +48,177 @@ pub const SYSSTS0_LNST: u16 = 0x0003;
 // DVSTCTR0 has NO VBUSEN/EXICEN/HNPBTOA bits — bits 11:9 are reserved
 // ("always read as 0, write 0", TRM §28.3.4).  VBUS power must be switched
 // externally (board GPIO); the module only *senses* VBUS via the VBUS pin.
-pub const DVSTCTR0_RHST: u16 = 0x0007;
-pub const DVSTCTR0_UACT: u16 = 0x0010;
-pub const DVSTCTR0_RESUME: u16 = 0x0020;
-pub const DVSTCTR0_USBRST: u16 = 0x0040;
-pub const DVSTCTR0_RWUPE: u16 = 0x0080;
-pub const DVSTCTR0_WKUP: u16 = 0x0100;
+pub(crate) const DVSTCTR0_RHST: u16 = 0x0007;
+pub(crate) const DVSTCTR0_UACT: u16 = 0x0010;
+pub(crate) const DVSTCTR0_RESUME: u16 = 0x0020;
+pub(crate) const DVSTCTR0_USBRST: u16 = 0x0040;
+pub(crate) const DVSTCTR0_RWUPE: u16 = 0x0080;
+pub(crate) const DVSTCTR0_WKUP: u16 = 0x0100;
 
-pub const DVSTCTR0_RHST_LS: u16 = 0b001;
-pub const DVSTCTR0_RHST_FS: u16 = 0b010;
-pub const DVSTCTR0_RHST_HS: u16 = 0b011;
+pub(crate) const DVSTCTR0_RHST_LS: u16 = 0b001;
+pub(crate) const DVSTCTR0_RHST_FS: u16 = 0b010;
+pub(crate) const DVSTCTR0_RHST_HS: u16 = 0b011;
 
 // ---------------------------------------------------------------------------
 // FIFO SEL / CTR  (shared shape between CFIFOSEL and DnFIFOSEL)
 // ---------------------------------------------------------------------------
-pub const FIFOSEL_CURPIPE_MASK: u16 = 0x000F;
-pub const FIFOSEL_ISEL: u16 = 0x0020; // CFIFOSEL only
-pub const FIFOSEL_DREQE: u16 = 0x1000; // DnFIFOSEL only: DMA request enable
-pub const FIFOSEL_DCLRM: u16 = 0x2000; // DnFIFOSEL only: clear the buffer once its data is read
-pub const FIFOSEL_BIGEND: u16 = 0x0100;
-pub const FIFOSEL_MBW_MASK: u16 = 0x0C00;
-pub const FIFOSEL_MBW_SHIFT: u32 = 10;
-pub const FIFOSEL_REW: u16 = 0x4000;
-pub const FIFOSEL_RCNT: u16 = 0x8000;
+pub(crate) const FIFOSEL_CURPIPE_MASK: u16 = 0x000F;
+pub(crate) const FIFOSEL_ISEL: u16 = 0x0020; // CFIFOSEL only
+pub(crate) const FIFOSEL_DREQE: u16 = 0x1000; // DnFIFOSEL only: DMA request enable
+pub(crate) const FIFOSEL_DCLRM: u16 = 0x2000; // DnFIFOSEL only: clear the buffer once its data is read
+pub(crate) const FIFOSEL_BIGEND: u16 = 0x0100;
+pub(crate) const FIFOSEL_MBW_MASK: u16 = 0x0C00;
+pub(crate) const FIFOSEL_MBW_SHIFT: u32 = 10;
+pub(crate) const FIFOSEL_REW: u16 = 0x4000;
+pub(crate) const FIFOSEL_RCNT: u16 = 0x8000;
 
-pub const FIFOCTR_DTLN_MASK: u16 = 0x0FFF;
-pub const FIFOCTR_FRDY: u16 = 0x2000;
-pub const FIFOCTR_BCLR: u16 = 0x4000;
-pub const FIFOCTR_BVAL: u16 = 0x8000;
+pub(crate) const FIFOCTR_DTLN_MASK: u16 = 0x0FFF;
+pub(crate) const FIFOCTR_FRDY: u16 = 0x2000;
+pub(crate) const FIFOCTR_BCLR: u16 = 0x4000;
+pub(crate) const FIFOCTR_BVAL: u16 = 0x8000;
 
-pub const MBW_8: u16 = 0;
-pub const MBW_16: u16 = 1;
-pub const MBW_32: u16 = 2;
+pub(crate) const MBW_8: u16 = 0;
+pub(crate) const MBW_16: u16 = 1;
+pub(crate) const MBW_32: u16 = 2;
 
 // ---------------------------------------------------------------------------
 // INTENB0
 // ---------------------------------------------------------------------------
-pub const INTENB0_BRDYE: u16 = 0x0100;
-pub const INTENB0_NRDYE: u16 = 0x0200;
-pub const INTENB0_BEMPE: u16 = 0x0400;
-pub const INTENB0_CTRE: u16 = 0x0800;
-pub const INTENB0_DVSE: u16 = 0x1000;
-pub const INTENB0_SOFE: u16 = 0x2000;
-pub const INTENB0_RSME: u16 = 0x4000;
-pub const INTENB0_VBSE: u16 = 0x8000;
+pub(crate) const INTENB0_BRDYE: u16 = 0x0100;
+pub(crate) const INTENB0_NRDYE: u16 = 0x0200;
+pub(crate) const INTENB0_BEMPE: u16 = 0x0400;
+pub(crate) const INTENB0_CTRE: u16 = 0x0800;
+pub(crate) const INTENB0_DVSE: u16 = 0x1000;
+pub(crate) const INTENB0_SOFE: u16 = 0x2000;
+pub(crate) const INTENB0_RSME: u16 = 0x4000;
+pub(crate) const INTENB0_VBSE: u16 = 0x8000;
 
 // ---------------------------------------------------------------------------
 // INTENB1 (host-mode attach/detach/setup)
 // ---------------------------------------------------------------------------
-pub const INTENB1_SACKE: u16 = 0x0010; // Setup ACK enable
-pub const INTENB1_SIGNE: u16 = 0x0020; // Setup IGNORE (NAK/error) enable
-pub const INTENB1_EOFERRE: u16 = 0x0040;
-pub const INTENB1_ATTCHE: u16 = 0x0800;
-pub const INTENB1_DTCHE: u16 = 0x1000;
-pub const INTENB1_BCHGE: u16 = 0x4000;
+pub(crate) const INTENB1_SACKE: u16 = 0x0010; // Setup ACK enable
+pub(crate) const INTENB1_SIGNE: u16 = 0x0020; // Setup IGNORE (NAK/error) enable
+pub(crate) const INTENB1_EOFERRE: u16 = 0x0040;
+pub(crate) const INTENB1_ATTCHE: u16 = 0x0800;
+pub(crate) const INTENB1_DTCHE: u16 = 0x1000;
+pub(crate) const INTENB1_BCHGE: u16 = 0x4000;
 
 // ---------------------------------------------------------------------------
 // INTSTS0
 // ---------------------------------------------------------------------------
-pub const INTSTS0_CTSQ_MASK: u16 = 0x0007;
-pub const INTSTS0_VALID: u16 = 0x0008;
-pub const INTSTS0_DVSQ_MASK: u16 = 0x0070;
-pub const INTSTS0_DVSQ_SHIFT: u32 = 4;
-pub const INTSTS0_VBSTS: u16 = 0x0080;
-pub const INTSTS0_BRDY: u16 = 0x0100;
-pub const INTSTS0_NRDY: u16 = 0x0200;
-pub const INTSTS0_BEMP: u16 = 0x0400;
-pub const INTSTS0_CTRT: u16 = 0x0800;
-pub const INTSTS0_DVST: u16 = 0x1000;
-pub const INTSTS0_SOFR: u16 = 0x2000;
-pub const INTSTS0_RESM: u16 = 0x4000;
-pub const INTSTS0_VBINT: u16 = 0x8000;
+pub(crate) const INTSTS0_CTSQ_MASK: u16 = 0x0007;
+pub(crate) const INTSTS0_VALID: u16 = 0x0008;
+pub(crate) const INTSTS0_DVSQ_MASK: u16 = 0x0070;
+pub(crate) const INTSTS0_DVSQ_SHIFT: u32 = 4;
+pub(crate) const INTSTS0_VBSTS: u16 = 0x0080;
+pub(crate) const INTSTS0_BRDY: u16 = 0x0100;
+pub(crate) const INTSTS0_NRDY: u16 = 0x0200;
+pub(crate) const INTSTS0_BEMP: u16 = 0x0400;
+pub(crate) const INTSTS0_CTRT: u16 = 0x0800;
+pub(crate) const INTSTS0_DVST: u16 = 0x1000;
+pub(crate) const INTSTS0_SOFR: u16 = 0x2000;
+pub(crate) const INTSTS0_RESM: u16 = 0x4000;
+pub(crate) const INTSTS0_VBINT: u16 = 0x8000;
 
 // DVSQ sub-values
-pub const DVSQ_POWERED: u16 = 0b000;
-pub const DVSQ_DEFAULT: u16 = 0b001; // bus reset completed
-pub const DVSQ_ADDRESS: u16 = 0b010;
-pub const DVSQ_CONFIGURED: u16 = 0b011;
-pub const DVSQ_SUSP0: u16 = 0b100;
+pub(crate) const DVSQ_POWERED: u16 = 0b000;
+pub(crate) const DVSQ_DEFAULT: u16 = 0b001; // bus reset completed
+pub(crate) const DVSQ_ADDRESS: u16 = 0b010;
+pub(crate) const DVSQ_CONFIGURED: u16 = 0b011;
+pub(crate) const DVSQ_SUSP0: u16 = 0b100;
 
 // CTSQ sub-values
-pub const CTSQ_IDLE: u16 = 0b000;
-pub const CTSQ_READ_DATA: u16 = 0b001;
-pub const CTSQ_READ_STATUS: u16 = 0b010;
-pub const CTSQ_WRITE_DATA: u16 = 0b011;
-pub const CTSQ_WRITE_STATUS: u16 = 0b100;
-pub const CTSQ_WRITE_ZLP: u16 = 0b101;
+pub(crate) const CTSQ_IDLE: u16 = 0b000;
+pub(crate) const CTSQ_READ_DATA: u16 = 0b001;
+pub(crate) const CTSQ_READ_STATUS: u16 = 0b010;
+pub(crate) const CTSQ_WRITE_DATA: u16 = 0b011;
+pub(crate) const CTSQ_WRITE_STATUS: u16 = 0b100;
+pub(crate) const CTSQ_WRITE_ZLP: u16 = 0b101;
 
 // ---------------------------------------------------------------------------
 // INTSTS1
 // ---------------------------------------------------------------------------
-pub const INTSTS1_SACK: u16 = 0x0010; // Setup ACK received
-pub const INTSTS1_SIGN: u16 = 0x0020; // Setup IGNORE (NAK/error)
-pub const INTSTS1_EOFERR: u16 = 0x0040; // EOF error: the controller stopped the port
-pub const INTSTS1_ATTCH: u16 = 0x0800;
-pub const INTSTS1_DTCH: u16 = 0x1000;
+pub(crate) const INTSTS1_SACK: u16 = 0x0010; // Setup ACK received
+pub(crate) const INTSTS1_SIGN: u16 = 0x0020; // Setup IGNORE (NAK/error)
+pub(crate) const INTSTS1_EOFERR: u16 = 0x0040; // EOF error: the controller stopped the port
+pub(crate) const INTSTS1_ATTCH: u16 = 0x0800;
+pub(crate) const INTSTS1_DTCH: u16 = 0x1000;
 
 // ---------------------------------------------------------------------------
 // FRMNUM
 // ---------------------------------------------------------------------------
-pub const FRMNUM_FRNM_MASK: u16 = 0x07FF;
-pub const FRMNUM_CRCE: u16 = 0x4000;
-pub const FRMNUM_OVRN: u16 = 0x8000;
+pub(crate) const FRMNUM_FRNM_MASK: u16 = 0x07FF;
+pub(crate) const FRMNUM_CRCE: u16 = 0x4000;
+pub(crate) const FRMNUM_OVRN: u16 = 0x8000;
 
 // ---------------------------------------------------------------------------
 // DCPMAXP
 // ---------------------------------------------------------------------------
-pub const DCPMAXP_MXPS_MASK: u16 = 0x007F;
-pub const DCPMAXP_DEVSEL_SHIFT: u32 = 12; // host: device address in DCPMAXP[15:12]
+pub(crate) const DCPMAXP_MXPS_MASK: u16 = 0x007F;
+pub(crate) const DCPMAXP_DEVSEL_SHIFT: u32 = 12; // host: device address in DCPMAXP[15:12]
 
 // ---------------------------------------------------------------------------
 // DCPCFG (host mode)
 // ---------------------------------------------------------------------------
-pub const DCPCFG_DIR: u16 = 0x0010; // bit 4: data stage direction (1=host OUT)
-pub const DCPCFG_SHTNAK: u16 = 0x0080; // NAK on short packet
+pub(crate) const DCPCFG_DIR: u16 = 0x0010; // bit 4: data stage direction (1=host OUT)
+pub(crate) const DCPCFG_SHTNAK: u16 = 0x0080; // NAK on short packet
 
 // ---------------------------------------------------------------------------
 // DCPCTR (DCP control — some bits overlap with PIPEnCTR)
 // ---------------------------------------------------------------------------
-pub const DCPCTR_SUREQ: u16 = 0x4000; // bit 14: issue SETUP token
-pub const DCPCTR_SUREQCLR: u16 = 0x0800; // bit 11: cancel pending SETUP
+pub(crate) const DCPCTR_SUREQ: u16 = 0x4000; // bit 14: issue SETUP token
+pub(crate) const DCPCTR_SUREQCLR: u16 = 0x0800; // bit 11: cancel pending SETUP
 
 // ---------------------------------------------------------------------------
 // DCPCTR / PIPEnCTR
 // ---------------------------------------------------------------------------
-pub const PIPECTR_PID_MASK: u16 = 0x0003;
-pub const PIPECTR_PID_NAK: u16 = 0b00;
-pub const PIPECTR_PID_BUF: u16 = 0b01;
+pub(crate) const PIPECTR_PID_MASK: u16 = 0x0003;
+pub(crate) const PIPECTR_PID_NAK: u16 = 0b00;
+pub(crate) const PIPECTR_PID_BUF: u16 = 0b01;
 // STALL has two encodings.  The controller reaches STALL(11) autonomously (on
 // babble or a control-sequence error) and firmware sets STALL from NAK→STALL(10)
 // or BUF→STALL(11); a direct STALL(11)→NAK write is ignored, so clearing must
 // step 11→10→NAK (TRM §28.3.30 PID; matches Linux `__usbhsp_pid_try_nak_if_stall`).
-pub const PIPECTR_PID_STALL10: u16 = 0b10;
-pub const PIPECTR_PID_STALL11: u16 = 0b11;
+pub(crate) const PIPECTR_PID_STALL10: u16 = 0b10;
+pub(crate) const PIPECTR_PID_STALL11: u16 = 0b11;
 /// Alias for [`PIPECTR_PID_STALL10`] (the firmware-set STALL encoding).
-pub const PIPECTR_PID_STALL: u16 = PIPECTR_PID_STALL10;
-pub const PIPECTR_CCPL: u16 = 0x0004; // DCP only
-pub const PIPECTR_PBUSY: u16 = 0x0020;
-pub const PIPECTR_SQMON: u16 = 0x0040;
-pub const PIPECTR_SQSET: u16 = 0x0080;
-pub const PIPECTR_SQCLR: u16 = 0x0100;
-pub const PIPECTR_ACLRM: u16 = 0x0200; // pipes 1-9,A-F
-pub const PIPECTR_INBUFM: u16 = 0x4000; // pipes 1-5 and 9-15 (not 6-8)
-pub const PIPECTR_BSTS: u16 = 0x8000;
+pub(crate) const PIPECTR_PID_STALL: u16 = PIPECTR_PID_STALL10;
+pub(crate) const PIPECTR_CCPL: u16 = 0x0004; // DCP only
+pub(crate) const PIPECTR_PBUSY: u16 = 0x0020;
+pub(crate) const PIPECTR_SQMON: u16 = 0x0040;
+pub(crate) const PIPECTR_SQSET: u16 = 0x0080;
+pub(crate) const PIPECTR_SQCLR: u16 = 0x0100;
+pub(crate) const PIPECTR_ACLRM: u16 = 0x0200; // pipes 1-9,A-F
+pub(crate) const PIPECTR_INBUFM: u16 = 0x4000; // pipes 1-5 and 9-15 (not 6-8)
+pub(crate) const PIPECTR_BSTS: u16 = 0x8000;
 
 // ---------------------------------------------------------------------------
 // PIPECFG
 // ---------------------------------------------------------------------------
-pub const PIPECFG_EPNUM_MASK: u16 = 0x000F;
-pub const PIPECFG_DIR: u16 = 0x0010; // 0=OUT, 1=IN
-pub const PIPECFG_SHTNAK: u16 = 0x0080;
-pub const PIPECFG_CNTMD: u16 = 0x0100;
-pub const PIPECFG_DBLB: u16 = 0x0200;
-pub const PIPECFG_BFRE: u16 = 0x0400;
-pub const PIPECFG_TYPE_MASK: u16 = 0xC000;
-pub const PIPECFG_TYPE_SHIFT: u32 = 14;
-pub const PIPECFG_TYPE_BULK: u16 = 0b01 << 14;
-pub const PIPECFG_TYPE_INTR: u16 = 0b10 << 14;
-pub const PIPECFG_TYPE_ISO: u16 = 0b11 << 14;
+pub(crate) const PIPECFG_EPNUM_MASK: u16 = 0x000F;
+pub(crate) const PIPECFG_DIR: u16 = 0x0010; // 0=OUT, 1=IN
+pub(crate) const PIPECFG_SHTNAK: u16 = 0x0080;
+pub(crate) const PIPECFG_CNTMD: u16 = 0x0100;
+pub(crate) const PIPECFG_DBLB: u16 = 0x0200;
+pub(crate) const PIPECFG_BFRE: u16 = 0x0400;
+pub(crate) const PIPECFG_TYPE_MASK: u16 = 0xC000;
+pub(crate) const PIPECFG_TYPE_SHIFT: u32 = 14;
+pub(crate) const PIPECFG_TYPE_BULK: u16 = 0b01 << 14;
+pub(crate) const PIPECFG_TYPE_INTR: u16 = 0b10 << 14;
+pub(crate) const PIPECFG_TYPE_ISO: u16 = 0b11 << 14;
 
 // ---------------------------------------------------------------------------
 // PIPEBUF
 // ---------------------------------------------------------------------------
-pub const PIPEBUF_BUFNMB_MASK: u16 = 0x00FF;
-pub const PIPEBUF_BUFSIZE_MASK: u16 = 0x7C00;
-pub const PIPEBUF_BUFSIZE_SHIFT: u32 = 10;
+pub(crate) const PIPEBUF_BUFNMB_MASK: u16 = 0x00FF;
+pub(crate) const PIPEBUF_BUFSIZE_MASK: u16 = 0x7C00;
+pub(crate) const PIPEBUF_BUFSIZE_SHIFT: u32 = 10;
 
 // ---------------------------------------------------------------------------
 // PIPEMAXP
 // ---------------------------------------------------------------------------
-pub const PIPEMAXP_MXPS_MASK: u16 = 0x07FF;
-pub const PIPEMAXP_DEVSEL_SHIFT: u32 = 12;
+pub(crate) const PIPEMAXP_MXPS_MASK: u16 = 0x07FF;
+pub(crate) const PIPEMAXP_DEVSEL_SHIFT: u32 = 12;
 
 // ---------------------------------------------------------------------------
 // PIPEPERI
@@ -231,8 +235,8 @@ pub const PIPEMAXP_DEVSEL_SHIFT: u32 = 12;
 // Conversion from USB bInterval to IITV (see host::interrupt_iitv):
 //   high-speed device:  IITV = (bInterval - 1).min(7)         (microframes)
 //   full/low speed:     IITV = floor(log2(bInterval)).min(7)  (1 ms frames, also behind a HS hub)
-pub const PIPEPERI_IFIS: u16 = 1 << 12; // isochronous IN buffer flush enable
-pub const PIPEPERI_IITV_MASK: u16 = 0x0007;
+pub(crate) const PIPEPERI_IFIS: u16 = 1 << 12; // isochronous IN buffer flush enable
+pub(crate) const PIPEPERI_IITV_MASK: u16 = 0x0007;
 
 // ---------------------------------------------------------------------------
 // DEVADD (host mode — per-device speed + hub configuration)
@@ -250,29 +254,29 @@ pub const PIPEPERI_IITV_MASK: u16 = 0x0007;
 // split transactions (SSPLIT/CSPLIT) for the device — no firmware action
 // beyond writing the register is needed.
 /// USBSPD field in DEVADDn: bits `[7:6]` = 01 → LS, 10 → FS, 11 → HS.
-pub const DEVADD_USBSPD_SHIFT: u32 = 6;
-pub const DEVADD_USBSPD_LS: u16 = 1 << 6; // Low-speed  (01)
-pub const DEVADD_USBSPD_FS: u16 = 2 << 6; // Full-speed (10)
-pub const DEVADD_USBSPD_HS: u16 = 3 << 6; // High-speed (11)
+pub(crate) const DEVADD_USBSPD_SHIFT: u32 = 6;
+pub(crate) const DEVADD_USBSPD_LS: u16 = 1 << 6; // Low-speed  (01)
+pub(crate) const DEVADD_USBSPD_FS: u16 = 2 << 6; // Full-speed (10)
+pub(crate) const DEVADD_USBSPD_HS: u16 = 3 << 6; // High-speed (11)
 /// UPPHUB field in DEVADDn: bits `[14:11]` — hub USB address (0 = direct).
-pub const DEVADD_UPPHUB_SHIFT: u32 = 11;
+pub(crate) const DEVADD_UPPHUB_SHIFT: u32 = 11;
 /// HUBPORT field in DEVADDn: bits `[10:8]` — hub port number (0 = direct).
-pub const DEVADD_HUBPORT_SHIFT: u32 = 8;
+pub(crate) const DEVADD_HUBPORT_SHIFT: u32 = 8;
 
 // ---------------------------------------------------------------------------
 // SUSPMODE
 // ---------------------------------------------------------------------------
-pub const SUSPMODE_SUSPM: u16 = 0x4000;
+pub(crate) const SUSPMODE_SUSPM: u16 = 0x4000;
 
 // ---------------------------------------------------------------------------
 // Packet buffer constants  (§28 of the RZ/A1L TRM)
 // ---------------------------------------------------------------------------
 /// Total packet buffer size in bytes.
-pub const PKT_BUF_SIZE_BYTES: usize = 8192;
+pub(crate) const PKT_BUF_SIZE_BYTES: usize = 8192;
 /// Granularity of one buffer block in bytes.
-pub const PKT_BUF_BLOCK_SIZE: usize = 64;
+pub(crate) const PKT_BUF_BLOCK_SIZE: usize = 64;
 /// Total number of 64-byte blocks in the packet buffer.
-pub const PKT_BUF_BLOCKS: usize = PKT_BUF_SIZE_BYTES / PKT_BUF_BLOCK_SIZE; // 128
+pub(crate) const PKT_BUF_BLOCKS: usize = PKT_BUF_SIZE_BYTES / PKT_BUF_BLOCK_SIZE; // 128
 
 // ---------------------------------------------------------------------------
 // BUSWAIT — BWAIT[5:0] wait cycles per register access (TRM §28.3.2).
@@ -280,7 +284,7 @@ pub const PKT_BUF_BLOCKS: usize = PKT_BUF_SIZE_BYTES / PKT_BUF_BLOCK_SIZE; // 12
 // (66.7 MHz, 15 ns/cycle) time, i.e. >= 3 wait cycles (5 access cycles).
 // 0x0F (15 waits, the reset value) is used: conservative.
 // ---------------------------------------------------------------------------
-pub const BUSWAIT_VALUE: u16 = 0x000F;
+pub(crate) const BUSWAIT_VALUE: u16 = 0x000F;
 
 // ---------------------------------------------------------------------------
 // Registers
@@ -294,7 +298,7 @@ pub fn usb(port: u8) -> Usb {
 
 /// Pipe `pipe`'s control register: `DCPCTR` for pipe 0, `PIPEnCTR` for pipes 1-15.
 #[inline]
-pub fn pipectr(u: Usb, pipe: usize) -> Reg<u16, RW> {
+pub(crate) fn pipectr(u: Usb, pipe: usize) -> Reg<u16, RW> {
     if pipe == 0 {
         u.dcpctr()
     } else {

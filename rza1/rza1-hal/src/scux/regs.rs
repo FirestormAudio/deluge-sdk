@@ -46,10 +46,6 @@ pub const DMARS_SCURXI3: u32 = 0x010E;
 // of `init_ffd_dma` / `init_ffu_dma`. The Deluge values are in
 // `deluge_bsp::system`.
 
-/// Link-descriptor HEADER word (same field encoding as SSI — see ssi.rs `DESC_HEADER`).
-/// bits: LDEN(3)=1, NXA(2)=1, reserved(1)=0, valid(0)=1 → 0b1101.
-pub(super) const DESC_HEADER: u32 = 0b1101;
-
 // CHCFG for SCUX FFD DMA (SRAM → SCUX FIFO, source increments, destination fixed):
 //   DMS | DEM | DAD | DDS_32BIT | SDS_32BIT | AM_BURST | HIEN | REQD | LVL | channel
 //   = 0x8000_0000 | 0x0100_0000 | 0x0020_0000 | 0x0002_0000 | 0x0000_2000
