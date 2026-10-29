@@ -237,6 +237,15 @@ mod tests {
     }
 
     #[test]
+    fn board_config_gives_the_time_driver_its_pre_phase1_priority() {
+        // The OSTM time driver's interrupts were at 14 when the driver set them itself.
+        assert_eq!(
+            crate::system::BOARD_CONFIG.time_interrupt_priority,
+            rza1_hal::interrupt::Priority::P14
+        );
+    }
+
+    #[test]
     fn board_config_gives_the_dmac_its_pre_phase1_priority() {
         assert_eq!(
             crate::system::BOARD_CONFIG.dma_interrupt_priority,

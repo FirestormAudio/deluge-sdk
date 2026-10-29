@@ -56,12 +56,14 @@ pub const MODULE_CLOCKS: ModuleClocks = ModuleClocks::new()
     .without(M::Rtc);
 
 /// The Deluge's chip configuration for `rza1_hal::init`: its 13.2256 MHz crystal, [`CPG`],
-/// [`MODULE_CLOCKS`], and the DMAC's interrupt priority.
+/// [`MODULE_CLOCKS`], and the DMAC's and time driver's interrupt priorities.
 pub const BOARD_CONFIG: rza1_hal::Config = rza1_hal::Config::new(CLOCKS)
     .with_cpg(CPG)
     .with_module_clocks(MODULE_CLOCKS)
     // The OLED's DMA completion, as the C firmware set it.
-    .with_dma_interrupt_priority(rza1_hal::interrupt::Priority::P13);
+    .with_dma_interrupt_priority(rza1_hal::interrupt::Priority::P13)
+    // The OSTM time driver: below the DMAC, as the driver set it before priorities moved here.
+    .with_time_interrupt_priority(rza1_hal::interrupt::Priority::P14);
 
 /// SSI0's SSICR: I²S master, 24-bit data in 32-bit words, clock ÷4 (44.1 kHz with the Deluge's
 /// audio crystal).
