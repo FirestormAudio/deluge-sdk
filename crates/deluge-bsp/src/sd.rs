@@ -125,6 +125,7 @@ mod device {
     use rza1_hal::UNCACHED_MIRROR_OFFSET;
     use rza1_hal::cache;
     use rza1_hal::dmac::{self, Dma};
+    use rza1_hal::dma_buf::UncachedMut;
     use rza1_hal::sdhi::{self, Sdhi};
 
     use super::SdError;
@@ -287,6 +288,24 @@ mod device {
     struct SdDmaBuf([u8; SD_DMA_MAX_SECTORS * 512]);
     // Safety: access is serialised by the async executor (single SD task).
     static mut SD_DMA_BUF: SdDmaBuf = SdDmaBuf([0u8; SD_DMA_MAX_SECTORS * 512]);
+
+    /// The bounce buffer, through its uncached mirror, as the DMA buffer it is.
+    ///
+    /// # Safety
+    /// The caller holds [`CARD`] (one SD operation at a time), so no other view of the buffer is
+    /// live; the buffer is only ever touched through this mirror view, and `init` cleans and
+    /// invalidates its cached alias once.
+    unsafe fn bounce() -> UncachedMut<'static> {
+        // SAFETY: the caller's contract.
+        let mirror = unsafe {
+            core::slice::from_raw_parts_mut(
+                (core::ptr::addr_of_mut!(SD_DMA_BUF.0[0]) as usize + UNCACHED_MIRROR_OFFSET)
+                    as *mut u8,
+                SD_DMA_MAX_SECTORS * 512,
+            )
+        };
+        UncachedMut::new(mirror).expect("the SD bounce buffer's mirror is uncached memory")
+    }
 
     // ---------------------------------------------------------------------------
     // Internal helpers
@@ -622,14 +641,12 @@ mod device {
         let addr = lba_to_addr(lba);
         let cmd = CMD17;
 
-        unsafe {
-            let dma_ptr =
-                (core::ptr::addr_of!(SD_DMA_BUF.0[0]) as usize + UNCACHED_MIRROR_OFFSET) as *mut u8;
-            controller().set_block_count(1);
-            controller().set_arg(addr);
-            controller().read_blocks_dma(cmd, dma_ptr, 1).await?;
-            buf.copy_from_slice(core::slice::from_raw_parts(dma_ptr, 512));
-        }
+        // SAFETY: the caller holds CARD.
+        let mut dma = unsafe { bounce() };
+        controller().set_block_count(1);
+        controller().set_arg(addr);
+        controller().read_blocks_dma(cmd, dma.prefix(512)).await?;
+        buf.copy_from_slice(&dma.as_slice()[..512]);
         Ok(())
     }
 
@@ -651,16 +668,12 @@ mod device {
         let addr = lba_to_addr(lba);
         let cmd = CMD24;
 
-        unsafe {
-            let dma_ptr =
-                (core::ptr::addr_of!(SD_DMA_BUF.0[0]) as usize + UNCACHED_MIRROR_OFFSET) as *mut u8;
-            core::ptr::copy_nonoverlapping(buf.as_ptr(), dma_ptr, 512);
-            controller().set_block_count(1);
-            controller().set_arg(addr);
-            controller()
-                .write_blocks_dma(cmd, dma_ptr as *const u8, 1)
-                .await?;
-        }
+        // SAFETY: the caller holds CARD.
+        let mut dma = unsafe { bounce() };
+        dma.as_mut_slice()[..512].copy_from_slice(buf);
+        controller().set_block_count(1);
+        controller().set_arg(addr);
+        controller().write_blocks_dma(cmd, dma.prefix(512).as_source()).await?;
         Ok(())
     }
 
@@ -692,9 +705,9 @@ mod device {
             return read_sector_unlocked(lba, unsafe { &mut *arr }).await;
         }
 
-        unsafe {
-            let dma_ptr =
-                (core::ptr::addr_of!(SD_DMA_BUF.0[0]) as usize + UNCACHED_MIRROR_OFFSET) as *mut u8;
+        {
+            // SAFETY: the caller holds CARD.
+            let mut dma = unsafe { bounce() };
             let mut remaining = count;
             let mut cur_lba = lba;
             let mut buf_offset = 0usize;
@@ -704,7 +717,8 @@ mod device {
                 let cmd = if chunk > 1 { CMD18_MULTI } else { CMD17 };
                 controller().set_block_count(chunk);
                 controller().set_arg(chunk_addr);
-                let xfer = controller().read_blocks_dma(cmd, dma_ptr, chunk).await;
+                let chunk_bytes = (chunk as usize) * 512;
+                let xfer = controller().read_blocks_dma(cmd, dma.prefix(chunk_bytes)).await;
                 // CMD18 (READ_MULTIPLE_BLOCK) runs in extended mode with auto-CMD12
                 // disabled (CMD18 | 0x7C00, [15:14]=01), so the card keeps streaming
                 // data until it receives STOP_TRANSMISSION.  The SD_STOP SEC bit only
@@ -721,9 +735,8 @@ mod device {
                 };
                 xfer?;
                 stop?;
-                let chunk_bytes = (chunk as usize) * 512;
                 buf[buf_offset..buf_offset + chunk_bytes]
-                    .copy_from_slice(core::slice::from_raw_parts(dma_ptr, chunk_bytes));
+                    .copy_from_slice(&dma.as_slice()[..chunk_bytes]);
                 remaining -= chunk;
                 cur_lba += chunk;
                 buf_offset += chunk_bytes;
@@ -755,9 +768,9 @@ mod device {
             return write_sector_unlocked(lba, unsafe { &*arr }).await;
         }
 
-        unsafe {
-            let dma_ptr =
-                (core::ptr::addr_of!(SD_DMA_BUF.0[0]) as usize + UNCACHED_MIRROR_OFFSET) as *mut u8;
+        {
+            // SAFETY: the caller holds CARD.
+            let mut dma = unsafe { bounce() };
             let mut remaining = count;
             let mut cur_lba = lba;
             let mut buf_offset = 0usize;
@@ -766,11 +779,12 @@ mod device {
                 let chunk_addr = lba_to_addr(cur_lba);
                 let cmd = if chunk > 1 { CMD25 } else { CMD24 };
                 let chunk_bytes = (chunk as usize) * 512;
-                core::ptr::copy_nonoverlapping(buf.as_ptr().add(buf_offset), dma_ptr, chunk_bytes);
+                dma.as_mut_slice()[..chunk_bytes]
+                    .copy_from_slice(&buf[buf_offset..buf_offset + chunk_bytes]);
                 controller().set_block_count(chunk);
                 controller().set_arg(chunk_addr);
                 controller()
-                    .write_blocks_dma(cmd, dma_ptr as *const u8, chunk)
+                    .write_blocks_dma(cmd, dma.prefix(chunk_bytes).as_source())
                     .await?;
                 remaining -= chunk;
                 cur_lba += chunk;
@@ -915,7 +929,11 @@ mod device {
             // Single-block read = plain CMD17 (normal mode); multi-block read adds
             // the extended multiple-block bits. HC vs SC addressing is in `addr`.
             let cmd = if count > 1 { CMD18_MULTI } else { CMD17 };
-            let ptr = blocks.as_mut_ptr() as *mut u8;
+            // SAFETY: an embedded-sdmmc `Block` is its 512 content bytes, so the blocks are
+            // `count * 512` contiguous bytes, borrowed for this call.
+            let bytes = unsafe {
+                core::slice::from_raw_parts_mut(blocks.as_mut_ptr() as *mut u8, blocks.len() * 512)
+            };
             // Interrupt-driven PIO transfer, mirroring the vendor HAL's
             // `_sd_software_trans`. embedded-sdmmc's `BlockDevice` is synchronous,
             // so run the async transfer to completion with block_on (fine for the
@@ -923,11 +941,11 @@ mod device {
             // path, [`read_sectors`], directly so the executor keeps running during
             // transfers.
             embassy_futures::block_on(async {
-                unsafe {
+                {
                     controller().set_block_count(count);
                     controller().set_arg(addr);
                     controller().send_cmd(cmd).await?;
-                    let xfer = controller().read_blocks_sw(ptr, count).await;
+                    let xfer = controller().read_blocks_sw(bytes).await;
                     // CMD18 multi-block read leaves auto-CMD12 disabled (see
                     // `read_sectors`); stop the card explicitly — even if the data
                     // phase failed — so a bailed-out read never leaves the card
@@ -962,14 +980,17 @@ mod device {
             // Single/multi-block write both use normal mode (plain command index).
             let cmd = if count > 1 { CMD25 } else { CMD24 };
 
-            let ptr = blocks.as_ptr() as *const u8;
+            // SAFETY: as in `read`: the blocks are `count * 512` contiguous bytes.
+            let bytes = unsafe {
+                core::slice::from_raw_parts(blocks.as_ptr() as *const u8, blocks.len() * 512)
+            };
             // Interrupt-driven PIO transfer (see `read` above).
             embassy_futures::block_on(async {
-                unsafe {
+                {
                     controller().set_block_count(count);
                     controller().set_arg(addr);
                     controller().send_cmd(cmd).await?;
-                    controller().write_blocks_sw(ptr, count).await
+                    controller().write_blocks_sw(bytes).await
                 }
             })
             .map_err(SdError::from)

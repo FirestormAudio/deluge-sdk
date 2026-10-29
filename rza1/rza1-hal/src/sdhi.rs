@@ -39,6 +39,7 @@
 //! let resp = sdhi.read_r1();
 //! ```
 
+use crate::dma_buf::{Uncached, UncachedMut};
 use core::future::poll_fn;
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 use core::task::Poll;
@@ -596,6 +597,7 @@ unsafe fn wait_clk_stable(port: u8) {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[non_exhaustive]
 pub enum SdhiError {
     /// Response timeout (no response received in time).
     ResponseTimeout,
@@ -611,6 +613,17 @@ pub enum SdhiError {
     IllegalAccess,
     /// Generic hardware error.
     HardwareError,
+    /// The buffer is empty or not a whole number of 512-byte blocks.
+    BufferLength,
+}
+
+/// The number of 512-byte blocks in a `len`-byte buffer, or [`SdhiError::BufferLength`] if it is
+/// empty or not a whole number of blocks.
+fn block_count(len: usize) -> Result<u32, SdhiError> {
+    if len == 0 || len % 512 != 0 {
+        return Err(SdhiError::BufferLength);
+    }
+    u32::try_from(len / 512).map_err(|_| SdhiError::BufferLength)
 }
 
 impl From<SdhiError> for &'static str {
@@ -623,6 +636,7 @@ impl From<SdhiError> for &'static str {
             SdhiError::CmdBusy => "SDHI: command busy timeout",
             SdhiError::IllegalAccess => "SDHI: illegal register access",
             SdhiError::HardwareError => "SDHI: hardware error",
+            SdhiError::BufferLength => "SDHI: buffer is not a whole number of 512-byte blocks",
         }
     }
 }
@@ -1693,52 +1707,42 @@ impl<'d> Sdhi<'d> {
         unsafe { read_status_block_sw(self.port, cmd_val, arg, buf).await }
     }
 
-    /// Read `count` blocks into `buf` by PIO.
-    ///
-    /// # Safety
-    /// `buf` is valid for `count * 512` bytes of writes.
-    pub async unsafe fn read_blocks_sw(&self, buf: *mut u8, count: u32) -> Result<(), SdhiError> {
-        unsafe { read_blocks_sw(self.port, buf, count).await }
+    /// Read `buf.len() / 512` blocks into `buf` by PIO (any memory: the CPU copies). The command
+    /// has already been issued.
+    pub async fn read_blocks_sw(&self, buf: &mut [u8]) -> Result<(), SdhiError> {
+        let count = block_count(buf.len())?;
+        // SAFETY: `buf` holds `count * 512` writable bytes, borrowed for the whole transfer.
+        unsafe { read_blocks_sw(self.port, buf.as_mut_ptr(), count).await }
     }
 
-    /// Write `count` blocks from `buf` by PIO.
-    ///
-    /// # Safety
-    /// `buf` is valid for `count * 512` bytes of reads.
-    pub async unsafe fn write_blocks_sw(
-        &self,
-        buf: *const u8,
-        count: u32,
-    ) -> Result<(), SdhiError> {
-        unsafe { write_blocks_sw(self.port, buf, count).await }
+    /// Write `buf.len() / 512` blocks from `buf` by PIO. The command has already been issued.
+    pub async fn write_blocks_sw(&self, buf: &[u8]) -> Result<(), SdhiError> {
+        let count = block_count(buf.len())?;
+        // SAFETY: `buf` holds `count * 512` readable bytes, borrowed for the whole transfer.
+        unsafe { write_blocks_sw(self.port, buf.as_ptr(), count).await }
     }
 
-    /// Issue `cmd_val` and read `count` blocks into `buf` by DMA.
-    ///
-    /// # Safety
-    /// `buf` is `count * 512` bytes of uncached memory, valid and unaliased until this returns.
-    pub async unsafe fn read_blocks_dma(
+    /// Issue `cmd_val` and read `buf.len() / 512` blocks into `buf` by DMA.
+    pub async fn read_blocks_dma(
         &self,
         cmd_val: u16,
-        buf: *mut u8,
-        count: u32,
+        mut buf: UncachedMut<'_>,
     ) -> Result<(), SdhiError> {
+        let count = block_count(buf.len())?;
         let mut rx = self.rx_dma.lock().await;
-        unsafe { read_blocks_dma(self.port, cmd_val, buf, count, &mut rx).await }
+        // SAFETY: `buf` is `count * 512` bytes of uncached memory, borrowed for the transfer.
+        unsafe {
+            read_blocks_dma(self.port, cmd_val, buf.as_mut_slice().as_mut_ptr(), count, &mut rx)
+                .await
+        }
     }
 
-    /// Issue `cmd_val` and write `count` blocks from `buf` by DMA.
-    ///
-    /// # Safety
-    /// `buf` is `count * 512` bytes of uncached memory, valid until this returns.
-    pub async unsafe fn write_blocks_dma(
-        &self,
-        cmd_val: u16,
-        buf: *const u8,
-        count: u32,
-    ) -> Result<(), SdhiError> {
+    /// Issue `cmd_val` and write `buf.len() / 512` blocks from `buf` by DMA.
+    pub async fn write_blocks_dma(&self, cmd_val: u16, buf: Uncached<'_>) -> Result<(), SdhiError> {
+        let count = block_count(buf.len())?;
         let mut tx = self.tx_dma.lock().await;
-        unsafe { write_blocks_dma(self.port, cmd_val, buf, count, &mut tx).await }
+        // SAFETY: `buf` is `count * 512` bytes of uncached memory, borrowed for the transfer.
+        unsafe { write_blocks_dma(self.port, cmd_val, buf.as_slice().as_ptr(), count, &mut tx).await }
     }
 }
 
@@ -1852,7 +1856,7 @@ mod typed_tests {
     use super::*;
     use crate::dmac::{self, Dma};
     use crate::mmio::test;
-    use crate::peripherals::{DMA_CH11, DMA_CH14, SDHI1};
+    use crate::peripherals::{DMA_CH14, SDHI1};
 
     crate::bind_interrupts!(struct Irqs {
         SDHI1_STATUS => StatusInterruptHandler<SDHI1>;
@@ -1881,6 +1885,36 @@ mod typed_tests {
                 0x00BD,
             )
         }
+    }
+
+    #[test]
+    fn a_buffer_that_is_not_whole_blocks_is_refused() {
+        let sdhi = sdhi1();
+        test::reset();
+        let mut odd = [0u8; 513];
+        let mut empty = [0u8; 0];
+        assert_eq!(
+            embassy_futures::block_on(sdhi.read_blocks_sw(&mut odd)),
+            Err(SdhiError::BufferLength)
+        );
+        assert_eq!(
+            embassy_futures::block_on(sdhi.write_blocks_sw(&empty)),
+            Err(SdhiError::BufferLength)
+        );
+        assert_eq!(
+            embassy_futures::block_on(
+                sdhi.read_blocks_dma(17, crate::dma_buf::UncachedMut::new(&mut odd).unwrap())
+            ),
+            Err(SdhiError::BufferLength)
+        );
+        assert_eq!(
+            embassy_futures::block_on(
+                sdhi.write_blocks_dma(24, crate::dma_buf::Uncached::new(&odd).unwrap())
+            ),
+            Err(SdhiError::BufferLength)
+        );
+        let _ = &mut empty;
+        assert!(test::writes().is_empty(), "no command went out");
     }
 
     #[test]
