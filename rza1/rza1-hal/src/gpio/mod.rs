@@ -830,8 +830,8 @@ mod pin_function_tests {
     fn wp<T: sdhi::Instance>(p: &impl sdhi::WpPin<T>) -> Alternate { p.alternate() }
 
     #[test]
-    fn deluge_pin_functions_match_the_known_working_muxes() {
-        // Every function the Deluge muxes today with set_pin_mux(port, pin, n), and its n.
+    fn pin_functions_match_a_known_working_board() {
+        // Every function a known-working board muxes, with the alternative it uses.
         let p = unsafe {
             (
                 P6_15::steal(), P6_14::steal(), P3_15::steal(), P1_9::steal(), P6_0::steal(),
