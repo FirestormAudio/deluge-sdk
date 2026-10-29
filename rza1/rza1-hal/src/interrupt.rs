@@ -445,6 +445,7 @@ mod tests {
             [32, 33, 34, 35, 36, 37, 38, 39]
         );
         // SDHIn: status (card detect), operation, SDIO.
+        #[cfg(feature = "rza1l")]
         assert_eq!(
             [
                 typelevel::SDHI0_STATUS::ID,
@@ -453,6 +454,7 @@ mod tests {
             ],
             [302, 303, 304]
         );
+        #[cfg(feature = "rza1l")]
         assert_eq!(
             [
                 typelevel::SDHI1_STATUS::ID,

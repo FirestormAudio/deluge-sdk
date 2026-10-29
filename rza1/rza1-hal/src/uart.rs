@@ -1025,7 +1025,7 @@ impl<'d> UartRx<'d, Async> {
     }
 
     /// The ring's start as the DMAC addresses it.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "rza1l"))]
     fn ring_base(&self) -> u32 {
         match &self.path {
             RxPath::Dma(ring) => ring.base,
@@ -1578,10 +1578,15 @@ mod tests {
 #[cfg(all(test, not(target_os = "none")))]
 mod typed_tests {
     use super::*;
-    use crate::dmac::{self, Dma};
     use crate::mmio::test;
-    use crate::peripherals::{DMA_CH10, DMA_CH12, DMA_CH13, SCIF0, SCIF1};
+    // The SCIF pins are RZ/A1L-only so far, and so is everything that builds a UART.
+    #[cfg(feature = "rza1l")]
+    use crate::{
+        dmac::{self, Dma},
+        peripherals::{DMA_CH10, DMA_CH12, DMA_CH13, SCIF0, SCIF1},
+    };
 
+    #[cfg(feature = "rza1l")]
     crate::bind_interrupts!(struct Irqs {
         BRI0 => BreakInterruptHandler<SCIF0>;
         ERI0 => ErrorInterruptHandler<SCIF0>;
@@ -1594,6 +1599,7 @@ mod typed_tests {
         DMAINT13 => dmac::InterruptHandler<DMA_CH13>;
     });
 
+    #[cfg(feature = "rza1l")]
     /// DMAC channel `ch`'s register at `off`.
     fn chreg(ch: u8, off: usize) -> usize {
         0xE820_0000 + ch as usize * 64 + (if ch >= 8 { 0x200 } else { 0 }) + off
@@ -1605,6 +1611,7 @@ mod typed_tests {
         LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    #[cfg(feature = "rza1l")]
     /// SCIF1 up on its DMA ring, as the PIC link runs, with nothing received yet.
     fn scif1_rx() -> UartRx<'static, Async> {
         crate::clocks::init(crate::clocks::TEST_CLOCKS);
@@ -1627,6 +1634,7 @@ mod typed_tests {
         rx
     }
 
+    #[cfg(feature = "rza1l")]
     #[test]
     fn new_with_rx_dma_drops_errors_left_by_an_earlier_driver() {
         let _serial = serial();
@@ -1701,6 +1709,7 @@ mod typed_tests {
         assert_eq!(take_error(4), Some(Error::Break));
     }
 
+    #[cfg(feature = "rza1l")]
     #[test]
     fn errors_are_reported_one_per_read_in_priority_order() {
         let _serial = serial();
@@ -1713,6 +1722,7 @@ mod typed_tests {
         assert_eq!(rx.try_read(), Ok(None));
     }
 
+    #[cfg(feature = "rza1l")]
     #[test]
     fn try_read_returns_ring_bytes_after_the_error() {
         let _serial = serial();
@@ -1727,6 +1737,7 @@ mod typed_tests {
         assert_eq!(rx.try_read(), Ok(None));
     }
 
+    #[cfg(feature = "rza1l")]
     #[test]
     fn an_async_read_returns_a_pending_error_before_any_byte() {
         let _serial = serial();
@@ -1744,6 +1755,7 @@ mod typed_tests {
         assert_eq!(buf[0], 0x33);
     }
 
+    #[cfg(feature = "rza1l")]
     #[test]
     fn a_uart_is_configured_bound_and_moves_both_directions_by_dma() {
         let _serial = serial();
@@ -1838,6 +1850,7 @@ mod typed_tests {
         assert_eq!(test::peek16(b + 0x08), TIE | RIE | RE | TE);
     }
 
+    #[cfg(feature = "rza1l")]
     #[test]
     fn a_stolen_receiver_shares_the_owners_read_position_across_the_ring_wrap() {
         let _serial = serial();
@@ -1897,13 +1910,20 @@ mod typed_tests {
 #[cfg(all(test, not(target_os = "none")))]
 mod blocking_tests {
     use super::*;
+    #[cfg(feature = "rza1l")]
     use crate::mmio::test;
 
+    #[cfg(feature = "rza1l")]
     const B: usize = 0xE800_8800; // SCIF3
+    #[cfg(feature = "rza1l")]
     const SCSCR: usize = B + 0x08;
+    #[cfg(feature = "rza1l")]
     const SCFSR: usize = B + 0x10;
+    #[cfg(feature = "rza1l")]
     const SCFRDR: usize = B + 0x14;
+    #[cfg(feature = "rza1l")]
     const SCFDR: usize = B + 0x1C;
+    #[cfg(feature = "rza1l")]
     const SCLSR: usize = B + 0x24;
 
     fn serial() -> std::sync::MutexGuard<'static, ()> {
@@ -1911,6 +1931,7 @@ mod blocking_tests {
         LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    #[cfg(feature = "rza1l")]
     fn scif3() -> (UartRx<'static, Blocking>, UartTx<'static, Blocking>) {
         crate::clocks::init(crate::clocks::TEST_CLOCKS);
         test::reset();
@@ -1926,6 +1947,7 @@ mod blocking_tests {
         .split()
     }
 
+    #[cfg(feature = "rza1l")]
     #[test]
     fn new_blocking_enables_only_te_re() {
         let _serial = serial();
@@ -1933,6 +1955,7 @@ mod blocking_tests {
         assert_eq!(test::peek16(SCSCR), TE | RE);
     }
 
+    #[cfg(feature = "rza1l")]
     #[test]
     fn new_blocking_drops_errors_left_by_an_earlier_driver() {
         let _serial = serial();
@@ -1971,6 +1994,7 @@ mod blocking_tests {
         unsafe { configure(3, &c) };
     }
 
+    #[cfg(feature = "rza1l")]
     #[test]
     fn nb_read_would_block_on_an_empty_fifo() {
         let _serial = serial();
@@ -1979,6 +2003,7 @@ mod blocking_tests {
         assert_eq!(rx.nb_read(), Err(nb::Error::WouldBlock));
     }
 
+    #[cfg(feature = "rza1l")]
     #[test]
     fn nb_read_returns_a_byte_and_clears_rdf_dr() {
         let _serial = serial();
@@ -1990,6 +2015,7 @@ mod blocking_tests {
         assert_eq!(test::peek16(SCFSR) & (RDF | DR), 0);
     }
 
+    #[cfg(feature = "rza1l")]
     #[test]
     fn nb_read_reports_a_framing_error_from_scfsr() {
         let _serial = serial();
@@ -2003,6 +2029,7 @@ mod blocking_tests {
         assert_eq!(test::peek16(SCLSR) & 1, 0);
     }
 
+    #[cfg(feature = "rza1l")]
     /// FER is read-only: it describes the byte at the head of the FIFO and clears only once that
     /// byte is read. The error is reported once (from ER), then the byte itself is read.
     #[test]
@@ -2018,6 +2045,7 @@ mod blocking_tests {
         assert_eq!(rx.nb_read(), Ok(0xEE));
     }
 
+    #[cfg(feature = "rza1l")]
     #[test]
     fn nb_write_would_block_on_a_full_fifo() {
         let _serial = serial();
@@ -2029,6 +2057,7 @@ mod blocking_tests {
         assert_eq!(test::peek8(B + 0x0C), 0x41);
     }
 
+    #[cfg(feature = "rza1l")]
     #[test]
     fn blocking_read_returns_what_the_fifo_holds() {
         let _serial = serial();
@@ -2051,6 +2080,7 @@ mod blocking_tests {
     }
 }
 
+#[cfg(feature = "rza1l")]
 #[cfg(all(test, not(target_os = "none")))]
 mod irq_tests {
     use super::*;

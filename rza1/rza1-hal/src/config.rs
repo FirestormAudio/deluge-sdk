@@ -412,11 +412,16 @@ mod tests {
 
     #[test]
     fn reserved_bits_keep_their_fixed_values_whatever_runs() {
+        // MSTP104/103 are reserved on the RZ/A1L and stop RSPI3/4 on the RZ/A1H.
+        #[cfg(feature = "rza1l")]
+        const STBCR10_RESERVED: u8 = 0x19;
+        #[cfg(feature = "rza1h")]
+        const STBCR10_RESERVED: u8 = 0x01;
         // Every module running: only the reserved bits are left, at their fixed values.
         let all = ModuleClock::ALL.iter().fold(ModuleClocks::new(), |m, &c| m.with(c));
         assert_eq!(
             stbcr_all(&all),
-            [0x6A, 0x11, 0x07, 0x3C, 0x3C, 0x2C, 0xE1, 0x05, 0x19, 0xC3, 0xF0]
+            [0x6A, 0x11, 0x07, 0x3C, 0x3C, 0x2C, 0xE1, 0x05, STBCR10_RESERVED, 0xC3, 0xF0]
         );
     }
 

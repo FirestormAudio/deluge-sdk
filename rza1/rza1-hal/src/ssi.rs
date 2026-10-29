@@ -657,6 +657,7 @@ mod config_tests {
         assert_eq!(regs(3).ssicr().addr(), 0xE820_C800);
     }
 
+    #[cfg(feature = "rza1l")]
     #[test]
     fn ssi_pin_functions_are_generated() {
         use crate::peripherals::{P6_8, P6_9, P6_10, P6_11, SSIF0};
@@ -671,6 +672,7 @@ mod config_tests {
     }
 }
 
+#[cfg(feature = "rza1l")]
 #[cfg(all(test, not(target_os = "none")))]
 mod driver_tests {
     use super::*;

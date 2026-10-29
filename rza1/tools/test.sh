@@ -102,6 +102,7 @@ echo "==> rza1: QEMU ARM tests"
 cargo test --target "$QEMU" -p rza1-pac --features rza1l --lib
 cargo test --target "$QEMU" -p rza1-pac --features rza1h --lib
 cargo test --target "$QEMU" -p rza1-hal --features rza1l --lib
+cargo test --target "$QEMU" -p rza1-hal --features rza1h --lib
 
 echo "==> rza1: device build"
 cargo build "${BUILD_STD[@]}" -p rza1-hal --features rza1l

@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `rza1h` is documented as experimental: it compiles, is not validated on hardware, and its pin
+  tables are not filled in, so drivers that take pins are RZ/A1L-only for now. `rza1-hal`'s QEMU
+  tests now build and run under `rza1h` too (`rza1/tools/test.sh`), with the pin-dependent tests
+  kept to `rza1l`.
 - `rza1-hal`'s `Rusb1EndpointIn` and `Rusb1EndpointOut` keep their fields private. The new
   `pipe()` reads the RUSB1 pipe; the endpoint's info comes through embassy-usb-driver's
   `Endpoint::info()`.
