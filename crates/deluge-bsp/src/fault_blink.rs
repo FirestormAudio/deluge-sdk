@@ -8,8 +8,9 @@
 use rza1_hal::gpio::{Level, Output};
 use rza1_rt::{FaultInfo, FaultKind};
 
-/// Busy-wait counts: about a quarter second per pulse half, a second between groups, at the
-/// Deluge's 400 MHz core clock with the caches in whatever state the fault left them.
+/// Busy-wait counts, the old assembly handler's: with the caches off (a fault before the MMU is
+/// up), about 2 s per pulse half and 8 s between groups, as measured with `fault-probe`; much
+/// shorter with the caches on.
 const HALF_PULSE: u32 = 0x0080_0000;
 const GROUP_GAP: u32 = 0x0200_0000;
 
@@ -23,10 +24,19 @@ fn pulses(kind: FaultKind) -> u32 {
     }
 }
 
+/// The old assembly's two-instruction loop, so the pulse is the same length in a debug build as
+/// in a release one. `count` is non-zero.
 fn spin(count: u32) {
-    for _ in 0..count {
-        core::hint::spin_loop();
-    }
+    // SAFETY: a register-only countdown.
+    unsafe {
+        core::arch::asm!(
+            "1:",
+            "subs {0}, {0}, #1",
+            "bne 1b",
+            inout(reg) count => _,
+            options(nomem, nostack),
+        )
+    };
 }
 
 #[rza1_rt::fault]
