@@ -58,39 +58,23 @@
 //! | FFU0_2  | 0x010A      | SCURXI2 — SCUX output FIFO 2 → CPU |
 //! | FFU0_3  | 0x010E      | SCURXI3 — SCUX output FIFO 3 → CPU |
 //!
-//! ## DMA channel allocation (Deluge)
-//! Channels are passed in by the board crate ([`init_ffd_dma`] / [`init_ffu_dma`]).
+//! ## Driver
+//! [`Scux::new`] resets the SCUX and splits it into four [`Channel`]s. Each becomes a [`Path`]:
+//! - [`Channel::into_ffu_path`]: FFD ring → SRC → DVU → FFU ring;
+//! - [`Channel::into_ssi_path`]: FFD ring → SRC → DVU → an SSI, for the routes the hardware has
+//!   ([`RoutesTo`]).
 //!
-//! | DMA ch | Direction        | SCUX path    | Max ch |
-//! |--------|-----------------|--------------|--------|
-//! | 0      | SRAM → FFD0_0   | DMATD0_CIM   | 8      |
-//! | 1      | FFU0_0 → SRAM   | DMATU0_CIM   | 8      |
-//! | 2      | SRAM → FFD0_2   | DMATD2_CIM   | 2      |
-//! | 3      | SRAM → FFD0_1   | DMATD1_CIM   | 8      |
-//! | 4      | SRAM → FFD0_3   | DMATD3_CIM   | 2      |
-//! | 5      | FFU0_1 → SRAM   | DMATU1_CIM   | 8      |
-//! | 8      | FFU0_2 → SRAM   | DMATU2_CIM   | 2      |
-//! | 9      | FFU0_3 → SRAM   | DMATU3_CIM   | 2      |
+//! [`Path::split`] gives its [`Control`] (volume, ramps, the converter's input rate) and its
+//! rings ([`WritableRing`], [`ReadableRing`]), each lent by the caller.
 
+//!
 use core::marker::PhantomData;
 
 use crate::Peri;
-use crate::dmac::Dma;
 use crate::pac::SCUX;
-
-// ── Uncached mirror ───────────────────────────────────────────────────────────
-
-/// Add to any internal-SRAM cached VA to get its uncached alias.
-use crate::UNCACHED_MIRROR_OFFSET;
 
 mod regs;
 
-/// CPU → SCUX DVU → SSI0 output path (hardware volume, ramps, zero-cross mute).
-pub mod dvu_path;
-/// CPU → SCUX async SRC → CPU path, for bridging two clock domains.
-pub mod src_path;
-/// Engine ↔ USB-rate async SRC path (2SRC1/0).
-pub mod usb_tx_path;
 use regs::*;
 // Re-export the public SCUX register/API constants as `scux::NAME`.
 pub use regs::{
@@ -150,7 +134,7 @@ impl AudioInfo {
 
 /// 2SRC operating mode.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum SrcMode {
+pub(crate) enum SrcMode {
     /// Asynchronous — SCUX generates an internal reference; input and output
     /// clocks are independent.  Use for CPU→SRAM pipelines.
     Async,
@@ -161,7 +145,7 @@ pub enum SrcMode {
 
 /// Configuration for one 2SRC path.
 #[derive(Copy, Clone, Debug)]
-pub struct SrcConfig {
+pub(crate) struct SrcConfig {
     /// Async or sync mode.
     pub mode: SrcMode,
     /// Audio input format fed into the SRC.
@@ -194,7 +178,7 @@ pub struct RampConfig {
 
 /// Configuration for one DVU instance.
 #[derive(Copy, Clone, Debug)]
-pub struct DvuConfig {
+pub(crate) struct DvuConfig {
     /// Audio format passing through this DVU instance.
     pub audio: AudioInfo,
     /// If true, all DVU processing is bypassed (audio passes unchanged).
@@ -232,7 +216,7 @@ impl DvuConfig {
 /// - `101–111` = no operation
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(u32)]
-pub enum IpcSel {
+pub(crate) enum IpcSel {
     /// Input path disabled.
     None = 0b000,
     /// SSI → 2SRC (async clock domain).
@@ -256,7 +240,7 @@ pub enum IpcSel {
 /// SRC+DVU, or SRC+DVU+MIX). DVU/MIX routing is configured separately.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(u32)]
-pub enum OpcSel {
+pub(crate) enum OpcSel {
     /// Output path disabled.
     None = 0b000,
     /// Async path → SSIF direct (works with or without DVU/MIX in chain).
@@ -267,145 +251,17 @@ pub enum OpcSel {
 
 /// MIX configuration.
 #[derive(Copy, Clone, Debug)]
-pub struct MixConfig {
+pub(crate) struct MixConfig {
     /// Audio format for MIX output.
     pub audio: AudioInfo,
     /// If true, the mixer is bypassed (first connected source passes through).
     pub bypass: bool,
 }
 
-// ── Link descriptors ──────────────────────────────────────────────────────────
-
-/// Cache-line-aligned 8-word DMA link descriptor (same layout as SSI).
-#[repr(C, align(32))]
-struct LinkDesc([u32; 8]);
-
-/// Each FIFO's DMA channel, once its path's `init` has handed it over: `start` starts the
-/// channels a bitmask names, and the paths read their positions.
-type FifoChannels = embassy_sync::blocking_mutex::Mutex<
-    embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-    core::cell::RefCell<[Option<Dma<'static>>; 4]>,
->;
-static FFD_DMA: FifoChannels =
-    embassy_sync::blocking_mutex::Mutex::new(core::cell::RefCell::new([None, None, None, None]));
-static FFU_DMA: FifoChannels =
-    embassy_sync::blocking_mutex::Mutex::new(core::cell::RefCell::new([None, None, None, None]));
-
-/// Run `f` on FIFO `n`'s channel in `table`.
-///
-/// # Panics
-/// If no path has handed that FIFO a channel: reading a DMA position before `init` would read a
-/// channel that isn't there.
-fn with_fifo<R>(table: &FifoChannels, n: usize, f: impl FnOnce(&mut Dma<'static>) -> R) -> R {
-    table.lock(|t| {
-        f(t.borrow_mut()[n]
-            .as_mut()
-            .expect("scux path used before init"))
-    })
-}
-
 /// 2SRC unit `unit`'s path `pair`: the PAC numbers the four paths `2 * unit + pair`.
 fn src(unit: u8, pair: u8) -> crate::pac::scux::Src {
     SCUX.src(2 * unit as usize + pair as usize)
 }
-
-/// FFD `n`'s DMA read position (CRSA).
-pub(crate) fn ffd_current_src(n: usize) -> u32 {
-    with_fifo(&FFD_DMA, n, |d| d.current_src())
-}
-
-/// FFU `n`'s DMA write position (CRDA).
-pub(crate) fn ffu_current_dst(n: usize) -> u32 {
-    with_fifo(&FFU_DMA, n, |d| d.current_dst())
-}
-
-static mut FFD0_DESC: LinkDesc = LinkDesc([
-    DESC_HEADER, // LDEN + NXA + valid (see DESC_HEADER)
-    0,           // src  → FFD0 buffer (set at init)
-    0,           // dst = DMATD0_CIM data register (set at init)
-    0,           // byte count (set at init)
-    0,           // CHCFG (patched at init from dma_ch param)
-    0,           // CHITVL
-    0,           // CHEXT
-    0,           // NXLA → &FFD0_DESC (set at init)
-]);
-
-static mut FFD1_DESC: LinkDesc = LinkDesc([
-    DESC_HEADER,
-    0,
-    0, // dst = DMATDn_CIM data register (set at init)
-    0,
-    0, // CHCFG (patched at init)
-    0,
-    0,
-    0,
-]);
-
-static mut FFU0_DESC: LinkDesc = LinkDesc([
-    DESC_HEADER,
-    0, // src = DMATU0_CIM data register (set at init)
-    0, // dst → FFU0 buffer (set at init)
-    0, // byte count (set at init)
-    0, // CHCFG (patched at init)
-    0,
-    0,
-    0,
-]);
-
-static mut FFU1_DESC: LinkDesc = LinkDesc([
-    DESC_HEADER,
-    0, // src = DMATUn_CIM data register (set at init)
-    0,
-    0,
-    0, // CHCFG (patched at init)
-    0,
-    0,
-    0,
-]);
-
-static mut FFD2_DESC: LinkDesc = LinkDesc([
-    DESC_HEADER,
-    0,
-    0, // dst = DMATDn_CIM data register (set at init)
-    0,
-    0, // CHCFG (patched at init)
-    0,
-    0,
-    0,
-]);
-
-static mut FFD3_DESC: LinkDesc = LinkDesc([
-    DESC_HEADER,
-    0,
-    0, // dst = DMATDn_CIM data register (set at init)
-    0,
-    0, // CHCFG (patched at init)
-    0,
-    0,
-    0,
-]);
-
-static mut FFU2_DESC: LinkDesc = LinkDesc([
-    DESC_HEADER,
-    0, // src = DMATUn_CIM data register (set at init)
-    0,
-    0,
-    0, // CHCFG (patched at init)
-    0,
-    0,
-    0,
-]);
-
-static mut FFU3_DESC: LinkDesc = LinkDesc([
-    DESC_HEADER,
-    0, // src = DMATUn_CIM data register (set at init)
-    0,
-    0,
-    0, // CHCFG (patched at init)
-    0,
-    0,
-    0,
-]);
 
 // ── Software reset ─────────────────────────────────────────────────────────────
 
@@ -419,7 +275,7 @@ static mut FFU3_DESC: LinkDesc = LinkDesc([
 /// # Safety
 /// Writes to CIM memory-mapped registers.  Call from a single-threaded init
 /// context after [`init`](crate::init) has started the SCUX module clock.
-pub unsafe fn reset() {
+pub(crate) unsafe fn reset() {
     SCUX.swrsr_cim().write_value(SWRSR_RESET);
     let _ = SCUX.swrsr_cim().read(); // mandatory dummy read
     SCUX.swrsr_cim().write_value(SWRSR_RUN);
@@ -436,7 +292,7 @@ pub unsafe fn reset() {
 ///
 /// # Safety
 /// Writes to IPC memory-mapped registers.
-pub unsafe fn configure_ipc(ch: u8, sel: IpcSel) {
+pub(crate) unsafe fn configure_ipc(ch: u8, sel: IpcSel) {
     SCUX.ipc(ch as usize).ipslr().write_value(sel as u32);
 }
 
@@ -447,7 +303,7 @@ pub unsafe fn configure_ipc(ch: u8, sel: IpcSel) {
 ///
 /// # Safety
 /// Writes to OPC memory-mapped registers.
-pub unsafe fn configure_opc(ch: u8, sel: OpcSel) {
+pub(crate) unsafe fn configure_opc(ch: u8, sel: OpcSel) {
     SCUX.opc(ch as usize).opslr().write_value(sel as u32);
 }
 
@@ -461,7 +317,7 @@ pub unsafe fn configure_opc(ch: u8, sel: OpcSel) {
 ///
 /// # Safety
 /// Writes to FFD memory-mapped registers.
-pub unsafe fn configure_ffd(ch: u8, audio: AudioInfo, dma_size: u8) {
+pub(crate) unsafe fn configure_ffd(ch: u8, audio: AudioInfo, dma_size: u8) {
     SCUX.ffd(ch as usize).fdair().write_value(audio.to_reg());
     SCUX.ffd(ch as usize).drqsr().write_value(dma_size as u32);
     SCUX.ffd(ch as usize).devmr().write_value(0); // all event flags cleared = DMA mode
@@ -477,7 +333,7 @@ pub unsafe fn configure_ffd(ch: u8, audio: AudioInfo, dma_size: u8) {
 ///
 /// # Safety
 /// Writes to FFU memory-mapped registers.
-pub unsafe fn configure_ffu(ch: u8, audio: AudioInfo, dma_size: u8) {
+pub(crate) unsafe fn configure_ffu(ch: u8, audio: AudioInfo, dma_size: u8) {
     SCUX.ffu(ch as usize).fuair().write_value(audio.to_reg());
     SCUX.ffu(ch as usize).urqsr().write_value(dma_size as u32);
     SCUX.ffu(ch as usize).uevmr().write_value(0); // all event flags cleared = DMA mode
@@ -497,7 +353,7 @@ pub unsafe fn configure_ffu(ch: u8, audio: AudioInfo, dma_size: u8) {
 ///
 /// # Safety
 /// Writes to 2SRC memory-mapped registers.
-pub unsafe fn configure_src(unit: u8, pair: u8, cfg: SrcConfig) {
+pub(crate) unsafe fn configure_src(unit: u8, pair: u8, cfg: SrcConfig) {
     // Audio information — channel count and bit depth.
     src(unit, pair).sadir().write_value(cfg.audio.to_reg());
 
@@ -549,7 +405,7 @@ pub unsafe fn configure_src(unit: u8, pair: u8, cfg: SrcConfig) {
 ///
 /// # Safety
 /// Writes to 2SRC live registers; the path must be running.
-pub unsafe fn src_update_intifs(unit: u8, pair: u8, new_intifs: u32) {
+pub(crate) unsafe fn src_update_intifs(unit: u8, pair: u8, new_intifs: u32) {
     src(unit, pair).ifsvr().write_value(new_intifs);
     // Reload the input-rate by toggling SRCIRR.INIT (unit-level register)
     SCUX.srcirr(unit as usize).write_value(1); // assert
@@ -569,7 +425,7 @@ pub unsafe fn src_update_intifs(unit: u8, pair: u8, new_intifs: u32) {
 ///
 /// # Safety
 /// Writes to DVU memory-mapped registers.
-pub unsafe fn configure_dvu(ch: u8, cfg: DvuConfig) {
+pub(crate) unsafe fn configure_dvu(ch: u8, cfg: DvuConfig) {
     // VADIR and DVUBR can be written while INIT=1 (BSP SetupDvu does so).
     SCUX.dvu(ch as usize)
         .vadir()
@@ -595,7 +451,7 @@ pub unsafe fn configure_dvu(ch: u8, cfg: DvuConfig) {
 ///
 /// # Safety
 /// Writes to DVU memory-mapped registers.  DVUIR.INIT must be 0.
-pub unsafe fn apply_dvu_after_init(ch: u8, cfg: DvuConfig) {
+pub(crate) unsafe fn apply_dvu_after_init(ch: u8, cfg: DvuConfig) {
     if cfg.bypass {
         return; // bypass: no volume processing, nothing to set
     }
@@ -657,7 +513,7 @@ pub unsafe fn apply_dvu_after_init(ch: u8, cfg: DvuConfig) {
 ///
 /// # Safety
 /// Writes to a DVU VOLxR register.
-pub unsafe fn set_volume(dvu_ch: u8, audio_ch: u8, vol: u32) {
+pub(crate) unsafe fn set_volume(dvu_ch: u8, audio_ch: u8, vol: u32) {
     SCUX.dvu(dvu_ch as usize)
         .volr(audio_ch as usize)
         .write_value(vol);
@@ -667,7 +523,7 @@ pub unsafe fn set_volume(dvu_ch: u8, audio_ch: u8, vol: u32) {
 ///
 /// # Safety
 /// Writes to DVU VOL0R–VOL7R registers.
-pub unsafe fn set_volume_all(dvu_ch: u8, n_channels: u8, vol: u32) {
+pub(crate) unsafe fn set_volume_all(dvu_ch: u8, n_channels: u8, vol: u32) {
     for i in 0..n_channels {
         SCUX.dvu(dvu_ch as usize).volr(i as usize).write_value(vol);
     }
@@ -680,7 +536,7 @@ pub unsafe fn set_volume_all(dvu_ch: u8, n_channels: u8, vol: u32) {
 ///
 /// # Safety
 /// Writes to DVU ramp registers.
-pub unsafe fn start_ramp(dvu_ch: u8, ramp: RampConfig) {
+pub(crate) unsafe fn start_ramp(dvu_ch: u8, ramp: RampConfig) {
     SCUX.dvu(dvu_ch as usize).vrpdr().write_value(ramp.vrpdr);
     SCUX.dvu(dvu_ch as usize).vrdbr().write_value(ramp.vrdbr);
     SCUX.dvu(dvu_ch as usize).vrctr().write_value(VRCTR_VREN); // caller sets channel mask if needed
@@ -697,7 +553,7 @@ pub unsafe fn start_ramp(dvu_ch: u8, ramp: RampConfig) {
 ///
 /// # Safety
 /// Writes to MIX memory-mapped registers.
-pub unsafe fn configure_mix(cfg: MixConfig) {
+pub(crate) unsafe fn configure_mix(cfg: MixConfig) {
     SCUX.mix().madir().write_value(cfg.audio.to_reg());
 
     if cfg.bypass {
@@ -714,41 +570,7 @@ pub unsafe fn configure_mix(cfg: MixConfig) {
     }
 }
 
-/// Set the per-source gain on one MIX input (MDB0R–MDB3R).
-///
-/// The MIX block has four input slots, each with a 10-bit dB gain coefficient:
-/// - `0x000` = 0 dB (unity)
-/// - `0x001`–`0x3FE` = attenuation (larger = more attenuation, ~−0.5 dB/step)
-/// - `0x3FF` = mute
-///
-/// `source` is 0–3 corresponding to DVU0_0–DVU0_3.
-/// This allows hardware crossfades between multiple FFD paths meeting at the MIX.
-///
-/// # Safety
-/// Writes to MIX MDBxR registers.  MIX must not be in bypass mode.
-pub unsafe fn set_mix_source_gain(source: u8, gain: u32) {
-    let mdb = match source {
-        0 => SCUX.mix().mdbar(),
-        1 => SCUX.mix().mdbbr(),
-        2 => SCUX.mix().mdbcr(),
-        _ => SCUX.mix().mdbdr(),
-    };
-    mdb.write_value(gain & 0x3FF);
-}
 
-/// Configure the FDTSELn_CIM input-timing-signal selector for one SRC unit.
-///
-/// Writes FDTSELn_CIM (TRM §37.3.68).  Called when async mode is used with
-/// an FFD input path (TRM §37.4.6).  Pass the encoded value for the `SCKSEL`
-/// field; set `DIVEN = 1` (bit 8, [`FDTSEL_DIVEN`]) to enable the signal output.
-/// For example `FDTSEL_DIVEN | FDTSEL_SCKSEL_SSIF0_WS` selects SSIF0 WS with
-/// output enabled.
-///
-/// # Safety
-/// Writes to CIM FDTSELn register.
-pub unsafe fn set_fdtsel(src_unit: u8, val: u32) {
-    SCUX.fdtsel(src_unit.min(3) as usize).write_value(val);
-}
 
 /// FDTSEL/FUTSEL SCKSEL: the USB_X1 clock (TRM §37.3.68).
 pub const FDTSEL_SCKSEL_USB_X1: u32 = 0b0011;
@@ -773,300 +595,13 @@ pub fn input_timing(input_hz: u32) -> u32 {
     }
 }
 
-/// Configure the FUTSELn_CIM output-timing-signal selector for one SRC unit.
-///
-/// Writes FUTSELn_CIM (TRM §37.3.69).  Required when async mode is used and
-/// output goes through MIX or FFU (TRM §37.4.6).  Same encoding as
-/// [`set_fdtsel`].
-///
-/// # Safety
-/// Writes to CIM FUTSELn register.
-pub unsafe fn set_futsel(src_unit: u8, val: u32) {
-    SCUX.futsel(src_unit.min(3) as usize).write_value(val);
-}
 
-/// Write the CIM SSIRSEL register to route an SSI channel into a 2SRC unit.
-///
-/// Writes SSIRSEL_CIM (TRM §37.3.67).  `ssirsel` is written verbatim; consult
-/// TRM §37.3.67 Table 37-3 for encoding.  Required for SSIF→SRC paths.
-///
-/// # Safety
-/// Writes to CIM SSIRSEL register.
-pub unsafe fn set_ssirsel(ssirsel: u32) {
-    SCUX.ssirsel_cim().write_value(ssirsel);
-}
 
-/// Write the CIM SSIPMD register (SSI pin-mode / port direction).
-///
-/// Writes SSIPMD_CIM (TRM §37.3.70).  Controls whether each SSI pin is used
-/// as transmit, receive, or master input.  Required during initial setup
-/// (TRM §37.4.1, Fig. 37.6 step <4>).
-///
-/// # Safety
-/// Writes to CIM register.
-pub unsafe fn set_ssipmd(val: u32) {
-    SCUX.ssipmd_cim().write_value(val);
-}
 
-/// Write the CIM SSICTRL register (SSI clock/direct-drive control).
-///
-/// Writes SSICTRL_CIM (TRM §37.3.71).  Setting [`SSICTRL_SSI0TX`] (bit 14)
-/// routes the SCUX output directly to the SSIF0 transmitter, bypassing the
-/// SSI DMA path.  Set this as the final step before enabling SSI TX
-/// (TRM §37.4.2, Fig. 37.9 "Set transmission to start").
-///
-/// # Safety
-/// Writes to CIM register.
-pub unsafe fn set_ssictrl(val: u32) {
-    SCUX.ssictrl_cim().write_value(val);
-}
 
-/// Set up DMA for one FFD (download) channel and connect it to CIM.
-///
-/// `src_buf` must point to a buffer accessible by the DMAC (physical SRAM).
-/// `buf_bytes` is the total buffer size in bytes; the DMA will loop over this
-/// entire region continuously.
-///
-/// # Safety
-/// - Must be called after [`reset`] and sub-block configuration, before
-///   [`start`].
-/// - `src_buf` must remain valid and DMA-accessible for the lifetime of the
-///   transfer.
-/// - Writes to static link-descriptor memory and DMAC registers.
-pub unsafe fn init_ffd_dma(
-    ffd_ch: u8,
-    mut dma: Dma<'static>,
-    src_buf: *const u32,
-    buf_bytes: usize,
-) {
-    unsafe {
-        // An FFD ring raises DMAINT every pass (DEM clear); nothing awaits it.
-        dma.mask_interrupt();
-        let (desc_ptr, dmars) = match ffd_ch {
-            0 => (core::ptr::addr_of_mut!(FFD0_DESC), DMARS_SCUTXI0),
-            1 => (core::ptr::addr_of_mut!(FFD1_DESC), DMARS_SCUTXI1),
-            2 => (core::ptr::addr_of_mut!(FFD2_DESC), DMARS_SCUTXI2),
-            3 => (core::ptr::addr_of_mut!(FFD3_DESC), DMARS_SCUTXI3),
-            _ => panic!("init_ffd_dma: invalid channel"),
-        };
 
-        let desc_u = (desc_ptr as usize + UNCACHED_MIRROR_OFFSET) as *mut u32;
 
-        // Patch: source buffer address (SRAM audio data, increments each transfer)
-        desc_u.add(1).write_volatile(src_buf as u32);
-        // Patch: destination = DMATD_CIM data register (fixed address, SCUX ingests here)
-        desc_u
-            .add(2)
-            .write_volatile(SCUX.dmatd(ffd_ch as usize).addr() as u32);
-        // Patch: transfer byte count
-        desc_u.add(3).write_volatile(buf_bytes as u32);
-        // Patch: CHCFG (computed from dma_ch at runtime)
-        desc_u.add(4).write_volatile(ffd_chcfg(dma.number()));
-        // Patch: self-referential NXLA (uncached alias)
-        desc_u.add(7).write_volatile(desc_u as u32);
 
-        dma.init_with_link_descriptor(desc_u as *const u32, dmars);
-        FFD_DMA.lock(|t| t.borrow_mut()[ffd_ch as usize] = Some(dma));
-    }
-}
-
-/// Set up DMA for one FFU (upload) channel.
-///
-/// # Safety
-/// Same requirements as [`init_ffd_dma`].
-pub unsafe fn init_ffu_dma(ffu_ch: u8, mut dma: Dma<'static>, dst_buf: *mut u32, buf_bytes: usize) {
-    unsafe {
-        dma.mask_interrupt();
-        let (desc_ptr, dmars) = match ffu_ch {
-            0 => (core::ptr::addr_of_mut!(FFU0_DESC), DMARS_SCURXI0),
-            1 => (core::ptr::addr_of_mut!(FFU1_DESC), DMARS_SCURXI1),
-            2 => (core::ptr::addr_of_mut!(FFU2_DESC), DMARS_SCURXI2),
-            3 => (core::ptr::addr_of_mut!(FFU3_DESC), DMARS_SCURXI3),
-            _ => panic!("init_ffu_dma: invalid channel"),
-        };
-
-        let desc_u = (desc_ptr as usize + UNCACHED_MIRROR_OFFSET) as *mut u32;
-
-        // Patch: source = DMATU_CIM data register (fixed address, SCUX outputs here)
-        desc_u
-            .add(1)
-            .write_volatile(SCUX.dmatu(ffu_ch as usize).addr() as u32);
-        // Patch: destination buffer (SRAM, increments each transfer)
-        desc_u.add(2).write_volatile(dst_buf as u32);
-        // Patch: byte count
-        desc_u.add(3).write_volatile(buf_bytes as u32);
-        // Patch: CHCFG (computed from dma_ch at runtime)
-        desc_u.add(4).write_volatile(ffu_chcfg(dma.number()));
-        // Patch: NXLA
-        desc_u.add(7).write_volatile(desc_u as u32);
-
-        dma.init_with_link_descriptor(desc_u as *const u32, dmars);
-        FFU_DMA.lock(|t| t.borrow_mut()[ffu_ch as usize] = Some(dma));
-    }
-}
-
-/// Enable DMA in CIM and clear INIT bits on all configured sub-blocks.
-///
-/// Call this after all sub-blocks have been configured and their DMA channels
-/// set up.  The TRM mandates a specific INIT-clear order for async SRC mode
-/// (TRM §37.4.2, Fig. 37.9 "Clear initialization of FFD and start boot" and
-/// "Clear initialization of FFU, SRC, DVU, MIX, IPC, and OPC"):
-///
-/// 1. Enable DMACR_CIM (§37.3.64) for FFD and FFU channels.
-/// 2. Start corresponding DMAC channels.
-/// 3. FFD: clear FFDIR.INIT, set FFDBR.BOOT (§§37.3.5, 37.3.9).
-/// 4. FFU: clear FFUIR.INIT (§37.3.12).
-/// 5. 2SRC: clear SRCIRp.INIT (§37.3.18) + SRCIRR.INIT (§37.3.30).
-/// 6. DVU: clear DVUIR.INIT (§37.3.31) — then call [`apply_dvu_after_init`].
-/// 7. MIX: clear MIXIR.INIT (§37.3.52).
-/// 8. IPC: clear IPCIR.INIT (§37.3.1) — second-to-last.
-/// 9. OPC: clear OPCIR.INIT (§37.3.3) — **must be last**.
-///
-/// Also writes SRCRSELn_CIM and MIXRSEL_CIM (§§37.3.72–37.3.73) to identity
-/// mapping (0x7654_3210) after soft-reset clears them.
-///
-/// `ffd_mask`, `ffu_mask`: bitmask of channels to start (bit 0 = ch 0, etc.).
-/// `src_mask`: bits 0–3 → unit0/pair0, unit0/pair1, unit1/pair0, unit1/pair1.
-/// `dvu_mask`: bitmask of DVU channels to start.
-/// `mix_en`: true to start the MIX block.
-/// `ipc_mask`, `opc_mask`: bitmasks of IPC/OPC channels to start.
-///
-/// # Safety
-/// All specified sub-blocks must have been configured before calling this.
-pub unsafe fn start(
-    ffd_mask: u8,
-    ffu_mask: u8,
-    src_mask: u8,
-    dvu_mask: u8,
-    mix_en: bool,
-    ipc_mask: u8,
-    opc_mask: u8,
-) {
-    unsafe {
-        // Enable DMA triggers in CIM.
-        // DMACR: bits [3:0] = FFD0-3 TX enable, bits [7:4] = FFU0-3 RX enable
-        let dmacr = (ffd_mask as u32) | ((ffu_mask as u32) << 4);
-        SCUX.dmacr_cim().write_value(dmacr);
-
-        // Start DMA channels
-        for ch in 0..4u8 {
-            if ffd_mask & (1 << ch) != 0 {
-                with_fifo(&FFD_DMA, ch as usize, |d| d.channel_start());
-            }
-        }
-        for ch in 0..4u8 {
-            if ffu_mask & (1 << ch) != 0 {
-                with_fifo(&FFU_DMA, ch as usize, |d| d.channel_start());
-            }
-        }
-
-        // 1. FFD: clear INIT (start), then set BOOT to arm the FIFO.
-        for ch in 0..4u8 {
-            if ffd_mask & (1 << ch) != 0 {
-                SCUX.ffd(ch as usize).ffdir().write_value(INIT_CLR);
-                SCUX.ffd(ch as usize).ffdbr().write_value(FFDBR_BOOT);
-            }
-        }
-
-        // 2. FFU: clear INIT (start).
-        for ch in 0..4u8 {
-            if ffu_mask & (1 << ch) != 0 {
-                SCUX.ffu(ch as usize).ffuir().write_value(INIT_CLR);
-            }
-        }
-
-        // 3a. Routing registers — must be written after SWRST which may clear them.
-        //     Hardware reset value 0x76543210 = pass-through identity mapping.
-        SCUX.srcrsel(0).write_value(0x7654_3210);
-        SCUX.srcrsel(1).write_value(0x7654_3210);
-        SCUX.srcrsel(2).write_value(0x7654_3210);
-        SCUX.srcrsel(3).write_value(0x7654_3210);
-        SCUX.mixrsel_cim().write_value(0x7654_3210);
-
-        // 3b. 2SRC: clear SRCIR and SRCIRR for each active path.
-        for idx in 0..4u8 {
-            if src_mask & (1 << idx) != 0 {
-                let unit = idx / 2;
-                let pair = idx % 2;
-                src(unit, pair).srcir().write_value(INIT_CLR);
-                SCUX.srcirr(unit as usize).write_value(INIT_CLR);
-            }
-        }
-
-        // 4. DVU: clear INIT only.
-        //    VOLxR, VRCTR, DVUCR, DVUER must be written AFTER DVUIR.INIT=0;
-        //    the caller must invoke apply_dvu_after_init() once start() returns.
-        for ch in 0..4u8 {
-            if dvu_mask & (1 << ch) != 0 {
-                SCUX.dvu(ch as usize).dvuir().write_value(INIT_CLR);
-                // DVUER and volume regs: written by apply_dvu_after_init().
-            }
-        }
-
-        // 5. MIX: clear INIT.
-        if mix_en {
-            SCUX.mix().mixir().write_value(INIT_CLR);
-        }
-
-        // 6. IPC and OPC — MUST be last (TRM §37.4 startup order).
-        for ch in 0..4u8 {
-            if ipc_mask & (1 << ch) != 0 {
-                SCUX.ipc(ch as usize).ipcir().write_value(INIT_CLR);
-            }
-        }
-        for ch in 0..4u8 {
-            if opc_mask & (1 << ch) != 0 {
-                SCUX.opc(ch as usize).opcir().write_value(INIT_CLR);
-            }
-        }
-    }
-}
-
-/// Start additional SCUX sub-blocks without disturbing already-running paths.
-///
-/// Identical to [`start`] except:
-/// - DMACR_CIM (§37.3.64) is updated with a read-modify-write (OR) so
-///   FFD/FFU channels already enabled by a prior path are not cleared.
-/// - Routing registers SRCRSELn_CIM and MIXRSEL_CIM (§§37.3.72–73) are
-///   **not** re-written; they retain the identity mapping from [`start`].
-///
-/// INIT-clear order follows the same TRM §37.4.2 async sequence as [`start`]:
-/// FFD → FFU → 2SRC → DVU → MIX → IPC → OPC (last).
-///
-/// # Safety
-/// SCUX must have been started at least once via [`start`] before calling
-/// this function.  Writes to SCUX and DMAC registers.
-pub unsafe fn start_path(
-    ffd_mask: u8,
-    ffu_mask: u8,
-    src_mask: u8,
-    dvu_mask: u8,
-    mix_en: bool,
-    ipc_mask: u8,
-    opc_mask: u8,
-) {
-    unsafe {
-        // Read-modify-write DMACR so running channels are not cleared.
-        let existing_dmacr = SCUX.dmacr_cim().read();
-        let new_dmacr = existing_dmacr | (ffd_mask as u32) | ((ffu_mask as u32) << 4);
-        SCUX.dmacr_cim().write_value(new_dmacr);
-
-        // Start new DMA channels only.
-        for ch in 0..4u8 {
-            if ffd_mask & (1 << ch) != 0 {
-                with_fifo(&FFD_DMA, ch as usize, |d| d.channel_start());
-            }
-        }
-        for ch in 0..4u8 {
-            if ffu_mask & (1 << ch) != 0 {
-                with_fifo(&FFU_DMA, ch as usize, |d| d.channel_start());
-            }
-        }
-
-        // FFD: clear INIT + set BOOT.
-        clear_inits(ffd_mask, ffu_mask, src_mask, dvu_mask, mix_en, ipc_mask, opc_mask);
-    }
-}
 
 /// Take the masked units out of INIT in the TRM §37.4.2 start order: FFD (then BOOT), FFU, 2SRC,
 /// DVU, MIX, then IPC and OPC last.
@@ -1145,7 +680,7 @@ unsafe fn clear_inits(
 ///
 /// # Safety
 /// Writes to SCUX and DMAC registers.
-pub unsafe fn stop_path(
+pub(crate) unsafe fn stop_path(
     ffd_mask: u8,
     ffu_mask: u8,
     src_mask: u8,
@@ -1205,57 +740,7 @@ pub unsafe fn stop_path(
     SCUX.dmacr_cim().write_value(existing & !clear_mask);
 }
 
-/// Stop all active SCUX paths and re-assert INIT on all sub-blocks.
-///
-/// Asserts INIT in the reverse order from [`start`]: OPC/IPC first, MIX,
-/// DVU, 2SRC, FFU, FFD last.  Disables DMA in CIM.
-///
-/// After this call, sub-blocks can be reconfigured and [`start`] called again.
-///
-/// # Safety
-/// Writes to SCUX and DMAC registers.
-pub unsafe fn stop() {
-    // OPC / IPC first (TRM §37.4 stop order: reverse of start)
-    for ch in 0..4u8 {
-        SCUX.opc(ch as usize).opcir().write_value(INIT_SET);
-        SCUX.ipc(ch as usize).ipcir().write_value(INIT_SET);
-    }
 
-    // MIX
-    SCUX.mix().mixir().write_value(INIT_SET);
-
-    // DVU
-    for ch in 0..4u8 {
-        SCUX.dvu(ch as usize).dvuir().write_value(INIT_SET);
-    }
-
-    // 2SRC
-    for unit in 0..2u8 {
-        for pair in 0..2u8 {
-            src(unit, pair).srcir().write_value(INIT_SET);
-        }
-    }
-
-    // FFU, FFD
-    for ch in 0..4u8 {
-        SCUX.ffu(ch as usize).ffuir().write_value(1);
-        SCUX.ffd(ch as usize).ffdir().write_value(1);
-    }
-
-    // Disable DMA triggers in CIM
-    SCUX.dmacr_cim().write_value(0);
-}
-
-/// Returns the DMA channel number assigned to the given FFD path.
-///
-/// `u8::MAX` until [`init_ffd_dma`] has been called for `ffd_ch`.
-pub fn ffd_dma_ch(ffd_ch: u8) -> u8 {
-    FFD_DMA.lock(|t| {
-        t.borrow()[ffd_ch as usize]
-            .as_ref()
-            .map_or(u8::MAX, |d| d.number())
-    })
-}
 
 // ── Owned paths ───────────────────────────────────────────────────────────────
 
@@ -1701,40 +1186,10 @@ mod tests {
     // The path tests that run a legacy `init` hold the same lock and empty the FIFO tables
     // before releasing it, so every path is in its never-initialised state here. Reading the pointer then must panic
     // rather than read DMA registers at channel `u8::MAX`.
-    #[test]
-    #[should_panic(expected = "scux path used before init")]
-    fn dvu_tx_current_ptr_before_init_panics() {
-        let _serial = super::path_tests::serial();
-        let _ = super::dvu_path::tx_current_ptr();
-    }
 
-    #[test]
-    #[should_panic(expected = "scux path used before init")]
-    fn src_rx_current_ptr_before_init_panics() {
-        let _serial = super::path_tests::serial();
-        let _ = super::src_path::rx_current_ptr();
-    }
 
-    #[test]
-    #[should_panic(expected = "scux path used before init")]
-    fn src_tx_current_ptr_before_init_panics() {
-        let _serial = super::path_tests::serial();
-        let _ = super::src_path::tx_current_ptr();
-    }
 
-    #[test]
-    #[should_panic(expected = "scux path used before init")]
-    fn usb_tx_rx_current_ptr_before_init_panics() {
-        let _serial = super::path_tests::serial();
-        let _ = super::usb_tx_path::rx_current_ptr();
-    }
 
-    #[test]
-    #[should_panic(expected = "scux path used before init")]
-    fn usb_tx_tx_current_ptr_before_init_panics() {
-        let _serial = super::path_tests::serial();
-        let _ = super::usb_tx_path::tx_current_ptr();
-    }
 
     #[test]
     fn the_pac_names_the_same_scux_registers() {
@@ -1800,7 +1255,7 @@ mod tests {
 mod path_tests {
     use super::*;
     use crate::dma_buf::UncachedMut;
-    use crate::dmac::{BlockDma, BlockInterruptHandler, Dma};
+    use crate::dmac::{BlockDma, BlockInterruptHandler};
     use crate::mmio::test;
     use crate::peripherals::{DMA_CH2, DMA_CH3, DMA_CH5, DMA_CH8};
     use crate::ring_buffer::RingBuf;
@@ -1839,12 +1294,32 @@ mod path_tests {
             .collect()
     }
 
-    /// Empty the legacy paths' FIFO DMA tables, so the "used before init" tests see them empty.
-    fn forget_legacy_fifos() {
-        for table in [&FFD_DMA, &FFU_DMA] {
-            table.lock(|t| t.borrow_mut().iter_mut().for_each(|d| *d = None));
-        }
-    }
+    /// Every SCUX register the legacy `scux::src_path::init(.., 48_000, 44_100)` wrote, with its final value
+    /// (recorded from it before it was removed).
+    const LEGACY_SRC_PATH: &[(usize, u32)] = &[
+        (0xE8208100, 0x00000000), (0xE8208104, 0x00000003), (0xE8208500, 0x00000000),
+        (0xE8208504, 0x00000003), (0xE8208900, 0x00000000), (0xE8208904, 0x00000002),
+        (0xE8208908, 0x00000008), (0xE820890C, 0x00000001), (0xE8208910, 0x00000001),
+        (0xE8208914, 0x00000000), (0xE8208D00, 0x00000000), (0xE8208D04, 0x00000002),
+        (0xE8208D08, 0x00000008), (0xE8208D0C, 0x00000001), (0xE8208D10, 0x00000000),
+        (0xE8209034, 0x00000000), (0xE8209038, 0x00000002), (0xE820903C, 0x00000000),
+        (0xE8209040, 0x00000001), (0xE8209044, 0x0045A8EC), (0xE8209048, 0x00010110),
+        (0xE820904C, 0x00000000), (0xE8209050, 0x00000000), (0xE8209068, 0x00000000),
+        (0xE8209604, 0x00000002), (0xE8209608, 0x00000001), (0xE8209704, 0x00000022),
+    ];
+
+    /// The same for the legacy `scux::usb_tx_path::init(.., 48_000, 44_100)`.
+    const LEGACY_USB_TX_PATH: &[(usize, u32)] = &[
+        (0xE8208200, 0x00000000), (0xE8208204, 0x00000003), (0xE8208600, 0x00000000),
+        (0xE8208604, 0x00000003), (0xE8208A00, 0x00000000), (0xE8208A04, 0x00000002),
+        (0xE8208A08, 0x00000008), (0xE8208A0C, 0x00000001), (0xE8208A10, 0x00000001),
+        (0xE8208A14, 0x00000000), (0xE8208E00, 0x00000000), (0xE8208E04, 0x00000002),
+        (0xE8208E08, 0x00000008), (0xE8208E0C, 0x00000001), (0xE8208E10, 0x00000000),
+        (0xE8209100, 0x00000000), (0xE8209104, 0x00000002), (0xE8209108, 0x00000000),
+        (0xE820910C, 0x00000001), (0xE8209110, 0x0045A8EC), (0xE8209114, 0x00010110),
+        (0xE8209118, 0x00000000), (0xE820911C, 0x00000000), (0xE8209168, 0x00000000),
+        (0xE8209604, 0x00000002), (0xE8209608, 0x00000001), (0xE8209704, 0x00000044),
+    ];
 
     /// Every register `legacy` wrote ends with the same value under `new`.
     fn assert_covers(legacy: &BTreeMap<usize, u32>, new: &BTreeMap<usize, u32>) {
@@ -1859,21 +1334,10 @@ mod path_tests {
     }
 
     #[test]
-    fn a_channel1_ffu_path_writes_what_the_legacy_src_path_writes() {
+    fn a_channel1_ffu_path_writes_what_the_legacy_src_path_wrote() {
         let _serial = serial();
         crate::clocks::init(crate::clocks::TEST_CLOCKS);
-        test::reset();
-        unsafe {
-            src_path::init(
-                Dma::new_without_interrupt(DMA_CH3::steal()),
-                Dma::new_without_interrupt(DMA_CH5::steal()),
-                48_000,
-                44_100,
-            )
-        };
-        let legacy = scux_writes();
-        forget_legacy_fifos();
-
+        let legacy: BTreeMap<usize, u32> = LEGACY_SRC_PATH.iter().copied().collect();
         test::reset();
         let chs = Scux::new(unsafe { crate::peripherals::SCUX::steal() });
         let path = chs.ch1.into_ffu_path(
@@ -1891,21 +1355,10 @@ mod path_tests {
     }
 
     #[test]
-    fn a_channel2_ffu_path_writes_what_the_legacy_usb_tx_path_writes() {
+    fn a_channel2_ffu_path_writes_what_the_legacy_usb_tx_path_wrote() {
         let _serial = serial();
         crate::clocks::init(crate::clocks::TEST_CLOCKS);
-        test::reset();
-        unsafe {
-            usb_tx_path::init(
-                Dma::new_without_interrupt(DMA_CH2::steal()),
-                Dma::new_without_interrupt(DMA_CH8::steal()),
-                48_000,
-                44_100,
-            )
-        };
-        let legacy = scux_writes();
-        forget_legacy_fifos();
-
+        let legacy: BTreeMap<usize, u32> = LEGACY_USB_TX_PATH.iter().copied().collect();
         test::reset();
         let chs = Scux::new(unsafe { crate::peripherals::SCUX::steal() });
         let _path = chs.ch2.into_ffu_path(
