@@ -58,17 +58,15 @@ pub fn init_midi(
 ) {
     log::debug!("bsp uart: MIDI SCIF{} @ {} bps", MIDI_CH, baud);
     let rx_dma = Dma::new(rx_dma, MidiIrqs);
-    let (rx, tx) = Uart::new(scif, pins.tx, pins.rx, rx_dma, None, MidiIrqs, config(baud)).split();
+    let (rx, tx) =
+        Uart::new_with_rx_dma(scif, pins.tx, pins.rx, rx_dma, None, MidiIrqs, config(baud)).split();
     install(&MIDI_RX, &MIDI_TX, rx, tx);
 }
 
 /// Bring up the PIC32 UART (SCIF1): receive and transmit by DMA.
 ///
-/// **Why DMA and not RXI:** on the RZ/A1 the SCIF "receive-FIFO-data-full"
-/// request is wired to the DMAC, not the GIC — with RIE=1 and RDF=1 no GIC line
-/// in the SCIF range 220–245 goes pending. The stock Renesas/Deluge firmware
-/// notes the same: `SCSCR = 0x00F0; // Enable "interrupt" (which actually
-/// triggers DMA)`. So RX must go through the DMAC.
+/// DMA rather than RXI because a fault path reads the PIC ring without its owner
+/// ([`steal_pic_rx`]), which only the DMA ring supports.
 pub fn init_pic(
     scif: Peri<'static, PicScif>,
     pins: PicPins,
@@ -79,8 +77,16 @@ pub fn init_pic(
     log::debug!("bsp uart: PIC SCIF{} @ {} bps", PIC_CH, baud);
     let rx_dma = Dma::new(rx_dma, PicIrqs);
     let tx_dma = Dma::new(tx_dma, PicIrqs);
-    let (rx, tx) =
-        Uart::new(scif, pins.tx, pins.rx, rx_dma, Some(tx_dma), PicIrqs, config(baud)).split();
+    let (rx, tx) = Uart::new_with_rx_dma(
+        scif,
+        pins.tx,
+        pins.rx,
+        rx_dma,
+        Some(tx_dma),
+        PicIrqs,
+        config(baud),
+    )
+    .split();
     install(&PIC_RX, &PIC_TX, rx, tx);
 }
 
@@ -133,7 +139,10 @@ fn try_read(slot: &'static RxSlot, name: &str) -> Option<u8> {
     }
 }
 
-fn tx(slot: &'static OnceLock<UartTx<'static, Async>>, name: &str) -> &'static UartTx<'static, Async> {
+fn tx(
+    slot: &'static OnceLock<UartTx<'static, Async>>,
+    name: &str,
+) -> &'static UartTx<'static, Async> {
     slot.try_get()
         .unwrap_or_else(|| panic!("the {name} UART isn't initialised"))
 }

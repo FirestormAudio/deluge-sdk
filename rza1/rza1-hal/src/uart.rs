@@ -12,16 +12,26 @@
 //!
 //! ## Usage
 //! ```ignore
+//! // Async, on any SCIF: the reader waits on RXI, nothing polls.
 //! rza1_hal::bind_interrupts!(struct Irqs {
-//!     ERI0 => uart::ErrorInterruptHandler<SCIF0>;
-//!     TXI0 => uart::TxInterruptHandler<SCIF0>;
-//!     DMAINT13 => dmac::InterruptHandler<DMA_CH13>;
+//!     ERI2 => uart::ErrorInterruptHandler<SCIF2>;
+//!     RXI2 => uart::RxInterruptHandler<SCIF2>;
+//!     TXI2 => uart::TxInterruptHandler<SCIF2>;
 //! });
-//! let rx_dma = dmac::Dma::new(p.DMA_CH13, Irqs);
-//! let (mut rx, tx) = uart::Uart::new(p.SCIF0, p.P6_15, p.P6_14, rx_dma, None, Irqs, 31_250).split();
+//! let mut rx_buf = [0u8; 64];
+//! let (mut rx, tx) =
+//!     uart::Uart::new(p.SCIF2, p.P5_7, p.P1_10, Irqs, &mut rx_buf, None, uart::Config::default())
+//!         .split();
 //! tx.write(b"hello").await;
-//! let b = rx.read_byte().await;
+//! let b = rx.read_byte().await?;
+//!
+//! // Blocking, on any SCIF: embedded-io and embedded-hal-nb.
+//! let (mut rx, mut tx) =
+//!     uart::Uart::new_blocking(p.SCIF3, p.P3_9, p.P3_10, uart::Config::default()).split();
+//! tx.blocking_write(b"hello")?;
 //! ```
+//!
+//! [`Uart::new_with_rx_dma`] receives into a DMA ring instead (SCIF0/SCIF1), polled every 100 µs.
 
 use core::convert::Infallible;
 use core::future::poll_fn;
@@ -167,8 +177,7 @@ fn smr_for(config: &Config) -> u16 {
 
 // GIC base IDs for SCIF0; per RZ/A1L HW Manual §A.2:
 //   SCIFn: BRI = 221+n*4, ERI = 222+n*4, RXI = 223+n*4, TXI = 224+n*4
-// (RX uses DMA, so only ERI/TXI are registered; RXI_BASE is kept for the
-//  ID-layout test, BRI is not used.)
+// (BRI is not used.)
 const ERI_BASE: u16 = 222;
 const RXI_BASE: u16 = 223;
 const TXI_BASE: u16 = 224;
@@ -388,7 +397,7 @@ unsafe fn set_baud_regs(ch: usize, config: &Config) {
     // Re-enable TE/RE, plus the DMA trigger-enable bits that route the SCIF
     // request to the DMAC: RIE for DMA RX, TIE for DMA TX.
     let mut scscr = TE | RE;
-    if RX_DMA_ACTIVE[ch].load(Ordering::Relaxed) {
+    if RX_DMA_ACTIVE[ch].load(Ordering::Relaxed) || RX_IRQ_ACTIVE[ch].load(Ordering::Relaxed) {
         scscr |= RIE;
     }
     if TX_DMA_ACTIVE[ch].load(Ordering::Relaxed) {
@@ -397,13 +406,11 @@ unsafe fn set_baud_regs(ch: usize, config: &Config) {
     sc.scr().write_value(Scr(scscr));
 }
 
-// NOTE: SCIF receive-interrupt (RXI) driven RX is intentionally NOT supported.
-// On RZ/A1 the SCIF receive-FIFO-data-full request is wired to the DMAC, not the
-// GIC: with RIE=1 and RDF=1 (data in the FIFO) no GIC line in the SCIF range
-// (220–245) ever goes pending, so an RXI handler never fires. Verified on
-// hardware; the stock Renesas/Deluge driver documents the same with
-// `SCSCR = 0x00F0; // Enable "interrupt" (which actually triggers DMA)`. All RX
-// therefore goes through the DMA ring ([`UartRx`]).
+// RXI and the DMAC: the SCIF's receive request goes to the DMAC instead of the GIC while a DMA
+// channel's DMARS selects it. With RIE=1 and RDF=1, GIC 227 (RXI1) stays idle while DMARS6 points
+// channel 12 at SCIF1's receive request, even with the channel stopped, and goes pending once
+// DMARS6 is cleared (bench probe, 2026-10-29). So a DMA-ring receiver can't wait on RXI and polls;
+// one built by `Uart::new` uses no DMA channel and waits on RXI.
 
 // ---------------------------------------------------------------------------
 // Interrupt handlers
@@ -422,6 +429,79 @@ fn clear_rx_errors(ch: usize) {
     sc.fsr().write_value(Fsr(scfsr & !(ER | BRK | FER | PER)));
     let sclsr = sc.lsr().read().0;
     sc.lsr().write_value(Lsr(sclsr & !1u16)); // ORER = bit 0
+}
+
+/// Called from GIC dispatch when RXI fires for SCIF `ch`: moves the receive FIFO into the lent
+/// ring, latching an overrun for each byte that doesn't fit, and wakes the reader. With no ring
+/// installed the bytes are dropped, which clears the request.
+fn on_rxi(ch: usize) {
+    let sc = scif(ch);
+    let mut overrun = false;
+    critical_section::with(|cs| {
+        let cell = IRQ_RING[ch].borrow(cs);
+        let mut ring = cell.get();
+        for _ in 0..(sc.fdr().read().0 & 0x1F) {
+            let byte = sc.frdr().read().0;
+            match ring.as_mut() {
+                Some(r) if r.count < r.len => {
+                    // SAFETY: `head` < `len`, inside the lent buffer, which the receiver's
+                    // borrow keeps alive while it is installed.
+                    unsafe { r.ptr.add(r.head).write_volatile(byte) };
+                    r.head = (r.head + 1) % r.len;
+                    r.count += 1;
+                }
+                Some(_) => overrun = true,
+                None => {}
+            }
+        }
+        cell.set(ring);
+    });
+    if overrun {
+        RX_ERROR[ch].fetch_or(LATCH_OVERRUN, Ordering::AcqRel);
+    }
+    // Written 0 after being read as 1, as `clear_rx_errors` does.
+    let scfsr = sc.fsr().read().0;
+    sc.fsr().write_value(Fsr(scfsr & !(RDF | DR)));
+    UART_STATE[ch].rx_waker.wake();
+}
+
+/// A receive ring lent to [`Uart::new`], filled by [`on_rxi`].
+#[derive(Clone, Copy)]
+struct IrqRing {
+    ptr: *mut u8,
+    len: usize,
+    /// Where the next byte goes.
+    head: usize,
+    /// Unread bytes, ending just before `head`.
+    count: usize,
+}
+
+// SAFETY: the pointer is only dereferenced inside a critical section, by the interrupt or the
+// receiver that lent it.
+unsafe impl Send for IrqRing {}
+
+/// SCIF n's lent receive ring, while a receiver built by [`Uart::new`] owns it.
+static IRQ_RING: [critical_section::Mutex<core::cell::Cell<Option<IrqRing>>>; NUM_CHANNELS] =
+    [const { critical_section::Mutex::new(core::cell::Cell::new(None)) }; NUM_CHANNELS];
+
+/// Whether SCIF n receives on RXI: [`set_baud_regs`] restores RIE.
+static RX_IRQ_ACTIVE: [AtomicBool; NUM_CHANNELS] = [const { AtomicBool::new(false) }; NUM_CHANNELS];
+
+/// The oldest unread byte in SCIF `ch`'s lent ring.
+fn irq_ring_pop(ch: usize) -> Option<u8> {
+    critical_section::with(|cs| {
+        let cell = IRQ_RING[ch].borrow(cs);
+        let mut r = cell.get()?;
+        if r.count == 0 {
+            return None;
+        }
+        let tail = (r.head + r.len - r.count) % r.len;
+        // SAFETY: `tail` < `len`, inside the lent buffer.
+        let byte = unsafe { r.ptr.add(tail).read_volatile() };
+        r.count -= 1;
+        cell.set(Some(r));
+        Some(byte)
+    })
 }
 
 /// Called from GIC dispatch when ERI (framing/parity error) fires for SCIF `ch`.
@@ -547,6 +627,8 @@ pub trait Instance: crate::PeripheralType + sealed::Sealed + 'static {
     const INDEX: usize;
     /// Its receive-error interrupt, ERI<INDEX>.
     type ErrorInterrupt: Interrupt;
+    /// Its receive-FIFO-full interrupt, RXI<INDEX>.
+    type RxInterrupt: Interrupt;
     /// Its transmit-FIFO-empty interrupt, TXI<INDEX>.
     type TxInterrupt: Interrupt;
 }
@@ -558,22 +640,23 @@ pub trait RxDmaInstance: Instance {
 }
 
 macro_rules! instances {
-    ($($scif:ident = $n:literal, $eri:ident, $txi:ident;)*) => {$(
+    ($($scif:ident = $n:literal, $eri:ident, $rxi:ident, $txi:ident;)*) => {$(
         impl sealed::Sealed for crate::peripherals::$scif {}
         impl Instance for crate::peripherals::$scif {
             const INDEX: usize = $n;
             type ErrorInterrupt = crate::interrupt::typelevel::$eri;
+            type RxInterrupt = crate::interrupt::typelevel::$rxi;
             type TxInterrupt = crate::interrupt::typelevel::$txi;
         }
     )*};
 }
 
 instances! {
-    SCIF0 = 0, ERI0, TXI0;
-    SCIF1 = 1, ERI1, TXI1;
-    SCIF2 = 2, ERI2, TXI2;
-    SCIF3 = 3, ERI3, TXI3;
-    SCIF4 = 4, ERI4, TXI4;
+    SCIF0 = 0, ERI0, RXI0, TXI0;
+    SCIF1 = 1, ERI1, RXI1, TXI1;
+    SCIF2 = 2, ERI2, RXI2, TXI2;
+    SCIF3 = 3, ERI3, RXI3, TXI3;
+    SCIF4 = 4, ERI4, RXI4, TXI4;
 }
 
 impl RxDmaInstance for crate::peripherals::SCIF0 {
@@ -605,6 +688,18 @@ impl<T: Instance> Handler<T::ErrorInterrupt> for ErrorInterruptHandler<T> {
     }
 }
 
+/// SCIF `T`'s receive interrupt, for a receiver built by [`Uart::new`]: moves the receive FIFO
+/// into the lent buffer and wakes the reader.
+pub struct RxInterruptHandler<T: Instance> {
+    _scif: PhantomData<T>,
+}
+
+impl<T: Instance> Handler<T::RxInterrupt> for RxInterruptHandler<T> {
+    unsafe fn on_interrupt() {
+        on_rxi(T::INDEX);
+    }
+}
+
 /// SCIF `T`'s transmit interrupt: wakes a writer waiting for FIFO space.
 pub struct TxInterruptHandler<T: Instance> {
     _scif: PhantomData<T>,
@@ -616,23 +711,94 @@ impl<T: Instance> Handler<T::TxInterrupt> for TxInterruptHandler<T> {
     }
 }
 
-/// A SCIF UART, 8N1: it receives into a DMA ring and transmits by DMA or through the FIFO.
-/// [`split`](Self::split) it into its halves.
+/// A SCIF UART. An async one receives on its receive interrupt into a lent buffer
+/// ([`new`](Self::new)) or into a DMA ring ([`new_with_rx_dma`](Self::new_with_rx_dma)), and
+/// transmits by DMA or through the FIFO; a blocking one ([`new_blocking`](Self::new_blocking))
+/// polls the FIFOs. [`split`](Self::split) it into its halves.
 pub struct Uart<'d, M: Mode> {
     rx: UartRx<'d, M>,
     tx: UartTx<'d, M>,
 }
 
 impl<'d> Uart<'d, Async> {
-    /// Bring SCIF `T` up with `config` on pins `tx` and `rx`: receive into a ring on `rx_dma`;
-    /// transmit by DMA on `tx_dma`, or through the FIFO and TXI without one.
+    /// Bring SCIF `T` up with `config` on pins `tx` and `rx`: receive on RXI into `rx_buf`, a
+    /// ring that holds `rx_buf.len()` unread bytes (a byte arriving with it full is dropped and
+    /// reported as [`Error::Overrun`]); transmit by DMA on `tx_dma`, or through the FIFO and TXI
+    /// without one. Any SCIF. The reader waits on the interrupt: nothing polls.
+    ///
+    /// RXI reaches the GIC only while no DMA channel's DMARS selects this SCIF's receive request:
+    /// don't point one at it.
+    ///
+    /// Dropping the receiver stops the interrupt writing `rx_buf`; leaking it (`mem::forget`)
+    /// leaves the interrupt writing a buffer whose borrow has ended.
+    ///
+    /// # Panics
+    /// If `rx_buf` is empty, or [`crate::clocks::init`] has not been called.
+    pub fn new<T: Instance>(
+        _scif: Peri<'d, T>,
+        tx: Peri<'d, impl TxPin<T>>,
+        rx: Peri<'d, impl RxPin<T>>,
+        irq: impl Binding<T::ErrorInterrupt, ErrorInterruptHandler<T>>
+        + Binding<T::RxInterrupt, RxInterruptHandler<T>>
+        + Binding<T::TxInterrupt, TxInterruptHandler<T>>
+        + Copy
+        + 'd,
+        rx_buf: &'d mut [u8],
+        tx_dma: Option<Dma<'d>>,
+        config: Config,
+    ) -> Self {
+        assert!(!rx_buf.is_empty(), "uart: the receive buffer is empty");
+        let ch = T::INDEX;
+        let (tx_alt, rx_alt) = (tx.alternate(), rx.alternate());
+        crate::gpio::mux(tx, tx_alt);
+        crate::gpio::mux(rx, rx_alt);
+        // SAFETY: SCIF T is owned.
+        unsafe { configure(ch, &config) };
+        critical_section::with(|cs| {
+            IRQ_RING[ch].borrow(cs).set(Some(IrqRing {
+                ptr: rx_buf.as_mut_ptr(),
+                len: rx_buf.len(),
+                head: 0,
+                count: 0,
+            }));
+        });
+        RX_ERROR[ch].store(0, Ordering::Release);
+        RX_IRQ_ACTIVE[ch].store(true, Ordering::Release);
+        interrupt::bind::<T::ErrorInterrupt, ErrorInterruptHandler<T>>(irq);
+        interrupt::bind::<T::RxInterrupt, RxInterruptHandler<T>>(irq);
+        interrupt::bind::<T::TxInterrupt, TxInterruptHandler<T>>(irq);
+        // SAFETY: SCIF T's own interrupts; the ring they fill is installed. Their priorities are
+        // the application's.
+        unsafe {
+            T::ErrorInterrupt::enable();
+            T::RxInterrupt::enable();
+            T::TxInterrupt::enable();
+        }
+        let sc = scif(ch);
+        let scscr = sc.scr().read().0;
+        sc.scr().write_value(Scr(scscr | RIE | RE | TE));
+        let rx = UartRx {
+            ch,
+            path: RxPath::Irq { rxi: T::RxInterrupt::ID, _buf: PhantomData },
+            _mode: PhantomData,
+        };
+        let tx = UartTx::new(ch, tx_dma);
+        Self { rx, tx }
+    }
+
+    /// Bring SCIF `T` up with `config` on pins `tx` and `rx`: receive into a 256-byte ring the
+    /// DMAC fills from `rx_dma`; transmit by DMA on `tx_dma`, or through the FIFO and TXI without
+    /// one. SCIF0 and SCIF1 only (the HAL has two rings).
+    ///
+    /// The ring raises no interrupt (the SCIF's receive request goes to the DMAC, not the GIC),
+    /// so a reader waiting on it polls every 100 µs; [`new`](Self::new) doesn't.
     ///
     /// The pins are put on the SCIF's function first, so the ring never samples an unconnected
     /// pin.
     ///
     /// # Panics
     /// If [`crate::clocks::init`] has not been called.
-    pub fn new<T: RxDmaInstance>(
+    pub fn new_with_rx_dma<T: RxDmaInstance>(
         _scif: Peri<'d, T>,
         tx: Peri<'d, impl TxPin<T>>,
         rx: Peri<'d, impl RxPin<T>>,
@@ -686,6 +852,12 @@ enum RxPath<'d> {
     Fifo,
     /// A ring the DMAC fills.
     Dma(DmaRing<'d>),
+    /// The lent ring in [`IRQ_RING`] that the receive interrupt fills.
+    Irq {
+        /// RXI's GIC ID.
+        rxi: u16,
+        _buf: PhantomData<&'d mut [u8]>,
+    },
 }
 
 /// A receive ring the DMAC fills from the receive FIFO.
@@ -717,6 +889,24 @@ impl DmaRing<'_> {
             RX_READ[self.ring].store((read + 1) & (DMA_RX_BUF_SIZE as u32 - 1), Ordering::Release);
             Some(byte)
         })
+    }
+}
+
+impl<M: Mode> Drop for UartRx<'_, M> {
+    /// A receiver built by [`Uart::new`] stops its interrupt writing the lent buffer: RIE off,
+    /// RXI masked, the ring forgotten.
+    fn drop(&mut self) {
+        if let RxPath::Irq { rxi, .. } = self.path {
+            let sc = scif(self.ch);
+            critical_section::with(|cs| {
+                let scscr = sc.scr().read().0;
+                sc.scr().write_value(Scr(scscr & !RIE));
+                // SAFETY: masking an interrupt can't make a handler run.
+                unsafe { gic::disable(rxi) };
+                IRQ_RING[self.ch].borrow(cs).set(None);
+            });
+            RX_IRQ_ACTIVE[self.ch].store(false, Ordering::Release);
+        }
     }
 }
 
@@ -785,6 +975,7 @@ impl<'d> UartRx<'d, Async> {
     fn try_read_ring(&mut self) -> Option<u8> {
         match &mut self.path {
             RxPath::Dma(ring) => ring.try_read(),
+            RxPath::Irq { .. } => irq_ring_pop(self.ch),
             // An async receiver is never built on the FIFO.
             RxPath::Fifo => None,
         }
@@ -795,7 +986,7 @@ impl<'d> UartRx<'d, Async> {
     fn ring_base(&self) -> u32 {
         match &self.path {
             RxPath::Dma(ring) => ring.base,
-            RxPath::Fifo => unreachable!("not a ring"),
+            _ => unreachable!("not a DMA ring"),
         }
     }
 
@@ -831,9 +1022,22 @@ impl<'d> UartRx<'d, Async> {
         })
     }
 
-    /// Wait for the next received byte, or a receive error ([`try_read`](Self::try_read)). The
-    /// ring raises no interrupt, so this polls it every 100 µs.
+    /// Wait for the next received byte, or a receive error ([`try_read`](Self::try_read)). A
+    /// receiver built by [`Uart::new`] waits on its interrupts; a DMA ring raises none, so one
+    /// built by [`Uart::new_with_rx_dma`] polls it every 100 µs.
     pub async fn read_byte(&mut self) -> Result<u8, Error> {
+        if let RxPath::Irq { .. } = self.path {
+            let ch = self.ch;
+            return poll_fn(|cx| {
+                UART_STATE[ch].rx_waker.register(cx.waker());
+                match self.try_read() {
+                    Ok(Some(byte)) => Poll::Ready(Ok(byte)),
+                    Ok(None) => Poll::Pending,
+                    Err(e) => Poll::Ready(Err(e)),
+                }
+            })
+            .await;
+        }
         loop {
             if let Some(byte) = self.try_read()? {
                 return Ok(byte);
@@ -1357,7 +1561,7 @@ mod typed_tests {
         test::reset();
         let rx_dma = Dma::new(unsafe { DMA_CH12::steal() }, Irqs);
         let (rx, _tx) = unsafe {
-            Uart::new(
+            Uart::new_with_rx_dma(
                 SCIF1::steal(),
                 crate::peripherals::P3_15::steal(),
                 crate::peripherals::P1_9::steal(),
@@ -1439,7 +1643,7 @@ mod typed_tests {
         let rx_dma = Dma::new(unsafe { DMA_CH13::steal() }, Irqs);
         let tx_dma = Dma::new(unsafe { DMA_CH10::steal() }, Irqs);
         let (rx, mut tx) = unsafe {
-            Uart::new(
+            Uart::new_with_rx_dma(
                 SCIF0::steal(),
                 crate::peripherals::P6_15::steal(),
                 crate::peripherals::P6_14::steal(),
@@ -1531,7 +1735,7 @@ mod typed_tests {
         test::reset();
         let rx_dma = Dma::new(unsafe { DMA_CH12::steal() }, Irqs);
         let (mut rx, _tx) = unsafe {
-            Uart::new(
+            Uart::new_with_rx_dma(
                 SCIF1::steal(),
                 crate::peripherals::P3_15::steal(),
                 crate::peripherals::P1_9::steal(),
@@ -1681,5 +1885,132 @@ mod blocking_tests {
         assert_eq!(Error::Framing.kind(), ErrorKind::FrameFormat);
         assert_eq!(Error::Parity.kind(), ErrorKind::Parity);
         assert_eq!(Error::Break.kind(), ErrorKind::Other);
+    }
+}
+
+#[cfg(all(test, not(target_os = "none")))]
+mod irq_tests {
+    use super::*;
+    use crate::mmio::test;
+    use crate::peripherals::SCIF2;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::task::{Context, Wake, Waker};
+
+    crate::bind_interrupts!(struct Irqs {
+        ERI2 => ErrorInterruptHandler<SCIF2>;
+        RXI2 => RxInterruptHandler<SCIF2>;
+        TXI2 => TxInterruptHandler<SCIF2>;
+    });
+
+    const B: usize = 0xE800_8000; // SCIF2
+    const SCSCR: usize = B + 0x08;
+    const SCFSR: usize = B + 0x10;
+    const SCFRDR: usize = B + 0x14;
+    const SCFDR: usize = B + 0x1C;
+
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    struct Count(AtomicUsize);
+    impl Wake for Count {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn scif2(buf: &mut [u8]) -> UartRx<'_, Async> {
+        crate::clocks::init(crate::clocks::TEST_CLOCKS);
+        test::reset();
+        while take_error(2).is_some() {}
+        let (rx, _tx) = unsafe {
+            Uart::new(
+                SCIF2::steal(),
+                crate::peripherals::P5_7::steal(),
+                crate::peripherals::P1_10::steal(),
+                Irqs,
+                buf,
+                None,
+                Config::default(),
+            )
+        }
+        .split();
+        rx
+    }
+
+    /// One byte arrives: the receive interrupt sees it in the FIFO.
+    fn receive(byte: u8) {
+        test::poke16(SCFDR, 1);
+        test::poke8(SCFRDR, byte);
+        test::poke16(SCFSR, RDF);
+        unsafe { <RxInterruptHandler<SCIF2> as Handler<crate::interrupt::typelevel::RXI2>>::on_interrupt() };
+    }
+
+    #[test]
+    fn new_enables_the_receive_interrupt() {
+        let _serial = serial();
+        let mut buf = [0u8; 8];
+        let _rx = scif2(&mut buf);
+        assert_eq!(test::peek16(SCSCR) & (RIE | RE | TE), RIE | RE | TE);
+        assert!(crate::gic::handler(231).is_some(), "RXI2 bound");
+    }
+
+    #[test]
+    fn irq_rx_delivers_bytes_without_polling() {
+        let _serial = serial();
+        let mut buf = [0u8; 8];
+        let mut rx = scif2(&mut buf);
+        let count = Arc::new(Count(AtomicUsize::new(0)));
+        let waker = Waker::from(count.clone());
+        let mut cx = Context::from_waker(&waker);
+        {
+            let mut fut = core::pin::pin!(rx.read_byte());
+            assert!(fut.as_mut().poll(&mut cx).is_pending());
+            receive(0x42);
+            assert_eq!(count.0.load(Ordering::SeqCst), 1, "the reader was woken");
+            assert_eq!(test::peek16(SCFSR) & (RDF | DR), 0, "RDF cleared");
+            assert_eq!(fut.as_mut().poll(&mut cx), Poll::Ready(Ok(0x42)));
+        }
+        assert_eq!(rx.try_read(), Ok(None));
+    }
+
+    #[test]
+    fn irq_rx_full_ring_reports_overrun_and_keeps_old_bytes() {
+        let _serial = serial();
+        let mut buf = [0u8; 2];
+        let mut rx = scif2(&mut buf);
+        for b in [1, 2, 3] {
+            receive(b);
+        }
+        assert_eq!(rx.try_read(), Err(Error::Overrun));
+        assert_eq!(rx.try_read(), Ok(Some(1)));
+        assert_eq!(rx.try_read(), Ok(Some(2)));
+        assert_eq!(rx.try_read(), Ok(None));
+        // The ring wraps.
+        receive(4);
+        assert_eq!(rx.try_read(), Ok(Some(4)));
+    }
+
+    #[test]
+    fn irq_rx_drop_stops_the_isr_writing() {
+        let _serial = serial();
+        let mut buf = [0u8; 4];
+        let rx = scif2(&mut buf);
+        drop(rx);
+        assert_eq!(test::peek16(SCSCR) & RIE, 0, "RIE cleared");
+        // GICD_ICENABLER7 (0xE820_119C): RXI2 = 231 is bit 7.
+        assert!(test::writes().contains(&(0xE820_119C, 1 << 7)), "RXI2 masked");
+        receive(0x99);
+        assert_eq!(buf, [0; 4]);
+    }
+
+    #[test]
+    #[should_panic]
+    fn an_empty_receive_buffer_panics() {
+        let _serial = serial();
+        let mut buf = [0u8; 0];
+        let _rx = scif2(&mut buf);
     }
 }

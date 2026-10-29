@@ -160,9 +160,10 @@ pub mod typelevel {
         USB0 = 73, USB1 = 74,
         // MTU2 channel n's compare-match A.
         TGI0A = 139, TGI1A = 146, TGI2A = 150, TGI3A = 154, TGI4A = 159,
-        // SCIF channel n's receive error and transmit-FIFO-empty.
-        ERI0 = 222, TXI0 = 224, ERI1 = 226, TXI1 = 228, ERI2 = 230, TXI2 = 232,
-        ERI3 = 234, TXI3 = 236, ERI4 = 238, TXI4 = 240,
+        // SCIF channel n's receive error, receive-FIFO-full and transmit-FIFO-empty.
+        ERI0 = 222, RXI0 = 223, TXI0 = 224, ERI1 = 226, RXI1 = 227, TXI1 = 228,
+        ERI2 = 230, RXI2 = 231, TXI2 = 232, ERI3 = 234, RXI3 = 235, TXI3 = 236,
+        ERI4 = 238, RXI4 = 239, TXI4 = 240,
     }
 
     // SDHI channel n's status (card detect), operation and SDIO interrupts. The RZ/A1H's PAC has
@@ -372,6 +373,21 @@ mod tests {
         typelevel::USB0::disable();
         // GICD_ICENABLER2 (0xE820_1180 + 2*4), bit 73 - 64 = 9.
         assert_eq!(test::writes(), [(0xE820_1188, 1 << 9)]);
+    }
+
+    #[test]
+    fn scif_receive_interrupt_ids_match_the_hardware_manual() {
+        // RXIn = 223 + 4n (Table 7.3).
+        assert_eq!(
+            [
+                typelevel::RXI0::ID,
+                typelevel::RXI1::ID,
+                typelevel::RXI2::ID,
+                typelevel::RXI3::ID,
+                typelevel::RXI4::ID
+            ],
+            [223, 227, 231, 235, 239]
+        );
     }
 
     #[test]
