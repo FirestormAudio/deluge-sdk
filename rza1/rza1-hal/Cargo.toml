@@ -25,6 +25,8 @@ test = false
 
 [target.'cfg(target_os = "none")'.dependencies]
 cortex-ar = { workspace = true }
+# The time driver's queue: the driver is device-only (it registers embassy's global time symbols).
+embassy-time-queue-utils = { workspace = true, optional = true }
 
 [dependencies]
 rza1-pac = { path = "../rza1-pac", version = "0.1.0" }
@@ -34,7 +36,6 @@ embassy-futures = { workspace = true }
 embassy-hal-internal = { workspace = true }
 embassy-time = { workspace = true }
 embassy-time-driver = { workspace = true }
-embassy-time-queue-utils = { workspace = true, optional = true }
 embassy-usb-driver = { workspace = true }
 embedded-hal = "1"
 embedded-hal-async = "1"

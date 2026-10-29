@@ -18,13 +18,14 @@ use crate::interrupt::Priority;
 pub struct Config {
     /// The board's crystal, from which every peripheral clock is derived.
     pub clocks: ClockConfig,
-    /// The CPG's frequency control: the CPU clock divider and the CKO pin.
+    /// The CPG's frequency control: the CPU clock ratio and the CKO pin.
     pub cpg: CpgConfig,
     /// Which module clocks run.
     pub module_clocks: ModuleClocks,
     /// The priority of every DMAC channel's completion interrupt.
     pub dma_interrupt_priority: Priority,
-    /// The priority of the OSTM time driver's interrupts (`time-driver-ostm`).
+    /// The priority of the OSTM time driver's interrupts. Used only with the `time-driver-ostm`
+    /// feature; without it, `init` starts no time driver and ignores this.
     pub time_interrupt_priority: Priority,
 }
 
@@ -71,18 +72,18 @@ impl Config {
 // FRQCR
 // ---------------------------------------------------------------------------
 
-/// The CPU clock (Iφ) as a fraction of the PLL output's maximum (FRQCR.IFC). With the PLL at
-/// ×30 on a 13.33 MHz crystal, `Div1` is 400 MHz.
+/// The CPU clock (Iφ) as a ratio of its maximum (FRQCR.IFC). With the PLL at ×30 on a 13.33 MHz
+/// crystal, `Full` is 400 MHz.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum CpuClockDivider {
+pub enum CpuClockRatio {
     /// ×1 (IFC = 00).
-    Div1,
+    Full,
     /// ×2/3 (IFC = 01).
-    Div2_3,
+    TwoThirds,
     /// ×1/3 (IFC = 11): the reset setting.
-    Div1_3,
+    OneThird,
 }
 
 /// What the CKO pin outputs in normal operation, sleep mode and standby (FRQCR.CKOEN).
@@ -118,8 +119,8 @@ pub enum ClockOutputOnChange {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct CpgConfig {
-    /// The CPU clock divider.
-    pub cpu_clock: CpuClockDivider,
+    /// The CPU clock's ratio of its maximum.
+    pub cpu_clock: CpuClockRatio,
     /// The CKO pin in normal operation, sleep and standby.
     pub clock_output: ClockOutput,
     /// The CKO pin while the frequency changes.
@@ -134,15 +135,15 @@ impl CpgConfig {
     /// frequency change.
     pub const fn new() -> Self {
         Self {
-            cpu_clock: CpuClockDivider::Div1_3,
+            cpu_clock: CpuClockRatio::OneThird,
             clock_output: ClockOutput::HizInStandby,
             clock_output_on_change: ClockOutputOnChange::Unstable,
         }
     }
 
-    /// With the CPU clock divided by `divider`.
-    pub const fn with_cpu_clock(mut self, divider: CpuClockDivider) -> Self {
-        self.cpu_clock = divider;
+    /// With the CPU clock at `ratio` of its maximum.
+    pub const fn with_cpu_clock(mut self, ratio: CpuClockRatio) -> Self {
+        self.cpu_clock = ratio;
         self
     }
 
@@ -161,9 +162,9 @@ impl CpgConfig {
     /// The FRQCR value [`init`](crate::init) writes.
     pub const fn frqcr(&self) -> u16 {
         let ifc: u16 = match self.cpu_clock {
-            CpuClockDivider::Div1 => 0b00,
-            CpuClockDivider::Div2_3 => 0b01,
-            CpuClockDivider::Div1_3 => 0b11,
+            CpuClockRatio::Full => 0b00,
+            CpuClockRatio::TwoThirds => 0b01,
+            CpuClockRatio::OneThird => 0b11,
         };
         let ckoen: u16 = match self.clock_output {
             ClockOutput::HizInStandby => 0b00,
@@ -428,7 +429,7 @@ mod tests {
     #[test]
     fn cpg_fields_land_in_their_frqcr_bits() {
         let c = CpgConfig::new()
-            .with_cpu_clock(CpuClockDivider::Div1)
+            .with_cpu_clock(CpuClockRatio::Full)
             .with_clock_output(ClockOutput::LowInStandby)
             .with_clock_output_on_change(ClockOutputOnChange::Low);
         // CKOEN2 bit 14, CKOEN[1:0] bits 13:12, IFC[1:0] bits 9:8, reserved 0x35.

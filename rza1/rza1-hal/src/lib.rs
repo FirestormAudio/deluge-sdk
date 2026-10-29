@@ -123,7 +123,7 @@ pub mod cache;
 /// The clock tree, derived from the board's crystal (set once at boot by the BSP).
 pub mod clocks;
 mod config;
-pub use config::{ClockOutput, ClockOutputOnChange, Config, CpgConfig, CpuClockDivider, ModuleClock, ModuleClocks};
+pub use config::{ClockOutput, ClockOutputOnChange, Config, CpgConfig, CpuClockRatio, ModuleClock, ModuleClocks};
 mod cpg;
 pub mod dmac;
 pub mod gic;
@@ -174,7 +174,7 @@ mod init_tests {
 
         test::reset();
         let cpg = CpgConfig::new()
-            .with_cpu_clock(CpuClockDivider::Div1)
+            .with_cpu_clock(CpuClockRatio::Full)
             .with_clock_output(ClockOutput::LowInStandby);
         unsafe { cpg_then_stb(cpg.frqcr(), &STB) };
         let writes = test::writes();

@@ -80,3 +80,39 @@ macro_rules! error {
         }
     };
 }
+
+/// A byte slice that logs as two-digit hex (`[80, 06, 00, 01]`) under `log` and `defmt` alike:
+/// no format specifier does that for a slice on both backends.
+pub(crate) struct Bytes<'a>(pub &'a [u8]);
+
+impl core::fmt::Debug for Bytes<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("[")?;
+        for (i, b) in self.0.iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "{b:02x}")?;
+        }
+        f.write_str("]")
+    }
+}
+
+#[cfg(feature = "defmt")]
+impl defmt::Format for Bytes<'_> {
+    fn format(&self, f: defmt::Formatter) {
+        defmt::write!(f, "{=[u8]:02x}", self.0)
+    }
+}
+
+#[cfg(all(test, not(target_os = "none")))]
+mod tests {
+    use super::Bytes;
+    use std::format;
+
+    #[test]
+    fn bytes_debug_prints_two_digit_hex() {
+        assert_eq!(format!("{:?}", Bytes(&[0x80, 0x06, 0x00, 0x01])), "[80, 06, 00, 01]");
+        assert_eq!(format!("{:?}", Bytes(&[])), "[]");
+    }
+}

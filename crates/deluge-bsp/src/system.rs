@@ -13,7 +13,7 @@
 //! which runs at reset, is stopped.
 
 use rza1_hal::clocks::ClockConfig;
-use rza1_hal::{ClockOutput, CpgConfig, CpuClockDivider, ModuleClock as M, ModuleClocks};
+use rza1_hal::{ClockOutput, CpgConfig, CpuClockRatio, ModuleClock as M, ModuleClocks};
 
 // ---------------------------------------------------------------------------
 // Board-specific configuration constants
@@ -27,7 +27,7 @@ pub const CLOCKS: ClockConfig = ClockConfig::new(13_225_625);
 /// in standby, which is FRQCR `0x1035` (I:G:B:P1:P0 = 30:20:10:5:5/2), as the known-working
 /// Deluge firmware and bootloader set it.
 pub const CPG: CpgConfig = CpgConfig::new()
-    .with_cpu_clock(CpuClockDivider::Div1)
+    .with_cpu_clock(CpuClockRatio::Full)
     .with_clock_output(ClockOutput::LowInStandby);
 
 /// The module clocks the Deluge firmware runs; everything else stays stopped, to save power and

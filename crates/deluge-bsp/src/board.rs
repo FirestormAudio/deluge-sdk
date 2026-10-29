@@ -236,6 +236,69 @@ mod tests {
         }
     }
 
+    /// The interrupt names in `src`'s `bind_interrupts!` blocks (`NAME => Handler;`) and
+    /// `interrupt::bind::<NAME, …>` calls.
+    fn bound_interrupts(src: &str) -> std::vec::Vec<std::string::String> {
+        let mut names = std::vec::Vec::new();
+        let mut in_block = false;
+        let is_ident = |n: &str| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+        for line in src.lines() {
+            let line = line.trim();
+            if line.starts_with("//") {
+                continue;
+            }
+            if line.contains("bind_interrupts!(") {
+                in_block = true;
+                continue;
+            }
+            if in_block {
+                if line.starts_with('}') {
+                    in_block = false;
+                } else if let Some((name, _)) = line.split_once("=>") {
+                    if is_ident(name.trim()) {
+                        names.push(name.trim().into());
+                    }
+                }
+            }
+            if let Some(rest) = line.split_once("interrupt::bind::<").map(|(_, r)| r) {
+                if let Some((name, _)) = rest.split_once(',') {
+                    if is_ident(name.trim()) {
+                        names.push(name.trim().into());
+                    }
+                }
+            }
+        }
+        names
+    }
+
+    #[test]
+    fn every_interrupt_the_bsp_binds_gets_a_board_priority() {
+        // A driver the BSP adds later must not sit at the HAL's default P16 by omission: each
+        // interrupt bound in deluge-bsp or the deluge facade is in `apply_irq_priorities`, or is
+        // a DMAC completion (its priority is `Config::dma_interrupt_priority`).
+        let root = env!("CARGO_MANIFEST_DIR");
+        let table = std::fs::read_to_string(std::format!("{root}/src/board.rs")).unwrap();
+        let mut missing = std::vec::Vec::new();
+        for dir in ["src", "../deluge-sdk/src"] {
+            let mut stack = std::vec![std::path::PathBuf::from(std::format!("{root}/{dir}"))];
+            while let Some(path) = stack.pop() {
+                if path.is_dir() {
+                    stack.extend(std::fs::read_dir(&path).unwrap().map(|e| e.unwrap().path()));
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let src = std::fs::read_to_string(&path).unwrap();
+                    for name in bound_interrupts(&src) {
+                        let covered = name.starts_with("DMAINT")
+                            || table.contains(&std::format!("({name}::set_priority,"));
+                        if !covered {
+                            missing.push(std::format!("{name} ({})", path.display()));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(missing.is_empty(), "bound but given no board priority: {missing:?}");
+    }
+
     #[test]
     fn board_config_gives_the_time_driver_its_pre_phase1_priority() {
         // The OSTM time driver's interrupts were at 14 when the driver set them itself.

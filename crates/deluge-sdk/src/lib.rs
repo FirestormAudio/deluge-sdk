@@ -601,8 +601,8 @@ pub mod __rt {
                 let size = core::ptr::addr_of!(__sram_heap_end) as usize - start as usize;
                 rza1_alloc::SRAM.init(start, size);
 
-                // The chip (CPG, module clocks, GIC), then the board (MMU, caches, SDRAM, OSTM
-                // time driver).
+                // The chip (CPG, module clocks, GIC, OSTM time driver), then the board (MMU,
+                // caches, SDRAM, interrupt priorities).
                 let board =
                     deluge_bsp::Board::new(rza1_hal::init(deluge_bsp::system::BOARD_CONFIG));
 

@@ -891,7 +891,7 @@ impl ControlPipe for Rusb1ControlPipe {
         // transfer (the next packet would wipe the flag, then hang on a
         // BRDY/BEMP the re-enumerating host never produces).
         CTRL_ABORT[self.port as usize].store(false, Ordering::Release);
-        debug!("usb{}: setup() → {:?}", self.port, pkt);
+        debug!("usb{}: setup() → {:?}", self.port, crate::fmt::Bytes(&pkt));
         pkt
     }
 

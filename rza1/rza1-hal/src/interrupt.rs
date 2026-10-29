@@ -182,7 +182,8 @@ pub mod typelevel {
     mod ostm {
         interrupts! { OSTMI0 = 134, OSTMI1 = 135 }
     }
-    #[cfg(feature = "time-driver-ostm")]
+    // Only the device time driver (and the ID tests) use them; a host build has neither.
+    #[cfg(all(feature = "time-driver-ostm", any(target_os = "none", test)))]
     pub(crate) use ostm::*;
     #[cfg(not(feature = "time-driver-ostm"))]
     pub use ostm::*;
