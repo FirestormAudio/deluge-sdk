@@ -602,6 +602,8 @@ impl<'d> UartRx<'d> {
     /// or the caller is an interrupt (an interrupt-priority executor) that preempted the owner.
     /// [`try_read`](Self::try_read) masks interrupts across its update, so an owner preempted in
     /// it never rewinds what the stolen receiver consumed.
+    #[doc(hidden)]
+    #[cfg(any(feature = "unstable-driver-steal", test))]
     pub unsafe fn steal<T: RxDmaInstance, C: crate::dmac::Channel>() -> Option<UartRx<'static>> {
         if !RX_DMA_ACTIVE[T::INDEX].load(Ordering::Acquire) {
             return None;

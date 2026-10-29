@@ -192,6 +192,8 @@ impl<'d> Dma<'d> {
     /// # Safety
     /// The channel's owner must not run while the stolen handle is in use (interrupts masked, or
     /// the owner gone for good).
+    #[doc(hidden)]
+    #[cfg(any(feature = "unstable-driver-steal", test))]
     pub unsafe fn steal<C: Channel>() -> Dma<'static> {
         Dma {
             ch: C::NUMBER,

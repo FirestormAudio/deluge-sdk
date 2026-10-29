@@ -346,6 +346,8 @@ impl<'d> Rspi<'d> {
     /// # Safety
     /// [`Rspi::new`] has run for `T`, and its owner doesn't run while the stolen handle is in use
     /// (a panic handler with interrupts masked).
+    #[doc(hidden)]
+    #[cfg(any(feature = "unstable-driver-steal", test))]
     pub unsafe fn steal<T: Instance>() -> Rspi<'static> {
         Rspi { ch: T::INDEX, _rspi: PhantomData }
     }

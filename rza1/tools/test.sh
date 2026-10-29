@@ -57,6 +57,16 @@ cargo build "${BUILD_STD[@]}" -p rza1-hal --features rza1l,defmt
 # With no logging, every log argument must still be consumed: no unused-variable warnings.
 cargo rustc "${BUILD_STD[@]}" -p rza1-hal --lib --features rza1l -- -D unused
 
+echo "==> rza1: drivers document no steal() (it is behind the hidden unstable-driver-steal feature)"
+cargo doc "${BUILD_STD[@]}" -p rza1-hal --features rza1l --no-deps
+DOC=target/armv7a-none-eabihf/doc/rza1_hal
+for page in dmac/struct.Dma.html rspi/struct.Rspi.html uart/struct.UartRx.html; do
+  if grep -q 'method\.steal' "$DOC/$page"; then
+    echo "error: $page documents a steal() method" >&2
+    exit 1
+  fi
+done
+
 tools/check-register-tables.sh
 tools/check-pac.sh
 

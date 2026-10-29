@@ -57,6 +57,9 @@ rt = []
 ## Provide the `critical-section` implementation (single-core: IRQ and FIQ masking). Turn off to
 ## bring your own.
 critical-section-impl = ["cortex-ar/critical-section-single-core"]
+## `Dma::steal`, `Rspi::steal` and `UartRx::steal`: for panic and fault paths that must reach an
+## initialised driver without its owner. Hidden from the docs and not covered by semver.
+unstable-driver-steal = []
 ## The chip: enable exactly one.
 ## The RZ/A1L (R7S721020 and family).
 rza1l = ["rza1-pac/rza1l"]
