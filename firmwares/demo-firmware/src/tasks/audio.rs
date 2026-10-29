@@ -251,10 +251,11 @@ pub(crate) async fn uac2_task(ep_out: rza1_hal::usb::Rusb1EndpointOut) {
         if active && !ui_streaming {
             ui_streaming = true;
             // Gate speaker: on only if no headphone / line-out is inserted.
-            let hp = unsafe { rza1_hal::gpio::read_pin(6, 5) };
-            let lol = unsafe { rza1_hal::gpio::read_pin(6, 3) };
-            let lor = unsafe { rza1_hal::gpio::read_pin(6, 4) };
-            unsafe { rza1_hal::gpio::write(4, 1, !hp && !lol && !lor) };
+            use deluge_bsp::jacks::{self, Jack};
+            let hp = jacks::is_inserted(Jack::Headphone);
+            let lol = jacks::is_inserted(Jack::LineOutL);
+            let lor = jacks::is_inserted(Jack::LineOutR);
+            jacks::set_speaker_enable(!hp && !lol && !lor);
             info!("uac2_task: streaming started");
         } else if !active && ui_streaming {
             ui_streaming = false;
@@ -262,7 +263,7 @@ pub(crate) async fn uac2_task(ep_out: rza1_hal::usb::Rusb1EndpointOut) {
             // SPEAKER_ENABLE, and refill the ring with dither.  The host has
             // stopped, so no hook write races this fill.
             USB_AUDIO_STREAMING.store(false, Ordering::Release);
-            unsafe { rza1_hal::gpio::write(4, 1, false) }; // SPEAKER_ENABLE off
+            deluge_bsp::jacks::set_speaker_enable(false);
             fill_tx_with_dither();
             info!("uac2_task: stream stopped");
         }

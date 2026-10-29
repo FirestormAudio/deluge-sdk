@@ -77,17 +77,23 @@ fn setup() {
     info!("Deluge demo firmware starting");
     info!("Pad paint demo: press pads to toggle, buttons 0/1/2 to clear/fill/invert");
 
-    info!("GPIO: configuring heartbeat LED...");
-    unsafe { rza1_hal::gpio::set_as_output(6, 7) };
 
     info!("UART: initialising MIDI...");
-    let (midi, midi_rx) = deluge::parts::with(|p| (p.midi_uart.take(), p.midi_rx_dma.take()));
-    bsp_uart::init_midi(midi.expect("SCIF0 is free"), midi_rx.expect("the MIDI RX DMA channel is free"), 31_250);
+    let (midi, midi_pins, midi_rx) =
+        deluge::parts::with(|p| (p.midi_uart.take(), p.midi_pins.take(), p.midi_rx_dma.take()));
+    bsp_uart::init_midi(
+        midi.expect("SCIF0 is free"),
+        midi_pins.expect("SCIF0's pins are free"),
+        midi_rx.expect("the MIDI RX DMA channel is free"),
+        31_250,
+    );
     info!("UART: initialising PIC...");
-    let (pic, pic_rx, pic_tx) =
-        deluge::parts::with(|p| (p.pic_uart.take(), p.pic_rx_dma.take(), p.pic_tx_dma.take()));
+    let (pic, pic_pins, pic_rx, pic_tx) = deluge::parts::with(|p| {
+        (p.pic_uart.take(), p.pic_pins.take(), p.pic_rx_dma.take(), p.pic_tx_dma.take())
+    });
     bsp_uart::init_pic(
         pic.expect("SCIF1 is free"),
+        pic_pins.expect("SCIF1's pins are free"),
         pic_rx.expect("the PIC RX DMA channel is free"),
         pic_tx.expect("the PIC TX DMA channel is free"),
         31_250,
@@ -95,24 +101,28 @@ fn setup() {
     info!("UART: SCIF0/1 @ 31 250 baud");
 
     // The SD slot's controller, once; `sd::init` identifies the card when the SD task needs it.
-    let (card, sd_tx, sd_rx) =
-        deluge::parts::with(|p| (p.sd_card.take(), p.sd_tx_dma.take(), p.sd_rx_dma.take()));
+    let (card, sd_pins, sd_tx, sd_rx) = deluge::parts::with(|p| {
+        (p.sd_card.take(), p.sd_pins.take(), p.sd_tx_dma.take(), p.sd_rx_dma.take())
+    });
     deluge_bsp::sd::init_hw(
         card.expect("SDHI1 is free"),
+        sd_pins.expect("the SD slot's pins are free"),
         sd_tx.expect("the SD TX DMA channel is free"),
         sd_rx.expect("the SD RX DMA channel is free"),
     );
 
     info!("audio: initialising SSI0...");
-    let (ssi, ssi_rx, ffd0) = deluge::parts::with(|p| {
+    let (ssi, audio_pins, ssi_rx, ffd0) = deluge::parts::with(|p| {
         (
             p.audio_ssi.take(),
+            p.audio_pins.take(),
             p.ssi_rx_dma.take(),
             p.scux_ffd0_dma.take(),
         )
     });
     deluge_bsp::audio::init_with_scux(
         ssi.expect("SSIF0 is free"),
+        audio_pins.expect("the codec's pins are free"),
         ssi_rx.expect("the SSI RX DMA channel is free"),
         ffd0.expect("SCUX FFD0's DMA channel is free"),
     );
@@ -124,17 +134,28 @@ fn setup() {
 
     // RSPI0 is shared by the OLED (8-bit) and the CV DAC (32-bit), arbitrated by
     // deluge_bsp::bus. This firmware drives both itself, so it takes them from the SDK.
-    let (spi, oled_dma) = deluge::parts::with(|p| (p.shared_spi.take(), p.oled_dma.take()));
-    deluge_bsp::bus::init(spi.expect("RSPI0 is free"), oled_dma.expect("the OLED DMA channel is free"));
-    unsafe { cv_gate::init() };
+    let (spi, spi_pins, oled_dma) =
+        deluge::parts::with(|p| (p.shared_spi.take(), p.spi_pins.take(), p.oled_dma.take()));
+    deluge_bsp::bus::init(
+        spi.expect("RSPI0 is free"),
+        spi_pins.expect("RSPI0's pins are free"),
+        oled_dma.expect("the OLED DMA channel is free"),
+    );
+    cv_gate::init(deluge::parts::with(|p| p.cv_gate_pins.take()).expect("the CV/gate pins are free"));
     info!("RSPI0: initialised via cv_gate::init");
 
     info!("encoder: configuring interrupt-driven inputs...");
-    let poll_timer =
-        deluge::parts::with(|p| p.encoder_poll_timer.take()).expect("MTU2 channel 3 is free");
-    unsafe { deluge_bsp::encoder::irq_init(poll_timer) };
+    let (poll_timer, encoder_pins, trigger_pin) = deluge::parts::with(|p| {
+        (p.encoder_poll_timer.take(), p.encoder_pins.take(), p.trigger_pin.take())
+    });
+    unsafe {
+        deluge_bsp::encoder::irq_init(
+            poll_timer.expect("MTU2 channel 3 is free"),
+            encoder_pins.expect("the encoders' pins are free"),
+        )
+    };
     info!("trigger_clock: configuring interrupt-driven input...");
-    unsafe { deluge_bsp::trigger_clock::irq_init() };
+    unsafe { deluge_bsp::trigger_clock::irq_init(trigger_pin.expect("P1_14 is free")) };
 }
 
 // ---------------------------------------------------------------------------
@@ -227,7 +248,11 @@ async fn main(dlg: Deluge) {
 
     // ── Spawn tasks ──────────────────────────────────────────────────────────
     info!("starting Embassy tasks");
-    spawner.spawn(tasks::blink::blink_task().unwrap());
+    let sync_led = deluge::parts::with(|p| p.sync_led.take()).expect("the SYNC LED is free");
+    spawner.spawn(
+        tasks::blink::blink_task(rza1_hal::gpio::Output::new(sync_led, rza1_hal::gpio::Level::Low))
+            .unwrap(),
+    );
 
     // USB-mode-specific tasks ─────────────────────────────────────────────────
     if let Some(hd) = usb_host_driver {
@@ -255,7 +280,8 @@ async fn main(dlg: Deluge) {
     // Tasks common to both modes ───────────────────────────────────────────────
     spawner.spawn(tasks::pic::pic_task().unwrap());
     spawner.spawn(tasks::encoder::encoder_task().unwrap());
-    spawner.spawn(tasks::jack_detect::jack_detect_task(200).unwrap());
+    let jack_pins = deluge::parts::with(|p| p.jack_pins.take()).expect("the jack pins are free");
+    spawner.spawn(tasks::jack_detect::jack_detect_task(jack_pins, 200).unwrap());
     spawner.spawn(tasks::analysis::analysis_task().unwrap());
     spawner.spawn(tasks::rgb::rgb_task().unwrap());
     spawner.spawn(tasks::oled::oled_task().unwrap());

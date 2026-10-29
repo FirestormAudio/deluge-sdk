@@ -18,7 +18,7 @@ use embassy_time::Instant;
 #[cfg(not(feature = "audio-irq"))]
 use embassy_time::{Duration, Ticker};
 use embedded_hal::digital::{OutputPin, StatefulOutputPin};
-use rza1_hal::gpio::{Output, Pin};
+
 
 /// Run `f` over every audio block, forever.
 pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame]) + Send + 'static>(
@@ -60,8 +60,8 @@ pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame]) + Send 
     }
 }
 
-/// The SYNC LED is wired to port 6, pin 7.
-type SyncLedPin = Pin<6, 7, Output>;
+/// The SYNC LED (P6_7), from the board's pins.
+pub(crate) type SyncLedPin = rza1_hal::gpio::Flex<'static>;
 
 /// Bring up RSPI0, which the OLED and the CV DAC share, the first time either needs it, unless
 /// the app already did.
@@ -71,7 +71,8 @@ fn ensure_shared_spi() {
     }
     let spi = crate::parts::take("RSPI0 (the OLED and CV bus)", |p| p.shared_spi.take());
     let dma = crate::parts::take("the OLED DMA channel", |p| p.oled_dma.take());
-    deluge_bsp::bus::init(spi, dma);
+    let pins = crate::parts::take("RSPI0's pins", |p| p.spi_pins.take());
+    deluge_bsp::bus::init(spi, pins, dma);
 }
 
 pub(crate) async fn oled_init_panel() {
@@ -125,7 +126,8 @@ pub(crate) fn pic_ensure_started(spawner: Spawner) {
     let uart = crate::parts::take("SCIF1 (the PIC link)", |p| p.pic_uart.take());
     let rx = crate::parts::take("the PIC receive DMA channel", |p| p.pic_rx_dma.take());
     let tx = crate::parts::take("the PIC transmit DMA channel", |p| p.pic_tx_dma.take());
-    bsp_uart::init_pic(uart, rx, tx, PIC_BAUD);
+    let pins = crate::parts::take("the PIC link's pins", |p| p.pic_pins.take());
+    bsp_uart::init_pic(uart, pins, rx, tx, PIC_BAUD);
     // `#[embassy_executor::task]` returns a Result in this Embassy version; the
     // only failure is pool exhaustion, impossible for this single spawn.
     spawner.spawn(pic_pump().unwrap());
@@ -159,24 +161,27 @@ async fn pic_pump() {
 }
 
 pub(crate) fn sync_led_init() -> SyncLedPin {
-    // SAFETY: the take-once guard in `Deluge::sync_led` ensures this runs once
-    // and nothing else owns P6_7; clocks are up by the time an app runs.
-    unsafe { SyncLedPin::into_output() }
+    let pin = crate::parts::take("the SYNC LED (P6_7)", |p| p.sync_led.take());
+    let mut led = rza1_hal::gpio::Flex::new(pin);
+    // Keep whatever level the LED's output latch already holds: only the direction changes.
+    let level = led.is_set_high().into();
+    led.set_as_output(level);
+    led
 }
 pub(crate) fn sync_led_set_high(pin: &mut SyncLedPin) -> Result<(), Infallible> {
-    pin.set_high()
+    OutputPin::set_high(pin)
 }
 pub(crate) fn sync_led_set_low(pin: &mut SyncLedPin) -> Result<(), Infallible> {
-    pin.set_low()
+    OutputPin::set_low(pin)
 }
 pub(crate) fn sync_led_toggle(pin: &mut SyncLedPin) -> Result<(), Infallible> {
     StatefulOutputPin::toggle(pin)
 }
 pub(crate) fn sync_led_is_set_high(pin: &mut SyncLedPin) -> Result<bool, Infallible> {
-    pin.is_set_high()
+    StatefulOutputPin::is_set_high(pin)
 }
 pub(crate) fn sync_led_is_set_low(pin: &mut SyncLedPin) -> Result<bool, Infallible> {
-    pin.is_set_low()
+    StatefulOutputPin::is_set_low(pin)
 }
 
 pub(crate) fn cv_gate_init() {
@@ -185,14 +190,14 @@ pub(crate) fn cv_gate_init() {
     // linearity init (poll-based delays). Acquire CV/gate before entering a
     // loop that also drives the OLED, so this one-time RSPI0 setup can't race an
     // in-flight OLED transfer (see docs/advanced-guide.md §7).
-    unsafe { deluge_bsp::cv_gate::init() };
+    let pins = crate::parts::take("the CV chip select and the gates", |p| p.cv_gate_pins.take());
+    deluge_bsp::cv_gate::init(pins);
 }
 pub(crate) async fn cv_set(ch: u8, code: u16) {
     deluge_bsp::cv_gate::cv_set(ch, code).await;
 }
 pub(crate) fn gate_set(ch: u8, on: bool) {
-    // SAFETY: GPIO write to a gate line we own; pins configured by init.
-    unsafe { deluge_bsp::cv_gate::gate_set(ch, on) };
+    deluge_bsp::cv_gate::gate_set(ch, on);
 }
 
 /// MIDI DIN baud rate.
@@ -202,7 +207,8 @@ pub(crate) fn midi_init() {
     // Runs once. Binds SCIF0's handlers before it enables their sources, so it is safe at runtime.
     let uart = crate::parts::take("SCIF0 (DIN MIDI)", |p| p.midi_uart.take());
     let rx = crate::parts::take("the MIDI receive DMA channel", |p| p.midi_rx_dma.take());
-    deluge_bsp::uart::init_midi(uart, rx, MIDI_BAUD);
+    let pins = crate::parts::take("DIN MIDI's pins", |p| p.midi_pins.take());
+    deluge_bsp::uart::init_midi(uart, pins, rx, MIDI_BAUD);
 }
 pub(crate) async fn midi_send(data: &[u8]) {
     deluge_bsp::uart::write_midi(data).await;
@@ -218,7 +224,8 @@ pub(crate) fn clock_in_init() {
     // SAFETY: runs once. Registers the P1_14/IRQ6 handler and enables the
     // GIC line. Registered lazily, after interrupts are enabled, as the
     // encoder IRQs are in `input_start_pump`.
-    unsafe { trigger_clock::irq_init() };
+    let pin = crate::parts::take("the trigger-clock input (P1_14)", |p| p.trigger_pin.take());
+    unsafe { trigger_clock::irq_init(pin) };
 }
 pub(crate) async fn clock_in_wait_edge() -> u64 {
     let start = trigger_clock::EDGE_COUNT.load(Ordering::Relaxed);
@@ -244,9 +251,9 @@ pub(crate) fn clock_in_last_edge() -> Option<Instant> {
 }
 
 pub(crate) fn jacks_init() {
-    // SAFETY: runs once. Configures the five jack-detect inputs and the
-    // speaker-enable output (left disabled).
-    unsafe { jacks::init() };
+    // Runs once. The five jack-detect inputs and the speaker-enable output (left disabled).
+    let pins = crate::parts::take("the jack detects and the speaker enable", |p| p.jack_pins.take());
+    jacks::init(pins);
 }
 pub(crate) fn jacks_headphone() -> bool {
     jacks::is_inserted(Jack::Headphone)
@@ -264,8 +271,7 @@ pub(crate) fn jacks_line_out_right() -> bool {
     jacks::is_inserted(Jack::LineOutR)
 }
 pub(crate) fn jacks_set_speaker(on: bool) {
-    // SAFETY: GPIO write to the speaker-enable output configured by init.
-    unsafe { jacks::set_speaker_enable(on) };
+    jacks::set_speaker_enable(on);
 }
 
 pub(crate) async fn sd_init_card() -> Result<(), deluge_bsp::sd::SdError> {
@@ -275,7 +281,8 @@ pub(crate) async fn sd_init_card() -> Result<(), deluge_bsp::sd::SdError> {
         let card = crate::parts::take("SDHI1 (the SD card slot)", |p| p.sd_card.take());
         let tx = crate::parts::take("the SD transmit DMA channel", |p| p.sd_tx_dma.take());
         let rx = crate::parts::take("the SD receive DMA channel", |p| p.sd_rx_dma.take());
-        deluge_bsp::sd::init_hw(card, tx, rx);
+        let pins = crate::parts::take("the SD slot's pins", |p| p.sd_pins.take());
+        deluge_bsp::sd::init_hw(card, pins, tx, rx);
     }
     deluge_bsp::sd::init().await
 }
@@ -329,7 +336,8 @@ pub(crate) fn input_start_pump(spawner: Spawner) {
     // handler before enabling its source, so it is safe with interrupts enabled.
     let poll_timer =
         crate::parts::take("MTU2 channel 3 (the encoder poll)", |p| p.encoder_poll_timer.take());
-    unsafe { encoder::irq_init(poll_timer) };
+    let pins = crate::parts::take("the encoders' pins", |p| p.encoder_pins.take());
+    unsafe { encoder::irq_init(poll_timer, pins) };
     spawner.spawn(encoder_pump().unwrap());
 }
 

@@ -139,21 +139,25 @@ pub extern "C" fn main() -> ! {
     info!("SDRAM heap: initialised (64 MB)");
 
     info!("GPIO: configuring heartbeat LED...");
-    unsafe { rza1_hal::gpio::set_as_output(6, 7) };
+    // The SYNC LED as an output at the level its latch already holds; the host drives it over CDC.
+    let mut sync_led = rza1_hal::gpio::Flex::new(board.pins.sync_led);
+    sync_led.set_as_output(sync_led.is_set_high().into());
+    tasks::cdc::set_sync_led(sync_led);
+    let jack_pins = board.pins.jacks;
     info!("GPIO: heartbeat LED P6_7 configured");
 
     info!("UART: initialising MIDI...");
-    bsp_uart::init_midi(board.midi_uart, board.dma.midi_rx, 31_250);
+    bsp_uart::init_midi(board.midi_uart, board.pins.midi, board.dma.midi_rx, 31_250);
     info!("UART: MIDI ready");
 
     info!("UART: initialising PIC...");
-    bsp_uart::init_pic(board.pic_uart, board.dma.pic_rx, board.dma.pic_tx, 31_250);
+    bsp_uart::init_pic(board.pic_uart, board.pins.pic, board.dma.pic_rx, board.dma.pic_tx, 31_250);
     // The SD slot's controller, once; `sd::init` identifies the card when it is needed.
-    deluge_bsp::sd::init_hw(board.sd_card, board.dma.sd_tx, board.dma.sd_rx);
+    deluge_bsp::sd::init_hw(board.sd_card, board.pins.sd, board.dma.sd_tx, board.dma.sd_rx);
     info!("UART: SCIF0/1 @ 31 250 baud");
 
     info!("audio: initialising SSI0...");
-    deluge_bsp::audio::init_with_scux(board.audio_ssi, board.dma.ssi_rx, board.dma.scux_ffd0);
+    deluge_bsp::audio::init_with_scux(board.audio_ssi, board.pins.audio, board.dma.ssi_rx, board.dma.scux_ffd0);
     info!("audio: SSI0 + DMA + codec running");
 
     // Pre-fill SSI TX buffer with dither so the codec does not auto-mute before
@@ -163,8 +167,8 @@ pub extern "C" fn main() -> ! {
 
     // RSPI0 is shared between OLED (8-bit) and CV DAC (32-bit). The bus brings it up in 32-bit
     // mode; cv_gate::init() runs the DAC's linearity sequence; oled::init() switches to 8-bit.
-    deluge_bsp::bus::init(board.shared_spi, board.dma.oled);
-    unsafe { cv_gate::init() };
+    deluge_bsp::bus::init(board.shared_spi, board.pins.spi, board.dma.oled);
+    cv_gate::init(board.pins.cv_gate);
     info!("RSPI0: initialised via cv_gate::init");
 
     // ── USB0 mode selection (host vs device) ──────────────────────────────
@@ -266,7 +270,7 @@ pub extern "C" fn main() -> ! {
     }
 
     info!("encoder: configuring interrupt-driven inputs...");
-    unsafe { deluge_bsp::encoder::irq_init(board.encoder_poll_timer) };
+    unsafe { deluge_bsp::encoder::irq_init(board.encoder_poll_timer, board.pins.encoders) };
 
     debug!("enabling IRQ...");
     unsafe { cortex_ar::interrupt::enable() };
@@ -310,7 +314,7 @@ pub extern "C" fn main() -> ! {
         // Hardware service + host-driven rendering tasks ───────────────────
         spawner.spawn(tasks::pic::pic_task().unwrap());
         spawner.spawn(tasks::encoder::encoder_task().unwrap());
-        spawner.spawn(tasks::jack_detect::jack_detect_task(200).unwrap());
+        spawner.spawn(tasks::jack_detect::jack_detect_task(jack_pins, 200).unwrap());
         spawner.spawn(tasks::oled::oled_task().unwrap());
         spawner.spawn(tasks::sd::sd_task().unwrap());
     });

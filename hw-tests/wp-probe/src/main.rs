@@ -77,18 +77,20 @@ pub extern "C" fn main() -> ! {
     unsafe { allocator::SDRAM.init(0x0C00_0000 as *mut u8, 64 * 1024 * 1024) };
 
     // Heartbeat LED pin (unused beyond init; keeps parity with other firmwares).
-    unsafe { rza1_hal::gpio::set_as_output(6, 7) };
+    // The SYNC LED as an output at the level its latch already holds.
+    let mut sync_led = rza1_hal::gpio::Flex::new(board.pins.sync_led);
+    sync_led.set_as_output(sync_led.is_set_high().into());
 
     info!("UART: initialising PIC...");
-    bsp_uart::init_pic(board.pic_uart, board.dma.pic_rx, board.dma.pic_tx, 31_250);
+    bsp_uart::init_pic(board.pic_uart, board.pins.pic, board.dma.pic_rx, board.dma.pic_tx, 31_250);
     // The SD slot's controller, once; `sd::init` identifies the card when it is needed.
-    deluge_bsp::sd::init_hw(board.sd_card, board.dma.sd_tx, board.dma.sd_rx);
+    deluge_bsp::sd::init_hw(board.sd_card, board.pins.sd, board.dma.sd_tx, board.dma.sd_rx);
 
     // RSPI0 is shared between OLED (8-bit) and CV DAC (32-bit). The bus brings it up;
     // cv_gate::init() runs the DAC's linearity sequence; oled::init() then switches
     // it to 8-bit mode for the panel.
-    deluge_bsp::bus::init(board.shared_spi, board.dma.oled);
-    unsafe { cv_gate::init() };
+    deluge_bsp::bus::init(board.shared_spi, board.pins.spi, board.dma.oled);
+    cv_gate::init(board.pins.cv_gate);
     info!("RSPI0: initialised via cv_gate::init");
 
     unsafe { cortex_ar::interrupt::enable() };

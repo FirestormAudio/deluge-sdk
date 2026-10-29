@@ -89,11 +89,11 @@ A typical boot sequence (`Board::new` also brings up the MMU, caches and the SDR
 
 ```rust
 let board = deluge_bsp::Board::new(rza1_hal::init(deluge_bsp::system::BOARD_CONFIG));
-deluge_bsp::uart::init_pic(board.pic_uart, board.dma.pic_rx, board.dma.pic_tx, 31_250);
-deluge_bsp::bus::init(board.shared_spi, board.dma.oled);
-deluge_bsp::sd::init_hw(board.sd_card, board.dma.sd_tx, board.dma.sd_rx);
-deluge_bsp::audio::init(board.audio_ssi, board.dma.ssi_tx, board.dma.ssi_rx);
-unsafe { deluge_bsp::cv_gate::init() };
+deluge_bsp::uart::init_pic(board.pic_uart, board.pins.pic, board.dma.pic_rx, board.dma.pic_tx, 31_250);
+deluge_bsp::bus::init(board.shared_spi, board.pins.spi, board.dma.oled);
+deluge_bsp::sd::init_hw(board.sd_card, board.pins.sd, board.dma.sd_tx, board.dma.sd_rx);
+deluge_bsp::audio::init(board.audio_ssi, board.pins.audio, board.dma.ssi_tx, board.dma.ssi_rx);
+deluge_bsp::cv_gate::init(board.pins.cv_gate);
 ```
 
 Apps built on the `deluge` SDK get all of this from `#[deluge::app]` and don't

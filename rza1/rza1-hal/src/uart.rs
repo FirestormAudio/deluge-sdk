@@ -7,8 +7,8 @@
 //! GIC interrupt IDs (per RZ/A1L HW Manual §A.2, devdrv_intc.h):
 //!   SCIF_n: BRI = 221+n*4, ERI = 222+n*4, RXI = 223+n*4, TXI = 224+n*4
 //!
-//! **This module is board-agnostic.** It does not know which ports are wired
-//! to which SCIF channel. Mux its pins with [`crate::gpio::set_pin_mux`] before [`Uart::new`].
+//! **This module is board-agnostic.** [`Uart::new`] takes the board's TxD and RxD pins
+//! ([`TxPin`], [`RxPin`]) and puts them on the SCIF's function itself.
 //!
 //! ## Usage
 //! ```ignore
@@ -17,10 +17,8 @@
 //!     TXI0 => uart::TxInterruptHandler<SCIF0>;
 //!     DMAINT13 => dmac::InterruptHandler<DMA_CH13>;
 //! });
-//! // Mux the board's pins first, so the receive ring never samples an unconnected pin.
-//! unsafe { gpio::set_pin_mux(6, 15, 5); gpio::set_pin_mux(6, 14, 5); }
 //! let rx_dma = dmac::Dma::new(p.DMA_CH13, Irqs);
-//! let (mut rx, tx) = uart::Uart::new(p.SCIF0, rx_dma, None, Irqs, 31_250).split();
+//! let (mut rx, tx) = uart::Uart::new(p.SCIF0, p.P6_15, p.P6_14, rx_dma, None, Irqs, 31_250).split();
 //! tx.write(b"hello").await;
 //! let b = rx.read_byte().await;
 //! ```
@@ -209,9 +207,7 @@ fn scbrr(p1_hz: u32, baud: u32) -> u8 {
 
 /// Initialise SCIF channel `ch` (`0`–`4`) at `baud_rate` bps.
 ///
-/// This function only programmes the SCIF peripheral registers. GPIO pin-mux
-/// for the TX/RX pins must be configured separately via
-/// [`crate::gpio::set_pin_mux`] using board-specific port/pin/mux values.
+/// This function only programmes the SCIF peripheral registers; [`Uart::new`] muxes the pins.
 ///
 /// # Panics
 /// If [`crate::clocks::init`] has not been called.
@@ -391,6 +387,15 @@ mod sealed {
     pub trait Sealed {}
 }
 
+pin_trait!(
+    /// A pin that can carry SCIF `T`'s transmit data (TxDn).
+    TxPin, Instance
+);
+pin_trait!(
+    /// A pin that can carry SCIF `T`'s receive data (RxDn).
+    RxPin, Instance
+);
+
 /// A SCIF channel singleton (`peripherals::SCIF0`–`SCIF4`).
 pub trait Instance: crate::PeripheralType + sealed::Sealed + 'static {
     /// The channel number, 0–4.
@@ -474,15 +479,18 @@ pub struct Uart<'d> {
 }
 
 impl<'d> Uart<'d> {
-    /// Bring SCIF `T` up at `baud`: receive into a ring on `rx_dma`; transmit by DMA on `tx_dma`,
-    /// or through the FIFO and TXI without one.
+    /// Bring SCIF `T` up at `baud` on pins `tx` and `rx`: receive into a ring on `rx_dma`;
+    /// transmit by DMA on `tx_dma`, or through the FIFO and TXI without one.
     ///
-    /// Mux its pins before calling this, so the ring never samples an unconnected pin.
+    /// The pins are put on the SCIF's function first, so the ring never samples an unconnected
+    /// pin.
     ///
     /// # Panics
     /// If [`crate::clocks::init`] has not been called.
     pub fn new<T: RxDmaInstance>(
         _scif: Peri<'d, T>,
+        tx: Peri<'d, impl TxPin<T>>,
+        rx: Peri<'d, impl RxPin<T>>,
         rx_dma: Dma<'d>,
         tx_dma: Option<Dma<'d>>,
         irq: impl Binding<T::ErrorInterrupt, ErrorInterruptHandler<T>>
@@ -491,6 +499,9 @@ impl<'d> Uart<'d> {
         + 'd,
         baud: u32,
     ) -> Self {
+        let (tx_alt, rx_alt) = (tx.alternate(), rx.alternate());
+        crate::gpio::mux(tx, tx_alt);
+        crate::gpio::mux(rx, rx_alt);
         // SAFETY: SCIF T is owned.
         unsafe { configure(T::INDEX, baud) };
         interrupt::bind::<T::ErrorInterrupt, ErrorInterruptHandler<T>>(irq);
@@ -892,8 +903,26 @@ mod typed_tests {
         test::reset();
         let rx_dma = Dma::new(unsafe { DMA_CH13::steal() }, Irqs);
         let tx_dma = Dma::new(unsafe { DMA_CH10::steal() }, Irqs);
-        let (rx, mut tx) =
-            Uart::new(unsafe { SCIF0::steal() }, rx_dma, Some(tx_dma), Irqs, 31_250).split();
+        let (rx, mut tx) = unsafe {
+            Uart::new(
+                SCIF0::steal(),
+                crate::peripherals::P6_15::steal(),
+                crate::peripherals::P6_14::steal(),
+                rx_dma,
+                Some(tx_dma),
+                Irqs,
+                31_250,
+            )
+        }
+        .split();
+
+        // TxD0 (P6_15) and RxD0 (P6_14) on alternative 5: PFCAE6 set, PFCE6/PFC6 clear, the
+        // function driving direction (PIPC6).
+        let pins = (1u16 << 15) | (1 << 14);
+        assert_eq!(test::peek16(0xFCFE_3A18) & pins, pins, "PFCAE6");
+        assert_eq!(test::peek16(0xFCFE_3618) & pins, 0, "PFCE6");
+        assert_eq!(test::peek16(0xFCFE_3518) & pins, 0, "PFC6");
+        assert_eq!(test::peek16(0xFCFE_7218) & pins, pins, "PIPC6");
 
         let b = 0xE800_7000usize; // SCIF0
         assert_eq!(test::peek8(b + 0x04), 131, "31 250 bps");
@@ -965,7 +994,18 @@ mod typed_tests {
         crate::clocks::init(crate::clocks::TEST_CLOCKS);
         test::reset();
         let rx_dma = Dma::new(unsafe { DMA_CH12::steal() }, Irqs);
-        let (mut rx, _tx) = Uart::new(unsafe { SCIF1::steal() }, rx_dma, None, Irqs, 31_250).split();
+        let (mut rx, _tx) = unsafe {
+            Uart::new(
+                SCIF1::steal(),
+                crate::peripherals::P3_15::steal(),
+                crate::peripherals::P1_9::steal(),
+                rx_dma,
+                None,
+                Irqs,
+                31_250,
+            )
+        }
+        .split();
         let ring = rx_ring(1);
         let crda = chreg(12, 0x1C);
 

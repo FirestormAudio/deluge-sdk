@@ -78,7 +78,8 @@ fn ensure_init() {
     let ssi = crate::parts::take("SSIF0 (the codec's I²S port)", |p| p.audio_ssi.take());
     let tx = crate::parts::take("the SSI transmit DMA channel", |p| p.ssi_tx_dma.take());
     let rx = crate::parts::take("the SSI receive DMA channel", |p| p.ssi_rx_dma.take());
-    deluge_bsp::audio::init(ssi, tx, rx);
+    let pins = crate::parts::take("the codec's pins", |p| p.audio_pins.take());
+    deluge_bsp::audio::init(ssi, pins, tx, rx);
 }
 
 /// The codec audio path, taken once from [`Deluge::audio`](crate::Deluge::audio).

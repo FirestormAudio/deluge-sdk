@@ -654,21 +654,31 @@ pub mod __rt {
             crate::parts::stash(crate::parts::Parts {
                 shared_spi: Some(board.shared_spi),
                 oled_dma: Some(board.dma.oled),
+                spi_pins: Some(board.pins.spi),
                 midi_uart: Some(board.midi_uart),
                 midi_rx_dma: Some(board.dma.midi_rx),
+                midi_pins: Some(board.pins.midi),
                 pic_uart: Some(board.pic_uart),
                 pic_rx_dma: Some(board.dma.pic_rx),
                 pic_tx_dma: Some(board.dma.pic_tx),
+                pic_pins: Some(board.pins.pic),
                 gate_timer: Some(board.gate_timer),
                 encoder_poll_timer: Some(board.encoder_poll_timer),
                 sd_card: Some(board.sd_card),
                 sd_tx_dma: Some(board.dma.sd_tx),
                 sd_rx_dma: Some(board.dma.sd_rx),
+                sd_pins: Some(board.pins.sd),
                 audio_ssi: Some(board.audio_ssi),
                 ssi_tx_dma: Some(board.dma.ssi_tx),
                 ssi_rx_dma: Some(board.dma.ssi_rx),
                 scux_ffd0_dma: Some(board.dma.scux_ffd0),
                 usb0: usb0_part,
+                audio_pins: Some(board.pins.audio),
+                jack_pins: Some(board.pins.jacks),
+                cv_gate_pins: Some(board.pins.cv_gate),
+                encoder_pins: Some(board.pins.encoders),
+                trigger_pin: Some(board.pins.trigger),
+                sync_led: Some(board.pins.sync_led),
             });
 
             // App's synchronous, interrupts-masked initialisation.
@@ -722,18 +732,21 @@ pub mod __rt {
             // Always-visible fallback: strobe the SYNC LED forever. A panic before the clock tree
             // is registered can't time the strobe, and must not panic again here (that would
             // recurse until the stack overflows), so it holds the LED on instead.
-            unsafe { rza1_hal::gpio::set_as_output(6, 7) };
+            // SAFETY: interrupts are masked and this never returns, so whatever owned P6_7 never
+            // runs again.
+            let mut led = rza1_hal::gpio::Output::new(
+                unsafe { rza1_hal::peripherals::P6_7::steal() },
+                rza1_hal::gpio::Level::High,
+            );
             loop {
-                unsafe {
-                    rza1_hal::gpio::write(6, 7, true);
-                    if !rza1_hal::ostm::try_delay_ms(100) {
-                        loop {
-                            core::hint::spin_loop();
-                        }
+                led.set_high();
+                if !rza1_hal::ostm::try_delay_ms(100) {
+                    loop {
+                        core::hint::spin_loop();
                     }
-                    rza1_hal::gpio::write(6, 7, false);
-                    rza1_hal::ostm::try_delay_ms(100);
                 }
+                led.set_low();
+                rza1_hal::ostm::try_delay_ms(100);
             }
         }
 

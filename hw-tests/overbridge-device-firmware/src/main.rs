@@ -67,8 +67,8 @@ pub extern "C" fn main() -> ! {
     let board = deluge_bsp::Board::new(rza1_hal::init(deluge_bsp::system::BOARD_CONFIG));
     unsafe { allocator::SDRAM.init(0x0C00_0000 as *mut u8, 64 * 1024 * 1024) };
 
-    unsafe { rza1_hal::gpio::set_as_output(6, 7) };
-    bsp_uart::init_pic(board.pic_uart, board.dma.pic_rx, board.dma.pic_tx, 31_250);
+    let sync_led = rza1_hal::gpio::Output::new(board.pins.sync_led, rza1_hal::gpio::Level::Low);
+    bsp_uart::init_pic(board.pic_uart, board.pins.pic, board.dma.pic_rx, board.dma.pic_tx, 31_250);
 
     let info = OverbridgeInfo {
         pid: 0,
@@ -90,7 +90,7 @@ pub extern "C" fn main() -> ! {
         EXECUTOR.assume_init_mut()
     };
     executor.run(|spawner: Spawner| {
-        spawner.spawn(tasks::blink::blink_task().unwrap());
+        spawner.spawn(tasks::blink::blink_task(sync_led).unwrap());
         spawner.spawn(tasks::pic::pic_task().unwrap());
         spawner.spawn(tasks::faces::faces_task(board.usb0).unwrap());
         spawner.spawn(tasks::overbridge::stems_task().unwrap());

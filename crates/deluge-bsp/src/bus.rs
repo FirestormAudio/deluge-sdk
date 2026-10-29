@@ -28,7 +28,7 @@ use rza1_hal::Peri;
 use rza1_hal::dmac::{self, Dma};
 use rza1_hal::rspi::Rspi;
 
-use crate::board::{OledDma, SharedSpi};
+use crate::board::{OledDma, SharedSpi, SpiPins};
 
 /// RSPI0's SCK rate, shared by the CV DAC and the OLED.
 ///
@@ -36,10 +36,6 @@ use crate::board::{OledDma, SharedSpi};
 /// cycle), but the 2026 batch of these panels, the same model, glitches at 8.5 MHz and above; 4 MHz is safe.
 const RATE_HZ: u32 = 4_000_000;
 
-/// RSPI0's clock and data-out pins, `(port, pin, mux)`: P6.0 is RSPCLK0, P6.2 is MOSI0. Both
-/// devices on the bus share them; each has its own chip select.
-const SCK: (u8, u8, u8) = (6, 0, 3);
-const MOSI: (u8, u8, u8) = (6, 2, 3);
 
 rza1_hal::bind_interrupts!(struct Irqs {
     DMAINT4 => dmac::InterruptHandler<OledDma>;
@@ -149,15 +145,10 @@ pub type Rspi0Guard = MappedMutexGuard<'static, CriticalSectionRawMutex, Rspi0>;
 ///
 /// # Panics
 /// If the bus is already up (only reachable with stolen peripherals).
-pub fn init(spi: Peri<'static, SharedSpi>, oled_dma: Peri<'static, OledDma>) {
+pub fn init(spi: Peri<'static, SharedSpi>, pins: SpiPins, oled_dma: Peri<'static, OledDma>) {
     // Before touching RSPI0: reconfiguring a live bus would corrupt its transfer in flight.
     assert!(!is_initialised(), "RSPI0's bus is already up: bus::init runs once");
-    // SAFETY: RSPI0's own pins, which only this bus drives.
-    unsafe {
-        rza1_hal::gpio::set_pin_mux(SCK.0, SCK.1, SCK.2);
-        rza1_hal::gpio::set_pin_mux(MOSI.0, MOSI.1, MOSI.2);
-    }
-    let rspi = Rspi::new(spi, RATE_HZ);
+    let rspi = Rspi::new_txonly(spi, pins.sck, pins.mosi, RATE_HZ);
     let mut oled_dma = Dma::new(oled_dma, Irqs);
     // SAFETY: every OLED transfer writes SPDR's low byte, the transmit register of the RSPI0
     // this bus owns.
@@ -235,7 +226,11 @@ pub unsafe fn steal_rspi0() -> Rspi0 {
 mod tests {
     use super::*;
     use rza1_hal::mmio::test;
-    use rza1_hal::peripherals::{DMA_CH4, RSPI0};
+    use rza1_hal::peripherals::{DMA_CH4, P6_0, P6_2, RSPI0};
+
+    fn test_pins() -> SpiPins {
+        unsafe { SpiPins { sck: P6_0::steal(), mosi: P6_2::steal() } }
+    }
 
     #[test]
     fn the_bus_comes_up_in_32_bit_mode_with_the_oled_dma_aimed_at_spdr() {
@@ -246,20 +241,20 @@ mod tests {
         // Before init there is no bus: locking one must panic, not hand out an unconfigured RSPI0.
         assert!(std::panic::catch_unwind(|| try_lock_rspi0().is_some()).is_err());
 
-        init(unsafe { RSPI0::steal() }, unsafe { DMA_CH4::steal() });
+        init(unsafe { RSPI0::steal() }, test_pins(), unsafe { DMA_CH4::steal() });
         assert!(is_initialised());
         let bus = try_lock_rspi0().expect("nobody holds the bus");
         assert_eq!(bus.mode, Mode::Bits32);
         // DMA channel 4 (registers at 0xE820_0100): N0DA is SPDR's low byte, CHCFG the OLED's.
         assert_eq!(test::peek32(0xE820_0104), crate::oled::RSPI0_SPDR_LL);
         assert_eq!(test::peek32(0xE820_012C), crate::oled::OLED_CHCFG);
-        // SCK (P6_0) and MOSI (P6_2) are muxed to RSPI0: without them RSPI0 shifts the OLED's
-        // frames out to nothing. PMC6 at 0xFCFE_3418 marks both pins as peripheral functions.
-        assert_eq!(test::peek16(0xFCFE_3418) & 0b101, 0b101);
+        // SCK (P6_0) and MOSI (P6_2) are muxed to RSPI0 (alternative 3: PFCE6 at 0xFCFE_3618):
+        // without them RSPI0 shifts the OLED's frames out to nothing.
+        assert_eq!(test::peek16(0xFCFE_3618) & 0b101, 0b101);
         drop(bus);
 
         // A second bus over the same RSPI0 would silently drop the live one and its DMA channel.
-        let again = std::panic::catch_unwind(|| init(unsafe { RSPI0::steal() }, unsafe { DMA_CH4::steal() }));
+        let again = std::panic::catch_unwind(|| init(unsafe { RSPI0::steal() }, test_pins(), unsafe { DMA_CH4::steal() }));
         assert!(again.is_err(), "bus::init must refuse to replace a live bus");
     }
 }

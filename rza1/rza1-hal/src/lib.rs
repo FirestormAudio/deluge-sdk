@@ -10,6 +10,19 @@
 // them.
 mod fmt;
 
+/// Declare a pin-function trait: a pin that can carry one of `$instance`'s signals. Its impls
+/// come from the generated `gpio::rza1l_functions` table.
+macro_rules! pin_trait {
+    ($(#[$doc:meta])* $name:ident, $instance:path) => {
+        $(#[$doc])*
+        pub trait $name<T: $instance>: crate::gpio::Pin {
+            /// The alternative function that routes the signal to this pin.
+            #[doc(hidden)]
+            fn alternate(&self) -> crate::gpio::Alternate;
+        }
+    };
+}
+
 #[cfg(not(any(feature = "rza1l", feature = "rza1h")))]
 compile_error!("rza1-hal: enable exactly one chip feature: rza1l or rza1h");
 #[cfg(all(feature = "rza1l", feature = "rza1h"))]
@@ -63,6 +76,22 @@ embassy_hal_internal::peripherals! {
     DMA_CH8, DMA_CH9, DMA_CH10, DMA_CH11, DMA_CH12, DMA_CH13, DMA_CH14, DMA_CH15,
     MTU2_0, MTU2_1, MTU2_2, MTU2_3, MTU2_4,
     SPIBSC0, SCUX, ADC,
+    // The pins (Table 41.8); P8 and P9 exist only on the 208- and 233-pin packages.
+    P0_0, P0_1, P0_2, P0_3, P1_0, P1_1, P1_2, P1_3,
+    P1_4, P1_5, P1_6, P1_7, P1_8, P1_9, P1_10, P1_11,
+    P1_12, P1_13, P1_14, P1_15, P2_0, P2_1, P2_2, P2_3,
+    P2_4, P2_5, P2_6, P2_7, P2_8, P2_9, P3_0, P3_1,
+    P3_2, P3_3, P3_4, P3_5, P3_6, P3_7, P3_8, P3_9,
+    P3_10, P3_11, P3_12, P3_13, P3_14, P3_15, P4_0, P4_1,
+    P4_2, P4_3, P4_4, P4_5, P4_6, P4_7, P5_0, P5_1,
+    P5_2, P5_3, P5_4, P5_5, P5_6, P5_7, P5_8, P5_9,
+    P5_10, P5_11, P5_12, P5_13, P5_14, P5_15, P6_0, P6_1,
+    P6_2, P6_3, P6_4, P6_5, P6_6, P6_7, P6_8, P6_9,
+    P6_10, P6_11, P6_12, P6_13, P6_14, P6_15, P7_0, P7_1,
+    P7_2, P7_3, P7_4, P7_5, P7_6, P7_7, P7_8, P7_9,
+    P7_10, P7_11, P8_0, P8_1, P8_2, P8_3, P8_4, P8_5,
+    P8_6, P8_7, P8_8, P8_9, P8_10, P8_11, P8_12, P8_13,
+    P8_14, P8_15, P9_0, P9_1, P9_2, P9_3, P9_4, P9_5,
 }
 
 /// Bring up the chip and hand out its peripherals: record the clock tree, program the CPG,

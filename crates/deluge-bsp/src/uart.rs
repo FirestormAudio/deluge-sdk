@@ -18,7 +18,7 @@ use rza1_hal::Peri;
 use rza1_hal::dmac::{self, Dma};
 use rza1_hal::uart::{self, Uart, UartRx, UartTx};
 
-use crate::board::{MidiRxDma, MidiScif, PicRxDma, PicScif, PicTxDma};
+use crate::board::{MidiPins, MidiRxDma, MidiScif, PicPins, PicRxDma, PicScif, PicTxDma};
 
 /// SCIF channel used for MIDI DIN (31250 bps).
 pub const MIDI_CH: usize = 0;
@@ -49,16 +49,15 @@ static PIC_TX: OnceLock<UartTx<'static>> = OnceLock::new();
 
 /// Bring up the MIDI DIN UART (SCIF0): receive by DMA, transmit through the FIFO and TXI
 /// (MIDI messages are short).
-pub fn init_midi(scif: Peri<'static, MidiScif>, rx_dma: Peri<'static, MidiRxDma>, baud: u32) {
+pub fn init_midi(
+    scif: Peri<'static, MidiScif>,
+    pins: MidiPins,
+    rx_dma: Peri<'static, MidiRxDma>,
+    baud: u32,
+) {
     log::debug!("bsp uart: MIDI SCIF{} @ {} bps", MIDI_CH, baud);
-    // SAFETY: TxD0 and RxD0, which only SCIF0 drives. Muxed first, so the receive ring never
-    // samples an unconnected pin.
-    unsafe {
-        rza1_hal::gpio::set_pin_mux(6, 15, 5); // TxD0
-        rza1_hal::gpio::set_pin_mux(6, 14, 5); // RxD0
-    }
     let rx_dma = Dma::new(rx_dma, MidiIrqs);
-    let (rx, tx) = Uart::new(scif, rx_dma, None, MidiIrqs, baud).split();
+    let (rx, tx) = Uart::new(scif, pins.tx, pins.rx, rx_dma, None, MidiIrqs, baud).split();
     install(&MIDI_RX, &MIDI_TX, rx, tx);
 }
 
@@ -71,19 +70,15 @@ pub fn init_midi(scif: Peri<'static, MidiScif>, rx_dma: Peri<'static, MidiRxDma>
 /// triggers DMA)`. So RX must go through the DMAC.
 pub fn init_pic(
     scif: Peri<'static, PicScif>,
+    pins: PicPins,
     rx_dma: Peri<'static, PicRxDma>,
     tx_dma: Peri<'static, PicTxDma>,
     baud: u32,
 ) {
     log::debug!("bsp uart: PIC SCIF{} @ {} bps", PIC_CH, baud);
-    // SAFETY: TxD1 and RxD1, which only SCIF1 drives; muxed first, as in `init_midi`.
-    unsafe {
-        rza1_hal::gpio::set_pin_mux(3, 15, 5); // TxD1
-        rza1_hal::gpio::set_pin_mux(1, 9, 3); // RxD1
-    }
     let rx_dma = Dma::new(rx_dma, PicIrqs);
     let tx_dma = Dma::new(tx_dma, PicIrqs);
-    let (rx, tx) = Uart::new(scif, rx_dma, Some(tx_dma), PicIrqs, baud).split();
+    let (rx, tx) = Uart::new(scif, pins.tx, pins.rx, rx_dma, Some(tx_dma), PicIrqs, baud).split();
     install(&PIC_RX, &PIC_TX, rx, tx);
 }
 

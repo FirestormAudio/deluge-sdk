@@ -3,13 +3,18 @@
 //! The Deluge senses five rear/side audio jacks through mechanical switch
 //! contacts wired to GPIO inputs (a present jack reads high), and gates its
 //! on-board speaker amplifier through one GPIO output.  These pins are plain
-//! GPIO level reads — no ADC, no PIC involvement — so this module is a thin map
-//! over [`rza1_hal::gpio`].
+//! GPIO level reads — no ADC, no PIC involvement — so this module holds the board's
+//! [`JackPins`] as owned `rza1_hal::gpio` pins.
 //!
 //! The speaker-enable *policy* (when to mute the amp) is product-specific and
 //! intentionally left to the caller; see [`set_speaker_enable`].
 
-use rza1_hal::gpio;
+use core::cell::RefCell;
+
+use critical_section::Mutex;
+use rza1_hal::gpio::{Input, Level, Output};
+
+use crate::board::JackPins;
 
 /// The audio jacks whose insertion can be sensed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,76 +31,57 @@ pub enum Jack {
     LineOutR,
 }
 
-// ── Pin map (port, pin) ────────────────────────────────────────────────────────
-
-const HEADPHONE: (u8, u8) = (6, 5);
-const LINE_IN: (u8, u8) = (6, 6);
-const MIC: (u8, u8) = (7, 9);
-const LINE_OUT_L: (u8, u8) = (6, 3);
-const LINE_OUT_R: (u8, u8) = (6, 4);
-
-/// Speaker-amplifier enable output (high = amplifier on).
-const SPEAKER_ENABLE: (u8, u8) = (4, 1);
-
-const fn pin_of(jack: Jack) -> (u8, u8) {
-    match jack {
-        Jack::Headphone => HEADPHONE,
-        Jack::LineIn => LINE_IN,
-        Jack::Mic => MIC,
-        Jack::LineOutL => LINE_OUT_L,
-        Jack::LineOutR => LINE_OUT_R,
-    }
+/// The jack detects and the speaker enable, once [`init`] has run.
+struct Lines {
+    headphone: Input<'static>,
+    line_in: Input<'static>,
+    mic: Input<'static>,
+    line_out_l: Input<'static>,
+    line_out_r: Input<'static>,
+    speaker_enable: Output<'static>,
 }
 
-/// Configure the five jack-detect pins as inputs and the speaker-enable pin as
-/// an output, leaving the amplifier disabled.
-///
-/// # Safety
-/// Writes to GPIO mode/direction registers; call once during bring-up.
-pub unsafe fn init() {
-    unsafe {
-        gpio::set_as_input(HEADPHONE.0, HEADPHONE.1);
-        gpio::set_as_input(LINE_IN.0, LINE_IN.1);
-        gpio::set_as_input(MIC.0, MIC.1);
-        gpio::set_as_input(LINE_OUT_L.0, LINE_OUT_L.1);
-        gpio::set_as_input(LINE_OUT_R.0, LINE_OUT_R.1);
-        gpio::set_as_output(SPEAKER_ENABLE.0, SPEAKER_ENABLE.1);
-        gpio::write(SPEAKER_ENABLE.0, SPEAKER_ENABLE.1, false);
-    }
+static LINES: Mutex<RefCell<Option<Lines>>> = Mutex::new(RefCell::new(None));
+
+/// Make the five jack-detect pins inputs and the speaker-enable pin an output, leaving the
+/// amplifier disabled. Runs once: the pins are owned, so only `Board`'s one set can reach it.
+pub fn init(pins: JackPins) {
+    let lines = Lines {
+        headphone: Input::new(pins.headphone),
+        line_in: Input::new(pins.line_in),
+        mic: Input::new(pins.mic),
+        line_out_l: Input::new(pins.line_out_l),
+        line_out_r: Input::new(pins.line_out_r),
+        speaker_enable: Output::new(pins.speaker_enable, Level::Low),
+    };
+    critical_section::with(|cs| LINES.borrow_ref_mut(cs).replace(lines));
 }
 
-/// Returns `true` if `jack` is currently inserted.
-///
-/// [`init`] must have run first (the pin is configured as an input there).
+/// Returns `true` if `jack` is currently inserted; `false` before [`init`].
 pub fn is_inserted(jack: Jack) -> bool {
-    let (port, pin) = pin_of(jack);
-    // SAFETY: reads the read-only Port Pin Read register for a pin `init`
-    // configured as an input.
-    unsafe { gpio::read_pin(port, pin) }
+    critical_section::with(|cs| {
+        LINES.borrow_ref(cs).as_ref().is_some_and(|l| {
+            match jack {
+                Jack::Headphone => &l.headphone,
+                Jack::LineIn => &l.line_in,
+                Jack::Mic => &l.mic,
+                Jack::LineOutL => &l.line_out_l,
+                Jack::LineOutR => &l.line_out_r,
+            }
+            .is_high()
+        })
+    })
 }
 
-/// Drive the speaker-amplifier enable output (`true` = amplifier on).
+/// Drive the speaker-amplifier enable output (`true` = amplifier on). Does nothing before
+/// [`init`].
 ///
 /// The caller owns the muting policy; the standard one is "enable only when no
 /// headphone or line-out is inserted".
-///
-/// # Safety
-/// Writes to a GPIO output [`init`] configured.
-pub unsafe fn set_speaker_enable(on: bool) {
-    unsafe { gpio::write(SPEAKER_ENABLE.0, SPEAKER_ENABLE.1, on) };
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pin_map_matches_hardware() {
-        assert_eq!(pin_of(Jack::Headphone), (6, 5));
-        assert_eq!(pin_of(Jack::LineIn), (6, 6));
-        assert_eq!(pin_of(Jack::Mic), (7, 9));
-        assert_eq!(pin_of(Jack::LineOutL), (6, 3));
-        assert_eq!(pin_of(Jack::LineOutR), (6, 4));
-        assert_eq!(SPEAKER_ENABLE, (4, 1));
-    }
+pub fn set_speaker_enable(on: bool) {
+    critical_section::with(|cs| {
+        if let Some(l) = LINES.borrow_ref_mut(cs).as_mut() {
+            l.speaker_enable.set_level(on.into());
+        }
+    });
 }

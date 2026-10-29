@@ -396,7 +396,7 @@ There's also `try_lock_rspi0()` (non-blocking, startup use) and
 `unsafe steal_rspi0()` — the latter is reserved for the panic handler, which needs
 the bus while the world is stopped.
 
-The bus exists once `bus::init(board.shared_spi, board.dma.oled)` has run; the SDK runs it the
+The bus exists once `bus::init(board.shared_spi, board.pins.spi, board.dma.oled)` has run; the SDK runs it the
 first time an app uses the OLED or CV. Before that, locking it panics.
 
 ### The PIC co-processor
@@ -413,8 +413,13 @@ The runtime keeps the board's unclaimed peripherals in `deluge::parts` (device-o
 drives one through the BSP itself takes it in `setup`:
 
 ```rust
-let poll_timer = deluge::parts::with(|p| p.encoder_poll_timer.take()).expect("MTU2 channel 3 is free");
-unsafe { deluge_bsp::encoder::irq_init(poll_timer) };
+let (poll_timer, pins) = deluge::parts::with(|p| (p.encoder_poll_timer.take(), p.encoder_pins.take()));
+unsafe {
+    deluge_bsp::encoder::irq_init(
+        poll_timer.expect("MTU2 channel 3 is free"),
+        pins.expect("the encoders' pins are free"),
+    )
+};
 ```
 
 A capability that needs a peripheral the app took panics, naming it.

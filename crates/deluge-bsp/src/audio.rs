@@ -25,19 +25,16 @@ use rza1_hal::Peri;
 #[cfg(feature = "audio-irq")]
 use rza1_hal::dmac::BlockDma;
 use rza1_hal::dmac::Dma;
-use rza1_hal::{gpio, ostm, ssi};
+use rza1_hal::gpio::{Alternate, Flex, Level, Output};
+use rza1_hal::{ostm, ssi};
 
-use crate::board::{AudioSsi, ScuxFfd0Dma, SsiRxDma, SsiTxDma};
+use crate::board::{AudioPins, AudioSsi, ScuxFfd0Dma, SsiRxDma, SsiTxDma};
 use crate::scux_dvu_path;
 
 #[cfg(feature = "audio-irq")]
 rza1_hal::bind_interrupts!(struct BlockIrqs {
     DMAINT7 => rza1_hal::dmac::BlockInterruptHandler<SsiRxDma>;
 });
-
-/// Port and pin of the codec hardware-enable line.
-const CODEC_PORT: u8 = 6;
-const CODEC_PIN: u8 = 12;
 
 /// Delay required between SSI clock start and codec enable, in milliseconds.
 const CODEC_POWER_DELAY_MS: u32 = 5;
@@ -53,10 +50,11 @@ const CODEC_POWER_DELAY_MS: u32 = 5;
 /// **Call after:** `rza1_hal::init` (which starts the time driver), before any audio task starts.
 pub fn init_with_scux(
     ssi: Peri<'static, AudioSsi>,
+    pins: AudioPins,
     rx: Peri<'static, SsiRxDma>,
     ffd0: Peri<'static, ScuxFfd0Dma>,
 ) {
-    bring_up_scux(|| scux_dvu_path::init(ssi, rx, ffd0));
+    bring_up_scux(pins, || scux_dvu_path::init(ssi, rx, ffd0));
 }
 
 /// As [`init_with_scux`], with the SCUX's 2SRC converting `engine_hz` to the codec's 44.1 kHz:
@@ -66,34 +64,35 @@ pub fn init_with_scux(
 /// **Call after:** `rza1_hal::init` (which starts the time driver), before any audio task starts.
 pub fn init_with_scux_src(
     ssi: Peri<'static, AudioSsi>,
+    pins: AudioPins,
     rx: Peri<'static, SsiRxDma>,
     ffd0: Peri<'static, ScuxFfd0Dma>,
     engine_hz: u32,
 ) {
-    bring_up_scux(|| scux_dvu_path::init_with_src(ssi, rx, ffd0, engine_hz));
+    bring_up_scux(pins, || scux_dvu_path::init_with_src(ssi, rx, ffd0, engine_hz));
+}
+
+/// Put SSI0's pins and AUDIO_XOUT on their functions, and hold the codec off: the codec-power
+/// output, low.
+///
+/// Each pin keeps PIPC = 1 (the function drives its direction), as the pin-mux always set it,
+/// SSITxD0 included, although HW manual Table 41.7 asks for PIPC = 0 on SSITxD0; the SSI driver
+/// will apply Table 41.7 when it takes its pins. The pins are muxed in port order, as before.
+fn mux_ssi(pins: AudioPins) -> Output<'static> {
+    Flex::new(pins.xout).set_as_alternate(Alternate::Alt6); // AUDIO_XOUT (P7_11), codec master clock
+    Flex::new(pins.sck).set_as_alternate(Alternate::Alt3); // SSISCK0 (P6_8), I²S BCLK
+    Flex::new(pins.ws).set_as_alternate(Alternate::Alt3); // SSIWS0 (P6_9), I²S LRCK
+    Flex::new(pins.tx).set_as_alternate(Alternate::Alt3); // SSITxD0 (P6_10), I²S TX data
+    Flex::new(pins.rx).set_as_alternate(Alternate::Alt3); // SSIRxD0 (P6_11), I²S RX data
+    // CODEC_POWER: low while the SSI clocks stabilise.
+    Output::new(pins.codec_power, Level::Low)
 }
 
 /// Pin-mux SSI0, hold the codec off, start the SCUX path `path`, wait the codec's power-on
 /// delay, then power the codec.
-fn bring_up_scux(path: impl FnOnce()) {
-    log::debug!("audio: pin-mux SSI0 (P7.11, P6.8-11)");
-    // SAFETY: SSI0's pins and the codec-power GPIO, which only this module drives.
-    unsafe {
-        // ── Pin-mux: SSI peripheral signals ──────────────────────────────────────
-        //
-        // set_pin_mux sets PMC=1 (peripheral mode), the three mux-select bits
-        // (PFC/PFCE/PFCAE), and PIPC=1 so the peripheral controls the buffer
-        // direction automatically.
-        gpio::set_pin_mux(7, 11, 6); // AUDIO_XOUT — master clock to codec
-        gpio::set_pin_mux(6, 8, 3); // SSITXD0    — I²S TX data
-        gpio::set_pin_mux(6, 9, 3); // SSISCK0    — I²S BCLK
-        gpio::set_pin_mux(6, 10, 3); // SSIWS0     — I²S LRCK
-        gpio::set_pin_mux(6, 11, 3); // SSIRXD0    — I²S RX data (input)
-
-        // ── CODEC_POWER GPIO: hold low while SSI clocks stabilise ────────────────
-        gpio::set_as_output(CODEC_PORT, CODEC_PIN);
-        gpio::write(CODEC_PORT, CODEC_PIN, false);
-    }
+fn bring_up_scux(pins: AudioPins, path: impl FnOnce()) {
+    log::debug!("audio: pin-mux SSI0 (P7_11, P6_8-11)");
+    let mut codec_power = mux_ssi(pins);
 
     // ── SCUX path: SSI RX DMA + SCUX → SSIF0 TX ─────────────────────────────
     path();
@@ -103,8 +102,7 @@ fn bring_up_scux(path: impl FnOnce()) {
     ostm::delay_ms(CODEC_POWER_DELAY_MS);
     log::debug!("audio: codec power-on delay done");
     // ── Assert CODEC_POWER — codec begins normal operation ───────────────────
-    // SAFETY: the codec-power GPIO.
-    unsafe { gpio::write(CODEC_PORT, CODEC_PIN, true) };
+    codec_power.set_high();
     log::debug!("audio: CODEC_POWER asserted, codec active");
 }
 
@@ -119,20 +117,12 @@ fn bring_up_scux(path: impl FnOnce()) {
 /// **Call after:** `rza1_hal::init` (which starts the time driver), before any audio task starts.
 pub fn init(
     ssi: Peri<'static, AudioSsi>,
+    pins: AudioPins,
     tx: Peri<'static, SsiTxDma>,
     rx: Peri<'static, SsiRxDma>,
 ) {
     log::debug!("audio: pin-mux SSI0 (direct, no SCUX)");
-    // SAFETY: SSI0's pins and the codec-power GPIO, which only this module drives.
-    unsafe {
-        gpio::set_pin_mux(7, 11, 6); // AUDIO_XOUT
-        gpio::set_pin_mux(6, 8, 3); // SSITXD0
-        gpio::set_pin_mux(6, 9, 3); // SSISCK0
-        gpio::set_pin_mux(6, 10, 3); // SSIWS0
-        gpio::set_pin_mux(6, 11, 3); // SSIRXD0
-        gpio::set_as_output(CODEC_PORT, CODEC_PIN);
-        gpio::write(CODEC_PORT, CODEC_PIN, false);
-    }
+    let mut codec_power = mux_ssi(pins);
     let tx = Dma::new_without_interrupt(tx);
     #[cfg(not(feature = "audio-irq"))]
     ssi::init(
@@ -145,7 +135,6 @@ pub fn init(
     #[cfg(feature = "audio-irq")]
     ssi::init_block_irq(ssi, tx, BlockDma::new(rx, BlockIrqs), crate::system::SSICR);
     ostm::delay_ms(CODEC_POWER_DELAY_MS);
-    // SAFETY: the codec-power GPIO.
-    unsafe { gpio::write(CODEC_PORT, CODEC_PIN, true) };
+    codec_power.set_high();
     log::debug!("audio: CODEC_POWER asserted (direct SSI path)");
 }

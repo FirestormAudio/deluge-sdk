@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `rza1-hal` GPIO is owned, embassy-style (phase 2 of the pre-0.1 API pass):
+  - Every RZ/A1L pin is a `Peripherals` singleton (`P0_0` … `P9_5`; P8/P9 only on the 208/233-pin
+    packages). `gpio::{Input, Output, Flex}` take one; they implement the embedded-hal 1.0
+    digital traits, and dropping one changes no register.
+  - An output's level goes through PSRn and toggles through PNOTn; mode, direction and the rest
+    are read-modify-written in a critical section (PMCSR1/PMSR1 have no bits for P1_8–P1_15), so
+    a write never undoes another pin's. An output's level is written before it becomes an output.
+    Only `OutputCapable` pins can be an `Output` (not P0_x or P1_8–P1_15).
+  - Pin-function traits (`uart::{TxPin, RxPin}`, `rspi::{SckPin, MosiPin, MisoPin, SslPin}`,
+    `sdhi::{ClkPin, CmdPin, D0Pin..D3Pin, CdPin, WpPin}`) are generated from the manual's port
+    tables by `rza1/tools/gen-pins.py` (`--check` in `rza1/tools/test.sh`). `Uart::new`,
+    `Rspi::new_txonly`/`Rspi::new` and `Sdhi::new` take their pins and set the functions
+    themselves. `Flex::set_as_alternate` covers functions without a driver yet.
+  - `gpio::read_port(Port)` is safe (reading changes nothing). The raw `set_as_output`,
+    `set_as_input`, `enable_input_buffer`, `read_pin`, `write` and `set_pin_mux`, and the
+    const-generic `Pin<PORT, BIT, MODE>`, are gone.
+- `deluge-bsp`: `Board::pins` (`BoardPins`) hands the pins out by role; `uart::init_*`,
+  `bus::init`, `sd::init_hw`, `audio::init*`, `jacks::init`, `cv_gate::init`,
+  `encoder::irq_init` and `trigger_clock::irq_init` take them. `cv_gate::init`,
+  `cv_gate::gate_set`, `jacks::init` and `jacks::set_speaker_enable` are safe now. The facade's
+  `deluge::parts` carries the pin groups.
 - **`rza1l-hal` is now `rza1-hal`**, with chip features `rza1l` and `rza1h`: enable exactly one.
   `rza1h` compiles and adds RSPI3/RSPI4 and the 587-entry interrupt table; it is not
   hardware-validated, and SDHI is `rza1l`-only (the A1H PAC has no SDHI block).

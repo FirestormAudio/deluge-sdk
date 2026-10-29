@@ -113,15 +113,15 @@ pub extern "C" fn main() -> ! {
     // DMA-RX ring that `pic::read_byte` reads from.  Must run before the
     // executor starts (global IRQs still masked).  Without it the OLED
     // chip-select echo handshake can never be received and `oled::init` hangs.
-    deluge_bsp::uart::init_pic(board.pic_uart, board.dma.pic_rx, board.dma.pic_tx, 31_250);
+    deluge_bsp::uart::init_pic(board.pic_uart, board.pins.pic, board.dma.pic_rx, board.dma.pic_tx, 31_250);
     // The SD slot's controller, once; `sd::init` identifies the card when it is needed.
-    deluge_bsp::sd::init_hw(board.sd_card, board.dma.sd_tx, board.dma.sd_rx);
+    deluge_bsp::sd::init_hw(board.sd_card, board.pins.sd, board.dma.sd_tx, board.dma.sd_rx);
 
     // The bus brings RSPI0 up; cv_gate::init runs the DAC's linearity sequence on it.
-    deluge_bsp::bus::init(board.shared_spi, board.dma.oled);
-    unsafe { deluge_bsp::cv_gate::init() };
+    deluge_bsp::bus::init(board.shared_spi, board.pins.spi, board.dma.oled);
+    deluge_bsp::cv_gate::init(board.pins.cv_gate);
     // Encoder GPIO interrupts and the MTU2 pin poll, while interrupts are still masked.
-    unsafe { deluge_bsp::encoder::irq_init(board.encoder_poll_timer) };
+    unsafe { deluge_bsp::encoder::irq_init(board.encoder_poll_timer, board.pins.encoders) };
 
     #[allow(static_mut_refs)]
     let executor = unsafe {

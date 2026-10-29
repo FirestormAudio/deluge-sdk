@@ -111,19 +111,19 @@ pub extern "C" fn main() -> ! {
     info!("SDRAM heap: initialised (64 MB)");
 
     info!("GPIO: configuring heartbeat LED...");
-    unsafe { rza1_hal::gpio::set_as_output(6, 7) };
+    let sync_led = rza1_hal::gpio::Output::new(board.pins.sync_led, rza1_hal::gpio::Level::Low);
 
     info!("UART: initialising PIC...");
-    bsp_uart::init_pic(board.pic_uart, board.dma.pic_rx, board.dma.pic_tx, 31_250);
+    bsp_uart::init_pic(board.pic_uart, board.pins.pic, board.dma.pic_rx, board.dma.pic_tx, 31_250);
     // The SD slot's controller, once; `sd::init` identifies the card when it is needed.
-    deluge_bsp::sd::init_hw(board.sd_card, board.dma.sd_tx, board.dma.sd_rx);
+    deluge_bsp::sd::init_hw(board.sd_card, board.pins.sd, board.dma.sd_tx, board.dma.sd_rx);
     info!("UART: SCIF1 @ 31 250 baud");
 
     // RSPI0 is shared between OLED (8-bit) and CV DAC (32-bit). The bus brings it up;
     // cv_gate::init() runs the DAC's linearity sequence; oled::init() then switches
     // it to 8-bit mode for the panel.
-    deluge_bsp::bus::init(board.shared_spi, board.dma.oled);
-    unsafe { cv_gate::init() };
+    deluge_bsp::bus::init(board.shared_spi, board.pins.spi, board.dma.oled);
+    cv_gate::init(board.pins.cv_gate);
     info!("RSPI0: initialised via cv_gate::init");
 
     // ── USB0 device mode ──────────────────────────────────────────────────
@@ -171,7 +171,7 @@ pub extern "C" fn main() -> ! {
         EXECUTOR.assume_init_mut()
     };
     executor.run(|spawner: Spawner| {
-        spawner.spawn(tasks::blink::blink_task().unwrap());
+        spawner.spawn(tasks::blink::blink_task(sync_led).unwrap());
         spawner.spawn(tasks::usb::usb_task(usb_device).unwrap());
         spawner.spawn(tasks::msc::msc_task(ep_in, ep_out).unwrap());
         spawner.spawn(tasks::pic::pic_task().unwrap());

@@ -25,16 +25,22 @@ pub struct Parts {
     pub shared_spi: Option<Peri<'static, SharedSpi>>,
     /// The OLED's DMA channel, for `deluge_bsp::bus::init`.
     pub oled_dma: Option<Peri<'static, OledDma>>,
+    /// RSPI0's pins, for `deluge_bsp::bus::init`.
+    pub spi_pins: Option<deluge_bsp::board::SpiPins>,
     /// SCIF0, for `deluge_bsp::uart::init_midi`.
     pub midi_uart: Option<Peri<'static, MidiScif>>,
     /// MIDI's receive DMA channel, for `deluge_bsp::uart::init_midi`.
     pub midi_rx_dma: Option<Peri<'static, MidiRxDma>>,
+    /// SCIF0's pins, for `deluge_bsp::uart::init_midi`.
+    pub midi_pins: Option<deluge_bsp::board::MidiPins>,
     /// SCIF1, for `deluge_bsp::uart::init_pic`.
     pub pic_uart: Option<Peri<'static, PicScif>>,
     /// The PIC link's receive DMA channel, for `deluge_bsp::uart::init_pic`.
     pub pic_rx_dma: Option<Peri<'static, PicRxDma>>,
     /// The PIC link's transmit DMA channel, for `deluge_bsp::uart::init_pic`.
     pub pic_tx_dma: Option<Peri<'static, PicTxDma>>,
+    /// SCIF1's pins, for `deluge_bsp::uart::init_pic`.
+    pub pic_pins: Option<deluge_bsp::board::PicPins>,
     /// MTU2 channel 2, for `deluge_bsp::midi_gate::setup`.
     pub gate_timer: Option<Peri<'static, GateTimer>>,
     /// MTU2 channel 3, for `deluge_bsp::encoder::irq_init`.
@@ -45,6 +51,8 @@ pub struct Parts {
     pub sd_tx_dma: Option<Peri<'static, SdTxDma>>,
     /// The SD card's receive DMA channel, for `deluge_bsp::sd::init_hw`.
     pub sd_rx_dma: Option<Peri<'static, SdRxDma>>,
+    /// The SD slot's pins, for `deluge_bsp::sd::init_hw`.
+    pub sd_pins: Option<deluge_bsp::board::SdPins>,
     /// SSIF0, the codec's I²S port, for `deluge_bsp::audio::{init, init_with_scux}`.
     pub audio_ssi: Option<Peri<'static, AudioSsi>>,
     /// SSI's transmit DMA channel, for `deluge_bsp::audio::init`.
@@ -55,6 +63,18 @@ pub struct Parts {
     pub scux_ffd0_dma: Option<Peri<'static, ScuxFfd0Dma>>,
     /// USB0, when neither `usb-log` nor `usb-serial` claims it, for `rza1_hal::usb::init_*_mode`.
     pub usb0: Option<Peri<'static, USB0>>,
+    /// The codec's pins, for `deluge_bsp::audio::{init, init_with_scux, init_with_scux_src}`.
+    pub audio_pins: Option<deluge_bsp::board::AudioPins>,
+    /// The jack detects and the speaker enable, for `deluge_bsp::jacks::init`.
+    pub jack_pins: Option<deluge_bsp::board::JackPins>,
+    /// The CV DAC's chip select and the gates, for `deluge_bsp::cv_gate::init`.
+    pub cv_gate_pins: Option<deluge_bsp::board::CvGatePins>,
+    /// The encoders' pins, for `deluge_bsp::encoder::irq_init`.
+    pub encoder_pins: Option<deluge_bsp::board::EncoderPins>,
+    /// The trigger-clock input (P1_14), for `deluge_bsp::trigger_clock::irq_init`.
+    pub trigger_pin: Option<Peri<'static, rza1_hal::peripherals::P1_14>>,
+    /// The SYNC LED (P6_7), for [`Deluge::sync_led`](crate::Deluge::sync_led).
+    pub sync_led: Option<Peri<'static, rza1_hal::peripherals::P6_7>>,
 }
 
 static PARTS: Mutex<CriticalSectionRawMutex, RefCell<Option<Parts>>> =

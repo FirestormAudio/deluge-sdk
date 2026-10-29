@@ -69,15 +69,16 @@ rza1_hal::bind_interrupts!(struct TriggerIrqs {
 ///
 /// # Safety
 /// Writes to GPIO/INTC/GIC MMIO.
-pub unsafe fn irq_init() {
+pub unsafe fn irq_init(pin: rza1_hal::Peri<'static, rza1_hal::peripherals::P1_14>) {
     unsafe {
         // Route P1_14 → IRQ6 via PFC alt-function 2.
-        rza1_hal::gpio::set_pin_mux(TRIG_PORT, TRIG_PIN, 2);
-        // `set_pin_mux` doesn't enable PIBC, without which the pin's level
+        let mut pin = rza1_hal::gpio::Flex::new(pin);
+        pin.set_as_alternate(rza1_hal::gpio::Alternate::Alt2);
+        // An alternative function doesn't enable PIBC, without which the pin's level
         // isn't visible in PPR. The IRQ itself doesn't need it (IRQn taps the
         // pad before the PIBC gate); enabled so the level stays readable, as
         // in the encoder setup.
-        rza1_hal::gpio::enable_input_buffer(TRIG_PORT, TRIG_PIN);
+        pin.enable_input_buffer();
 
         // Falling edge: the on-board transistor inverts the external clock,
         // so the external rising edge appears as a falling edge on P1_14.

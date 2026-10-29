@@ -140,7 +140,7 @@ fn enc_irq_handler(index: usize) {
     // Clear the pending edge BEFORE reading the pins: an A edge after the read then raises the
     // interrupt again, rather than being cleared away unread.
     unsafe { rza1_hal::gic::clear_irq_pending(w.irq_num) };
-    let pins = unsafe { rza1_hal::gpio::read_port(1) };
+    let pins = rza1_hal::gpio::read_port(rza1_hal::gpio::Port::P1);
     let edges = critical_section::with(|cs| {
         DECODERS.borrow_ref_mut(cs)[index].observe_a_edge(
             pin(pins, w.irq_pin),
@@ -190,7 +190,7 @@ rza1_hal::bind_interrupts!(struct PollIrqs {
 #[cfg(target_os = "none")]
 fn poll() {
     critical_section::with(|cs| {
-        let pins = unsafe { rza1_hal::gpio::read_port(1) };
+        let pins = rza1_hal::gpio::read_port(rza1_hal::gpio::Port::P1);
         let mut decoders = DECODERS.borrow_ref_mut(cs);
         for (index, w) in WIRING.iter().enumerate() {
             let edges =
@@ -239,16 +239,27 @@ rza1_hal::bind_interrupts!(struct EncoderIrqs {
 /// # Safety
 /// Must be called before `cortex_ar::interrupt::enable()`.
 #[cfg(target_os = "none")]
-pub unsafe fn irq_init(poll_timer: rza1_hal::Peri<'static, crate::board::EncoderPollTimer>) {
+pub unsafe fn irq_init(
+    poll_timer: rza1_hal::Peri<'static, crate::board::EncoderPollTimer>,
+    pins: crate::board::EncoderPins,
+) {
+    use rza1_hal::gpio::{Alternate, Flex, Input, Pin, Port};
     unsafe {
-        for w in &WIRING {
-            rza1_hal::gpio::set_pin_mux(1, w.irq_pin, 2);
-            rza1_hal::gpio::enable_input_buffer(1, w.irq_pin);
-            rza1_hal::gpio::set_as_input(1, w.comp_pin);
+        let crate::board::EncoderPins { irq, comp } = pins;
+        for ((w, irq), comp) in WIRING.iter().zip(irq).zip(comp) {
+            debug_assert_eq!(
+                (irq.port(), irq.bit(), comp.port(), comp.bit()),
+                (Port::P1, w.irq_pin, Port::P1, w.comp_pin)
+            );
+            // IRQn on alternative 2, its input buffer on so the ISR can read the level too.
+            let mut irq = Flex::new(irq);
+            irq.set_as_alternate(Alternate::Alt2);
+            irq.enable_input_buffer();
+            Input::new(comp);
         }
 
         // Start every decoder at the pins' current levels, so bring-up isn't read as a turn.
-        let pins = rza1_hal::gpio::read_port(1);
+        let pins = rza1_hal::gpio::read_port(rza1_hal::gpio::Port::P1);
         critical_section::with(|cs| {
             let mut decoders = DECODERS.borrow_ref_mut(cs);
             for (decoder, w) in decoders.iter_mut().zip(&WIRING) {
@@ -305,7 +316,11 @@ pub unsafe fn irq_init(poll_timer: rza1_hal::Peri<'static, crate::board::Encoder
 /// No-op; trivially safe. Signature matches the device variant so callers
 /// don't need to branch on target.
 #[cfg(not(target_os = "none"))]
-pub unsafe fn irq_init(_poll_timer: rza1_hal::Peri<'static, crate::board::EncoderPollTimer>) {}
+pub unsafe fn irq_init(
+    _poll_timer: rza1_hal::Peri<'static, crate::board::EncoderPollTimer>,
+    _pins: crate::board::EncoderPins,
+) {
+}
 
 #[cfg(all(test, not(target_os = "none")))]
 mod host_tests {
@@ -315,7 +330,8 @@ mod host_tests {
     #[test]
     fn host_irq_init_is_a_safe_noop_and_encoders_are_quiescent() {
         // Must not touch hardware / must not panic on host.
-        unsafe { irq_init(rza1_hal::peripherals::MTU2_3::steal()) };
+        let (board, _) = crate::board::Board::split(unsafe { rza1_hal::Peripherals::steal() });
+        unsafe { irq_init(board.encoder_poll_timer, board.pins.encoders) };
         assert_eq!(NUM_ENCODERS, 6);
         // Deltas start (and stay) zero with no ISRs firing.
         for d in &ENCODER_DELTAS {
