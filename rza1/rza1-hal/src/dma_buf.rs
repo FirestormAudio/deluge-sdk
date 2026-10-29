@@ -87,9 +87,13 @@ impl<'a> UncachedMut<'a> {
         UncachedMut(self.0)
     }
 
-    /// Its first `len` bytes (all of it if `len` is larger).
+    /// Its first `len` bytes.
+    ///
+    /// # Panics
+    /// If `len` is larger than the buffer: a transfer sized for more than the buffer holds would
+    /// wait for bytes that never arrive.
     pub fn prefix(&mut self, len: usize) -> UncachedMut<'_> {
-        let len = len.min(self.0.len());
+        assert!(len <= self.0.len(), "prefix of {} bytes from a {}-byte buffer", len, self.0.len());
         UncachedMut(&mut self.0[..len])
     }
 
@@ -112,6 +116,14 @@ mod tests {
     fn an_empty_buffer_is_refused() {
         assert_eq!(UncachedMut::new(&mut []).err(), Some(NotUncached));
         assert_eq!(Uncached::new(&[]).err(), Some(NotUncached));
+    }
+
+    #[test]
+    #[should_panic(expected = "prefix")]
+    fn a_prefix_longer_than_the_buffer_panics() {
+        let mut storage = [0u8; 512];
+        let mut buf = UncachedMut::new(&mut storage).unwrap();
+        let _ = buf.prefix(1024);
     }
 
     #[test]

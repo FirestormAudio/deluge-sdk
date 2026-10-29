@@ -1002,6 +1002,12 @@ async unsafe fn read_blocks_dma(
         // 5. Wait for transfer complete (DATA_TRNS via SDHI interrupt).
         let data_result = wait_access_end(port).await;
 
+        // On an error the SD_BUF DMA request stays asserted (HW manual ch. 38, DMA transfer): stop
+        // the DMAC before returning, or it keeps writing into the caller's buffer.
+        if data_result.is_err() && !crate::dmac::halt_channel(dma.number()) {
+            warn!("sdhi{}: DMA channel {} didn't stop after a read error", port, dma.number());
+        }
+
         // 5b. For RX: wait for the DMAC to drain its final burst into memory.
         // DATA_TRNS fires when the SD-bus transfer ends; the DMAC may still
         // be writing the last burst to the destination buffer.  Reading the
@@ -1082,6 +1088,12 @@ async unsafe fn write_blocks_dma(
 
         // 5. Wait for transfer complete (DATA_TRNS via SDHI interrupt).
         let data_result = wait_access_end(port).await;
+
+        // On an error the SD_BUF DMA request stays asserted (HW manual ch. 38, DMA transfer): stop
+        // the DMAC before returning.
+        if data_result.is_err() && !crate::dmac::halt_channel(dma.number()) {
+            warn!("sdhi{}: DMA channel {} didn't stop after a write error", port, dma.number());
+        }
 
         // No separate card-busy wait is needed here: per the RZ/A1 TRM (§38.2.6,
         // SD_INFO1 Access End), the Access End flag we awaited above (DATA_TRNS) is
@@ -1639,8 +1651,10 @@ impl<'d> Sdhi<'d> {
     /// [`take_aborted`](Self::take_aborted). Synchronous: nothing runs on after the future is gone.
     fn abort_on_drop(&self, dma: Option<u8>) -> OnDrop<impl FnOnce() + '_> {
         OnDrop::new(move || {
-            if let Some(ch) = dma {
-                crate::dmac::halt_channel(ch);
+            if let Some(ch) = dma
+                && !crate::dmac::halt_channel(ch)
+            {
+                warn!("sdhi{}: DMA channel {} didn't stop on abort", self.port, ch);
             }
             let s = sdhi(self.port);
             s.sd_stop().write_value(SD_STOP_STP);
@@ -2022,6 +2036,28 @@ mod typed_tests {
         let (stp, reset, _) = abort_writes();
         assert!(stp && reset);
         assert!(sdhi.take_aborted());
+    }
+
+    #[test]
+    fn a_read_that_fails_in_its_data_phase_stops_the_dma() {
+        // On an SD error the SD_BUF DMA request stays asserted (HW manual ch. 38): the DMAC must
+        // be stopped before the read returns, or it keeps writing into the caller's buffer.
+        let _serial = serial();
+        let sdhi = sdhi1();
+        let mut storage = [0u8; 512];
+        test::reset();
+        {
+            let read = sdhi.read_blocks_dma(17, crate::dma_buf::UncachedMut::new(&mut storage).unwrap());
+            let mut read = core::pin::pin!(read);
+            assert!(poll_once(read.as_mut()).is_pending());
+            interrupt_saw(INFO1_RESP);
+            assert!(poll_once(read.as_mut()).is_pending());
+            STATE[1].info2.fetch_or(INFO2_ERR3, Ordering::Release); // a data error
+            assert!(matches!(poll_once(read.as_mut()), Poll::Ready(Err(_))));
+        }
+        let (_, _, dma_halted) = abort_writes();
+        assert!(dma_halted, "the DMA channel was stopped");
+        assert!(!sdhi.take_aborted(), "an error is not an abort");
     }
 
     #[test]

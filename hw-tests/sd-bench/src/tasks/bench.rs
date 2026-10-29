@@ -190,8 +190,9 @@ async fn cancel_probe() {
 
     let ch = <deluge_bsp::board::SdRxDma as Channel>::NUMBER as usize;
     let chstat = rza1_hal::pac::DMAC.ch(ch).chstat().read();
-    if chstat & 1 != 0 {
-        error!("cancel: FAIL DMA channel {} still enabled after the drop (CHSTAT {:#010x})", ch, chstat);
+    // Stopped: EN (bit 0) clear and no bus transaction in flight (TACT, bit 2).
+    if chstat & ((1 << 0) | (1 << 2)) != 0 {
+        error!("cancel: FAIL DMA channel {} still running after the drop (CHSTAT {:#010x})", ch, chstat);
         return;
     }
 

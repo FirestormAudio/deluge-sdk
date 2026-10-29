@@ -32,6 +32,8 @@ const CHCTRL_CLRTC: u32 = 1 << 6; // Clear terminal count (TC bit)
 pub(crate) const CHSTAT_EN: u32 = 1 << 0;
 /// CHSTAT bit 6: TC — Terminal Count flag set when transfer completes.
 pub(crate) const CHSTAT_TC: u32 = 1 << 6;
+/// CHSTAT.TACT: a bus transaction is in flight. A stopped channel reads EN = 0 and TACT = 0.
+pub(crate) const CHSTAT_TACT: u32 = 1 << 2;
 
 // ── CHCFG register field constants (TRM §9.3.14; dmac_iobitmask.h) ───────────
 /// CHCFG bit 31: DMS — DMA Mode Select (0 = register mode, 1 = link mode).
@@ -313,17 +315,19 @@ impl<'d> Dma<'d> {
     }
 }
 
-/// Stop channel `ch`'s transfer and wait, briefly, until it has stopped (CHSTAT.EN reads 0): what
-/// a dropped transfer does, so the DMAC writes nothing more once its future is gone. Keeps the
-/// channel's configuration and request route.
-pub(crate) fn halt_channel(ch: u8) {
-    // SAFETY: the caller owns channel `ch` (it is aborting that channel's transfer).
+/// Stop channel `ch`'s transfer and wait, briefly, until it has stopped: CHSTAT.EN = 0 and the
+/// bus transaction in flight has ended (TACT = 0; HW manual §9.7.11). What a dropped or failed
+/// transfer does, so the DMAC writes nothing more once its caller's buffer borrow ends. Keeps the
+/// channel's configuration and request route. Returns whether the stop was seen within the bound.
+pub(crate) fn halt_channel(ch: u8) -> bool {
+    // SAFETY: the caller owns channel `ch` (it is stopping that channel's transfer).
     unsafe { raw::halt(ch) };
     for _ in 0..10_000 {
-        if crate::pac::DMAC.ch(ch as usize).chstat().read() & CHSTAT_EN == 0 {
-            return;
+        if crate::pac::DMAC.ch(ch as usize).chstat().read() & (CHSTAT_EN | CHSTAT_TACT) == 0 {
+            return true;
         }
     }
+    false
 }
 
 /// Stop every channel and release its request route: [`Dma::stop`] for channels 0–15.
@@ -443,6 +447,18 @@ fn on_block_int(ch: u8) {
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
+    #[test]
+    fn halt_channel_waits_for_the_transaction_to_end() {
+        // CHSTAT.EN clears as soon as CLREN is written; the channel has stopped only when the bus
+        // transaction in flight has ended too (TACT, bit 2).
+        let chstat = crate::pac::DMAC.ch(14).chstat().addr();
+        crate::mmio::test::reset();
+        crate::mmio::test::poke32(chstat, 1 << 2); // EN clear, TACT set
+        assert!(!halt_channel(14), "a transaction still active is not a stop");
+        crate::mmio::test::poke32(chstat, 0);
+        assert!(halt_channel(14));
+    }
+
     use super::*;
 
     // The register addresses as the TRM gives them, independent of the code under test: the
