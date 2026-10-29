@@ -64,12 +64,13 @@ pub extern "C" fn main() -> ! {
     unsafe { rza1_hal::gpio::set_as_output(6, 7) };
     bsp_uart::init_pic(board.pic_uart, board.pins.pic, board.dma.pic_rx, board.dma.pic_tx, 31_250);
     deluge_bsp::bus::init(board.shared_spi, board.pins.spi, board.dma.oled);
-    unsafe { cv_gate::init() };
+    cv_gate::init(board.pins.cv_gate);
 
     // The codec through the SCUX, its 2SRC converting the device's 48 kHz to 44.1 kHz; the UAC
     // host streams at 48 kHz so its resampler only trims clock drift.
     deluge_bsp::audio::init_with_scux_src(
         board.audio_ssi,
+        board.pins.audio,
         board.dma.ssi_rx,
         board.dma.scux_ffd0,
         48_000,

@@ -38,7 +38,9 @@
 //! SDRAM mode registers (CS2 @ 0x3FFF_D040, CS3 @ 0x3FFF_E040) are written
 //! as 16-bit accesses to latch the JEDEC mode register into the DRAM.
 
-use rza1_hal::gpio::set_pin_mux;
+use rza1_hal::gpio::{Alternate, Flex};
+
+use crate::board::SdramPins;
 
 // BSC register addresses
 const CS2BCR: usize = 0x3FFF_C00C;
@@ -64,23 +66,13 @@ pub const WINDOW: core::ops::Range<usize> = 0x0C00_0000..0x1000_0000;
 /// # Safety
 /// Writes to memory-mapped GPIO, BSC, and SDRAM mode registers.
 /// Must not be called while the SDRAM is actively in use.
-pub unsafe fn init() {
+pub unsafe fn init(pins: SdramPins) {
     unsafe {
         log::debug!("sdram: init");
-        // ---- SDRAM address pins: P3[0..14] mux1 ----
-        for pin in 0..=14u8 {
-            set_pin_mux(3, pin, 1);
-        }
-
-        // ---- SDRAM data pins: P5[0..15] mux1 ----
-        for pin in 0..=15u8 {
-            set_pin_mux(5, pin, 1);
-        }
-
-        // ---- SDRAM control pins: P2[0..6] mux1 ----
-        // CS3#, RAS#, CAS#, CKE, WE0#, WE1#, RD/!WR
-        for pin in 0..=6u8 {
-            set_pin_mux(2, pin, 1);
+        // Address (P3_0–P3_14), data (P5_0–P5_15), then control (P2_0–P2_6: CS3#, RAS#, CAS#,
+        // CKE, WE0#, WE1#, RD/!WR), all on alternative 1.
+        for pin in pins.address.into_iter().chain(pins.data).chain(pins.control) {
+            Flex::new(pin).set_as_alternate(Alternate::Alt1);
         }
 
         // ---- BSC configuration (from userdef_bsc_cs2_init, ramSize=0 = 64 MB) ----

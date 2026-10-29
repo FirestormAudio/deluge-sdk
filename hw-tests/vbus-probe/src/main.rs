@@ -89,7 +89,7 @@ pub extern "C" fn main() -> ! {
 
     // RSPI0 is shared between OLED (8-bit) and CV DAC (32-bit); the bus brings it up.
     deluge_bsp::bus::init(board.shared_spi, board.pins.spi, board.dma.oled);
-    unsafe { cv_gate::init() };
+    cv_gate::init(board.pins.cv_gate);
     info!("RSPI0: initialised via cv_gate::init");
 
     // Bring USB0 up in host mode so VBSTS reflects the real host-mode VBUS

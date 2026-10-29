@@ -88,7 +88,7 @@ pub extern "C" fn main() -> ! {
     // cv_gate::init() runs the DAC's linearity sequence; oled::init() then switches
     // it to 8-bit mode for the panel.
     deluge_bsp::bus::init(board.shared_spi, board.pins.spi, board.dma.oled);
-    unsafe { cv_gate::init() };
+    cv_gate::init(board.pins.cv_gate);
     info!("RSPI0: initialised via cv_gate::init");
 
     unsafe { cortex_ar::interrupt::enable() };

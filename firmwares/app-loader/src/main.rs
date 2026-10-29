@@ -119,9 +119,9 @@ pub extern "C" fn main() -> ! {
 
     // The bus brings RSPI0 up; cv_gate::init runs the DAC's linearity sequence on it.
     deluge_bsp::bus::init(board.shared_spi, board.pins.spi, board.dma.oled);
-    unsafe { deluge_bsp::cv_gate::init() };
+    deluge_bsp::cv_gate::init(board.pins.cv_gate);
     // Encoder GPIO interrupts and the MTU2 pin poll, while interrupts are still masked.
-    unsafe { deluge_bsp::encoder::irq_init(board.encoder_poll_timer) };
+    unsafe { deluge_bsp::encoder::irq_init(board.encoder_poll_timer, board.pins.encoders) };
 
     #[allow(static_mut_refs)]
     let executor = unsafe {

@@ -153,7 +153,7 @@ pub extern "C" fn main() -> ! {
     info!("UART: SCIF0/1 @ 31 250 baud");
 
     info!("audio: initialising SSI0...");
-    deluge_bsp::audio::init_with_scux(board.audio_ssi, board.dma.ssi_rx, board.dma.scux_ffd0);
+    deluge_bsp::audio::init_with_scux(board.audio_ssi, board.pins.audio, board.dma.ssi_rx, board.dma.scux_ffd0);
     info!("audio: SSI0 + DMA + codec running");
 
     // Pre-fill SSI TX buffer with dither so the codec does not auto-mute before
@@ -164,7 +164,7 @@ pub extern "C" fn main() -> ! {
     // RSPI0 is shared between OLED (8-bit) and CV DAC (32-bit). The bus brings it up in 32-bit
     // mode; cv_gate::init() runs the DAC's linearity sequence; oled::init() switches to 8-bit.
     deluge_bsp::bus::init(board.shared_spi, board.pins.spi, board.dma.oled);
-    unsafe { cv_gate::init() };
+    cv_gate::init(board.pins.cv_gate);
     info!("RSPI0: initialised via cv_gate::init");
 
     // ── USB0 mode selection (host vs device) ──────────────────────────────
@@ -266,7 +266,7 @@ pub extern "C" fn main() -> ! {
     }
 
     info!("encoder: configuring interrupt-driven inputs...");
-    unsafe { deluge_bsp::encoder::irq_init(board.encoder_poll_timer) };
+    unsafe { deluge_bsp::encoder::irq_init(board.encoder_poll_timer, board.pins.encoders) };
 
     debug!("enabling IRQ...");
     unsafe { cortex_ar::interrupt::enable() };

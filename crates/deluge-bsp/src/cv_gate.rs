@@ -24,9 +24,14 @@
 //! | 2       | 2    | 9   |
 //! | 3       | 4    | 0   |
 
+use core::cell::RefCell;
+
+use critical_section::Mutex;
+use rza1_hal::gpio::{Level, Output};
 #[cfg(target_os = "none")]
 use rza1_hal::ostm;
-use rza1_hal::gpio;
+
+use crate::board::CvGatePins;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -41,13 +46,39 @@ pub const NUM_GATE_CHANNELS: usize = 4;
 
 // ── Pin definitions ───────────────────────────────────────────────────────────
 
-/// SPI chip-select GPIO: P6.1 (software-controlled, active-low)
-const CS_PORT: u8 = 6;
-const CS_PIN: u8 = 1;
+/// The DAC's chip select (active low) and the gate outputs (V-trig: low = gate on), once
+/// [`init`] has run. Index matches the gate channel number.
+struct Lines {
+    cs: Output<'static>,
+    gates: [Output<'static>; NUM_GATE_CHANNELS],
+}
 
-/// Gate output pins.  Index matches the gate channel number.
-/// V-trig: write `false` (0) to assert gate ON; write `true` (1) for gate OFF.
-const GATE_PINS: [(u8, u8); NUM_GATE_CHANNELS] = [(2, 7), (2, 8), (2, 9), (4, 0)];
+static LINES: Mutex<RefCell<Option<Lines>>> = Mutex::new(RefCell::new(None));
+
+/// Take the board's chip-select and gate pins: the chip select deselected (high), every gate off
+/// (high). Each pin's level is set before it becomes an output, so neither the DAC nor a gate
+/// sees a pulse.
+fn take_lines(pins: CvGatePins) {
+    let lines = Lines {
+        cs: Output::new(pins.cs, Level::High),
+        gates: [
+            Output::new(pins.gate0, Level::High),
+            Output::new(pins.gate1, Level::High),
+            Output::new(pins.gate2, Level::High),
+            Output::new(pins.gate3, Level::High),
+        ],
+    };
+    critical_section::with(|cs| LINES.borrow_ref_mut(cs).replace(lines));
+}
+
+/// Drive the DAC's chip select: `true` selects it (low). Does nothing before [`init`].
+fn select_dac(select: bool) {
+    critical_section::with(|cs| {
+        if let Some(l) = LINES.borrow_ref_mut(cs).as_mut() {
+            l.cs.set_level((!select).into());
+        }
+    });
+}
 
 // ── MAX5136 command helpers ───────────────────────────────────────────────────
 
@@ -78,23 +109,12 @@ fn dac_word(ch: u8, value: u16) -> Option<u32> {
 /// - CV outputs are at 0 V.
 /// - RSPI0 is ready to accept transfers via [`cv_set`].
 ///
-/// # Safety
-/// Writes to memory-mapped GPIO and RSPI registers.
 #[cfg(target_os = "none")]
-pub unsafe fn init() {
-    unsafe {
+pub fn init(pins: CvGatePins) {
+    {
         log::debug!("cv_gate: init");
         // RSPI0's SCK and MOSI pins are the bus's (`bus::init` muxes them); CS is cv_gate's.
-
-        // ---- Chip-select: output, start deselected (high) -----------------------
-        gpio::set_as_output(CS_PORT, CS_PIN);
-        gpio::write(CS_PORT, CS_PIN, true);
-
-        // ---- Gate outputs: all de-asserted (V-trig: high = gate OFF) ------------
-        for &(port, pin) in GATE_PINS.iter() {
-            gpio::set_as_output(port, pin);
-            gpio::write(port, pin, true);
-        }
+        take_lines(pins);
         log::debug!("cv_gate: gate GPIOs ok");
 
         // ---- RSPI0 is the bus's: hold it for the whole linearity sequence ------
@@ -105,17 +125,17 @@ pub unsafe fn init() {
         // ---- MAX5136 linearity initialisation -----------------------------------
         // Step 1: LIN=1 (linear ramp mode)
         log::debug!("cv_gate: MAX5136 LIN=1");
-        gpio::write(CS_PORT, CS_PIN, false);
+        select_dac(true);
         bus.send32_blocking(max5136::LINEARITY_ON_U32);
-        gpio::write(CS_PORT, CS_PIN, true);
+        select_dac(false);
 
         // Step 2: wait ≥ 10 ms for internal capacitor to charge
         ostm::delay_ms(LIN_DELAY_MS);
 
         // Step 3: LIN=0 (return to normal mode)
-        gpio::write(CS_PORT, CS_PIN, false);
+        select_dac(true);
         bus.send32_blocking(max5136::LINEARITY_OFF_U32);
-        gpio::write(CS_PORT, CS_PIN, true);
+        select_dac(false);
         log::debug!("cv_gate: MAX5136 linearity init done");
 
         // ---- Zero all CV outputs ------------------------------------------------
@@ -126,16 +146,13 @@ pub unsafe fn init() {
     }
 }
 
-/// Host/QEMU stand-in for [`init`]: no RSPI0/GPIO/OSTM hardware to bring up
-/// (and no `ostm::delay_ms`, which does raw MMIO and would crash off-target),
-/// so this just logs and returns.
-///
-/// # Safety
-/// No unsafe operations; `unsafe` only to keep this a drop-in match for the
-/// device signature so callers need no `#[cfg]` of their own.
+/// Host/QEMU stand-in for [`init`]: no RSPI0/OSTM hardware to bring up (and no
+/// `ostm::delay_ms`, which does raw MMIO and would crash off-target), so this takes the pins and
+/// logs.
 #[cfg(not(target_os = "none"))]
-pub unsafe fn init() {
-    log::info!("cv_gate(host): init (no-op)");
+pub fn init(pins: CvGatePins) {
+    take_lines(pins);
+    log::info!("cv_gate(host): init (no DAC)");
 }
 
 // ── CV output ────────────────────────────────────────────────────────────────
@@ -156,13 +173,10 @@ pub async fn cv_set(ch: u8, value: u16) {
     };
     let mut bus = crate::bus::lock_rspi0().await;
     bus.enter_32bit();
-    // SAFETY: we hold the RSPI0 bus guard, so no concurrent transfer; CS GPIO is
-    // owned by cv_gate.
-    unsafe {
-        gpio::write(CS_PORT, CS_PIN, false);
-        bus.send32_blocking(word);
-        gpio::write(CS_PORT, CS_PIN, true);
-    }
+    // We hold the RSPI0 bus guard, so no other transfer runs while the DAC is selected.
+    select_dac(true);
+    bus.send32_blocking(word);
+    select_dac(false);
 }
 
 /// Write a voltage code to CV channel `ch` on a bus the caller already holds (in 32-bit mode).
@@ -172,11 +186,9 @@ fn cv_set_blocking(bus: &mut crate::bus::Rspi0, ch: u8, value: u16) {
         log::warn!("cv_gate: ignoring write to unwired CV channel {ch}");
         return;
     };
-    // SAFETY: CS is cv_gate's GPIO; the bus is held.
-    unsafe { gpio::write(CS_PORT, CS_PIN, false) };
+    select_dac(true);
     bus.send32_blocking(word);
-    // SAFETY: as above.
-    unsafe { gpio::write(CS_PORT, CS_PIN, true) };
+    select_dac(false);
 }
 
 // ── Gate output ───────────────────────────────────────────────────────────────
@@ -186,15 +198,18 @@ fn cv_set_blocking(bus: &mut crate::bus::Rspi0, ch: u8, value: u16) {
 /// - `ch`: 0–3.
 /// - `on`: `true` = gate active (low GPIO), `false` = gate inactive (high GPIO).
 ///
-/// # Safety
-/// Writes GPIO registers.
+/// Does nothing before [`init`].
+///
+/// # Panics
+/// If `ch` is 4 or more.
 #[inline]
-pub unsafe fn gate_set(ch: u8, on: bool) {
-    unsafe {
-        let (port, pin) = GATE_PINS[ch as usize];
-        // V-trig: 0 = active, 1 = inactive  → invert `on`
-        gpio::write(port, pin, !on);
-    }
+pub fn gate_set(ch: u8, on: bool) {
+    critical_section::with(|cs| {
+        if let Some(l) = LINES.borrow_ref_mut(cs).as_mut() {
+            // V-trig: 0 = active, 1 = inactive → invert `on`.
+            l.gates[ch as usize].set_level((!on).into());
+        }
+    });
 }
 
 // ── Address / logic tests (host only) ────────────────────────────────────────
@@ -228,22 +243,33 @@ mod tests {
         assert_eq!(word & 0xFF, 0);
     }
 
+    /// The host stand-in `init` takes the pins without the DAC bring-up (the device version calls
+    /// `ostm::delay_ms`, raw MMIO that would crash here); each gate then drives its own pin,
+    /// active low, through its port's PSR.
     #[test]
-    fn gate_channel_count() {
-        assert_eq!(GATE_PINS.len(), NUM_GATE_CHANNELS);
-    }
-
-    /// The host stand-in `init()` must return without touching hardware (the
-    /// device version calls `ostm::delay_ms`, raw MMIO that would crash here),
-    /// and `gate_set` (routed through the mmio-shadow `gpio` seam) must not panic either.
-    #[test]
-    fn init_and_gate_set_do_not_panic_on_host() {
-        unsafe {
-            init();
-            for ch in 0..NUM_GATE_CHANNELS as u8 {
-                gate_set(ch, true);
-                gate_set(ch, false);
+    fn each_gate_drives_its_pin_active_low() {
+        use rza1_hal::mmio::test;
+        use rza1_hal::peripherals::{P2_7, P2_8, P2_9, P4_0, P6_1};
+        let pins = unsafe {
+            CvGatePins {
+                cs: P6_1::steal(),
+                gate0: P2_7::steal(),
+                gate1: P2_8::steal(),
+                gate2: P2_9::steal(),
+                gate3: P4_0::steal(),
             }
+        };
+        init(pins);
+        // PSRn is 0xFCFE_3100 + 4n; the upper half selects the bit, the lower half is its level.
+        for (ch, psr, bit) in [(0u8, 0xFCFE_3108, 7), (1, 0xFCFE_3108, 8), (2, 0xFCFE_3108, 9), (3, 0xFCFE_3110, 0)] {
+            test::reset();
+            gate_set(ch, true);
+            gate_set(ch, false);
+            assert_eq!(
+                test::writes(),
+                [(psr, 1 << (bit + 16)), (psr, (1 << (bit + 16)) | (1 << bit))],
+                "gate {ch}: on = low, off = high"
+            );
         }
     }
 

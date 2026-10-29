@@ -63,6 +63,18 @@ pub struct Parts {
     pub scux_ffd0_dma: Option<Peri<'static, ScuxFfd0Dma>>,
     /// USB0, when neither `usb-log` nor `usb-serial` claims it, for `rza1_hal::usb::init_*_mode`.
     pub usb0: Option<Peri<'static, USB0>>,
+    /// The codec's pins, for `deluge_bsp::audio::{init, init_with_scux, init_with_scux_src}`.
+    pub audio_pins: Option<deluge_bsp::board::AudioPins>,
+    /// The jack detects and the speaker enable, for `deluge_bsp::jacks::init`.
+    pub jack_pins: Option<deluge_bsp::board::JackPins>,
+    /// The CV DAC's chip select and the gates, for `deluge_bsp::cv_gate::init`.
+    pub cv_gate_pins: Option<deluge_bsp::board::CvGatePins>,
+    /// The encoders' pins, for `deluge_bsp::encoder::irq_init`.
+    pub encoder_pins: Option<deluge_bsp::board::EncoderPins>,
+    /// The trigger-clock input (P1_14), for `deluge_bsp::trigger_clock::irq_init`.
+    pub trigger_pin: Option<Peri<'static, rza1_hal::peripherals::P1_14>>,
+    /// The SYNC LED (P6_7), for [`Deluge::sync_led`](crate::Deluge::sync_led).
+    pub sync_led: Option<Peri<'static, rza1_hal::peripherals::P6_7>>,
 }
 
 static PARTS: Mutex<CriticalSectionRawMutex, RefCell<Option<Parts>>> =

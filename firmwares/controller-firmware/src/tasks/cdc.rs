@@ -280,10 +280,7 @@ async fn handle_message(type_byte: u8, data: &[u8]) {
                 let ch = data[0];
                 let on = data[1] != 0;
                 if (ch as usize) < deluge_bsp::cv_gate::NUM_GATE_CHANNELS {
-                    // Safety: GPIO write only.
-                    unsafe {
-                        cv_gate::gate_set(ch, on);
-                    }
+                    cv_gate::gate_set(ch, on);
                 }
             }
         }

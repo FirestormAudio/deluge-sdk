@@ -114,15 +114,17 @@ fn setup() {
     );
 
     info!("audio: initialising SSI0...");
-    let (ssi, ssi_rx, ffd0) = deluge::parts::with(|p| {
+    let (ssi, audio_pins, ssi_rx, ffd0) = deluge::parts::with(|p| {
         (
             p.audio_ssi.take(),
+            p.audio_pins.take(),
             p.ssi_rx_dma.take(),
             p.scux_ffd0_dma.take(),
         )
     });
     deluge_bsp::audio::init_with_scux(
         ssi.expect("SSIF0 is free"),
+        audio_pins.expect("the codec's pins are free"),
         ssi_rx.expect("the SSI RX DMA channel is free"),
         ffd0.expect("SCUX FFD0's DMA channel is free"),
     );
@@ -141,15 +143,21 @@ fn setup() {
         spi_pins.expect("RSPI0's pins are free"),
         oled_dma.expect("the OLED DMA channel is free"),
     );
-    unsafe { cv_gate::init() };
+    cv_gate::init(deluge::parts::with(|p| p.cv_gate_pins.take()).expect("the CV/gate pins are free"));
     info!("RSPI0: initialised via cv_gate::init");
 
     info!("encoder: configuring interrupt-driven inputs...");
-    let poll_timer =
-        deluge::parts::with(|p| p.encoder_poll_timer.take()).expect("MTU2 channel 3 is free");
-    unsafe { deluge_bsp::encoder::irq_init(poll_timer) };
+    let (poll_timer, encoder_pins, trigger_pin) = deluge::parts::with(|p| {
+        (p.encoder_poll_timer.take(), p.encoder_pins.take(), p.trigger_pin.take())
+    });
+    unsafe {
+        deluge_bsp::encoder::irq_init(
+            poll_timer.expect("MTU2 channel 3 is free"),
+            encoder_pins.expect("the encoders' pins are free"),
+        )
+    };
     info!("trigger_clock: configuring interrupt-driven input...");
-    unsafe { deluge_bsp::trigger_clock::irq_init() };
+    unsafe { deluge_bsp::trigger_clock::irq_init(trigger_pin.expect("P1_14 is free")) };
 }
 
 // ---------------------------------------------------------------------------
