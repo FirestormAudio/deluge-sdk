@@ -15,10 +15,10 @@ testing.
 |---|---|
 | [`system`] | `BOARD_CONFIG`, the chip configuration `rza1_hal::init` takes (crystal, `CPG`, `MODULE_CLOCKS`, DMAC and time-driver priorities), and the DMA channel map |
 | [`sdram`] | 64 MB SDRAM (Micron MT48LC16M16A2P-75) — pin-mux, BSC registers, JEDEC init |
-| [`audio`] | SSI0 stereo codec interface; codec power sequencing and master-clock enable |
-| [`scux_dvu_path`] | SCUX DVU path — CPU SRAM → DMA → SCUX → SSIF0 TX (2048-frame buffer, software volume / fade); [`rza1_hal::scux::dvu_path`] bound to the Deluge's SSI0 config and DMA channel |
-| [`scux_src_path`] | SCUX async SRC path — asynchronous sample-rate conversion between two independent clock domains (e.g. 44.1 kHz ↔ 48 kHz); [`rza1_hal::scux::src_path`] on the Deluge's DMA channels |
-| [`scux_usb_tx_path`] | SCUX USB-rate SRC path; [`rza1_hal::scux::usb_tx_path`] on the Deluge's DMA channels |
+| [`audio`] | SSI0 stereo codec interface, its rings ([`audio::with_tx`], [`audio::with_rx`]); codec power sequencing and master-clock enable |
+| [`scux_dvu_path`] | Controls for the SCUX DVU path ([`audio::init_with_scux`]): volume, fades, the SRC's engine rate |
+| [`scux_src_path`] | SCUX channel 1: async SRC between two rings (FFD1 → SRC1 → FFU1) |
+| [`scux_usb_tx_path`] | SCUX channel 2: async SRC between two rings (FFD2 → SRC2 → FFU2), built here from the HAL's SCUX pieces |
 | [`cv_gate`] | MAX5136 quad 16-bit SPI CV DAC (2 channels, ~6552 counts/V; frames from the [`max5136`](../../drivers/max5136) crate) + 4 V-trig gate GPIOs |
 | [`midi_gate`] | MTU2 one-shot timer for sub-millisecond precise gate-off scheduling (~1.92 µs resolution); `setup(board.gate_timer)` |
 | [`oled`] | SSD1309 128×48 OLED — `FrameBuffer`, pixel API, DMA frame send via RSPI0; CS/RST handshaked through the PIC co-processor |
@@ -63,7 +63,7 @@ its USB identities, the SD-backed `SdBlock`, and the host-role supervisor.
 |---|---|
 | `fat` | The `embedded-sdmmc` FAT stack (`fat` module and the SD block-device adapters) |
 | `flash` | The `flash` module (only the app-loader writes flash) |
-| `audio-irq` | Clock `audio_block` from a per-block RX-DMA interrupt instead of a poll loop |
+| `audio-irq` | Clock `audio_block` from the RX ring's per-block interrupt (`wait_block`) instead of a poll loop, with a shorter write-ahead |
 | `embedded-graphics` | `DrawTarget` impl for `oled::FrameBuffer` |
 | `usb-host` | The USB host-role supervisor (turns on `usb-classes`' `host-midi` and `host-uac`) |
 | `usb-msc` | `usb::sd_block`, the SD card as a USB Mass Storage medium (turns on `usb-classes`' `device-msc`) |

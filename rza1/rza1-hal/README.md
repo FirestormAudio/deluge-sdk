@@ -73,8 +73,9 @@ documented in each peripheral module.
 
 | Module | Description |
 |--------|-------------|
-| `ssi`  | SSIF (I²S) stereo 44.1 kHz driver. `ssi::init(Peri<SSIF0>, tx: Dma, rx: Dma, ssicr)` (or `init_block_irq` with a `BlockDma` RX ring, or `init_rx_only` when SCUX drives TX); TX and RX each run in self-referential circular link-descriptor DMA mode with DMAINT masked. Buffer pointers and current-position helpers are exposed for the audio task; `wait_rx_block` awaits the block ring. |
-| `scux` | Sample Rate Conversion Unit — FFD (CPU→SCUX), IPC, 2SRC (async SRC), DVU (digital volume), MIX, OPC, FFU (SCUX→CPU) blocks. `init_ffd_dma` / `init_ffu_dma` and the `dvu_path` / `src_path` / `usb_tx_path` inits take `dmac::Dma` channels, which SCUX keeps (masked) for the position reads; `set_volume`, etc. |
+| `ssi`  | SSIF (I²S) driver on SSIF0/1/3: `Ssi::new` (full duplex), `new_rx_only`, `new_with_scux_tx`, each taking the channel, its pins, a `ring_buffer::RingBuf` per direction and an `ssi::Config`. The rings are `ring_buffer::{WritableRing, ReadableRing}`. |
+| `scux` | Sample Rate Conversion Unit. `Scux::new` splits it into four channels; a channel becomes a `Path` (FFD ring → SRC → DVU → FFU ring, or → an SSI on the routes the hardware has, checked at compile time). `Path::split` gives its `Control` (volume, ramps, input rate) and its rings. |
+| `ring_buffer` | DMA rings lent by the caller (`dma_buf::UncachedMut<u32>`): an embassy-style copy API (`write`/`read`, `Underrun`/`Overrun`) and a positional window (`position()`, the whole ring) usable from interrupt context. |
 
 ### Peripherals
 
@@ -126,8 +127,7 @@ fn main() -> ! {
 
 Drivers take their peripheral singleton (`Peri<'d, T>`) and the interrupt binding they need, so
 `Rspi::new`, `Uart::new` and `OneShot::new` are safe. Every driver takes its
-singleton and binding; the SCUX path inits stay `unsafe` because the paths share the block (each
-must claim distinct SRC units).
+singleton and binding. The SSI and SCUX drivers hold no buffers: their rings are the caller's.
 
 ### Registers
 

@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `rza1-hal` SSI and SCUX are owned drivers over lent rings (phase 5 of the pre-0.1 API pass):
+  - `dma_buf::{Uncached, UncachedMut}` are generic over the DMA word (`u8` by default, so byte
+    users don't change).
+  - `ring_buffer::{WritableRing, ReadableRing}` run circular block DMA over a caller-lent
+    `UncachedMut<u32>` (`RingBuf { dma: BlockDma, buf, blocks }`). Each block ends with an
+    interrupt that counts it, giving an absolute position. They offer an embassy-style copy API
+    (`write`/`read`, `write_immediate`/`read_immediate`, `Error::{Underrun, Overrun}` once, then
+    resuming) and a positional window (`position()`, `ring_mut()`/`ring()`), synchronous and
+    usable from interrupt context. `BlockSignal` waits for a block without borrowing the ring.
+  - `ssi::Ssi::{new, new_rx_only, new_with_scux_tx}` on SSIF0/1/3 take their pins (generated
+    `ssi::{SckPin, WsPin, TxdPin, RxdPin}`), rings and an `ssi::Config` (`Role`, `DataBits`,
+    `SystemWordBits`, `ClockSource`; the default encodes SSICR 0x002B_C020). Dropping a ring stops
+    its direction, then halts its DMA. SSIF2 (half-duplex) isn't supported yet.
+  - `scux::Scux::new` splits the SCUX into channels; `Channel::into_ffu_path` and
+    `into_ssi_path` (routes checked at compile time against SSIRSEL: ch0/ch1 → SSIF0 or SSIF3,
+    ch2 → SSIF1) build a `Path`, split into a `Control` and its rings.
+  - Removed: `ssi::{init, init_block_irq, init_rx_only, wait_rx_block, enable_tx, *_current_ptr,
+    *_buf_start, *_buf_end, *_dma_ch, TX_FRAMES, RX_FRAMES, ...}`, `scux::{dvu_path, src_path,
+    usb_tx_path}`, `scux::{start, start_path, stop, init_ffd_dma, init_ffu_dma, set_fdtsel, ...}`.
+    The raw SCUX configure functions are crate-internal. The HAL holds no audio buffers.
+  - `deluge-bsp`: the rings are its statics (cleaned and invalidated once, lent through their
+    mirror); `audio::{with_tx, with_rx, rx_block_signal}` reach them from a task or an interrupt
+    (`None` before init or when re-entered). `Board::scux` hands out the SCUX;
+    `audio::init_with_scux[_src]` take its channel 0. `scux_src_path`/`scux_usb_tx_path` are built
+    here. `system::SSICR` is `system::codec_ssi_config()`. The rings are always block-interrupt
+    driven now; `audio-irq` still picks the shorter write-ahead and `wait_block`.
+  - For DelugeFirmware's C ABI (phase 9): `tx_current_ptr`/`rx_current_ptr` become `position()`,
+    `tx_buf_start`/`rx_buf_start` become `ring_mut().as_ptr()`/`ring().as_ptr()`, and
+    `TX_FRAMES`/`RX_FRAMES` become `len() / 2`, through `audio::with_tx`/`with_rx`.
 - `rza1-hal` UART, RSPI and pin-interrupt modes, traits and errors (phase 4 of the pre-0.1 API
   pass):
   - `mode::{Blocking, Async}` typestate: `Uart<'d, M>`, `UartRx<'d, M>`, `UartTx<'d, M>` and
