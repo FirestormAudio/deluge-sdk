@@ -19,7 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Receive errors are no longer dropped: the error interrupt latches them and reads return a
     `#[non_exhaustive]` `uart::Error { Overrun, Framing, Parity, Break }` (`embedded_io::Error`,
     `embedded_hal_nb::serial::Error`), each once, before the bytes around it. The SCIF has no noise
-    flag, so there is no `Noise`. `UartRx::try_read` returns `Result<Option<u8>, Error>` and
+    flag, so there is no `Noise`. Both async constructors now also bind BRI
+    (`uart::BreakInterruptHandler`): BRK and ORER raise BRI, not ERI, and an uncleared ORER stops
+    reception. FER/PER are read-only and describe the next FIFO byte, so an ER whose byte the DMAC
+    already took is reported as `Framing`; the bad byte itself is still delivered after its error. `UartRx::try_read` returns `Result<Option<u8>, Error>` and
     `read_byte` `Result<u8, Error>`; `deluge-bsp` logs and skips them.
   - `Uart::new` now receives on RXI into a caller-lent buffer, on any SCIF, and its reader waits
     on the interrupt instead of polling. The DMA-ring receiver is `Uart::new_with_rx_dma`

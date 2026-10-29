@@ -626,10 +626,13 @@ impl<'d, M: Mode> Rspi<'d, M> {
         *self.mode.get_or_insert_with(|| rspi(self.ch).spcmd0().read() & 0b11)
     }
 
-    /// Get ready for full-duplex frames of `width`: switch to it if needed, reset the receive
+    /// Get ready for full-duplex frames of `width`: wait for TEND, switch to it if needed, reset the receive
     /// buffer (so nothing a transmit-only user left in it is read back) with a one-frame receive
     /// trigger, and clear a stale overrun.
     fn begin(&mut self, width: Width) {
+        // Frames a transmit-only caller left shifting (`send8` doesn't wait) would land in the
+        // receive buffer after its reset.
+        self.wait_end();
         if self.width != width {
             match width {
                 Width::Bits8 => self.configure_8bit(),
@@ -1104,6 +1107,25 @@ mod tests {
         assert_eq!(read, [0x3C]);
     }
 
+    /// A transmit-only caller may leave frames shifting (`send8` doesn't wait): the receive
+    /// buffer is reset only after TEND, or their bytes land after the reset.
+    #[test]
+    fn begin_waits_for_tend_before_resetting_the_rx_buffer() {
+        use embedded_hal::spi::SpiBus;
+        let _serial = serial();
+        let mut r = rspi0(Config::default());
+        crate::mmio::test::poke8(SPSR, SPSR_SPRF | SPSR_TEND | SPSR_SPTEF);
+        let start = crate::mmio::test::log().len();
+        SpiBus::<u8>::write(&mut r, &[1]).unwrap();
+        let log = crate::mmio::test::log()[start..].to_vec();
+        let tend = log.iter().position(|a| !a.write && a.addr == SPSR).expect("SPSR read");
+        let reset = log
+            .iter()
+            .position(|a| a.write && a.addr == SPBFCR && a.val & SPBFCR_RX_RESET as u32 != 0)
+            .expect("RX buffer reset");
+        assert!(tend < reset, "TEND checked before the reset");
+    }
+
     #[test]
     fn word_size_switches_the_frame_width() {
         use embedded_hal::spi::SpiBus;
@@ -1122,6 +1144,8 @@ mod tests {
         use embedded_hal::spi::{Error as _, ErrorKind};
         let _serial = serial();
         let mut r = rspi0(Config::default());
+        // An idle bus: TEND set.
+        crate::mmio::test::poke8(SPSR, SPSR_TEND | SPSR_SPTEF);
         r.begin(Width::Bits8);
         crate::mmio::test::poke8(SPSR, SPSR_SPRF | SPSR_TEND | SPSR_SPTEF | SPSR_OVRF);
         assert_eq!(r.frame(0), Err(Error::Overrun));

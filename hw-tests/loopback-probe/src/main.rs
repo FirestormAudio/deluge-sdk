@@ -34,6 +34,7 @@ unsafe extern "C" {
 }
 
 rza1_hal::bind_interrupts!(struct Irqs {
+    BRI0 => uart::BreakInterruptHandler<SCIF0>;
     ERI0 => uart::ErrorInterruptHandler<SCIF0>;
     RXI0 => uart::RxInterruptHandler<SCIF0>;
     TXI0 => uart::TxInterruptHandler<SCIF0>;

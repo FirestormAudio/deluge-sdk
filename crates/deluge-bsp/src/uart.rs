@@ -28,12 +28,14 @@ pub const MIDI_CH: usize = 0;
 pub const PIC_CH: usize = 1;
 
 rza1_hal::bind_interrupts!(struct MidiIrqs {
+    BRI0 => uart::BreakInterruptHandler<MidiScif>;
     ERI0 => uart::ErrorInterruptHandler<MidiScif>;
     TXI0 => uart::TxInterruptHandler<MidiScif>;
     DMAINT13 => dmac::InterruptHandler<MidiRxDma>;
 });
 
 rza1_hal::bind_interrupts!(struct PicIrqs {
+    BRI1 => uart::BreakInterruptHandler<PicScif>;
     ERI1 => uart::ErrorInterruptHandler<PicScif>;
     TXI1 => uart::TxInterruptHandler<PicScif>;
     DMAINT10 => dmac::InterruptHandler<PicTxDma>;

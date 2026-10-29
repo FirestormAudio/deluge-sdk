@@ -14,6 +14,7 @@
 //! ```ignore
 //! // Async, on any SCIF: the reader waits on RXI, nothing polls.
 //! rza1_hal::bind_interrupts!(struct Irqs {
+//!     BRI2 => uart::BreakInterruptHandler<SCIF2>;
 //!     ERI2 => uart::ErrorInterruptHandler<SCIF2>;
 //!     RXI2 => uart::RxInterruptHandler<SCIF2>;
 //!     TXI2 => uart::TxInterruptHandler<SCIF2>;
@@ -177,7 +178,6 @@ fn smr_for(config: &Config) -> u16 {
 
 // GIC base IDs for SCIF0; per RZ/A1L HW Manual §A.2:
 //   SCIFn: BRI = 221+n*4, ERI = 222+n*4, RXI = 223+n*4, TXI = 224+n*4
-// (BRI is not used.)
 const ERI_BASE: u16 = 222;
 const RXI_BASE: u16 = 223;
 const TXI_BASE: u16 = 224;
@@ -416,17 +416,16 @@ unsafe fn set_baud_regs(ch: usize, config: &Config) {
 // Interrupt handlers
 // ---------------------------------------------------------------------------
 
-/// Clear sticky receive-error flags so the SCIF resumes forwarding bytes.
-/// Writes 0 to the genuine receive-error flags (ER, BRK, FER, PER); SCLSR.ORER
-/// is bit 0. Shared by the ERI and BRI handlers.
+/// Clear sticky receive-error flags so the SCIF resumes forwarding bytes: ER and BRK in SCFSR,
+/// ORER (bit 0) in SCLSR. Shared by the ERI and BRI handlers. FER and PER are read-only; they
+/// clear as the bad byte leaves the FIFO.
 fn clear_rx_errors(ch: usize) {
     let sc = scif(ch);
-    // Write 0 to the genuine receive-error flags (ER, BRK, FER, PER) to clear
-    // them; preserve RDF/DR (data) and the TX flags. A status flag is only
-    // cleared by writing 0 after it has been read as 1, so the read-modify-
-    // write below is required.
+    // Write 0 to ER and BRK; preserve RDF/DR (data) and the TX flags. A status flag is only
+    // cleared by writing 0 after it has been read as 1, so the read-modify-write below is
+    // required.
     let scfsr = sc.fsr().read().0;
-    sc.fsr().write_value(Fsr(scfsr & !(ER | BRK | FER | PER)));
+    sc.fsr().write_value(Fsr(scfsr & !(ER | BRK)));
     let sclsr = sc.lsr().read().0;
     sc.lsr().write_value(Lsr(sclsr & !1u16)); // ORER = bit 0
 }
@@ -522,7 +521,12 @@ const LATCH_BREAK: u8 = 1 << 3;
 /// SCIF n's receive errors seen by its error interrupt and not yet returned by a read.
 static RX_ERROR: [AtomicU8; NUM_CHANNELS] = [const { AtomicU8::new(0) }; NUM_CHANNELS];
 
-/// Record SCIF `ch`'s receive-error flags (SCFSR PER/FER/BRK, SCLSR ORER) for its reader.
+/// Record SCIF `ch`'s receive-error events for its reader: SCLSR ORER, SCFSR BRK, and SCFSR ER
+/// (a framing or parity error).
+///
+/// FER and PER are read-only and describe only the byte at the head of the receive FIFO, so they
+/// give ER's kind when that byte is still there; when it has gone (the DMAC took it, or RXI ran
+/// first) neither is set, and the error is reported as framing.
 fn latch_rx_errors(ch: usize) {
     let sc = scif(ch);
     let scfsr = sc.fsr().read().0;
@@ -530,11 +534,8 @@ fn latch_rx_errors(ch: usize) {
     if sc.lsr().read().0 & 1 != 0 {
         bits |= LATCH_OVERRUN;
     }
-    if scfsr & FER != 0 {
-        bits |= LATCH_FRAMING;
-    }
-    if scfsr & PER != 0 {
-        bits |= LATCH_PARITY;
+    if scfsr & ER != 0 {
+        bits |= if scfsr & PER != 0 && scfsr & FER == 0 { LATCH_PARITY } else { LATCH_FRAMING };
     }
     if scfsr & BRK != 0 {
         bits |= LATCH_BREAK;
@@ -625,6 +626,8 @@ pin_trait!(
 pub trait Instance: crate::PeripheralType + sealed::Sealed + 'static {
     /// The channel number, 0–4.
     const INDEX: usize;
+    /// Its break and overrun interrupt, `BRI<INDEX>`.
+    type BreakInterrupt: Interrupt;
     /// Its receive-error interrupt, `ERI<INDEX>`.
     type ErrorInterrupt: Interrupt;
     /// Its receive-FIFO-full interrupt, `RXI<INDEX>`.
@@ -640,10 +643,11 @@ pub trait RxDmaInstance: Instance {
 }
 
 macro_rules! instances {
-    ($($scif:ident = $n:literal, $eri:ident, $rxi:ident, $txi:ident;)*) => {$(
+    ($($scif:ident = $n:literal, $bri:ident, $eri:ident, $rxi:ident, $txi:ident;)*) => {$(
         impl sealed::Sealed for crate::peripherals::$scif {}
         impl Instance for crate::peripherals::$scif {
             const INDEX: usize = $n;
+            type BreakInterrupt = crate::interrupt::typelevel::$bri;
             type ErrorInterrupt = crate::interrupt::typelevel::$eri;
             type RxInterrupt = crate::interrupt::typelevel::$rxi;
             type TxInterrupt = crate::interrupt::typelevel::$txi;
@@ -652,11 +656,11 @@ macro_rules! instances {
 }
 
 instances! {
-    SCIF0 = 0, ERI0, RXI0, TXI0;
-    SCIF1 = 1, ERI1, RXI1, TXI1;
-    SCIF2 = 2, ERI2, RXI2, TXI2;
-    SCIF3 = 3, ERI3, RXI3, TXI3;
-    SCIF4 = 4, ERI4, RXI4, TXI4;
+    SCIF0 = 0, BRI0, ERI0, RXI0, TXI0;
+    SCIF1 = 1, BRI1, ERI1, RXI1, TXI1;
+    SCIF2 = 2, BRI2, ERI2, RXI2, TXI2;
+    SCIF3 = 3, BRI3, ERI3, RXI3, TXI3;
+    SCIF4 = 4, BRI4, ERI4, RXI4, TXI4;
 }
 
 impl RxDmaInstance for crate::peripherals::SCIF0 {
@@ -683,6 +687,18 @@ pub struct ErrorInterruptHandler<T: Instance> {
 }
 
 impl<T: Instance> Handler<T::ErrorInterrupt> for ErrorInterruptHandler<T> {
+    unsafe fn on_interrupt() {
+        on_eri(T::INDEX);
+    }
+}
+
+/// SCIF `T`'s break and overrun interrupt (BRK, ORER): latches and clears them, without which an
+/// overrun stops reception for good, and wakes the reader.
+pub struct BreakInterruptHandler<T: Instance> {
+    _scif: PhantomData<T>,
+}
+
+impl<T: Instance> Handler<T::BreakInterrupt> for BreakInterruptHandler<T> {
     unsafe fn on_interrupt() {
         on_eri(T::INDEX);
     }
@@ -738,7 +754,8 @@ impl<'d> Uart<'d, Async> {
         _scif: Peri<'d, T>,
         tx: Peri<'d, impl TxPin<T>>,
         rx: Peri<'d, impl RxPin<T>>,
-        irq: impl Binding<T::ErrorInterrupt, ErrorInterruptHandler<T>>
+        irq: impl Binding<T::BreakInterrupt, BreakInterruptHandler<T>>
+        + Binding<T::ErrorInterrupt, ErrorInterruptHandler<T>>
         + Binding<T::RxInterrupt, RxInterruptHandler<T>>
         + Binding<T::TxInterrupt, TxInterruptHandler<T>>
         + Copy
@@ -764,12 +781,14 @@ impl<'d> Uart<'d, Async> {
         });
         RX_ERROR[ch].store(0, Ordering::Release);
         RX_IRQ_ACTIVE[ch].store(true, Ordering::Release);
+        interrupt::bind::<T::BreakInterrupt, BreakInterruptHandler<T>>(irq);
         interrupt::bind::<T::ErrorInterrupt, ErrorInterruptHandler<T>>(irq);
         interrupt::bind::<T::RxInterrupt, RxInterruptHandler<T>>(irq);
         interrupt::bind::<T::TxInterrupt, TxInterruptHandler<T>>(irq);
         // SAFETY: SCIF T's own interrupts; the ring they fill is installed. Their priorities are
         // the application's.
         unsafe {
+            T::BreakInterrupt::enable();
             T::ErrorInterrupt::enable();
             T::RxInterrupt::enable();
             T::TxInterrupt::enable();
@@ -804,7 +823,8 @@ impl<'d> Uart<'d, Async> {
         rx: Peri<'d, impl RxPin<T>>,
         rx_dma: Dma<'d>,
         tx_dma: Option<Dma<'d>>,
-        irq: impl Binding<T::ErrorInterrupt, ErrorInterruptHandler<T>>
+        irq: impl Binding<T::BreakInterrupt, BreakInterruptHandler<T>>
+        + Binding<T::ErrorInterrupt, ErrorInterruptHandler<T>>
         + Binding<T::TxInterrupt, TxInterruptHandler<T>>
         + Copy
         + 'd,
@@ -815,12 +835,14 @@ impl<'d> Uart<'d, Async> {
         crate::gpio::mux(rx, rx_alt);
         // SAFETY: SCIF T is owned.
         unsafe { configure(T::INDEX, &config) };
+        interrupt::bind::<T::BreakInterrupt, BreakInterruptHandler<T>>(irq);
         interrupt::bind::<T::ErrorInterrupt, ErrorInterruptHandler<T>>(irq);
         interrupt::bind::<T::TxInterrupt, TxInterruptHandler<T>>(irq);
         // SAFETY: SCIF T's own interrupts. ERI is enabled although reception is by DMA: receive
         // errors still reach the GIC, and one left uncleared stops reception for good. Their
         // priorities are the application's.
         unsafe {
+            T::BreakInterrupt::enable();
             T::ErrorInterrupt::enable();
             T::TxInterrupt::enable();
         }
@@ -1176,10 +1198,11 @@ impl<'d> Uart<'d, Blocking> {
     }
 }
 
-/// Whether SCIF `ch` reports a receive error: SCFSR ER/BRK/FER/PER or SCLSR ORER.
+/// Whether SCIF `ch` has a receive-error event pending: SCFSR ER/BRK or SCLSR ORER. Not FER/PER:
+/// they stay set until the bad byte is read, after its error has been reported.
 fn rx_error_flags(ch: usize) -> bool {
     let sc = scif(ch);
-    sc.fsr().read().0 & (ER | BRK | FER | PER) != 0 || sc.lsr().read().0 & 1 != 0
+    sc.fsr().read().0 & (ER | BRK) != 0 || sc.lsr().read().0 & 1 != 0
 }
 
 /// Move SCIF `ch`'s receive-error flags into its latch, as the error interrupt does.
@@ -1535,8 +1558,10 @@ mod typed_tests {
     use crate::peripherals::{DMA_CH10, DMA_CH12, DMA_CH13, SCIF0, SCIF1};
 
     crate::bind_interrupts!(struct Irqs {
+        BRI0 => BreakInterruptHandler<SCIF0>;
         ERI0 => ErrorInterruptHandler<SCIF0>;
         TXI0 => TxInterruptHandler<SCIF0>;
+        BRI1 => BreakInterruptHandler<SCIF1>;
         ERI1 => ErrorInterruptHandler<SCIF1>;
         TXI1 => TxInterruptHandler<SCIF1>;
         DMAINT10 => dmac::InterruptHandler<DMA_CH10>;
@@ -1585,11 +1610,47 @@ mod typed_tests {
         test::poke16(b + 0x10, FER | ER);
         test::poke16(b + 0x24, 1);
         on_eri(2);
-        assert_eq!(test::peek16(b + 0x10) & (FER | ER), 0, "SCFSR errors cleared");
+        assert_eq!(test::peek16(b + 0x10) & ER, 0, "ER cleared (FER is read-only)");
         assert_eq!(test::peek16(b + 0x24) & 1, 0, "ORER cleared");
         assert_eq!(take_error(2), Some(Error::Overrun));
         assert_eq!(take_error(2), Some(Error::Framing));
         assert_eq!(take_error(2), None);
+    }
+
+    /// On the DMA path the DMAC takes the bad byte before ERI runs, so FER/PER read 0: ER alone
+    /// still reports a (framing) error.
+    #[test]
+    fn eri_without_fer_or_per_still_latches_framing() {
+        let _serial = serial();
+        test::reset();
+        while take_error(4).is_some() {}
+        let b = 0xE800_9000usize; // SCIF4
+        test::poke16(b + 0x10, ER);
+        on_eri(4);
+        assert_eq!(test::peek16(b + 0x10) & ER, 0, "ER cleared");
+        assert_eq!(take_error(4), Some(Error::Framing));
+        assert_eq!(take_error(4), None);
+    }
+
+    /// BRK and ORER raise BRI, not ERI: its handler latches and clears them, so an overrun
+    /// doesn't stop reception for good.
+    #[test]
+    fn bri_clears_an_overrun_and_a_break() {
+        let _serial = serial();
+        test::reset();
+        while take_error(4).is_some() {}
+        let b = 0xE800_9000usize; // SCIF4
+        test::poke16(b + 0x24, 1);
+        test::poke16(b + 0x10, BRK);
+        unsafe {
+            <BreakInterruptHandler<crate::peripherals::SCIF4> as Handler<
+                crate::interrupt::typelevel::BRI4,
+            >>::on_interrupt()
+        };
+        assert_eq!(test::peek16(b + 0x24) & 1, 0, "ORER cleared");
+        assert_eq!(test::peek16(b + 0x10) & BRK, 0, "BRK cleared");
+        assert_eq!(take_error(4), Some(Error::Overrun));
+        assert_eq!(take_error(4), Some(Error::Break));
     }
 
     #[test]
@@ -1676,6 +1737,7 @@ mod typed_tests {
             "both requests go to the DMAC"
         );
         assert!(crate::gic::handler(222).is_some(), "ERI0 bound");
+        assert!(crate::gic::handler(221).is_some(), "BRI0 bound");
         assert!(crate::gic::handler(224).is_some(), "TXI0 bound");
         // DMARS5 holds channel 10 (low half: SCIF0 transmit); DMARS6 channel 13 (high: receive).
         assert_eq!(test::peek32(0xFCFE_1014) & 0xFFFF, 0x61);
@@ -1849,10 +1911,25 @@ mod blocking_tests {
         test::poke16(SCFDR, 1);
         test::poke16(SCFSR, FER | ER | RDF);
         assert_eq!(rx.nb_read(), Err(nb::Error::Other(Error::Framing)));
-        assert_eq!(test::peek16(SCFSR) & (FER | ER), 0);
+        assert_eq!(test::peek16(SCFSR) & ER, 0, "ER cleared");
         test::poke16(SCLSR, 1);
         assert_eq!(rx.nb_read(), Err(nb::Error::Other(Error::Overrun)));
         assert_eq!(test::peek16(SCLSR) & 1, 0);
+    }
+
+    /// FER is read-only: it describes the byte at the head of the FIFO and clears only once that
+    /// byte is read. The error is reported once (from ER), then the byte itself is read.
+    #[test]
+    fn a_framing_error_is_reported_once_then_its_byte_is_read() {
+        let _serial = serial();
+        let (mut rx, _tx) = scif3();
+        test::poke16(SCFDR, 1);
+        test::poke8(SCFRDR, 0xEE);
+        test::poke16(SCFSR, FER | ER | RDF);
+        assert_eq!(rx.nb_read(), Err(nb::Error::Other(Error::Framing)));
+        // The hardware keeps FER (read-only) until the byte leaves the FIFO; ER was cleared.
+        test::poke16(SCFSR, FER | RDF);
+        assert_eq!(rx.nb_read(), Ok(0xEE));
     }
 
     #[test]
@@ -1898,6 +1975,7 @@ mod irq_tests {
     use std::task::{Context, Wake, Waker};
 
     crate::bind_interrupts!(struct Irqs {
+        BRI2 => BreakInterruptHandler<SCIF2>;
         ERI2 => ErrorInterruptHandler<SCIF2>;
         RXI2 => RxInterruptHandler<SCIF2>;
         TXI2 => TxInterruptHandler<SCIF2>;
@@ -1955,6 +2033,7 @@ mod irq_tests {
         let _rx = scif2(&mut buf);
         assert_eq!(test::peek16(SCSCR) & (RIE | RE | TE), RIE | RE | TE);
         assert!(crate::gic::handler(231).is_some(), "RXI2 bound");
+        assert!(crate::gic::handler(229).is_some(), "BRI2 bound");
     }
 
     #[test]
