@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `rza1-hal` USB iso streams (phase 6 of the pre-0.1 API pass):
+  - `usb::iso`: `Rusb1EndpointOut::into_iso_stream(&'static mut dyn IsoOutConsumer)` and
+    `Rusb1EndpointIn::into_iso_stream(&'static mut dyn IsoInProducer)` bind an isochronous
+    endpoint, per port and pipe, to a consumer the USB interrupt calls on every BRDY: packets go
+    straight between the FIFO and the consumer, with no task hop. Enabling a bound IN endpoint
+    primes both FIFO planes, as before. Dropping a stream masks its BRDY and unbinds it. Packets
+    up to 1024 bytes (was 512, which clamped `AudioClass<6>`'s 882-byte capture packet); a longer
+    OUT packet is dropped and counted (`bad_packets`).
+  - Removed: `usb::pipe::{register_iso_out_hook, register_iso_in_hook, is_iso_in_hook_pipe}`.
+    `pipe_reset`, `pipe_enable`, `pipe_brdy_enable` and `pipe_iso_in_activate` are
+    `#[doc(hidden)]`, kept only for DelugeFirmware until phase 9.
+  - Fixed: alt settings that share an endpoint address (UAC2 streaming alts 1 and 2). One
+    SET_INTERFACE enables the selected alt's endpoint and then disables the other alt's, which is
+    the same pipe; a disable of a pipe the same request enabled is now skipped. Before, selecting
+    alt 1 (16-bit) left the stream disabled: a 16-bit capture failed (bench: `arecord -f S16_LE`
+    gave a header-only file; now exactly 529,244 bytes for 3 s). DelugeFirmware's re-enable
+    workaround in `set_alternate_setting` can go in phase 9.
+  - Host: the isochronous IN rings (2 pipes × 8 × 1024 B) are lent per port with
+    `Rusb1HostDriver::lend_iso_in_buffers(&'static mut IsoInBuffers)`; opening an isochronous IN
+    endpoint without them fails. `deluge_bsp::usb::host::usb_host_supervisor` lends its own.
+    The host's local `OnDrop` is embassy-hal-internal's.
+  - Firmwares: the speaker (`SpeakerSink`) and mic (`MicSource`) paths are stream consumers, their
+    write-ahead and conversion unchanged. Fixed: controller-firmware's capture, which a task fed
+    with `EndpointIn::write` and which returned no audio (bench: header-only `arecord` since at
+    least phase 4), now runs on a `MicSource` stream like demo-firmware's.
+  - For DelugeFirmware (phase 9): `register_iso_out_hook(pipe, f)` becomes
+    `ep_out.into_iso_stream(sink)` with `impl IsoOutConsumer`, `register_iso_in_hook` becomes
+    `ep_in.into_iso_stream(source)` with `impl IsoInProducer`, and the alt-1 re-enable in
+    `set_alternate_setting` goes.
 - `rza1-hal` SSI and SCUX are owned drivers over lent rings (phase 5 of the pre-0.1 API pass):
   - `dma_buf::{Uncached, UncachedMut}` are generic over the DMA word (`u8` by default, so byte
     users don't change).
