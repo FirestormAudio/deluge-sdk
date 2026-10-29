@@ -114,6 +114,22 @@ pub use host::{
 // Device: real SDHI1 hardware driver
 // ---------------------------------------------------------------------------
 
+/// Whether the card can be used for an operation: an aborted transfer (the controller stopped and
+/// reset after a dropped command or transfer, `aborted`) makes it unusable until `init` runs again,
+/// as does a card `init` hasn't readied.
+#[cfg_attr(not(any(target_os = "none", test)), allow(dead_code))]
+fn card_usable(aborted: bool, ready: &core::sync::atomic::AtomicBool) -> Result<(), SdError> {
+    use core::sync::atomic::Ordering;
+    if aborted {
+        ready.store(false, Ordering::Release);
+    }
+    if ready.load(Ordering::Acquire) {
+        Ok(())
+    } else {
+        Err(SdError::NotInitialized)
+    }
+}
+
 #[cfg(target_os = "none")]
 mod device {
     use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
@@ -125,6 +141,7 @@ mod device {
     use rza1_hal::UNCACHED_MIRROR_OFFSET;
     use rza1_hal::cache;
     use rza1_hal::dmac::{self, Dma};
+    use rza1_hal::dma_buf::UncachedMut;
     use rza1_hal::sdhi::{self, Sdhi};
 
     use super::SdError;
@@ -184,6 +201,12 @@ mod device {
     /// Before [`init_hw`].
     pub fn controller() -> &'static Sdhi<'static> {
         SDHI.try_get().expect("deluge_bsp::sd::init_hw hasn't run")
+    }
+
+    /// Whether a command or transfer was dropped mid-flight since the last check (false before
+    /// `init_hw`, when there is no controller to have aborted).
+    fn aborted() -> bool {
+        SDHI.try_get().is_some_and(|c| c.take_aborted())
     }
 
     // ---------------------------------------------------------------------------
@@ -288,6 +311,24 @@ mod device {
     // Safety: access is serialised by the async executor (single SD task).
     static mut SD_DMA_BUF: SdDmaBuf = SdDmaBuf([0u8; SD_DMA_MAX_SECTORS * 512]);
 
+    /// The bounce buffer, through its uncached mirror, as the DMA buffer it is.
+    ///
+    /// # Safety
+    /// The caller holds [`CARD`] (one SD operation at a time), so no other view of the buffer is
+    /// live; the buffer is only ever touched through this mirror view, and `init` cleans and
+    /// invalidates its cached alias once.
+    unsafe fn bounce() -> UncachedMut<'static> {
+        // SAFETY: the caller's contract.
+        let mirror = unsafe {
+            core::slice::from_raw_parts_mut(
+                (core::ptr::addr_of_mut!(SD_DMA_BUF.0[0]) as usize + UNCACHED_MIRROR_OFFSET)
+                    as *mut u8,
+                SD_DMA_MAX_SECTORS * 512,
+            )
+        };
+        UncachedMut::new(mirror).expect("the SD bounce buffer's mirror is uncached memory")
+    }
+
     // ---------------------------------------------------------------------------
     // Internal helpers
     // ---------------------------------------------------------------------------
@@ -367,6 +408,8 @@ mod device {
         // identification state each time: the previous card may have left SD_CLK at 16.7 or
         // 33.3 MHz (identification allows 400 kHz), or the controller wedged by a pull
         // mid-transfer.
+        // Re-identifying is what an aborted transfer asks for: drop its flag.
+        let _ = controller().take_aborted();
         controller().reset();
         unsafe {
             // Clean-invalidate the DMA bounce buffer's cacheable alias.  BSS
@@ -615,21 +658,17 @@ mod device {
     }
 
     async fn read_sector_unlocked(lba: u32, buf: &mut [u8; 512]) -> Result<(), SdError> {
-        if !CARD_READY.load(Ordering::Acquire) {
-            return Err(SdError::NotInitialized);
-        }
+        super::card_usable(aborted(), &CARD_READY)?;
 
         let addr = lba_to_addr(lba);
         let cmd = CMD17;
 
-        unsafe {
-            let dma_ptr =
-                (core::ptr::addr_of!(SD_DMA_BUF.0[0]) as usize + UNCACHED_MIRROR_OFFSET) as *mut u8;
-            controller().set_block_count(1);
-            controller().set_arg(addr);
-            controller().read_blocks_dma(cmd, dma_ptr, 1).await?;
-            buf.copy_from_slice(core::slice::from_raw_parts(dma_ptr, 512));
-        }
+        // SAFETY: the caller holds CARD.
+        let mut dma = unsafe { bounce() };
+        controller().set_block_count(1);
+        controller().set_arg(addr);
+        controller().read_blocks_dma(cmd, dma.prefix(512)).await?;
+        buf.copy_from_slice(&dma.as_slice()[..512]);
         Ok(())
     }
 
@@ -644,23 +683,17 @@ mod device {
     }
 
     async fn write_sector_unlocked(lba: u32, buf: &[u8; 512]) -> Result<(), SdError> {
-        if !CARD_READY.load(Ordering::Acquire) {
-            return Err(SdError::NotInitialized);
-        }
+        super::card_usable(aborted(), &CARD_READY)?;
 
         let addr = lba_to_addr(lba);
         let cmd = CMD24;
 
-        unsafe {
-            let dma_ptr =
-                (core::ptr::addr_of!(SD_DMA_BUF.0[0]) as usize + UNCACHED_MIRROR_OFFSET) as *mut u8;
-            core::ptr::copy_nonoverlapping(buf.as_ptr(), dma_ptr, 512);
-            controller().set_block_count(1);
-            controller().set_arg(addr);
-            controller()
-                .write_blocks_dma(cmd, dma_ptr as *const u8, 1)
-                .await?;
-        }
+        // SAFETY: the caller holds CARD.
+        let mut dma = unsafe { bounce() };
+        dma.as_mut_slice()[..512].copy_from_slice(buf);
+        controller().set_block_count(1);
+        controller().set_arg(addr);
+        controller().write_blocks_dma(cmd, dma.prefix(512).as_source()).await?;
         Ok(())
     }
 
@@ -678,9 +711,7 @@ mod device {
     }
 
     async fn read_sectors_unlocked(lba: u32, count: u32, buf: &mut [u8]) -> Result<(), SdError> {
-        if !CARD_READY.load(Ordering::Acquire) {
-            return Err(SdError::NotInitialized);
-        }
+        super::card_usable(aborted(), &CARD_READY)?;
         if buf.len() < (count as usize) * 512 {
             return Err(SdError::Protocol);
         }
@@ -692,9 +723,9 @@ mod device {
             return read_sector_unlocked(lba, unsafe { &mut *arr }).await;
         }
 
-        unsafe {
-            let dma_ptr =
-                (core::ptr::addr_of!(SD_DMA_BUF.0[0]) as usize + UNCACHED_MIRROR_OFFSET) as *mut u8;
+        {
+            // SAFETY: the caller holds CARD.
+            let mut dma = unsafe { bounce() };
             let mut remaining = count;
             let mut cur_lba = lba;
             let mut buf_offset = 0usize;
@@ -704,7 +735,8 @@ mod device {
                 let cmd = if chunk > 1 { CMD18_MULTI } else { CMD17 };
                 controller().set_block_count(chunk);
                 controller().set_arg(chunk_addr);
-                let xfer = controller().read_blocks_dma(cmd, dma_ptr, chunk).await;
+                let chunk_bytes = (chunk as usize) * 512;
+                let xfer = controller().read_blocks_dma(cmd, dma.prefix(chunk_bytes)).await;
                 // CMD18 (READ_MULTIPLE_BLOCK) runs in extended mode with auto-CMD12
                 // disabled (CMD18 | 0x7C00, [15:14]=01), so the card keeps streaming
                 // data until it receives STOP_TRANSMISSION.  The SD_STOP SEC bit only
@@ -721,9 +753,8 @@ mod device {
                 };
                 xfer?;
                 stop?;
-                let chunk_bytes = (chunk as usize) * 512;
                 buf[buf_offset..buf_offset + chunk_bytes]
-                    .copy_from_slice(core::slice::from_raw_parts(dma_ptr, chunk_bytes));
+                    .copy_from_slice(&dma.as_slice()[..chunk_bytes]);
                 remaining -= chunk;
                 cur_lba += chunk;
                 buf_offset += chunk_bytes;
@@ -741,9 +772,7 @@ mod device {
     }
 
     async fn write_sectors_unlocked(lba: u32, count: u32, buf: &[u8]) -> Result<(), SdError> {
-        if !CARD_READY.load(Ordering::Acquire) {
-            return Err(SdError::NotInitialized);
-        }
+        super::card_usable(aborted(), &CARD_READY)?;
         if buf.len() < (count as usize) * 512 {
             return Err(SdError::Protocol);
         }
@@ -755,9 +784,9 @@ mod device {
             return write_sector_unlocked(lba, unsafe { &*arr }).await;
         }
 
-        unsafe {
-            let dma_ptr =
-                (core::ptr::addr_of!(SD_DMA_BUF.0[0]) as usize + UNCACHED_MIRROR_OFFSET) as *mut u8;
+        {
+            // SAFETY: the caller holds CARD.
+            let mut dma = unsafe { bounce() };
             let mut remaining = count;
             let mut cur_lba = lba;
             let mut buf_offset = 0usize;
@@ -766,11 +795,12 @@ mod device {
                 let chunk_addr = lba_to_addr(cur_lba);
                 let cmd = if chunk > 1 { CMD25 } else { CMD24 };
                 let chunk_bytes = (chunk as usize) * 512;
-                core::ptr::copy_nonoverlapping(buf.as_ptr().add(buf_offset), dma_ptr, chunk_bytes);
+                dma.as_mut_slice()[..chunk_bytes]
+                    .copy_from_slice(&buf[buf_offset..buf_offset + chunk_bytes]);
                 controller().set_block_count(chunk);
                 controller().set_arg(chunk_addr);
                 controller()
-                    .write_blocks_dma(cmd, dma_ptr as *const u8, chunk)
+                    .write_blocks_dma(cmd, dma.prefix(chunk_bytes).as_source())
                     .await?;
                 remaining -= chunk;
                 cur_lba += chunk;
@@ -782,7 +812,9 @@ mod device {
 
     /// Returns `true` if `init()` completed successfully and the card is ready.
     pub fn is_ready() -> bool {
-        CARD_READY.load(Ordering::Acquire)
+        // An aborted transfer makes the card unready until `init` (USB mass storage's
+        // `ensure_ready` relies on this to re-initialise).
+        super::card_usable(aborted(), &CARD_READY).is_ok()
     }
 
     /// Returns `true` if the card is a High Capacity (SDHC/SDXC) card.
@@ -807,7 +839,7 @@ mod device {
     /// Reads the SDHI SD_WP signal.  Only meaningful once the controller is up
     /// (after [`init`]); returns `false` when no card is ready.
     pub fn is_write_protected() -> bool {
-        if !CARD_READY.load(Ordering::Acquire) {
+        if super::card_usable(aborted(), &CARD_READY).is_err() {
             return false;
         }
         controller().card_write_protected()
@@ -818,7 +850,7 @@ mod device {
     /// Only valid after [`init()`] has returned `Ok(())`.  Returns 0 if the card
     /// is not ready.  Used to answer SCSI READ CAPACITY for USB mass storage.
     pub fn total_sectors() -> u32 {
-        if !CARD_READY.load(Ordering::Acquire) {
+        if super::card_usable(aborted(), &CARD_READY).is_err() {
             return 0;
         }
         controller().card_size_blocks()
@@ -903,9 +935,7 @@ mod device {
             blocks: &mut [embedded_sdmmc::Block],
             start_block_idx: embedded_sdmmc::BlockIdx,
         ) -> Result<(), SdError> {
-            if !CARD_READY.load(Ordering::Acquire) {
-                return Err(SdError::NotInitialized);
-            }
+            super::card_usable(aborted(), &CARD_READY)?;
             let count = blocks.len() as u32;
             if count == 0 {
                 return Ok(());
@@ -915,7 +945,11 @@ mod device {
             // Single-block read = plain CMD17 (normal mode); multi-block read adds
             // the extended multiple-block bits. HC vs SC addressing is in `addr`.
             let cmd = if count > 1 { CMD18_MULTI } else { CMD17 };
-            let ptr = blocks.as_mut_ptr() as *mut u8;
+            // SAFETY: an embedded-sdmmc `Block` is its 512 content bytes, so the blocks are
+            // `count * 512` contiguous bytes, borrowed for this call.
+            let bytes = unsafe {
+                core::slice::from_raw_parts_mut(blocks.as_mut_ptr() as *mut u8, blocks.len() * 512)
+            };
             // Interrupt-driven PIO transfer, mirroring the vendor HAL's
             // `_sd_software_trans`. embedded-sdmmc's `BlockDevice` is synchronous,
             // so run the async transfer to completion with block_on (fine for the
@@ -923,11 +957,11 @@ mod device {
             // path, [`read_sectors`], directly so the executor keeps running during
             // transfers.
             embassy_futures::block_on(async {
-                unsafe {
+                {
                     controller().set_block_count(count);
                     controller().set_arg(addr);
                     controller().send_cmd(cmd).await?;
-                    let xfer = controller().read_blocks_sw(ptr, count).await;
+                    let xfer = controller().read_blocks_sw(bytes).await;
                     // CMD18 multi-block read leaves auto-CMD12 disabled (see
                     // `read_sectors`); stop the card explicitly — even if the data
                     // phase failed — so a bailed-out read never leaves the card
@@ -950,9 +984,7 @@ mod device {
             blocks: &[embedded_sdmmc::Block],
             start_block_idx: embedded_sdmmc::BlockIdx,
         ) -> Result<(), SdError> {
-            if !CARD_READY.load(Ordering::Acquire) {
-                return Err(SdError::NotInitialized);
-            }
+            super::card_usable(aborted(), &CARD_READY)?;
             let count = blocks.len() as u32;
             if count == 0 {
                 return Ok(());
@@ -962,23 +994,24 @@ mod device {
             // Single/multi-block write both use normal mode (plain command index).
             let cmd = if count > 1 { CMD25 } else { CMD24 };
 
-            let ptr = blocks.as_ptr() as *const u8;
+            // SAFETY: as in `read`: the blocks are `count * 512` contiguous bytes.
+            let bytes = unsafe {
+                core::slice::from_raw_parts(blocks.as_ptr() as *const u8, blocks.len() * 512)
+            };
             // Interrupt-driven PIO transfer (see `read` above).
             embassy_futures::block_on(async {
-                unsafe {
+                {
                     controller().set_block_count(count);
                     controller().set_arg(addr);
                     controller().send_cmd(cmd).await?;
-                    controller().write_blocks_sw(ptr, count).await
+                    controller().write_blocks_sw(bytes).await
                 }
             })
             .map_err(SdError::from)
         }
 
         fn num_blocks(&self) -> Result<embedded_sdmmc::BlockCount, SdError> {
-            if !CARD_READY.load(Ordering::Acquire) {
-                return Err(SdError::NotInitialized);
-            }
+            super::card_usable(aborted(), &CARD_READY)?;
             let n = controller().card_size_blocks();
             Ok(embedded_sdmmc::BlockCount(n))
         }
@@ -1500,6 +1533,21 @@ mod host {
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
+    #[test]
+    fn an_aborted_transfer_requires_reinit() {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        let ready = AtomicBool::new(true);
+        assert_eq!(super::card_usable(true, &ready), Err(super::SdError::NotInitialized));
+        assert!(!ready.load(Ordering::Relaxed));
+        assert_eq!(
+            super::card_usable(false, &ready),
+            Err(super::SdError::NotInitialized),
+            "still, until init"
+        );
+        ready.store(true, Ordering::Relaxed);
+        assert_eq!(super::card_usable(false, &ready), Ok(()));
+    }
+
     use super::*;
 
     #[test]

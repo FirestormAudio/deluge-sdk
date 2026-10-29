@@ -39,6 +39,8 @@
 //! let resp = sdhi.read_r1();
 //! ```
 
+use crate::dma_buf::{Uncached, UncachedMut};
+use embassy_hal_internal::drop::OnDrop;
 use core::future::poll_fn;
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 use core::task::Poll;
@@ -269,6 +271,8 @@ const SDIO_INFO1_MASK_INIT: u16 = 0xC007;
 // Soft-reset sequence values (SOFT_RST register)
 // ---------------------------------------------------------------------------
 
+/// SD_STOP.STP: stop the data transfer in progress.
+const SD_STOP_STP: u16 = 0x0001;
 /// SOFT_RST value to assert reset (bit 1 set, bit 0 clear).
 /// BSP: written first in the RZ/A1 two-step soft-reset sequence.
 const SOFT_RST_ASSERT: u16 = 0x0006;
@@ -596,6 +600,7 @@ unsafe fn wait_clk_stable(port: u8) {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[non_exhaustive]
 pub enum SdhiError {
     /// Response timeout (no response received in time).
     ResponseTimeout,
@@ -611,6 +616,17 @@ pub enum SdhiError {
     IllegalAccess,
     /// Generic hardware error.
     HardwareError,
+    /// The buffer is empty or not a whole number of 512-byte blocks.
+    BufferLength,
+}
+
+/// The number of 512-byte blocks in a `len`-byte buffer, or [`SdhiError::BufferLength`] if it is
+/// empty or not a whole number of blocks.
+fn block_count(len: usize) -> Result<u32, SdhiError> {
+    if len == 0 || len % 512 != 0 {
+        return Err(SdhiError::BufferLength);
+    }
+    u32::try_from(len / 512).map_err(|_| SdhiError::BufferLength)
 }
 
 impl From<SdhiError> for &'static str {
@@ -623,6 +639,7 @@ impl From<SdhiError> for &'static str {
             SdhiError::CmdBusy => "SDHI: command busy timeout",
             SdhiError::IllegalAccess => "SDHI: illegal register access",
             SdhiError::HardwareError => "SDHI: hardware error",
+            SdhiError::BufferLength => "SDHI: buffer is not a whole number of 512-byte blocks",
         }
     }
 }
@@ -985,6 +1002,12 @@ async unsafe fn read_blocks_dma(
         // 5. Wait for transfer complete (DATA_TRNS via SDHI interrupt).
         let data_result = wait_access_end(port).await;
 
+        // On an error the SD_BUF DMA request stays asserted (HW manual ch. 38, DMA transfer): stop
+        // the DMAC before returning, or it keeps writing into the caller's buffer.
+        if data_result.is_err() && !crate::dmac::halt_channel(dma.number()) {
+            warn!("sdhi{}: DMA channel {} didn't stop after a read error", port, dma.number());
+        }
+
         // 5b. For RX: wait for the DMAC to drain its final burst into memory.
         // DATA_TRNS fires when the SD-bus transfer ends; the DMAC may still
         // be writing the last burst to the destination buffer.  Reading the
@@ -1065,6 +1088,12 @@ async unsafe fn write_blocks_dma(
 
         // 5. Wait for transfer complete (DATA_TRNS via SDHI interrupt).
         let data_result = wait_access_end(port).await;
+
+        // On an error the SD_BUF DMA request stays asserted (HW manual ch. 38, DMA transfer): stop
+        // the DMAC before returning.
+        if data_result.is_err() && !crate::dmac::halt_channel(dma.number()) {
+            warn!("sdhi{}: DMA channel {} didn't stop after a write error", port, dma.number());
+        }
 
         // No separate card-busy wait is needed here: per the RZ/A1 TRM (§38.2.6,
         // SD_INFO1 Access End), the Access End flag we awaited above (DATA_TRNS) is
@@ -1518,9 +1547,13 @@ impl<T: Instance> Handler<T::OperationInterrupt> for OperationInterruptHandler<T
 /// An SD host controller, with its DMA channels.
 ///
 /// Its methods take `&self`, so firmware can keep it in a static. The card protocol is a
-/// sequence: issue one command (and its transfer) at a time.
+/// sequence: issue one command (and its transfer) at a time, serialised by the caller. A command
+/// or transfer dropped mid-flight resets the whole controller ([`take_aborted`](Self::take_aborted)),
+/// so one from another task running alongside it would never complete.
 pub struct Sdhi<'d> {
     port: u8,
+    /// Whether a command or transfer was dropped mid-flight ([`take_aborted`](Self::take_aborted)).
+    aborted: AtomicBool,
     /// The board's SD_OPTION, which [`reset`](Self::reset) restores.
     sd_option: u16,
     /// The DMA channels, each held by one block transfer at a time across its awaits.
@@ -1587,6 +1620,7 @@ impl<'d> Sdhi<'d> {
         }
         Self {
             port: T::PORT,
+            aborted: AtomicBool::new(false),
             sd_option,
             tx_dma: Mutex::new(tx_dma),
             rx_dma: Mutex::new(rx_dma),
@@ -1604,6 +1638,37 @@ impl<'d> Sdhi<'d> {
     pub fn reset(&self) {
         // SAFETY: the owned controller; nothing is in flight (this method's contract).
         unsafe { init(self.port, self.sd_option) }
+    }
+
+    /// Whether a command or transfer was dropped mid-flight since the last call. If so the
+    /// controller has been stopped and reset to identification mode, and the card must be
+    /// re-identified before it is used again.
+    ///
+    /// The controller runs one command or transfer at a time, and the caller serialises them (as
+    /// `deluge-bsp`'s SD layer does with one lock): an abort resets the whole controller, so an
+    /// operation another task had in flight on it would never complete.
+    pub fn take_aborted(&self) -> bool {
+        self.aborted.swap(false, Ordering::AcqRel)
+    }
+
+    /// A guard that, if dropped before it is defused, aborts the command or transfer in flight:
+    /// the DMA channel `dma` (if any) halted, the SD transfer stopped (SD_STOP.STP), the
+    /// controller soft-reset to identification mode, and the abort recorded for
+    /// [`take_aborted`](Self::take_aborted). Synchronous: nothing runs on after the future is gone.
+    fn abort_on_drop(&self, dma: Option<u8>) -> OnDrop<impl FnOnce() + '_> {
+        OnDrop::new(move || {
+            if let Some(ch) = dma
+                && !crate::dmac::halt_channel(ch)
+            {
+                warn!("sdhi{}: DMA channel {} didn't stop on abort", self.port, ch);
+            }
+            // STP stays set: the soft reset in `init` clears it and ends any CMD12 sequence
+            // (HW manual §38.2.3 note 3 forbids clearing STP while one may still run).
+            sdhi(self.port).sd_stop().write_value(SD_STOP_STP);
+            // SAFETY: the owned controller; the transfer in flight is stopped above.
+            unsafe { init(self.port, self.sd_option) };
+            self.aborted.store(true, Ordering::Release);
+        })
     }
 
     /// Set the SD clock divider (`CLK_DIV_*`). `CLK_DIV_2` needs a High-Speed card.
@@ -1626,8 +1691,11 @@ impl<'d> Sdhi<'d> {
 
     /// Issue a command and wait for its response.
     pub async fn send_cmd(&self, cmd_val: u16) -> Result<(), SdhiError> {
+        let guard = self.abort_on_drop(None);
         // SAFETY: the owned controller.
-        unsafe { send_cmd(self.port, cmd_val).await }
+        let r = unsafe { send_cmd(self.port, cmd_val).await };
+        guard.defuse();
+        r
     }
 
     /// The short (R1) response.
@@ -1650,8 +1718,11 @@ impl<'d> Sdhi<'d> {
 
     /// End a multi-block transfer (CMD12).
     pub async fn stop_transfer(&self) -> Result<(), SdhiError> {
+        let guard = self.abort_on_drop(None);
         // SAFETY: the owned controller.
-        unsafe { stop_transfer(self.port).await }
+        let r = unsafe { stop_transfer(self.port).await };
+        guard.defuse();
+        r
     }
 
     /// Whether a card is in the slot.
@@ -1689,56 +1760,65 @@ impl<'d> Sdhi<'d> {
         arg: u32,
         buf: &mut [u8; 64],
     ) -> Result<(), SdhiError> {
+        let guard = self.abort_on_drop(None);
         // SAFETY: the owned controller; `buf` is a live 64-byte buffer.
-        unsafe { read_status_block_sw(self.port, cmd_val, arg, buf).await }
+        let r = unsafe { read_status_block_sw(self.port, cmd_val, arg, buf).await };
+        guard.defuse();
+        r
     }
 
-    /// Read `count` blocks into `buf` by PIO.
-    ///
-    /// # Safety
-    /// `buf` is valid for `count * 512` bytes of writes.
-    pub async unsafe fn read_blocks_sw(&self, buf: *mut u8, count: u32) -> Result<(), SdhiError> {
-        unsafe { read_blocks_sw(self.port, buf, count).await }
+    /// Read `buf.len() / 512` blocks into `buf` by PIO (any memory: the CPU copies). The command
+    /// has already been issued.
+    pub async fn read_blocks_sw(&self, buf: &mut [u8]) -> Result<(), SdhiError> {
+        let count = block_count(buf.len())?;
+        let guard = self.abort_on_drop(None);
+        // SAFETY: `buf` holds `count * 512` writable bytes, borrowed for the whole transfer.
+        let r = unsafe { read_blocks_sw(self.port, buf.as_mut_ptr(), count).await };
+        guard.defuse();
+        r
     }
 
-    /// Write `count` blocks from `buf` by PIO.
-    ///
-    /// # Safety
-    /// `buf` is valid for `count * 512` bytes of reads.
-    pub async unsafe fn write_blocks_sw(
-        &self,
-        buf: *const u8,
-        count: u32,
-    ) -> Result<(), SdhiError> {
-        unsafe { write_blocks_sw(self.port, buf, count).await }
+    /// Write `buf.len() / 512` blocks from `buf` by PIO. The command has already been issued.
+    pub async fn write_blocks_sw(&self, buf: &[u8]) -> Result<(), SdhiError> {
+        let count = block_count(buf.len())?;
+        let guard = self.abort_on_drop(None);
+        // SAFETY: `buf` holds `count * 512` readable bytes, borrowed for the whole transfer.
+        let r = unsafe { write_blocks_sw(self.port, buf.as_ptr(), count).await };
+        guard.defuse();
+        r
     }
 
-    /// Issue `cmd_val` and read `count` blocks into `buf` by DMA.
-    ///
-    /// # Safety
-    /// `buf` is `count * 512` bytes of uncached memory, valid and unaliased until this returns.
-    pub async unsafe fn read_blocks_dma(
+    /// Issue `cmd_val` and read `buf.len() / 512` blocks into `buf` by DMA.
+    pub async fn read_blocks_dma(
         &self,
         cmd_val: u16,
-        buf: *mut u8,
-        count: u32,
+        mut buf: UncachedMut<'_>,
     ) -> Result<(), SdhiError> {
+        let count = block_count(buf.len())?;
         let mut rx = self.rx_dma.lock().await;
-        unsafe { read_blocks_dma(self.port, cmd_val, buf, count, &mut rx).await }
+        let guard = self.abort_on_drop(Some(rx.number()));
+        // SAFETY: `buf` is `count * 512` bytes of uncached memory, borrowed for the transfer (and
+        // the guard stops the DMAC before the borrow ends if the transfer is dropped).
+        let r = unsafe {
+            read_blocks_dma(self.port, cmd_val, buf.as_mut_slice().as_mut_ptr(), count, &mut rx)
+                .await
+        };
+        guard.defuse();
+        r
     }
 
-    /// Issue `cmd_val` and write `count` blocks from `buf` by DMA.
-    ///
-    /// # Safety
-    /// `buf` is `count * 512` bytes of uncached memory, valid until this returns.
-    pub async unsafe fn write_blocks_dma(
-        &self,
-        cmd_val: u16,
-        buf: *const u8,
-        count: u32,
-    ) -> Result<(), SdhiError> {
+    /// Issue `cmd_val` and write `buf.len() / 512` blocks from `buf` by DMA.
+    pub async fn write_blocks_dma(&self, cmd_val: u16, buf: Uncached<'_>) -> Result<(), SdhiError> {
+        let count = block_count(buf.len())?;
         let mut tx = self.tx_dma.lock().await;
-        unsafe { write_blocks_dma(self.port, cmd_val, buf, count, &mut tx).await }
+        let guard = self.abort_on_drop(Some(tx.number()));
+        // SAFETY: `buf` is `count * 512` bytes of uncached memory, borrowed for the transfer (and
+        // the guard stops the DMAC before the borrow ends if the transfer is dropped).
+        let r = unsafe {
+            write_blocks_dma(self.port, cmd_val, buf.as_slice().as_ptr(), count, &mut tx).await
+        };
+        guard.defuse();
+        r
     }
 }
 
@@ -1852,7 +1932,7 @@ mod typed_tests {
     use super::*;
     use crate::dmac::{self, Dma};
     use crate::mmio::test;
-    use crate::peripherals::{DMA_CH11, DMA_CH14, SDHI1};
+    use crate::peripherals::{DMA_CH14, SDHI1};
 
     crate::bind_interrupts!(struct Irqs {
         SDHI1_STATUS => StatusInterruptHandler<SDHI1>;
@@ -1883,8 +1963,170 @@ mod typed_tests {
         }
     }
 
+    /// The tests here share SDHI1's interrupt state (`STATE[1]`, a process-wide static), and test
+    /// threads run in parallel: each holds this lock so they don't race on it.
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Poll `f` once, without a waker that does anything.
+    fn poll_once<F: core::future::Future>(f: core::pin::Pin<&mut F>) -> Poll<F::Output> {
+        f.poll(&mut core::task::Context::from_waker(core::task::Waker::noop()))
+    }
+
+    /// The response-end and access-end flags the operation interrupt would record.
+    fn interrupt_saw(info1: u16) {
+        STATE[1].info1.fetch_or(info1, Ordering::Release);
+    }
+
+    fn abort_writes() -> (bool, bool, bool) {
+        let s = sdhi(1);
+        let dma = crate::pac::DMAC.ch(14).chctrl().addr();
+        let w = test::writes();
+        (
+            w.iter().any(|&(a, v)| a == s.sd_stop().addr() && v & 1 != 0),
+            w.iter().any(|&(a, v)| a == s.soft_rst().addr() && v == SOFT_RST_DEASSERT as u32),
+            w.iter().any(|&(a, v)| a == dma && v & (1 << 1) != 0),
+        )
+    }
+
+    #[test]
+    fn a_read_dropped_in_its_command_phase_aborts() {
+        let _serial = serial();
+        let sdhi = sdhi1();
+        let mut storage = [0u8; 512];
+        test::reset();
+        {
+            let read = sdhi.read_blocks_dma(17, crate::dma_buf::UncachedMut::new(&mut storage).unwrap());
+            let mut read = core::pin::pin!(read);
+            assert!(poll_once(read.as_mut()).is_pending(), "waits for the response");
+        }
+        let (stp, reset, _) = abort_writes();
+        assert!(stp && reset, "SD_STOP.STP and a soft reset");
+        // STP stays set until the soft reset (HW manual §38.2.3 note 3: don't clear STP while a
+        // CMD12 sequence may still run); SDRST itself ends the sequence.
+        let stop = super::sdhi(1).sd_stop().addr();
+        let last_stop = test::writes().into_iter().filter(|&(a, _)| a == stop).last();
+        assert_eq!(last_stop.map(|(_, v)| v), Some(SD_STOP_STP as u32), "STP not cleared by hand");
+        assert!(sdhi.take_aborted());
+        assert!(!sdhi.take_aborted(), "taken once");
+    }
+
+    #[test]
+    fn a_read_dropped_in_its_data_phase_halts_the_dma() {
+        let _serial = serial();
+        let sdhi = sdhi1();
+        let mut storage = [0u8; 1024];
+        test::reset();
+        {
+            let read = sdhi.read_blocks_dma(18, crate::dma_buf::UncachedMut::new(&mut storage).unwrap());
+            let mut read = core::pin::pin!(read);
+            assert!(poll_once(read.as_mut()).is_pending());
+            interrupt_saw(INFO1_RESP);
+            assert!(poll_once(read.as_mut()).is_pending(), "waits for the data");
+        }
+        let (stp, reset, dma_halted) = abort_writes();
+        assert!(stp && reset && dma_halted, "STP {stp}, reset {reset}, DMA halted {dma_halted}");
+        assert!(sdhi.take_aborted());
+    }
+
+    #[test]
+    fn a_write_dropped_mid_flight_aborts() {
+        let _serial = serial();
+        let sdhi = sdhi1();
+        let storage = [0u8; 512];
+        test::reset();
+        {
+            let write = sdhi.write_blocks_dma(24, crate::dma_buf::Uncached::new(&storage).unwrap());
+            let mut write = core::pin::pin!(write);
+            assert!(poll_once(write.as_mut()).is_pending());
+            interrupt_saw(INFO1_RESP);
+            assert!(poll_once(write.as_mut()).is_pending());
+        }
+        let (stp, reset, _) = abort_writes();
+        assert!(stp && reset);
+        assert!(sdhi.take_aborted());
+    }
+
+    #[test]
+    fn a_read_that_fails_in_its_data_phase_stops_the_dma() {
+        // On an SD error the SD_BUF DMA request stays asserted (HW manual ch. 38): the DMAC must
+        // be stopped before the read returns, or it keeps writing into the caller's buffer.
+        let _serial = serial();
+        let sdhi = sdhi1();
+        let mut storage = [0u8; 512];
+        test::reset();
+        {
+            let read = sdhi.read_blocks_dma(17, crate::dma_buf::UncachedMut::new(&mut storage).unwrap());
+            let mut read = core::pin::pin!(read);
+            assert!(poll_once(read.as_mut()).is_pending());
+            interrupt_saw(INFO1_RESP);
+            assert!(poll_once(read.as_mut()).is_pending());
+            STATE[1].info2.fetch_or(INFO2_ERR3, Ordering::Release); // a data error
+            assert!(matches!(poll_once(read.as_mut()), Poll::Ready(Err(_))));
+        }
+        let (_, _, dma_halted) = abort_writes();
+        assert!(dma_halted, "the DMA channel was stopped");
+        assert!(!sdhi.take_aborted(), "an error is not an abort");
+    }
+
+    #[test]
+    fn a_completed_read_never_aborts() {
+        let _serial = serial();
+        let sdhi = sdhi1();
+        let mut storage = [0u8; 512];
+        test::reset();
+        {
+            let read = sdhi.read_blocks_dma(17, crate::dma_buf::UncachedMut::new(&mut storage).unwrap());
+            let mut read = core::pin::pin!(read);
+            assert!(poll_once(read.as_mut()).is_pending());
+            interrupt_saw(INFO1_RESP);
+            assert!(poll_once(read.as_mut()).is_pending());
+            interrupt_saw(INFO1_DATA_TRNS);
+            // The DMAC's last burst landed: CHSTAT.TC.
+            test::poke32(crate::pac::DMAC.ch(14).chstat().addr(), crate::dmac::CHSTAT_TC);
+            assert!(poll_once(read.as_mut()).is_ready(), "completes");
+        }
+        let (stp, reset, _) = abort_writes();
+        assert!(!stp && !reset, "no abort after a completed transfer");
+        assert!(!sdhi.take_aborted());
+    }
+
+    #[test]
+    fn a_buffer_that_is_not_whole_blocks_is_refused() {
+        let _serial = serial();
+        let sdhi = sdhi1();
+        test::reset();
+        let mut odd = [0u8; 513];
+        let mut empty = [0u8; 0];
+        assert_eq!(
+            embassy_futures::block_on(sdhi.read_blocks_sw(&mut odd)),
+            Err(SdhiError::BufferLength)
+        );
+        assert_eq!(
+            embassy_futures::block_on(sdhi.write_blocks_sw(&empty)),
+            Err(SdhiError::BufferLength)
+        );
+        assert_eq!(
+            embassy_futures::block_on(
+                sdhi.read_blocks_dma(17, crate::dma_buf::UncachedMut::new(&mut odd).unwrap())
+            ),
+            Err(SdhiError::BufferLength)
+        );
+        assert_eq!(
+            embassy_futures::block_on(
+                sdhi.write_blocks_dma(24, crate::dma_buf::Uncached::new(&odd).unwrap())
+            ),
+            Err(SdhiError::BufferLength)
+        );
+        let _ = &mut empty;
+        assert!(test::writes().is_empty(), "no command went out");
+    }
+
     #[test]
     fn a_controller_comes_up_clocked_reset_and_bound_with_sdio_masked() {
+        let _serial = serial();
         test::reset();
         test::poke8(0xFCFE_0444, 0xFF);
         let _sdhi = sdhi1();
@@ -1905,6 +2147,7 @@ mod typed_tests {
 
     #[test]
     fn card_detect_reads_info1_of_its_own_port() {
+        let _serial = serial();
         test::reset();
         let sdhi = sdhi1();
         test::poke16(0xE804_E81C, INFO1_CD_LEVEL);
@@ -1914,6 +2157,7 @@ mod typed_tests {
     }
     #[test]
     fn a_reset_returns_the_controller_to_the_identification_clock() {
+        let _serial = serial();
         test::reset();
         let sdhi = sdhi1();
         // The previous card ran at the High-Speed clock with an odd block size.

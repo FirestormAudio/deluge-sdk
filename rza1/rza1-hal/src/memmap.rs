@@ -136,6 +136,28 @@ pub const AREAS: &[(u32, u32)] = &[
     (2550, PARA_STRONGLY_ORDERED), // area 11  I/O area 2             0x60A0_0000
 ];
 
+/// The attribute of 1 MB section `index` (`address >> 20`) in [`AREAS`].
+fn section_attr(index: usize) -> u32 {
+    let mut first = 0usize;
+    for &(size, attr) in AREAS {
+        if index < first + size as usize {
+            return attr;
+        }
+        first += size as usize;
+    }
+    PARA_STRONGLY_ORDERED
+}
+
+/// Whether every byte of `[start, start + len)` lies in a normal non-cacheable section of the
+/// HAL's MMU table: the uncached mirrors, where the DMAC and the CPU see the same bytes with no
+/// cache maintenance. False for `len == 0` and for a range that wraps past 4 GB.
+pub fn is_uncached_range(start: usize, len: usize) -> bool {
+    let Some(end) = start.checked_add(len) else {
+        return false;
+    };
+    len != 0 && (start >> 20..=(end - 1) >> 20).all(|s| section_attr(s) == PARA_NORMAL_NOT_CACHE)
+}
+
 /// Encode a 1 MB section descriptor for L1-section index `index`
 /// (`index == physical_address >> 20`) with attribute bits `attr`.
 ///
@@ -147,6 +169,35 @@ pub const fn ttb_section_descriptor(index: u32, attr: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_sram_and_sdram_mirrors_are_uncached() {
+        assert!(is_uncached_range(0x6000_0000, 512)); // SRAM mirror
+        assert!(is_uncached_range(0x4C00_0000, 64 * 512)); // SDRAM (CS3) mirror
+    }
+
+    #[test]
+    fn cached_memory_is_not_uncached() {
+        assert!(!is_uncached_range(0x2000_0000, 512)); // SRAM, cached
+        assert!(!is_uncached_range(0x0C00_0000, 512)); // SDRAM, cached
+    }
+
+    #[test]
+    fn a_range_crossing_out_of_a_mirror_is_refused() {
+        // The SRAM mirror is 10 sections: 0x6000_0000..0x60A0_0000.
+        assert!(is_uncached_range(0x609F_FE00, 512));
+        assert!(!is_uncached_range(0x609F_FF00, 512));
+    }
+
+    #[test]
+    fn a_wrapping_range_is_refused() {
+        assert!(!is_uncached_range(0xFFFF_FF00, 0x200));
+    }
+
+    #[test]
+    fn an_empty_range_is_refused() {
+        assert!(!is_uncached_range(0x6000_0000, 0));
+    }
     use super::*;
     extern crate std;
     use std::vec::Vec;

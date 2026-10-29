@@ -10,7 +10,8 @@ name = "sd-bench"
 test = false
 
 [dependencies]
-rza1-hal = { path = "../../rza1/rza1-hal", features = ["rza1l"] }
+# unstable-pac: the cancel probe reads the SD receive DMA channel's status register.
+rza1-hal = { path = "../../rza1/rza1-hal", features = ["rza1l", "unstable-pac"] }
 rza1-alloc = { path = "../../rza1/rza1-alloc" }
 deluge-bsp = { path = "../../crates/deluge-bsp" }
 cortex-ar = { workspace = true }

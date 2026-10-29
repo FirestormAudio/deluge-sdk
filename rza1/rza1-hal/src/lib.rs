@@ -154,6 +154,7 @@ pub mod clocks;
 mod config;
 pub use config::{ClockOutput, ClockOutputOnChange, Config, CpgConfig, CpuClockRatio, ModuleClock, ModuleClocks};
 mod cpg;
+pub mod dma_buf;
 pub mod dmac;
 pub mod gic;
 pub mod interrupt;
