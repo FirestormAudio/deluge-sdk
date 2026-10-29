@@ -1040,6 +1040,11 @@ impl Drop for SsiRx<'_> {
     }
 }
 
+/// Stop SSIF `n`'s transmit (TEN): what a SCUX path's control does when it drops.
+pub(crate) fn stop_tx(n: u8) {
+    ssicr_update(n, |v| v & !SSICR_TEN);
+}
+
 /// SSI `T`'s transmit, fed by a SCUX path instead of a DMA ring. Dropping it stops transmit.
 pub struct ScuxOutput<'d, T: Instance> {
     _ssi: PhantomData<(&'d mut (), T)>,

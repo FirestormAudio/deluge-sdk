@@ -72,6 +72,9 @@
 //! | 8      | FFU0_2 → SRAM   | DMATU2_CIM   | 2      |
 //! | 9      | FFU0_3 → SRAM   | DMATU3_CIM   | 2      |
 
+use core::marker::PhantomData;
+
+use crate::Peri;
 use crate::dmac::Dma;
 use crate::pac::SCUX;
 
@@ -1061,52 +1064,69 @@ pub unsafe fn start_path(
         }
 
         // FFD: clear INIT + set BOOT.
-        for ch in 0..4u8 {
-            if ffd_mask & (1 << ch) != 0 {
-                SCUX.ffd(ch as usize).ffdir().write_value(INIT_CLR);
-                SCUX.ffd(ch as usize).ffdbr().write_value(FFDBR_BOOT);
-            }
-        }
+        clear_inits(ffd_mask, ffu_mask, src_mask, dvu_mask, mix_en, ipc_mask, opc_mask);
+    }
+}
 
-        // FFU: clear INIT.
-        for ch in 0..4u8 {
-            if ffu_mask & (1 << ch) != 0 {
-                SCUX.ffu(ch as usize).ffuir().write_value(INIT_CLR);
-            }
+/// Take the masked units out of INIT in the TRM §37.4.2 start order: FFD (then BOOT), FFU, 2SRC,
+/// DVU, MIX, then IPC and OPC last.
+///
+/// # Safety
+/// Writes SCUX registers; the units must be configured.
+unsafe fn clear_inits(
+    ffd_mask: u8,
+    ffu_mask: u8,
+    src_mask: u8,
+    dvu_mask: u8,
+    mix_en: bool,
+    ipc_mask: u8,
+    opc_mask: u8,
+) {
+    for ch in 0..4u8 {
+        if ffd_mask & (1 << ch) != 0 {
+            SCUX.ffd(ch as usize).ffdir().write_value(INIT_CLR);
+            SCUX.ffd(ch as usize).ffdbr().write_value(FFDBR_BOOT);
         }
+    }
 
-        // 2SRC: clear SRCIR + SRCIRR.
-        for idx in 0..4u8 {
-            if src_mask & (1 << idx) != 0 {
-                let unit = idx / 2;
-                let pair = idx % 2;
-                src(unit, pair).srcir().write_value(INIT_CLR);
-                SCUX.srcirr(unit as usize).write_value(INIT_CLR);
-            }
+    // FFU: clear INIT.
+    for ch in 0..4u8 {
+        if ffu_mask & (1 << ch) != 0 {
+            SCUX.ffu(ch as usize).ffuir().write_value(INIT_CLR);
         }
+    }
 
-        // DVU: clear INIT (caller must call apply_dvu_after_init after this).
-        for ch in 0..4u8 {
-            if dvu_mask & (1 << ch) != 0 {
-                SCUX.dvu(ch as usize).dvuir().write_value(INIT_CLR);
-            }
+    // 2SRC: clear SRCIR + SRCIRR.
+    for idx in 0..4u8 {
+        if src_mask & (1 << idx) != 0 {
+            let unit = idx / 2;
+            let pair = idx % 2;
+            src(unit, pair).srcir().write_value(INIT_CLR);
+            SCUX.srcirr(unit as usize).write_value(INIT_CLR);
         }
+    }
 
-        // MIX: clear INIT.
-        if mix_en {
-            SCUX.mix().mixir().write_value(INIT_CLR);
+    // DVU: clear INIT (caller must call apply_dvu_after_init after this).
+    for ch in 0..4u8 {
+        if dvu_mask & (1 << ch) != 0 {
+            SCUX.dvu(ch as usize).dvuir().write_value(INIT_CLR);
         }
+    }
 
-        // IPC and OPC — MUST be last (TRM §37.4 startup order).
-        for ch in 0..4u8 {
-            if ipc_mask & (1 << ch) != 0 {
-                SCUX.ipc(ch as usize).ipcir().write_value(INIT_CLR);
-            }
+    // MIX: clear INIT.
+    if mix_en {
+        SCUX.mix().mixir().write_value(INIT_CLR);
+    }
+
+    // IPC and OPC — MUST be last (TRM §37.4 startup order).
+    for ch in 0..4u8 {
+        if ipc_mask & (1 << ch) != 0 {
+            SCUX.ipc(ch as usize).ipcir().write_value(INIT_CLR);
         }
-        for ch in 0..4u8 {
-            if opc_mask & (1 << ch) != 0 {
-                SCUX.opc(ch as usize).opcir().write_value(INIT_CLR);
-            }
+    }
+    for ch in 0..4u8 {
+        if opc_mask & (1 << ch) != 0 {
+            SCUX.opc(ch as usize).opcir().write_value(INIT_CLR);
         }
     }
 }
@@ -1237,6 +1257,309 @@ pub fn ffd_dma_ch(ffd_ch: u8) -> u8 {
     })
 }
 
+// ── Owned paths ───────────────────────────────────────────────────────────────
+
+use crate::dmac::ring::{Dir, RingDma};
+use crate::ring_buffer::{ReadableRing, RingBuf, WritableRing};
+
+mod sealed_ch {
+    pub trait Sealed {}
+}
+
+/// A SCUX channel: FFDn → IPCn → SRCn (2SRC unit n/2, pair n%2) → DVUn → OPCn → FFUn or an SSI.
+pub trait ChannelId: sealed_ch::Sealed + 'static {
+    /// The channel number, 0–3.
+    const N: u8;
+}
+
+macro_rules! channel_ids {
+    ($($ch:ident = $n:literal),*) => {$(
+        #[doc = concat!("SCUX channel ", stringify!($n), ".")]
+        pub struct $ch;
+        impl sealed_ch::Sealed for $ch {}
+        impl ChannelId for $ch {
+            const N: u8 = $n;
+        }
+    )*};
+}
+channel_ids!(Ch0 = 0, Ch1 = 1, Ch2 = 2, Ch3 = 3);
+
+/// One SCUX channel, to build a [`Path`] from.
+pub struct Channel<'d, C: ChannelId> {
+    _ch: PhantomData<(&'d mut (), C)>,
+}
+
+/// The four channels of [`Scux::new`].
+#[allow(missing_docs)]
+pub struct Channels<'d> {
+    pub ch0: Channel<'d, Ch0>,
+    pub ch1: Channel<'d, Ch1>,
+    pub ch2: Channel<'d, Ch2>,
+    pub ch3: Channel<'d, Ch3>,
+}
+
+/// The SCUX, split into its channels.
+pub struct Scux;
+
+impl Scux {
+    /// Reset the SCUX, set its routing registers to their identity mapping, and hand out its
+    /// four channels.
+    pub fn new<'d>(_scux: Peri<'d, crate::peripherals::SCUX>) -> Channels<'d> {
+        // SAFETY: the SCUX is owned; nothing runs on it yet.
+        unsafe { reset() };
+        for n in 0..4 {
+            SCUX.srcrsel(n).write_value(0x7654_3210);
+        }
+        SCUX.mixrsel_cim().write_value(0x7654_3210);
+        Channels {
+            ch0: Channel { _ch: PhantomData },
+            ch1: Channel { _ch: PhantomData },
+            ch2: Channel { _ch: PhantomData },
+            ch3: Channel { _ch: PhantomData },
+        }
+    }
+}
+
+/// A channel's sample-rate converter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Src {
+    /// Pass samples through at their rate.
+    Bypass,
+    /// Convert `input_hz` to `output_hz`, asynchronously.
+    Async {
+        /// The input rate.
+        input_hz: u32,
+        /// The output rate.
+        output_hz: u32,
+    },
+}
+
+/// A channel's digital volume unit.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub enum Dvu {
+    /// No volume processing.
+    Bypass,
+    /// Every audio channel at `volume` (Q20: 0x0010_0000 is unity).
+    Volume {
+        /// The volume.
+        volume: u32,
+        /// A ramp to it, or none.
+        ramp: Option<RampConfig>,
+        /// Mute at zero crossings.
+        zero_cross_mute: bool,
+    },
+}
+
+/// The sub-units one path runs, one bit each per mask.
+#[derive(Debug, Clone, Copy)]
+struct Units {
+    ffd: u8,
+    ffu: u8,
+    src: u8,
+    dvu: u8,
+    ipc: u8,
+    opc: u8,
+}
+
+/// Enable `u`'s FIFO DMA requests (DMACR, read-modify-written so other paths keep theirs) and
+/// take its units out of INIT. Its rings are already running.
+///
+/// # Safety
+/// Writes SCUX registers; the units must be configured.
+unsafe fn enable_units(u: Units) {
+    critical_section::with(|_| {
+        let dmacr = SCUX.dmacr_cim().read();
+        SCUX.dmacr_cim().write_value(dmacr | u.ffd as u32 | ((u.ffu as u32) << 4));
+    });
+    // SAFETY: the caller's contract.
+    unsafe { clear_inits(u.ffd, u.ffu, u.src, u.dvu, false, u.ipc, u.opc) };
+}
+
+impl<'d, C: ChannelId> Channel<'d, C> {
+    /// FFD ring → SRC → DVU → FFU ring: convert what's written to `ffd` and read it back from
+    /// `ffu`. Frames are `format.channels` words.
+    pub fn into_ffu_path(
+        self,
+        format: AudioInfo,
+        ffd: RingBuf<'d>,
+        src: Src,
+        dvu: Dvu,
+        ffu: RingBuf<'d>,
+    ) -> Path<'d> {
+        let n = C::N;
+        let frame = format.channels as usize;
+        let tx = start_ffd(n, ffd, frame);
+        let ffu_ch = ffu.dma.number();
+        let rx = RingDma::start(
+            ffu.dma,
+            ffu.buf,
+            ffu.blocks,
+            frame,
+            ffu_chcfg(ffu_ch) & !crate::dmac::CHCFG_DEM,
+            Dir::PeriphToMem { src: SCUX.dmatu(n as usize).addr() as u32 },
+            DMARS_SCURXI0 + 4 * n as u32,
+        );
+        // SAFETY: channel n's units are this path's.
+        let control = unsafe {
+            configure_ipc(n, IpcSel::FfdToSrcAsync);
+            configure_opc(n, OpcSel::ToFfu);
+            configure_ffd(n, format, 8);
+            configure_ffu(n, format, 8);
+            let control = configure_src_dvu(n, format, src, dvu, true);
+            enable_units(control.units);
+            control.after_start();
+            control
+        };
+        Path { control, tx: WritableRing::new(tx), rx: Some(ReadableRing::new(rx)) }
+    }
+}
+
+/// Start channel `n`'s FFD ring (feeding DMATDn).
+fn start_ffd<'d>(n: u8, ffd: RingBuf<'d>, frame: usize) -> RingDma<'d> {
+    let ch = ffd.dma.number();
+    RingDma::start(
+        ffd.dma,
+        ffd.buf,
+        ffd.blocks,
+        frame,
+        ffd_chcfg(ch),
+        Dir::MemToPeriph { dst: SCUX.dmatd(n as usize).addr() as u32 },
+        DMARS_SCUTXI0 + 4 * n as u32,
+    )
+}
+
+/// Configure channel `n`'s SRC and DVU (and the MIX's bypass, as the FFU path always has), and
+/// return the path's control with its unit masks. `ffu` adds the FFU to them.
+///
+/// # Safety
+/// Writes channel `n`'s SCUX registers.
+unsafe fn configure_src_dvu(n: u8, format: AudioInfo, src: Src, dvu: Dvu, ffu: bool) -> Control {
+    let bit = 1u8 << n;
+    let (bypass, intifs, output_hz) = match src {
+        Src::Bypass => (true, INTIFS_44100_TO_44100, None),
+        Src::Async { input_hz, output_hz } => (false, intifs(input_hz, output_hz), Some(output_hz)),
+    };
+    // SAFETY: the caller's contract.
+    unsafe {
+        configure_src(
+            n / 2,
+            n % 2,
+            SrcConfig { mode: SrcMode::Async, audio: format, bypass, intifs, mnfsr: 0, buf_size: 0 },
+        );
+    }
+    let dvu_cfg = match dvu {
+        Dvu::Bypass => None,
+        Dvu::Volume { volume, ramp, zero_cross_mute } => {
+            let cfg = DvuConfig { audio: format, bypass: false, volumes: [volume; 8], ramp, zero_cross_mute };
+            // SAFETY: the caller's contract.
+            unsafe { configure_dvu(n, cfg) };
+            Some(cfg)
+        }
+    };
+    if ffu {
+        // SAFETY: the caller's contract.
+        unsafe { configure_mix(MixConfig { audio: format, bypass: true }) };
+    }
+    Control {
+        n,
+        channels: format.channels,
+        output_hz,
+        dvu: dvu_cfg,
+        ssi: None,
+        units: Units {
+            ffd: bit,
+            ffu: if ffu { bit } else { 0 },
+            src: bit,
+            dvu: if dvu_cfg.is_some() { bit } else { 0 },
+            ipc: bit,
+            opc: bit,
+        },
+    }
+}
+
+/// A running SCUX path: [`split`](Self::split) it into its control and its rings.
+pub struct Path<'d> {
+    control: Control,
+    tx: WritableRing<'d>,
+    rx: Option<ReadableRing<'d>>,
+}
+
+impl<'d> Path<'d> {
+    /// The path's control, its FFD ring, and its FFU ring if it has one. Dropping the control
+    /// stops the path; dropping a ring halts its DMA.
+    pub fn split(self) -> (Control, WritableRing<'d>, Option<ReadableRing<'d>>) {
+        (self.control, self.tx, self.rx)
+    }
+}
+
+/// A running path's volume and rate. Dropping it stops the path's units (and its SSI's
+/// transmit, on a path into an SSI).
+pub struct Control {
+    n: u8,
+    channels: u8,
+    output_hz: Option<u32>,
+    dvu: Option<DvuConfig>,
+    ssi: Option<u8>,
+    units: Units,
+}
+
+impl Control {
+    /// Apply the DVU settings that must follow DVUIR.INIT = 0.
+    ///
+    /// # Safety
+    /// The path's units are running.
+    unsafe fn after_start(&self) {
+        if let Some(cfg) = self.dvu {
+            // SAFETY: the caller's contract.
+            unsafe { apply_dvu_after_init(self.n, cfg) };
+        }
+    }
+
+    /// Set audio channel `audio_ch`'s volume (Q20). No effect on a path without a DVU.
+    pub fn set_volume(&mut self, audio_ch: u8, vol: u32) {
+        // SAFETY: this path's DVU register.
+        unsafe { set_volume(self.n, audio_ch, vol) }
+    }
+
+    /// Set every audio channel's volume (Q20).
+    pub fn set_volume_all(&mut self, vol: u32) {
+        // SAFETY: this path's DVU registers.
+        unsafe { set_volume_all(self.n, self.channels, vol) }
+    }
+
+    /// Ramp every audio channel to `vol` with `ramp`.
+    pub fn fade_to(&mut self, vol: u32, ramp: RampConfig) {
+        // SAFETY: this path's DVU registers.
+        unsafe {
+            set_volume_all(self.n, self.channels, vol);
+            start_ramp(self.n, ramp);
+        }
+    }
+
+    /// Change the converter's input rate.
+    ///
+    /// # Panics
+    /// On a path whose SRC is bypassed.
+    pub fn set_input_rate(&mut self, input_hz: u32) {
+        let output_hz = self.output_hz.expect("scux: set_input_rate on a bypassed SRC");
+        // SAFETY: this path's SRC register.
+        unsafe { src_update_intifs(self.n / 2, self.n % 2, intifs(input_hz, output_hz)) }
+    }
+}
+
+impl Drop for Control {
+    fn drop(&mut self) {
+        if let Some(ssi) = self.ssi {
+            crate::ssi::stop_tx(ssi);
+        }
+        let u = self.units;
+        // SAFETY: this path's units.
+        unsafe { stop_path(u.ffd, u.ffu, u.src, u.dvu, false, u.ipc, u.opc) };
+    }
+}
+
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
     use super::*;
@@ -1280,36 +1603,41 @@ mod tests {
         assert_eq!(mono.to_reg() & 0xFFFF, 1);
     }
 
-    // No test in this binary calls a path's `init`, so every path is in its
-    // never-initialised state here. Reading the pointer then must panic
+    // The path tests that run a legacy `init` hold the same lock and empty the FIFO tables
+    // before releasing it, so every path is in its never-initialised state here. Reading the pointer then must panic
     // rather than read DMA registers at channel `u8::MAX`.
     #[test]
     #[should_panic(expected = "scux path used before init")]
     fn dvu_tx_current_ptr_before_init_panics() {
+        let _serial = super::path_tests::serial();
         let _ = super::dvu_path::tx_current_ptr();
     }
 
     #[test]
     #[should_panic(expected = "scux path used before init")]
     fn src_rx_current_ptr_before_init_panics() {
+        let _serial = super::path_tests::serial();
         let _ = super::src_path::rx_current_ptr();
     }
 
     #[test]
     #[should_panic(expected = "scux path used before init")]
     fn src_tx_current_ptr_before_init_panics() {
+        let _serial = super::path_tests::serial();
         let _ = super::src_path::tx_current_ptr();
     }
 
     #[test]
     #[should_panic(expected = "scux path used before init")]
     fn usb_tx_rx_current_ptr_before_init_panics() {
+        let _serial = super::path_tests::serial();
         let _ = super::usb_tx_path::rx_current_ptr();
     }
 
     #[test]
     #[should_panic(expected = "scux path used before init")]
     fn usb_tx_tx_current_ptr_before_init_panics() {
+        let _serial = super::path_tests::serial();
         let _ = super::usb_tx_path::tx_current_ptr();
     }
 
@@ -1370,5 +1698,176 @@ mod tests {
                 (false, swrsr, 4)
             ]
         );
+    }
+}
+
+#[cfg(all(test, not(target_os = "none")))]
+mod path_tests {
+    use super::*;
+    use crate::dma_buf::UncachedMut;
+    use crate::dmac::{BlockDma, BlockInterruptHandler, Dma};
+    use crate::mmio::test;
+    use crate::peripherals::{DMA_CH2, DMA_CH3, DMA_CH5, DMA_CH8};
+    use crate::ring_buffer::RingBuf;
+    use std::collections::BTreeMap;
+
+    crate::bind_interrupts!(struct Irqs {
+        DMAINT2 => BlockInterruptHandler<DMA_CH2>;
+        DMAINT3 => BlockInterruptHandler<DMA_CH3>;
+        DMAINT5 => BlockInterruptHandler<DMA_CH5>;
+        DMAINT8 => BlockInterruptHandler<DMA_CH8>;
+    });
+
+    /// The SCUX and its legacy path tables are process-wide.
+    pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn ring<C: crate::dmac::Channel>(ch: crate::Peri<'static, C>, words: usize) -> RingBuf<'static>
+    where
+        Irqs: crate::interrupt::Binding<C::Interrupt, BlockInterruptHandler<C>>,
+    {
+        RingBuf {
+            dma: BlockDma::new(ch, Irqs),
+            buf: UncachedMut::new(std::vec![0u32; words].leak()).unwrap(),
+            blocks: 4,
+        }
+    }
+
+    /// The final value of every SCUX register written since the log began.
+    fn scux_writes() -> BTreeMap<usize, u32> {
+        test::log()
+            .into_iter()
+            .filter(|a| a.write && (0xE820_8000..0xE820_A000).contains(&a.addr))
+            .map(|a| (a.addr, a.val))
+            .collect()
+    }
+
+    /// Empty the legacy paths' FIFO DMA tables, so the "used before init" tests see them empty.
+    fn forget_legacy_fifos() {
+        for table in [&FFD_DMA, &FFU_DMA] {
+            table.lock(|t| t.borrow_mut().iter_mut().for_each(|d| *d = None));
+        }
+    }
+
+    /// Every register `legacy` wrote ends with the same value under `new`.
+    fn assert_covers(legacy: &BTreeMap<usize, u32>, new: &BTreeMap<usize, u32>) {
+        for (addr, val) in legacy {
+            assert_eq!(new.get(addr), Some(val), "SCUX register {addr:#010x}");
+        }
+    }
+
+    fn dmars(ch: usize) -> u32 {
+        let reg = test::peek32(0xFCFE_1000 + (ch / 2) * 4);
+        if ch % 2 == 0 { reg & 0xFFFF } else { reg >> 16 }
+    }
+
+    #[test]
+    fn a_channel1_ffu_path_writes_what_the_legacy_src_path_writes() {
+        let _serial = serial();
+        crate::clocks::init(crate::clocks::TEST_CLOCKS);
+        test::reset();
+        unsafe {
+            src_path::init(
+                Dma::new_without_interrupt(DMA_CH3::steal()),
+                Dma::new_without_interrupt(DMA_CH5::steal()),
+                48_000,
+                44_100,
+            )
+        };
+        let legacy = scux_writes();
+        forget_legacy_fifos();
+
+        test::reset();
+        let chs = Scux::new(unsafe { crate::peripherals::SCUX::steal() });
+        let path = chs.ch1.into_ffu_path(
+            AudioInfo::STEREO_24,
+            ring(unsafe { DMA_CH3::steal() }, 512),
+            Src::Async { input_hz: 48_000, output_hz: 44_100 },
+            Dvu::Bypass,
+            ring(unsafe { DMA_CH5::steal() }, 512),
+        );
+        assert_covers(&legacy, &scux_writes());
+        assert_eq!((dmars(3), dmars(5)), (0x105, 0x106), "FFD1 / FFU1 requests");
+        let (_control, tx, rx) = path.split();
+        assert_eq!(tx.len(), 512);
+        assert!(rx.is_some());
+    }
+
+    #[test]
+    fn a_channel2_ffu_path_writes_what_the_legacy_usb_tx_path_writes() {
+        let _serial = serial();
+        crate::clocks::init(crate::clocks::TEST_CLOCKS);
+        test::reset();
+        unsafe {
+            usb_tx_path::init(
+                Dma::new_without_interrupt(DMA_CH2::steal()),
+                Dma::new_without_interrupt(DMA_CH8::steal()),
+                48_000,
+                44_100,
+            )
+        };
+        let legacy = scux_writes();
+        forget_legacy_fifos();
+
+        test::reset();
+        let chs = Scux::new(unsafe { crate::peripherals::SCUX::steal() });
+        let _path = chs.ch2.into_ffu_path(
+            AudioInfo::STEREO_24,
+            ring(unsafe { DMA_CH2::steal() }, 512),
+            Src::Async { input_hz: 48_000, output_hz: 44_100 },
+            Dvu::Bypass,
+            ring(unsafe { DMA_CH8::steal() }, 512),
+        );
+        assert_covers(&legacy, &scux_writes());
+        assert_eq!((dmars(2), dmars(8)), (0x109, 0x10A), "FFD2 / FFU2 requests");
+        assert_eq!(SCUX.dmacr_cim().read() & 0xFF, 0b0100 | (0b0100 << 4), "only channel 2's");
+    }
+
+    #[test]
+    fn two_paths_keep_each_others_dmacr_bits() {
+        let _serial = serial();
+        crate::clocks::init(crate::clocks::TEST_CLOCKS);
+        test::reset();
+        let chs = Scux::new(unsafe { crate::peripherals::SCUX::steal() });
+        let src = Src::Async { input_hz: 48_000, output_hz: 44_100 };
+        let a = chs.ch1.into_ffu_path(
+            AudioInfo::STEREO_24,
+            ring(unsafe { DMA_CH3::steal() }, 512),
+            src,
+            Dvu::Bypass,
+            ring(unsafe { DMA_CH5::steal() }, 512),
+        );
+        let b = chs.ch2.into_ffu_path(
+            AudioInfo::STEREO_24,
+            ring(unsafe { DMA_CH2::steal() }, 512),
+            src,
+            Dvu::Bypass,
+            ring(unsafe { DMA_CH8::steal() }, 512),
+        );
+        assert_eq!(SCUX.dmacr_cim().read() & 0xFF, 0b0110 | (0b0110 << 4));
+        let (control_a, _, _) = a.split();
+        drop(control_a);
+        assert_eq!(SCUX.dmacr_cim().read() & 0xFF, 0b0100 | (0b0100 << 4), "dropping one stops only it");
+        drop(b);
+    }
+
+    #[test]
+    fn set_volume_writes_its_dvu_channel() {
+        let _serial = serial();
+        crate::clocks::init(crate::clocks::TEST_CLOCKS);
+        test::reset();
+        let chs = Scux::new(unsafe { crate::peripherals::SCUX::steal() });
+        let path = chs.ch2.into_ffu_path(
+            AudioInfo::STEREO_24,
+            ring(unsafe { DMA_CH2::steal() }, 512),
+            Src::Bypass,
+            Dvu::Volume { volume: 0x0010_0000, ramp: None, zero_cross_mute: false },
+            ring(unsafe { DMA_CH8::steal() }, 512),
+        );
+        let (mut control, _, _) = path.split();
+        control.set_volume(1, 0x0008_0000);
+        assert_eq!(test::peek32(SCUX.dvu(2).volr(1).addr()), 0x0008_0000);
     }
 }
