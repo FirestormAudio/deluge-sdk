@@ -70,8 +70,8 @@ static mut MSC_CLASS_BUF: MaybeUninit<usb_classes::msc::MscClass> = MaybeUninit:
 
 static mut EXECUTOR: MaybeUninit<Executor> = MaybeUninit::uninit();
 
-#[unsafe(no_mangle)]
-pub extern "C" fn main() -> ! {
+#[deluge_bsp::entry]
+fn main() -> ! {
     // With the `rtt` feature, log over a 16 KB RTT up-channel in `.rtt_buffer`
     // (uncached RAM).
     #[cfg(feature = "rtt")]

@@ -81,6 +81,16 @@ if [ -n "$iso_hook_hits" ]; then
   exit 1
 fi
 
+# Entry points are `#[entry]` (spec decision 4), which type-checks `fn() -> !`; a hand-exported
+# `extern "C" fn main` is not.
+entry_hits="$(grep -rnE --include='*.rs' --exclude-dir=target 'extern "C" fn main\b' firmwares hw-tests examples crates/deluge-sdk-macros/src \
+  | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)"
+if [ -n "$entry_hits" ]; then
+  printf '%s\n' "$entry_hits"
+  echo "error: an entry point is a hand-exported \`extern \"C\" fn main\`; use \`#[deluge_bsp::entry]\` (or \`#[deluge::app]\`)" >&2
+  exit 1
+fi
+
 # Board-agnostic crates (spec rule 3): usb/ and drivers/ never name the chip HAL, the board, or
 # any deluge-* crate in code. Their dependencies are checked against Cargo's graph at the end.
 AGNOSTIC_DIRS=(usb drivers)

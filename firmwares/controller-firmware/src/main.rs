@@ -96,8 +96,8 @@ static mut CDC_ACM_STATE: embassy_usb::class::cdc_acm::State<'static> =
 
 static mut EXECUTOR: MaybeUninit<Executor> = MaybeUninit::uninit();
 
-#[unsafe(no_mangle)]
-pub extern "C" fn main() -> ! {
+#[deluge_bsp::entry]
+fn main() -> ! {
     // With the `rtt` feature, log over a 16 KB RTT up-channel whose ring buffer
     // and control block live in `.rtt_buffer` (uncached RAM).  Without it no
     // logger is registered and `log!` calls are no-ops.

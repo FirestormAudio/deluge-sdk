@@ -55,8 +55,8 @@ static mut EXECUTOR: MaybeUninit<Executor> = MaybeUninit::uninit();
 /// SCIF0's lent receive buffer.
 static mut RX_BUF: [u8; 64] = [0; 64];
 
-#[unsafe(no_mangle)]
-pub extern "C" fn main() -> ! {
+#[deluge_bsp::entry]
+fn main() -> ! {
     #[cfg(feature = "rtt")]
     {
         let channels = rtt_target::rtt_init! {

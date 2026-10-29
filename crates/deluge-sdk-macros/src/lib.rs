@@ -39,7 +39,7 @@ use syn::{parse_macro_input, FnArg, ItemFn};
 ///
 /// ## What it expands to
 /// - an Embassy task wrapping the function body;
-/// - on the device, `extern "C" fn main` that runs `deluge::__rt::run(setup,
+/// - on the device, an `#[entry]` function that runs `deluge::__rt::run(setup,
 ///   spawn)` (logging → heaps + clocks → `setup` → enable interrupts →
 ///   executor), and a `#[panic_handler]`;
 /// - on the host, a plain `fn main` handing off to the simulator (`sim`
@@ -115,11 +115,11 @@ pub fn app(args: TokenStream, item: TokenStream) -> TokenStream {
             #body
         }
 
-        // Device entry point: a C `main` plus the panic handler the bare-metal
+        // Device entry point (rza1-rt's `#[entry]`, which exports `main`) plus the panic handler the bare-metal
         // runtime needs.
         #[cfg(target_os = "none")]
-        #[unsafe(no_mangle)]
-        pub extern "C" fn main() -> ! {
+        #[::deluge::__rt::entry]
+        fn __deluge_main() -> ! {
             ::deluge::__rt::run(
                 // Synchronous, interrupts-masked setup (empty unless `setup = …`).
                 || { #setup_call; },
