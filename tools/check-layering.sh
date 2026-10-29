@@ -66,6 +66,16 @@ fi
 # Board-agnostic crates (spec rule 3): usb/ and drivers/ never name the chip HAL, the board, or
 # any deluge-* crate in code. Their dependencies are checked against Cargo's graph at the end.
 AGNOSTIC_DIRS=(usb drivers)
+# Audio rings are lent by the caller (spec decision 2): the SSI and SCUX drivers hold no static
+# buffers or descriptors of their own.
+audio_static_hits="$(grep -rnE --include='*.rs' 'static mut' rza1/rza1-hal/src/ssi.rs rza1/rza1-hal/src/scux.rs rza1/rza1-hal/src/scux \
+  | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)"
+if [ -n "$audio_static_hits" ]; then
+  printf '%s\n' "$audio_static_hits"
+  echo "error: rza1-hal's SSI/SCUX drivers hold a static buffer; audio rings are lent by the caller" >&2
+  exit 1
+fi
+
 agnostic_hits="$(grep -rnE --include='*.rs' --exclude-dir=target '\b(rza1_hal|deluge_[a-z_]+)\b' "${AGNOSTIC_DIRS[@]}" \
   | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)"
 if [ -n "$agnostic_hits" ]; then

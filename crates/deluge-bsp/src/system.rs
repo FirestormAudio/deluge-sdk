@@ -65,13 +65,17 @@ pub const BOARD_CONFIG: rza1_hal::Config = rza1_hal::Config::new(CLOCKS)
     // The OSTM time driver: below the DMAC, as the driver set it before priorities moved here.
     .with_time_interrupt_priority(rza1_hal::interrupt::Priority::P14);
 
-/// SSI0's SSICR: I²S master, 24-bit data in 32-bit words, clock ÷4 (44.1 kHz with the Deluge's
-/// audio crystal).
-///
-/// 0x002B_C020 decodes as: CKS=0 (AUDIO_X1 source), DWL=101 (24-bit data words), SWL=011 (32-bit
-/// system words), SCKD=SWSD=1 (master), CKDV=0b0010 (AUDIOφ ÷ 4 → BCLK = 22.5792 MHz ÷ 4 =
-/// 5.6448 MHz).
-pub const SSICR: u32 = 0x002B_C020;
+/// SSI0's settings for the codec: I²S master from AUDIO_X1 ÷ 4 (BCLK = 22.5792 MHz ÷ 4 =
+/// 5.6448 MHz, so 44.1 kHz frames), 24-bit samples in 32-bit words. SSICR 0x002B_C020.
+pub fn codec_ssi_config() -> rza1_hal::ssi::Config {
+    use rza1_hal::ssi::{ClockDiv, ClockSource, Config, DataBits, Role, SystemWordBits};
+    let mut c = Config::default();
+    c.role = Role::Master(ClockDiv::Div4);
+    c.data_bits = DataBits::B24;
+    c.system_word_bits = SystemWordBits::B32;
+    c.clock_source = ClockSource::AudioX1;
+    c
+}
 
 /// SD_OPTION register value for SDHI port 1 on the Deluge board.
 ///
@@ -85,8 +89,7 @@ pub const SD_OPTION: u16 = 0x00BD;
 // SCUX DMA channel assignments for the Deluge board
 // ---------------------------------------------------------------------------
 //
-// Pass these as the `dma_ch` argument to `rza1_hal::scux::init_ffd_dma` and
-// `rza1_hal::scux::init_ffu_dma`.
+// The channel numbers `board`'s `ScuxFf*Dma` types name; its tests cross-check them.
 
 /// DMA channel for FFD path 0 (CPU → SCUX, 8-ch, main synthesis / DVU path).
 pub const SCUX_FFD0_DMA_CH: u8 = 0;

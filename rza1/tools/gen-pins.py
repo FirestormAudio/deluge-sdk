@@ -4,7 +4,7 @@
 Reads the per-port "Pin Function (Pn)" tables (Tables 41.11-41.29) of
 vendor/docs/rza1/rza1l-hw-manual/ch41-ports.md and writes
 rza1-hal/src/gpio/rza1l_functions.rs: one `pin_function!` per (pin, signal) for the signals the
-HAL's drivers take pins for (SCIF, RSPI, SDHI, IRQ0-7). Also checks that rza1-hal/src/gpio/pins.rs marks
+HAL's drivers take pins for (SCIF, RSPI, SDHI, IRQ0-7, SSIF0/1/3). Also checks that rza1-hal/src/gpio/pins.rs marks
 exactly the pins with a port-mode output as `out`.
 
 Each table's Input/Output header row gives its column layout (port mode, then alternative 1..N,
@@ -45,6 +45,10 @@ SIGNALS = [
     (re.compile(r"^SD_CD_([01])$"), lambda m: ("crate::sdhi::CdPin", f"SDHI{m[1]}")),
     (re.compile(r"^SD_WP_([01])$"), lambda m: ("crate::sdhi::WpPin", f"SDHI{m[1]}")),
     (re.compile(r"^IRQ([0-7])$"), lambda m: ("crate::exti::IrqPin", f"EXTI{m[1]}")),
+    (re.compile(r"^SSISCK([013])$"), lambda m: ("crate::ssi::SckPin", f"SSIF{m[1]}")),
+    (re.compile(r"^SSIWS([013])$"), lambda m: ("crate::ssi::WsPin", f"SSIF{m[1]}")),
+    (re.compile(r"^SSITxD([013])$"), lambda m: ("crate::ssi::TxdPin", f"SSIF{m[1]}")),
+    (re.compile(r"^SSIRxD([013])$"), lambda m: ("crate::ssi::RxdPin", f"SSIF{m[1]}")),
 ]
 
 HEADER = """\

@@ -1,7 +1,6 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use deluge_bsp::scux_dvu_path;
+use deluge_bsp::audio;
 use log::info;
-use rza1_hal::ssi;
 
 use usb_classes::audio::{USB_BITS_PER_SAMPLE, USB_CAPTURE_BITS_PER_SAMPLE};
 
@@ -26,9 +25,9 @@ const WRITE_AHEAD: usize = 2048;
 static PACKET_SEQ: AtomicU32 = AtomicU32::new(0);
 
 /// Data-path state owned exclusively by the ISO OUT BRDY ISR (single producer,
-/// IRQs disabled — no locking needed).  `HOOK_WRITE_PTR` is the next SSI TX slot
+/// IRQs disabled — no locking needed).  `HOOK_WRITE_OFF` is the next TX ring word
 /// to write; `HOOK_LFSR` is the dither generator state carried across packets.
-static mut HOOK_WRITE_PTR: *mut i32 = core::ptr::null_mut();
+static mut HOOK_WRITE_OFF: usize = 0;
 static mut HOOK_LFSR: u32 = 0xACE1;
 
 // ── Diagnostics ──────────────────────────────────────────────────────────────
@@ -69,16 +68,7 @@ fn dither_sample(lfsr: &mut u32) -> i32 {
 /// Called once at startup and after the USB stream ends to ensure the codec
 /// never sees a burst of identical samples.
 pub(crate) fn fill_tx_with_dither() {
-    let buf_start = scux_dvu_path::tx_buf_start();
-    let buf_end = scux_dvu_path::tx_buf_end();
-    let mut lfsr: u32 = 0xACE1;
-    let mut p = buf_start;
-    while p < buf_end {
-        unsafe {
-            p.write_volatile(dither_sample(&mut lfsr));
-            p = p.add(1);
-        }
-    }
+    audio::fill_tx_with_dither();
 }
 
 /// ISO OUT BRDY hook — runs in **IRQ context** for every speaker packet.
@@ -98,35 +88,27 @@ pub(crate) fn fill_tx_with_dither() {
 /// only from the BRDY ISR (single producer, IRQs disabled).  `pkt` points to
 /// `len` valid bytes.  Uses integer arithmetic only — no VFP state to preserve.
 unsafe fn iso_out_to_ssi(pkt: *const u8, len: usize) {
-    unsafe {
-        let buf_start = scux_dvu_path::tx_buf_start();
-        let buf_end = scux_dvu_path::tx_buf_end();
-        let buf_len = scux_dvu_path::DVU_PATH_BUF_LEN;
+    audio::with_tx(|tx| unsafe {
+        let buf_len = tx.len();
+        // The DMA's read position, already wrapped into [0, buf_len) and frame-aligned.
+        let dma_off = tx.position();
+        let ring = tx.ring_mut();
 
-        let dma_ptr = scux_dvu_path::tx_current_ptr();
-        // CRSA can briefly read one-past-the-end during the DMA link-descriptor
-        // reload at the buffer wrap boundary.  Wrap into [0, buf_len) so the
-        // ahead calculation below doesn't see a spuriously small value.
-        let dma_off = (dma_ptr.offset_from(buf_start) as usize) % buf_len;
-
-        let mut write_ptr = HOOK_WRITE_PTR;
+        let mut write_off = HOOK_WRITE_OFF;
 
         // First packet after silence — re-anchor the write pointer WRITE_AHEAD
         // slots ahead of the DMA, snapped to a stereo frame boundary (even
         // offset) to keep L/R channels correct.  USB_AUDIO_STREAMING is cleared
         // by uac2_task when packet activity stops.
         if !USB_AUDIO_STREAMING.load(Ordering::Acquire) {
-            let off = ((dma_off + WRITE_AHEAD) % buf_len) & !1;
-            write_ptr = buf_start.add(off);
+            write_off = ((dma_off + WRITE_AHEAD) % buf_len) & !1;
             USB_AUDIO_STREAMING.store(true, Ordering::Release);
         }
 
-        // Underrun guard: if the DMA has caught up to the write pointer, re-anchor.
-        let wr_off = write_ptr.offset_from(buf_start) as usize;
-        let ahead = (wr_off + buf_len - dma_off) % buf_len;
+        // Underrun guard: if the DMA has caught up to the write offset, re-anchor.
+        let ahead = (write_off + buf_len - dma_off) % buf_len;
         if ahead < WRITE_AHEAD / 2 {
-            let off = ((dma_off + WRITE_AHEAD) % buf_len) & !1;
-            write_ptr = buf_start.add(off);
+            write_off = ((dma_off + WRITE_AHEAD) % buf_len) & !1;
             REANCHOR_COUNT.fetch_add(1, Ordering::Relaxed);
         }
 
@@ -160,11 +142,8 @@ unsafe fn iso_out_to_ssi(pkt: *const u8, len: usize) {
                     clips += 1;
                 }
 
-                write_ptr.write_volatile(sample);
-                write_ptr = write_ptr.add(1);
-                if write_ptr >= buf_end {
-                    write_ptr = buf_start;
-                }
+                ring[write_off] = sample as u32;
+                write_off = (write_off + 1) % buf_len;
             }
             HOOK_LFSR = lfsr;
             if clips != 0 {
@@ -173,9 +152,9 @@ unsafe fn iso_out_to_ssi(pkt: *const u8, len: usize) {
             PEAK_LEVEL.fetch_max(peak, Ordering::Relaxed);
         }
 
-        HOOK_WRITE_PTR = write_ptr;
+        HOOK_WRITE_OFF = write_off;
         PACKET_SEQ.fetch_add(1, Ordering::Relaxed);
-    }
+    });
 }
 
 /// UAC2 speaker supervisor task.
@@ -200,7 +179,7 @@ pub(crate) async fn uac2_task(ep_out: rza1_hal::usb::Rusb1EndpointOut) {
     // Pre-fill with dither so the codec stays alive before streaming begins, and
     // anchor the hook's write pointer somewhere valid before its first packet.
     fill_tx_with_dither();
-    unsafe { HOOK_WRITE_PTR = scux_dvu_path::tx_buf_start() };
+    unsafe { HOOK_WRITE_OFF = 0 };
 
     // Install the ISR fast path.  BRDY is armed for the ISO OUT pipe whenever the
     // endpoint is enabled (driver `endpoint_set_enabled`), so once the hook is
@@ -271,9 +250,9 @@ pub(crate) async fn uac2_task(ep_out: rza1_hal::usb::Rusb1EndpointOut) {
 }
 
 // ── ISO IN (mic) continuous-hook state ─────────────────────────────────────
-/// SSI RX read position carried across hook calls (mirrors `HOOK_WRITE_PTR`).
-static mut MIC_READ_PTR: *const i32 = core::ptr::null();
-/// False until the first packet of a capture stream anchors `MIC_READ_PTR`; the
+/// SSI RX read offset carried across hook calls (mirrors `HOOK_WRITE_OFF`).
+static mut MIC_READ_OFF: usize = 0;
+/// False until the first packet of a capture stream anchors `MIC_READ_OFF`; the
 /// supervisor clears it when packet activity stops so the next stream re-anchors.
 static MIC_STREAMING: AtomicBool = AtomicBool::new(false);
 /// Bumped once per ISO IN packet — the supervisor watches it for activity.
@@ -291,34 +270,34 @@ static MIC_PACKET_SEQ: AtomicU32 = AtomicU32::new(0);
 /// Called from the BRDY ISR (single producer, IRQs disabled) and once at enable
 /// from task context.  Integer arithmetic only — no VFP state to preserve.
 unsafe fn iso_in_from_ssi(buf: *mut u8, max: usize) -> usize {
-    unsafe {
-        let rx_start = ssi::rx_buf_start();
-        let rx_len = ssi::RX_BUF_LEN;
+    audio::with_rx(|rx| unsafe {
+        let rx_len = rx.len();
         let bytes_per_sample = (USB_CAPTURE_BITS_PER_SAMPLE.load(Ordering::Relaxed) / 8) as usize;
         if bytes_per_sample == 0 {
             return 0;
         }
         let max_frames = max / (2 * bytes_per_sample);
+        // The DMA's write position, wrapped and frame-aligned.
+        let rx_hw_off = rx.position();
 
         // First packet of a (re)started stream: anchor at the current DMA write
-        // head.  captured_mono then grows as the DMA advances; the read pointer
+        // head.  captured_mono then grows as the DMA advances; the read offset
         // only ever consumes what the DMA has already written, so it can never
         // overtake the writer.
-        let mut read_ptr = MIC_READ_PTR;
-        if read_ptr.is_null() || !MIC_STREAMING.load(Ordering::Acquire) {
-            read_ptr = ssi::rx_current_ptr();
+        let mut read_off = MIC_READ_OFF;
+        if !MIC_STREAMING.load(Ordering::Acquire) {
+            read_off = rx_hw_off;
             MIC_STREAMING.store(true, Ordering::Release);
         }
 
         // Stereo frames captured since the last packet (ties the implicit-feedback
         // cadence to the SSI crystal clock).
-        let rx_hw_off = (ssi::rx_current_ptr().offset_from(rx_start) as usize) % rx_len;
-        let read_off = (read_ptr.offset_from(rx_start) as usize) % rx_len;
         let captured_mono = (rx_hw_off + rx_len - read_off) % rx_len;
         let frames = (captured_mono / 2).min(max_frames);
 
+        let ring = rx.ring();
         for i in 0..frames * 2 {
-            let sample = read_ptr.read_volatile();
+            let sample = ring[read_off] as i32;
             // SSI audio is in bits [31:8]; shift right to get the significant bits.
             let off = i * bytes_per_sample;
             if bytes_per_sample == 3 {
@@ -331,16 +310,14 @@ unsafe fn iso_in_from_ssi(buf: *mut u8, max: usize) -> usize {
                 *buf.add(off) = (val & 0xFF) as u8;
                 *buf.add(off + 1) = ((val >> 8) & 0xFF) as u8;
             }
-            read_ptr = read_ptr.add(1);
-            if read_ptr >= rx_start.add(rx_len) {
-                read_ptr = rx_start;
-            }
+            read_off = (read_off + 1) % rx_len;
         }
 
-        MIC_READ_PTR = read_ptr;
+        MIC_READ_OFF = read_off;
         MIC_PACKET_SEQ.fetch_add(1, Ordering::Relaxed);
         frames * 2 * bytes_per_sample
-    }
+    })
+    .unwrap_or(0)
 }
 
 /// UAC2 microphone capture task — installs the ISO IN hook and supervises.

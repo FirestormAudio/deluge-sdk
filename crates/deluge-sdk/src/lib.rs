@@ -672,6 +672,7 @@ pub mod __rt {
                 ssi_tx_dma: Some(board.dma.ssi_tx),
                 ssi_rx_dma: Some(board.dma.ssi_rx),
                 scux_ffd0_dma: Some(board.dma.scux_ffd0),
+                scux: Some(board.scux),
                 usb0: usb0_part,
                 audio_pins: Some(board.pins.audio),
                 jack_pins: Some(board.pins.jacks),

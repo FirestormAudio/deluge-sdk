@@ -169,6 +169,7 @@ pub mod mmu;
 pub mod mode;
 pub mod mtu2;
 pub mod ostm;
+pub mod ring_buffer;
 pub mod rspi;
 pub mod scux;
 // The RZ/A1H's PAC has no SDHI block.
