@@ -313,6 +313,19 @@ impl<'d> Dma<'d> {
     }
 }
 
+/// Stop channel `ch`'s transfer and wait, briefly, until it has stopped (CHSTAT.EN reads 0): what
+/// a dropped transfer does, so the DMAC writes nothing more once its future is gone. Keeps the
+/// channel's configuration and request route.
+pub(crate) fn halt_channel(ch: u8) {
+    // SAFETY: the caller owns channel `ch` (it is aborting that channel's transfer).
+    unsafe { raw::halt(ch) };
+    for _ in 0..10_000 {
+        if crate::pac::DMAC.ch(ch as usize).chstat().read() & CHSTAT_EN == 0 {
+            return;
+        }
+    }
+}
+
 /// Stop every channel and release its request route: [`Dma::stop`] for channels 0–15.
 ///
 /// For a loader handing the chip to another program, where a circular channel (a UART receive

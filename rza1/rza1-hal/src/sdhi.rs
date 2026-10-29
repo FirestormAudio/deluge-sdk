@@ -40,6 +40,7 @@
 //! ```
 
 use crate::dma_buf::{Uncached, UncachedMut};
+use embassy_hal_internal::drop::OnDrop;
 use core::future::poll_fn;
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 use core::task::Poll;
@@ -270,6 +271,8 @@ const SDIO_INFO1_MASK_INIT: u16 = 0xC007;
 // Soft-reset sequence values (SOFT_RST register)
 // ---------------------------------------------------------------------------
 
+/// SD_STOP.STP: stop the data transfer in progress.
+const SD_STOP_STP: u16 = 0x0001;
 /// SOFT_RST value to assert reset (bit 1 set, bit 0 clear).
 /// BSP: written first in the RZ/A1 two-step soft-reset sequence.
 const SOFT_RST_ASSERT: u16 = 0x0006;
@@ -1535,6 +1538,8 @@ impl<T: Instance> Handler<T::OperationInterrupt> for OperationInterruptHandler<T
 /// sequence: issue one command (and its transfer) at a time.
 pub struct Sdhi<'d> {
     port: u8,
+    /// Whether a command or transfer was dropped mid-flight ([`take_aborted`](Self::take_aborted)).
+    aborted: AtomicBool,
     /// The board's SD_OPTION, which [`reset`](Self::reset) restores.
     sd_option: u16,
     /// The DMA channels, each held by one block transfer at a time across its awaits.
@@ -1601,6 +1606,7 @@ impl<'d> Sdhi<'d> {
         }
         Self {
             port: T::PORT,
+            aborted: AtomicBool::new(false),
             sd_option,
             tx_dma: Mutex::new(tx_dma),
             rx_dma: Mutex::new(rx_dma),
@@ -1618,6 +1624,31 @@ impl<'d> Sdhi<'d> {
     pub fn reset(&self) {
         // SAFETY: the owned controller; nothing is in flight (this method's contract).
         unsafe { init(self.port, self.sd_option) }
+    }
+
+    /// Whether a command or transfer was dropped mid-flight since the last call. If so the
+    /// controller has been stopped and reset to identification mode, and the card must be
+    /// re-identified before it is used again.
+    pub fn take_aborted(&self) -> bool {
+        self.aborted.swap(false, Ordering::AcqRel)
+    }
+
+    /// A guard that, if dropped before it is defused, aborts the command or transfer in flight:
+    /// the DMA channel `dma` (if any) halted, the SD transfer stopped (SD_STOP.STP), the
+    /// controller soft-reset to identification mode, and the abort recorded for
+    /// [`take_aborted`](Self::take_aborted). Synchronous: nothing runs on after the future is gone.
+    fn abort_on_drop(&self, dma: Option<u8>) -> OnDrop<impl FnOnce() + '_> {
+        OnDrop::new(move || {
+            if let Some(ch) = dma {
+                crate::dmac::halt_channel(ch);
+            }
+            let s = sdhi(self.port);
+            s.sd_stop().write_value(SD_STOP_STP);
+            s.sd_stop().write_value(0x0000);
+            // SAFETY: the owned controller; the transfer in flight is stopped above.
+            unsafe { init(self.port, self.sd_option) };
+            self.aborted.store(true, Ordering::Release);
+        })
     }
 
     /// Set the SD clock divider (`CLK_DIV_*`). `CLK_DIV_2` needs a High-Speed card.
@@ -1640,8 +1671,11 @@ impl<'d> Sdhi<'d> {
 
     /// Issue a command and wait for its response.
     pub async fn send_cmd(&self, cmd_val: u16) -> Result<(), SdhiError> {
+        let guard = self.abort_on_drop(None);
         // SAFETY: the owned controller.
-        unsafe { send_cmd(self.port, cmd_val).await }
+        let r = unsafe { send_cmd(self.port, cmd_val).await };
+        guard.defuse();
+        r
     }
 
     /// The short (R1) response.
@@ -1664,8 +1698,11 @@ impl<'d> Sdhi<'d> {
 
     /// End a multi-block transfer (CMD12).
     pub async fn stop_transfer(&self) -> Result<(), SdhiError> {
+        let guard = self.abort_on_drop(None);
         // SAFETY: the owned controller.
-        unsafe { stop_transfer(self.port).await }
+        let r = unsafe { stop_transfer(self.port).await };
+        guard.defuse();
+        r
     }
 
     /// Whether a card is in the slot.
@@ -1703,23 +1740,32 @@ impl<'d> Sdhi<'d> {
         arg: u32,
         buf: &mut [u8; 64],
     ) -> Result<(), SdhiError> {
+        let guard = self.abort_on_drop(None);
         // SAFETY: the owned controller; `buf` is a live 64-byte buffer.
-        unsafe { read_status_block_sw(self.port, cmd_val, arg, buf).await }
+        let r = unsafe { read_status_block_sw(self.port, cmd_val, arg, buf).await };
+        guard.defuse();
+        r
     }
 
     /// Read `buf.len() / 512` blocks into `buf` by PIO (any memory: the CPU copies). The command
     /// has already been issued.
     pub async fn read_blocks_sw(&self, buf: &mut [u8]) -> Result<(), SdhiError> {
         let count = block_count(buf.len())?;
+        let guard = self.abort_on_drop(None);
         // SAFETY: `buf` holds `count * 512` writable bytes, borrowed for the whole transfer.
-        unsafe { read_blocks_sw(self.port, buf.as_mut_ptr(), count).await }
+        let r = unsafe { read_blocks_sw(self.port, buf.as_mut_ptr(), count).await };
+        guard.defuse();
+        r
     }
 
     /// Write `buf.len() / 512` blocks from `buf` by PIO. The command has already been issued.
     pub async fn write_blocks_sw(&self, buf: &[u8]) -> Result<(), SdhiError> {
         let count = block_count(buf.len())?;
+        let guard = self.abort_on_drop(None);
         // SAFETY: `buf` holds `count * 512` readable bytes, borrowed for the whole transfer.
-        unsafe { write_blocks_sw(self.port, buf.as_ptr(), count).await }
+        let r = unsafe { write_blocks_sw(self.port, buf.as_ptr(), count).await };
+        guard.defuse();
+        r
     }
 
     /// Issue `cmd_val` and read `buf.len() / 512` blocks into `buf` by DMA.
@@ -1730,19 +1776,29 @@ impl<'d> Sdhi<'d> {
     ) -> Result<(), SdhiError> {
         let count = block_count(buf.len())?;
         let mut rx = self.rx_dma.lock().await;
-        // SAFETY: `buf` is `count * 512` bytes of uncached memory, borrowed for the transfer.
-        unsafe {
+        let guard = self.abort_on_drop(Some(rx.number()));
+        // SAFETY: `buf` is `count * 512` bytes of uncached memory, borrowed for the transfer (and
+        // the guard stops the DMAC before the borrow ends if the transfer is dropped).
+        let r = unsafe {
             read_blocks_dma(self.port, cmd_val, buf.as_mut_slice().as_mut_ptr(), count, &mut rx)
                 .await
-        }
+        };
+        guard.defuse();
+        r
     }
 
     /// Issue `cmd_val` and write `buf.len() / 512` blocks from `buf` by DMA.
     pub async fn write_blocks_dma(&self, cmd_val: u16, buf: Uncached<'_>) -> Result<(), SdhiError> {
         let count = block_count(buf.len())?;
         let mut tx = self.tx_dma.lock().await;
-        // SAFETY: `buf` is `count * 512` bytes of uncached memory, borrowed for the transfer.
-        unsafe { write_blocks_dma(self.port, cmd_val, buf.as_slice().as_ptr(), count, &mut tx).await }
+        let guard = self.abort_on_drop(Some(tx.number()));
+        // SAFETY: `buf` is `count * 512` bytes of uncached memory, borrowed for the transfer (and
+        // the guard stops the DMAC before the borrow ends if the transfer is dropped).
+        let r = unsafe {
+            write_blocks_dma(self.port, cmd_val, buf.as_slice().as_ptr(), count, &mut tx).await
+        };
+        guard.defuse();
+        r
     }
 }
 
@@ -1887,8 +1943,112 @@ mod typed_tests {
         }
     }
 
+    /// The tests here share SDHI1's interrupt state (`STATE[1]`, a process-wide static), and test
+    /// threads run in parallel: each holds this lock so they don't race on it.
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Poll `f` once, without a waker that does anything.
+    fn poll_once<F: core::future::Future>(f: core::pin::Pin<&mut F>) -> Poll<F::Output> {
+        f.poll(&mut core::task::Context::from_waker(core::task::Waker::noop()))
+    }
+
+    /// The response-end and access-end flags the operation interrupt would record.
+    fn interrupt_saw(info1: u16) {
+        STATE[1].info1.fetch_or(info1, Ordering::Release);
+    }
+
+    fn abort_writes() -> (bool, bool, bool) {
+        let s = sdhi(1);
+        let dma = crate::pac::DMAC.ch(14).chctrl().addr();
+        let w = test::writes();
+        (
+            w.iter().any(|&(a, v)| a == s.sd_stop().addr() && v & 1 != 0),
+            w.iter().any(|&(a, v)| a == s.soft_rst().addr() && v == SOFT_RST_DEASSERT as u32),
+            w.iter().any(|&(a, v)| a == dma && v & (1 << 1) != 0),
+        )
+    }
+
+    #[test]
+    fn a_read_dropped_in_its_command_phase_aborts() {
+        let _serial = serial();
+        let sdhi = sdhi1();
+        let mut storage = [0u8; 512];
+        test::reset();
+        {
+            let read = sdhi.read_blocks_dma(17, crate::dma_buf::UncachedMut::new(&mut storage).unwrap());
+            let mut read = core::pin::pin!(read);
+            assert!(poll_once(read.as_mut()).is_pending(), "waits for the response");
+        }
+        let (stp, reset, _) = abort_writes();
+        assert!(stp && reset, "SD_STOP.STP and a soft reset");
+        assert!(sdhi.take_aborted());
+        assert!(!sdhi.take_aborted(), "taken once");
+    }
+
+    #[test]
+    fn a_read_dropped_in_its_data_phase_halts_the_dma() {
+        let _serial = serial();
+        let sdhi = sdhi1();
+        let mut storage = [0u8; 1024];
+        test::reset();
+        {
+            let read = sdhi.read_blocks_dma(18, crate::dma_buf::UncachedMut::new(&mut storage).unwrap());
+            let mut read = core::pin::pin!(read);
+            assert!(poll_once(read.as_mut()).is_pending());
+            interrupt_saw(INFO1_RESP);
+            assert!(poll_once(read.as_mut()).is_pending(), "waits for the data");
+        }
+        let (stp, reset, dma_halted) = abort_writes();
+        assert!(stp && reset && dma_halted, "STP {stp}, reset {reset}, DMA halted {dma_halted}");
+        assert!(sdhi.take_aborted());
+    }
+
+    #[test]
+    fn a_write_dropped_mid_flight_aborts() {
+        let _serial = serial();
+        let sdhi = sdhi1();
+        let storage = [0u8; 512];
+        test::reset();
+        {
+            let write = sdhi.write_blocks_dma(24, crate::dma_buf::Uncached::new(&storage).unwrap());
+            let mut write = core::pin::pin!(write);
+            assert!(poll_once(write.as_mut()).is_pending());
+            interrupt_saw(INFO1_RESP);
+            assert!(poll_once(write.as_mut()).is_pending());
+        }
+        let (stp, reset, _) = abort_writes();
+        assert!(stp && reset);
+        assert!(sdhi.take_aborted());
+    }
+
+    #[test]
+    fn a_completed_read_never_aborts() {
+        let _serial = serial();
+        let sdhi = sdhi1();
+        let mut storage = [0u8; 512];
+        test::reset();
+        {
+            let read = sdhi.read_blocks_dma(17, crate::dma_buf::UncachedMut::new(&mut storage).unwrap());
+            let mut read = core::pin::pin!(read);
+            assert!(poll_once(read.as_mut()).is_pending());
+            interrupt_saw(INFO1_RESP);
+            assert!(poll_once(read.as_mut()).is_pending());
+            interrupt_saw(INFO1_DATA_TRNS);
+            // The DMAC's last burst landed: CHSTAT.TC.
+            test::poke32(crate::pac::DMAC.ch(14).chstat().addr(), crate::dmac::CHSTAT_TC);
+            assert!(poll_once(read.as_mut()).is_ready(), "completes");
+        }
+        let (stp, reset, _) = abort_writes();
+        assert!(!stp && !reset, "no abort after a completed transfer");
+        assert!(!sdhi.take_aborted());
+    }
+
     #[test]
     fn a_buffer_that_is_not_whole_blocks_is_refused() {
+        let _serial = serial();
         let sdhi = sdhi1();
         test::reset();
         let mut odd = [0u8; 513];
@@ -1919,6 +2079,7 @@ mod typed_tests {
 
     #[test]
     fn a_controller_comes_up_clocked_reset_and_bound_with_sdio_masked() {
+        let _serial = serial();
         test::reset();
         test::poke8(0xFCFE_0444, 0xFF);
         let _sdhi = sdhi1();
@@ -1939,6 +2100,7 @@ mod typed_tests {
 
     #[test]
     fn card_detect_reads_info1_of_its_own_port() {
+        let _serial = serial();
         test::reset();
         let sdhi = sdhi1();
         test::poke16(0xE804_E81C, INFO1_CD_LEVEL);
@@ -1948,6 +2110,7 @@ mod typed_tests {
     }
     #[test]
     fn a_reset_returns_the_controller_to_the_identification_clock() {
+        let _serial = serial();
         test::reset();
         let sdhi = sdhi1();
         // The previous card ran at the High-Speed clock with an odd block size.
