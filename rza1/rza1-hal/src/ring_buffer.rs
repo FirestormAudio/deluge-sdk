@@ -125,6 +125,13 @@ impl<'d> WritableRing<'d> {
         self.ring.buf_mut()
     }
 
+    /// The ring's first word, on the uncached alias, for a caller that fills by offset outside a
+    /// borrow of this ring (an interrupt, or C through an ABI). Valid for `'d`, the ring's lifetime;
+    /// [`len`](Self::len) words long.
+    pub fn as_mut_ptr(&mut self) -> *mut u32 {
+        self.ring.buf_mut().as_mut_ptr()
+    }
+
     /// Waits for this ring's blocks without borrowing it.
     pub fn block_signal(&self) -> BlockSignal {
         BlockSignal { ch: self.ring.channel() }
@@ -204,6 +211,12 @@ impl<'d> ReadableRing<'d> {
     /// The whole ring: the window. Words just behind [`position`](Self::position) are newest.
     pub fn ring(&self) -> &[u32] {
         self.ring.buf()
+    }
+
+    /// The ring's first word, on the uncached alias, for a caller that reads by offset outside a
+    /// borrow of this ring. Valid for `'d`, the ring's lifetime; [`len`](Self::len) words long.
+    pub fn as_ptr(&self) -> *const u32 {
+        self.ring.buf().as_ptr()
     }
 
     /// Waits for this ring's blocks without borrowing it.
@@ -302,6 +315,17 @@ mod tests {
         }
         test::poke32(crate::pac::DMAC.ch(9).crsa().addr(), base + 4 * w);
         test::poke32(crate::pac::DMAC.ch(9).crda().addr(), base + 4 * w);
+    }
+
+    /// The raw pointers are the lent buffer's first word, for a caller that keeps filling by offset
+    /// outside the borrow.
+    #[test]
+    fn the_ring_pointers_are_the_lent_buffer() {
+        let _serial = serial();
+        let (mut tx, base) = writable();
+        assert_eq!(tx.as_mut_ptr() as u32, base);
+        let (rx, base) = readable();
+        assert_eq!(rx.as_ptr() as u32, base);
     }
 
     #[test]

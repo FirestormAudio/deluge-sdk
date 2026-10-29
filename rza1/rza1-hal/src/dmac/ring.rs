@@ -42,6 +42,13 @@ pub(crate) enum Dir {
     PeriphToMem { src: u32 },
 }
 
+/// `x % n`, as a mask when `n` is a power of two (every ring the drivers lend): the Cortex-A9 has no
+/// divider, and `position` runs in interrupt handlers.
+#[inline]
+fn wrap(x: usize, n: usize) -> usize {
+    if n.is_power_of_two() { x & (n - 1) } else { x % n }
+}
+
 /// A channel sweeping a lent ring in `blocks` blocks, with an absolute position. Dropping it
 /// halts the channel before the ring's borrow ends.
 pub(crate) struct RingDma<'d> {
@@ -136,8 +143,8 @@ impl<'d> RingDma<'d> {
             Dir::MemToPeriph { .. } => self.dma.current_src(),
             Dir::PeriphToMem { .. } => self.dma.current_dst(),
         };
-        let word = (addr.wrapping_sub(self.buf.bus_addr()) / 4) as usize % self.len();
-        word - word % self.frame_words
+        let word = wrap((addr.wrapping_sub(self.buf.bus_addr()) / 4) as usize, self.len());
+        word - wrap(word, self.frame_words)
     }
 
     /// Words moved since the ring started, never decreasing. The block count is a hint (see

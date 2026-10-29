@@ -73,7 +73,6 @@ pub(crate) static PIPE_IS_IN: AtomicU16 = AtomicU16::new(0);
 ///
 /// # Safety
 /// No transfer in flight on this pipe. Runs in a critical section.
-/// For DelugeFirmware's alt-setting workaround until phase 9; not part of the API.
 pub(crate) unsafe fn pipe_iso_in_activate(u: Usb, n: usize) {
     // All of it with interrupts masked: pipes 1 and 2 share D0FIFO, so another pipe's BRDY (the
     // speaker's, every microframe) would re-select the FIFO port under the prime, and this pipe's
@@ -671,7 +670,6 @@ fn pid_nak_if_stall(ctr: Reg<u16, RW>) {
 ///
 /// # Safety
 /// The caller owns USB port `u`: no other context reconfigures pipe `n` meanwhile.
-/// For DelugeFirmware's alt-setting workaround until phase 9; not part of the API.
 pub(crate) unsafe fn pipe_enable(u: Usb, n: usize) {
     let ctr = pipectr(u, n);
     // Clear any residual STALL first (matches Linux usbhs_pipe_enable).
@@ -712,7 +710,6 @@ pub(crate) unsafe fn pipe_stall(u: Usb, n: usize) {
 ///
 /// # Safety
 /// The caller owns USB port `u`: no other context reconfigures pipe `n` meanwhile.
-/// For DelugeFirmware's alt-setting workaround until phase 9; not part of the API.
 pub(crate) unsafe fn pipe_reset(u: Usb, n: usize) {
     unsafe {
         // ACLRM and SQCLR require PID=NAK with the pipe idle (PBUSY=0).
@@ -784,7 +781,6 @@ unsafe fn pipe_quiesce(u: Usb, n: usize) {
 ///
 /// # Safety
 /// The caller owns USB port `u`: no other context reconfigures pipe `n` meanwhile.
-/// For DelugeFirmware's alt-setting workaround until phase 9; not part of the API.
 pub(crate) unsafe fn pipe_brdy_enable(u: Usb, n: usize) {
     let brdysts = u.brdysts();
     let brdyenb = u.brdyenb();
