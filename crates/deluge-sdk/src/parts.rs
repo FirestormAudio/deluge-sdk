@@ -61,6 +61,9 @@ pub struct Parts {
     pub ssi_rx_dma: Option<Peri<'static, SsiRxDma>>,
     /// SCUX FFD0's DMA channel, for `deluge_bsp::audio::init_with_scux`.
     pub scux_ffd0_dma: Option<Peri<'static, ScuxFfd0Dma>>,
+    /// The SCUX, for `rza1_hal::scux::Scux::new` (channel 0 goes to
+    /// `deluge_bsp::audio::init_with_scux`).
+    pub scux: Option<Peri<'static, rza1_hal::peripherals::SCUX>>,
     /// USB0, when neither `usb-log` nor `usb-serial` claims it, for `rza1_hal::usb::init_*_mode`.
     pub usb0: Option<Peri<'static, USB0>>,
     /// The codec's pins, for `deluge_bsp::audio::{init, init_with_scux, init_with_scux_src}`.

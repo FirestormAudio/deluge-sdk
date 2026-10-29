@@ -8,9 +8,9 @@
 
 use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
+use deluge_bsp::audio;
 use deluge_bsp::ring_follow::{self, WriteAhead};
 use deluge_bsp::sample_fmt::f32_to_i32;
-use deluge_bsp::scux_dvu_path as dvu;
 use embassy_time::{Instant, Timer};
 use log::info;
 use usb_classes::host::uac;
@@ -33,17 +33,13 @@ const CHUNK_FRAMES: usize = 128;
 
 /// The SCUX DMA's read slot in the DVU ring.
 fn read_slot() -> usize {
-    // SAFETY: both point into the DVU ring (uncached alias). CRSA can briefly read
-    // one-past-the-end at the link-descriptor reload; the modulo folds it back.
-    (unsafe { dvu::tx_current_ptr().offset_from(dvu::tx_buf_start()) } as usize)
-        % dvu::DVU_PATH_BUF_LEN
+    audio::with_tx(|tx| tx.position()).unwrap_or(0)
 }
 
 #[embassy_executor::task]
 pub(crate) async fn speaker_task() {
     info!("speaker: running (UAC capture → SCUX 2SRC → codec)");
-    let ring = dvu::tx_buf_start();
-    let len = dvu::DVU_PATH_BUF_LEN;
+    let len = audio::with_tx(|tx| tx.len()).expect("audio::init_with_scux_src runs first");
     let mut wr = ((read_slot() + LEAD_FRAMES * 2) % len) & !1;
     let mut scratch = [0.0f32; CHUNK_FRAMES * MAX_CH];
     let (mut in_frames, mut silent_frames, mut reanchors, mut window_peak) =
@@ -89,25 +85,25 @@ pub(crate) async fn speaker_task() {
         while to_write > 0 {
             let frames = to_write.min(CHUNK_FRAMES);
             let got = uac::capture_read(&mut scratch[..frames * cap_ch]) / cap_ch;
-            for f in 0..frames {
-                // Left and right from the first two channels (mono duplicated); silence once
-                // the capture runs short.
-                let (l, r) = if f < got {
-                    let s = &scratch[f * cap_ch..f * cap_ch + cap_ch];
-                    (s[0], if cap_ch > 1 { s[1] } else { s[0] })
-                } else {
-                    (0.0, 0.0)
-                };
-                let p = (l.abs().max(r.abs()).min(1.0) * 1000.0) as u32;
-                window_peak = window_peak.max(p);
-                // SAFETY: `wr` and `wr + 1` are in-bounds slots of the uncached DVU ring,
-                // which only this task writes.
-                unsafe {
-                    ring.add(wr).write_volatile(f32_to_i32(l));
-                    ring.add(wr + 1).write_volatile(f32_to_i32(r));
+            audio::with_tx(|tx| {
+                let ring = tx.ring_mut();
+                for f in 0..frames {
+                    // Left and right from the first two channels (mono duplicated); silence once
+                    // the capture runs short.
+                    let (l, r) = if f < got {
+                        let s = &scratch[f * cap_ch..f * cap_ch + cap_ch];
+                        (s[0], if cap_ch > 1 { s[1] } else { s[0] })
+                    } else {
+                        (0.0, 0.0)
+                    };
+                    let p = (l.abs().max(r.abs()).min(1.0) * 1000.0) as u32;
+                    window_peak = window_peak.max(p);
+                    // `wr` is even and the ring's length is whole frames, so `wr + 1` is in bounds.
+                    ring[wr] = f32_to_i32(l) as u32;
+                    ring[wr + 1] = f32_to_i32(r) as u32;
+                    wr = (wr + 2) % len;
                 }
-                wr = (wr + 2) % len;
-            }
+            });
             in_frames += got as u32;
             silent_frames += (frames - got) as u32;
             to_write -= frames;

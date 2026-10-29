@@ -1,140 +1,261 @@
-//! Deluge board audio (SSI0 / SSIF0) initialisation.
+//! The codec's audio: SSI0 straight to the codec ([`init`]), or out through SCUX channel 0 with
+//! DVU volume and an optional rate converter ([`init_with_scux`], [`init_with_scux_src`]).
 //!
-//! ## Pin assignments
-//!
-//! | Port.Pin | Mux | Signal       | Direction |
-//! |----------|-----|--------------|-----------|
-//! | P7.11    | 6   | AUDIO_XOUT   | Output    |
-//! | P6.8     | 3   | SSITXD0      | Output    |
-//! | P6.9     | 3   | SSISCK0      | Output    |
-//! | P6.10    | 3   | SSIWS0       | Output    |
-//! | P6.11    | 3   | SSIRXD0      | Input     |
-//! | P6.12    | —   | CODEC_POWER  | GPIO out  |
-//!
-//! `CODEC_POWER` (P6.12) is driven low during SSI initialisation and raised
-//! high after the codec's required 5 ms clock-stable delay, following the
-//! sequence used by the original C firmware.
-//!
-//! The SCUX DVU block sits between the CPU audio buffer and the SSIF0
-//! transmitter, providing hardware volume control and click-free fades.
-//! On the SCUX path ([`init_with_scux`]) SSI0 TX DMA (ch 6) is intentionally
-//! **not** started; SCUX drives SSIF0 TX directly via `SSICTRL.SSI0TX`.  SSI0 RX
-//! DMA (ch 7) is started as usual.
+//! The rings live here, lent to the drivers through their uncached mirror. An interrupt handler
+//! or a task reaches them through [`with_tx`] / [`with_rx`], which run a closure on the ring in a
+//! critical section: keep it short. Both return `None` before an `init` (or when re-entered).
 
+use core::cell::{Cell, RefCell};
+
+use critical_section::Mutex;
 use rza1_hal::Peri;
-#[cfg(feature = "audio-irq")]
-use rza1_hal::dmac::BlockDma;
-use rza1_hal::dmac::Dma;
+use rza1_hal::dma_buf::UncachedMut;
+use rza1_hal::dmac::{BlockDma, BlockInterruptHandler};
 use rza1_hal::gpio::{Alternate, Flex, Level, Output};
-use rza1_hal::{ostm, ssi};
+use rza1_hal::ostm;
+use rza1_hal::ring_buffer::{BlockSignal, ReadableRing, RingBuf, WritableRing};
+use rza1_hal::scux::{AudioInfo, Ch0, Channel, Dvu, Src};
+use rza1_hal::ssi::{Ssi, SsiRx, SsiTx};
 
 use crate::board::{AudioPins, AudioSsi, ScuxFfd0Dma, SsiRxDma, SsiTxDma};
 use crate::scux_dvu_path;
 
-#[cfg(feature = "audio-irq")]
-rza1_hal::bind_interrupts!(struct BlockIrqs {
-    DMAINT7 => rza1_hal::dmac::BlockInterruptHandler<SsiRxDma>;
+rza1_hal::bind_interrupts!(struct Irqs {
+    DMAINT0 => BlockInterruptHandler<ScuxFfd0Dma>;
+    DMAINT6 => BlockInterruptHandler<SsiTxDma>;
+    DMAINT7 => BlockInterruptHandler<SsiRxDma>;
 });
 
-/// Delay required between SSI clock start and codec enable, in milliseconds.
+/// Codec power-on delay after the SSI clocks start, as the C firmware waits.
 const CODEC_POWER_DELAY_MS: u32 = 5;
 
-/// Bring up the codec via the **SCUX** path (SCUX DVU drives SSIF0 TX; SSI RX
-/// DMA captures input). Use this only when SCUX is actually needed — USB audio,
-/// or an internal rate that differs from the codec. For a same-rate DSP effect
-/// prefer [`init`] (direct SSI, no SCUX).
+/// The engine's sample rate: the SSI's frame rate.
+const SSI_HZ: u32 = 44_100;
+
+/// SSI transmit ring: 1024 stereo frames in 8 blocks of 128.
+pub const SSI_TX_WORDS: usize = 2048;
+/// SSI receive ring: 2048 stereo frames in 16 blocks of 128.
+pub const SSI_RX_WORDS: usize = 4096;
+/// SCUX DVU path ring: 2048 stereo frames in 16 blocks of 128.
+pub const DVU_WORDS: usize = 4096;
+
+/// A cache-line-aligned ring.
+#[repr(C, align(32))]
+pub(crate) struct Ring<const N: usize>(pub(crate) [u32; N]);
+
+// SAFETY (all three): lent once, by the `init` that runs, and touched only through that loan.
+static mut SSI_TX_BUF: Ring<SSI_TX_WORDS> = Ring([0; SSI_TX_WORDS]);
+static mut SSI_RX_BUF: Ring<SSI_RX_WORDS> = Ring([0; SSI_RX_WORDS]);
+static mut DVU_BUF: Ring<DVU_WORDS> = Ring([0; DVU_WORDS]);
+
+/// `buf` through its uncached mirror, as a DMA ring. Its cached alias is cleaned and invalidated
+/// first: zeroing the BSS left dirty lines there that an eviction would write over the DMA's data.
 ///
-/// Configures SSI0 pin-mux + the SCUX DVU path + SSI RX DMA, waits the codec
-/// power-on delay, then asserts `CODEC_POWER`.
-///
-/// **Call after:** `rza1_hal::init` (which starts the time driver), before any audio task starts.
+/// # Safety
+/// Called once per buffer; nothing else touches it afterwards.
+pub(crate) unsafe fn lend<const N: usize>(buf: *mut Ring<N>) -> UncachedMut<'static, u32> {
+    let start = buf as usize;
+    #[cfg(target_os = "none")]
+    // SAFETY: the buffer's own lines; nothing has used it yet.
+    unsafe {
+        rza1_hal::cache::dma_clean_inv_range(start, start + N * 4);
+    }
+    #[cfg(target_os = "none")]
+    let start = start + rza1_hal::UNCACHED_MIRROR_OFFSET;
+    // SAFETY: the caller's contract; the mirror is the same memory, uncached.
+    let words = unsafe { core::slice::from_raw_parts_mut(start as *mut u32, N) };
+    UncachedMut::new(words).expect("an audio ring's mirror is uncached memory")
+}
+
+/// Channel `ch` with its block interrupt bound, over `buf` in `blocks` blocks.
+fn ring<C: rza1_hal::dmac::Channel>(
+    ch: Peri<'static, C>,
+    buf: UncachedMut<'static, u32>,
+    blocks: usize,
+) -> RingBuf<'static>
+where
+    Irqs: rza1_hal::interrupt::Binding<C::Interrupt, BlockInterruptHandler<C>>,
+{
+    RingBuf { dma: BlockDma::new(ch, Irqs), buf, blocks }
+}
+
+/// The transmit ring: the SSI's own, or the SCUX DVU path's FFD.
+enum Tx {
+    Ssi(SsiTx<'static>),
+    Scux(WritableRing<'static>),
+}
+
+impl Tx {
+    fn ring(&mut self) -> &mut WritableRing<'static> {
+        match self {
+            Tx::Ssi(tx) => tx,
+            Tx::Scux(tx) => tx,
+        }
+    }
+}
+
+static TX: Mutex<RefCell<Option<Tx>>> = Mutex::new(RefCell::new(None));
+static RX: Mutex<RefCell<Option<SsiRx<'static>>>> = Mutex::new(RefCell::new(None));
+static RX_SIGNAL: Mutex<Cell<Option<BlockSignal>>> = Mutex::new(Cell::new(None));
+
+/// Run `f` on what `slot` holds, in a critical section; `None` if it's empty or already in use
+/// (a nested call).
+pub(crate) fn with_slot<T, R>(
+    slot: &Mutex<RefCell<Option<T>>>,
+    f: impl FnOnce(&mut T) -> R,
+) -> Option<R> {
+    critical_section::with(|cs| {
+        let mut held = slot.borrow(cs).try_borrow_mut().ok()?;
+        held.as_mut().map(f)
+    })
+}
+
+/// Run `f` on the transmit ring (what the codec plays): the SSI's, or with SCUX the DVU path's.
+/// `None` before an `init`.
+pub fn with_tx<R>(f: impl FnOnce(&mut WritableRing<'static>) -> R) -> Option<R> {
+    with_slot(&TX, |tx| f(tx.ring()))
+}
+
+/// Run `f` on the SSI receive ring (what the codec records). `None` before an `init`.
+pub fn with_rx<R>(f: impl FnOnce(&mut ReadableRing<'static>) -> R) -> Option<R> {
+    with_slot(&RX, |rx| f(rx))
+}
+
+/// Waits for the receive ring's next 128-frame block, without holding it. `None` before an
+/// `init`.
+pub fn rx_block_signal() -> Option<BlockSignal> {
+    critical_section::with(|cs| RX_SIGNAL.borrow(cs).get())
+}
+
+fn install(tx: Tx, rx: SsiRx<'static>) {
+    critical_section::with(|cs| {
+        RX_SIGNAL.borrow(cs).set(Some(rx.block_signal()));
+        *TX.borrow(cs).borrow_mut() = Some(tx);
+        *RX.borrow(cs).borrow_mut() = Some(rx);
+    });
+}
+
+/// Put AUDIO_XOUT (P7_11, the codec's master clock) on its function, and hold the codec off.
+fn codec_off(xout: Peri<'static, rza1_hal::peripherals::P7_11>, power: Peri<'static, rza1_hal::peripherals::P6_12>) -> Output<'static> {
+    Flex::new(xout).set_as_alternate(Alternate::Alt6);
+    Output::new(power, Level::Low)
+}
+
+/// Power the codec on once its clocks run.
+fn codec_on(mut power: Output<'static>) {
+    ostm::delay_ms(CODEC_POWER_DELAY_MS);
+    power.set_high();
+    log::debug!("audio: CODEC_POWER asserted, codec active");
+}
+
+/// Bring up the codec with output through SCUX channel 0's DVU (unity volume, no rate
+/// conversion): SSI0 receives into its ring; the DVU path's FFD ring ([`with_tx`]) plays.
 pub fn init_with_scux(
     ssi: Peri<'static, AudioSsi>,
     pins: AudioPins,
     rx: Peri<'static, SsiRxDma>,
     ffd0: Peri<'static, ScuxFfd0Dma>,
+    ch0: Channel<'static, Ch0>,
 ) {
-    bring_up_scux(pins, || scux_dvu_path::init(ssi, rx, ffd0));
+    bring_up_scux(ssi, pins, rx, ffd0, ch0, Src::Bypass);
 }
 
-/// As [`init_with_scux`], with the SCUX's 2SRC converting `engine_hz` to the codec's 44.1 kHz:
-/// samples written into the DVU path's ring at `engine_hz` (48 kHz from a USB audio device,
-/// say) play at the codec rate, converted in hardware.
-///
-/// **Call after:** `rza1_hal::init` (which starts the time driver), before any audio task starts.
+/// [`init_with_scux`], converting `engine_hz` to the codec's 44.1 kHz in SCUX.
 pub fn init_with_scux_src(
     ssi: Peri<'static, AudioSsi>,
     pins: AudioPins,
     rx: Peri<'static, SsiRxDma>,
     ffd0: Peri<'static, ScuxFfd0Dma>,
+    ch0: Channel<'static, Ch0>,
     engine_hz: u32,
 ) {
-    bring_up_scux(pins, || scux_dvu_path::init_with_src(ssi, rx, ffd0, engine_hz));
+    bring_up_scux(ssi, pins, rx, ffd0, ch0, Src::Async { input_hz: engine_hz, output_hz: SSI_HZ });
 }
 
-/// Put SSI0's pins and AUDIO_XOUT on their functions, and hold the codec off: the codec-power
-/// output, low.
-///
-/// Each pin keeps PIPC = 1 (the function drives its direction), as the pin-mux always set it,
-/// SSITxD0 included, although HW manual Table 41.7 asks for PIPC = 0 on SSITxD0; the SSI driver
-/// will apply Table 41.7 when it takes its pins. The pins are muxed in port order, as before.
-fn mux_ssi(pins: AudioPins) -> Output<'static> {
-    Flex::new(pins.xout).set_as_alternate(Alternate::Alt6); // AUDIO_XOUT (P7_11), codec master clock
-    Flex::new(pins.sck).set_as_alternate(Alternate::Alt3); // SSISCK0 (P6_8), I²S BCLK
-    Flex::new(pins.ws).set_as_alternate(Alternate::Alt3); // SSIWS0 (P6_9), I²S LRCK
-    Flex::new(pins.tx).set_as_alternate(Alternate::Alt3); // SSITxD0 (P6_10), I²S TX data
-    Flex::new(pins.rx).set_as_alternate(Alternate::Alt3); // SSIRxD0 (P6_11), I²S RX data
-    // CODEC_POWER: low while the SSI clocks stabilise.
-    Output::new(pins.codec_power, Level::Low)
+fn bring_up_scux(
+    ssi: Peri<'static, AudioSsi>,
+    pins: AudioPins,
+    rx: Peri<'static, SsiRxDma>,
+    ffd0: Peri<'static, ScuxFfd0Dma>,
+    ch0: Channel<'static, Ch0>,
+    src: Src,
+) {
+    let power = codec_off(pins.xout, pins.codec_power);
+    // SAFETY: each buffer is lent once, here.
+    let (rx_buf, dvu_buf) = unsafe {
+        (lend(core::ptr::addr_of_mut!(SSI_RX_BUF)), lend(core::ptr::addr_of_mut!(DVU_BUF)))
+    };
+    let (out, rx) = Ssi::new_with_scux_tx(
+        ssi,
+        pins.sck,
+        pins.ws,
+        pins.tx,
+        pins.rx,
+        ring(rx, rx_buf, 16),
+        crate::system::codec_ssi_config(),
+    );
+    let dvu = Dvu::Volume { volume: 0x0010_0000, ramp: None, zero_cross_mute: false };
+    let path = ch0.into_ssi_path(AudioInfo::STEREO_24, ring(ffd0, dvu_buf, 16), src, dvu, out);
+    let (control, tx, _) = path.split();
+    scux_dvu_path::install(control);
+    install(Tx::Scux(tx), rx);
+    log::debug!("audio: SSI0 receive + SCUX DVU path streaming");
+    codec_on(power);
 }
 
-/// Pin-mux SSI0, hold the codec off, start the SCUX path `path`, wait the codec's power-on
-/// delay, then power the codec.
-fn bring_up_scux(pins: AudioPins, path: impl FnOnce()) {
-    log::debug!("audio: pin-mux SSI0 (P7_11, P6_8-11)");
-    let mut codec_power = mux_ssi(pins);
-
-    // ── SCUX path: SSI RX DMA + SCUX → SSIF0 TX ─────────────────────────────
-    path();
-
-    // ── 5 ms clock-stable delay before enabling the codec ────────────────────
-    // OSTM0 must already be running in free-running mode.
-    ostm::delay_ms(CODEC_POWER_DELAY_MS);
-    log::debug!("audio: codec power-on delay done");
-    // ── Assert CODEC_POWER — codec begins normal operation ───────────────────
-    codec_power.set_high();
-    log::debug!("audio: CODEC_POWER asserted, codec active");
-}
-
-/// Bring up the codec on the **direct SSI TX+RX DMA path** (no SCUX) — the
-/// default for same-rate (44.1 kHz) DSP. SCUX is only needed when the internal
-/// rate differs from the codec or for USB rate conversion; use
-/// [`init_with_scux`] for those.
-///
-/// Configures SSI0 pin-mux, drives SSIF0 TX directly from the SSI TX DMA
-/// ([`ssi::init`]), waits the codec power-on delay, then asserts `CODEC_POWER`.
-///
-/// **Call after:** `rza1_hal::init` (which starts the time driver), before any audio task starts.
+/// Bring up the codec straight on SSI0: transmit and receive rings, no SCUX.
 pub fn init(
     ssi: Peri<'static, AudioSsi>,
     pins: AudioPins,
     tx: Peri<'static, SsiTxDma>,
     rx: Peri<'static, SsiRxDma>,
 ) {
-    log::debug!("audio: pin-mux SSI0 (direct, no SCUX)");
-    let mut codec_power = mux_ssi(pins);
-    let tx = Dma::new_without_interrupt(tx);
-    #[cfg(not(feature = "audio-irq"))]
-    ssi::init(
+    let power = codec_off(pins.xout, pins.codec_power);
+    // SAFETY: each buffer is lent once, here.
+    let (tx_buf, rx_buf) = unsafe {
+        (lend(core::ptr::addr_of_mut!(SSI_TX_BUF)), lend(core::ptr::addr_of_mut!(SSI_RX_BUF)))
+    };
+    let (tx, rx) = Ssi::new(
         ssi,
-        tx,
-        Dma::new_without_interrupt(rx),
-        crate::system::SSICR,
+        pins.sck,
+        pins.ws,
+        pins.tx,
+        pins.rx,
+        ring(tx, tx_buf, 8),
+        ring(rx, rx_buf, 16),
+        crate::system::codec_ssi_config(),
     );
-    // `audio-irq`: RX runs as a per-block descriptor ring; its interrupt is bound before it starts.
-    #[cfg(feature = "audio-irq")]
-    ssi::init_block_irq(ssi, tx, BlockDma::new(rx, BlockIrqs), crate::system::SSICR);
-    ostm::delay_ms(CODEC_POWER_DELAY_MS);
-    codec_power.set_high();
-    log::debug!("audio: CODEC_POWER asserted (direct SSI path)");
+    install(Tx::Ssi(tx), rx);
+    log::debug!("audio: SSI0 full duplex streaming");
+    codec_on(power);
+}
+
+#[cfg(all(test, not(target_os = "none")))]
+mod tests {
+    use super::*;
+    use core::cell::RefCell;
+    use critical_section::Mutex;
+
+    #[test]
+    fn with_tx_before_init_is_none() {
+        assert!(with_tx(|_| ()).is_none());
+        assert!(with_rx(|_| ()).is_none());
+        assert!(rx_block_signal().is_none());
+    }
+
+    #[test]
+    fn with_slot_reentered_is_none() {
+        static SLOT: Mutex<RefCell<Option<u32>>> = Mutex::new(RefCell::new(Some(7)));
+        let outer = with_slot(&SLOT, |v| {
+            *v += 1;
+            with_slot(&SLOT, |_| ()).is_none()
+        });
+        assert_eq!(outer, Some(true), "the nested call sees the slot taken");
+        assert_eq!(with_slot(&SLOT, |v| *v), Some(8));
+    }
+
+    #[test]
+    fn codec_ssi_config_is_the_bench_value() {
+        assert_eq!(rza1_hal::ssi::ssicr(&crate::system::codec_ssi_config()), 0x002B_C020);
+    }
 }

@@ -68,11 +68,13 @@ pub extern "C" fn main() -> ! {
 
     // The codec through the SCUX, its 2SRC converting the device's 48 kHz to 44.1 kHz; the UAC
     // host streams at 48 kHz so its resampler only trims clock drift.
+    let scux = rza1_hal::scux::Scux::new(board.scux);
     deluge_bsp::audio::init_with_scux_src(
         board.audio_ssi,
         board.pins.audio,
         board.dma.ssi_rx,
         board.dma.scux_ffd0,
+        scux.ch0,
         48_000,
     );
     deluge_bsp::usb::host::set_uac_sample_rate(48_000);

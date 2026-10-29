@@ -235,6 +235,10 @@ pub struct Board {
     pub sd_card: Peri<'static, SdCard>,
     /// SSIF0, the codec's I²S port.
     pub audio_ssi: Peri<'static, AudioSsi>,
+    /// The SCUX: split it with `rza1_hal::scux::Scux::new` and hand channel 0 to
+    /// [`crate::audio::init_with_scux`] (channels 1 and 2 serve [`crate::scux_src_path`] and
+    /// [`crate::scux_usb_tx_path`]).
+    pub scux: Peri<'static, rza1_hal::peripherals::SCUX>,
     pub dma: BoardDma,
     /// The pins, by role.
     pub pins: BoardPins,
@@ -341,6 +345,7 @@ impl Board {
             encoder_poll_timer: p.MTU2_3,
             sd_card: p.SDHI1,
             audio_ssi: p.SSIF0,
+            scux: p.SCUX,
             dma: BoardDma {
                 scux_ffd0: p.DMA_CH0,
                 scux_ffu0: p.DMA_CH1,

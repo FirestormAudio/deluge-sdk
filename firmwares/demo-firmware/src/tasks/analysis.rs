@@ -7,7 +7,7 @@
 use core::arch::arm::{vcvtq_f32_s32, vhaddq_s32, vld2q_s32, vmulq_n_f32};
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use deluge_bsp::scux_dvu_path;
+use deluge_bsp::audio;
 use embassy_futures::yield_now;
 use embassy_time::Timer;
 
@@ -140,43 +140,42 @@ pub(crate) async fn analysis_task() {
     // Give hardware init and other tasks time to settle.
     Timer::after_millis(500).await;
 
-    let base = scux_dvu_path::tx_buf_start() as *const i32;
-    let buf_len = scux_dvu_path::DVU_PATH_BUF_LEN; // interleaved i32 slots (stereo)
-
     loop {
         Timer::after_millis(50).await;
 
-        let cur_ptr = scux_dvu_path::tx_current_ptr() as *const i32;
         let streaming = USB_AUDIO_STREAMING.load(Ordering::Acquire);
 
         if !streaming {
             continue;
         }
 
-        // ── Extract FFT_N mid-channel samples ending at cur_ptr ─────────────
+        // ── Extract FFT_N mid-channel samples ending at the DMA's position ──
         //
         // The TX ring buffer is interleaved stereo: slot 0=L, 1=R, 2=L, 3=R …
-        // cur_ptr is the next slot the DMA will read (already committed data
-        // is at cur_ptr-1 and earlier).
-        //
-        // We snap cur_ptr down to the nearest even (left-channel) index, then
-        // walk back FFT_N × 2 stereo slots to read FFT_N mid-channel samples.
-
-        let cur_off = (cur_ptr as usize - base as usize) / core::mem::size_of::<i32>();
-        // Round down to the most recent left-channel sample (even index).
-        let head = cur_off & !1usize;
-        // Start index (wraps inside the ring).
-        let start = head.wrapping_sub(FFT_N * 2) % buf_len;
+        // The DMA's position is the next slot it will read (already played
+        // data is before it); it is frame-aligned, so it is a left-channel
+        // index. Walk back FFT_N × 2 stereo slots to read FFT_N mid-channel
+        // samples.
 
         // Working buffer on the stack (~2 kB).
         let mut wave_raw = [0.0f32; FFT_N];
 
-        // SAFETY: `base` is the uncached SRAM alias; all slots before cur_ptr
-        // have been read by the DMA and were written by the ISO OUT hook.  Regular
-        // (non-volatile) loads are correct and required for SIMD vectorisation.
-        // buf_len and start are both even, so every segment boundary is
-        // stereo-pair-aligned.
-        unsafe { extract_mid_channel(base, buf_len, start, &mut wave_raw) };
+        let copied = audio::with_tx(|tx| {
+            let buf_len = tx.len();
+            let head = tx.position();
+            // Start index (wraps inside the ring).
+            let start = (head + buf_len - FFT_N * 2) % buf_len;
+            let base = tx.ring_mut().as_ptr() as *const i32;
+            // SAFETY: `base` is the ring's first of `buf_len` words, all
+            // played or written by the ISO OUT hook.  Regular (non-volatile)
+            // loads are correct and required for SIMD vectorisation.  buf_len
+            // and start are both even, so every segment boundary is
+            // stereo-pair-aligned.
+            unsafe { extract_mid_channel(base, buf_len, start, &mut wave_raw) };
+        });
+        if copied.is_none() {
+            continue;
+        }
 
         // Yield between each heavy stage so other tasks keep running.
         yield_now().await;

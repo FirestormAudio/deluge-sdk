@@ -112,19 +112,22 @@ fn setup() {
     );
 
     info!("audio: initialising SSI0...");
-    let (ssi, audio_pins, ssi_rx, ffd0) = deluge::parts::with(|p| {
+    let (ssi, audio_pins, ssi_rx, ffd0, scux) = deluge::parts::with(|p| {
         (
             p.audio_ssi.take(),
             p.audio_pins.take(),
             p.ssi_rx_dma.take(),
             p.scux_ffd0_dma.take(),
+            p.scux.take(),
         )
     });
+    let scux = rza1_hal::scux::Scux::new(scux.expect("the SCUX is free"));
     deluge_bsp::audio::init_with_scux(
         ssi.expect("SSIF0 is free"),
         audio_pins.expect("the codec's pins are free"),
         ssi_rx.expect("the SSI RX DMA channel is free"),
         ffd0.expect("SCUX FFD0's DMA channel is free"),
+        scux.ch0,
     );
     info!("audio: SSI0 + DMA + codec running");
     // Pre-fill SSI TX buffer with dither so the codec does not auto-mute before

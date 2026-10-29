@@ -94,7 +94,7 @@ pub(crate) async fn encoder_task() {
                         // 0–16: −∞ dB (0x000_0000) to 0 dB (0x0010_0000) linear
                         // 16–32: 0 dB (0x0010_0000) to +18 dB (0x007F_FFFF) linear
                         let vol = dvu_vol_from_knob(knob_level[0]);
-                        unsafe { scux_dvu_path::set_volume_stereo(vol) };
+                        scux_dvu_path::set_volume_stereo(vol);
                     }
                 } else {
                     info!("encoder {} Δ{}", i, detents);
