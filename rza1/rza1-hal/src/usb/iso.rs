@@ -14,7 +14,12 @@
 //!
 //! The consumer is lent `&'static mut` because the interrupt reaches it for as long as the
 //! stream lives, and a stream can be leaked. One stream per pipe. Dropping a stream masks the
-//! pipe's BRDY and unbinds it, so the consumer is never called after the drop returns.
+//! pipe's BRDY and unbinds it, so the consumer is never called after the drop returns, provided
+//! the drop runs in thread mode or at a priority below the USB interrupt's (a higher-priority
+//! context could land between the interrupt fetching the consumer and calling it).
+//!
+//! Bind an IN stream before the host enables the endpoint, or at any time after: binding to an
+//! endpoint already enabled starts it then.
 //!
 //! ```ignore
 //! struct Speaker { /* write offset, dither state */ }
@@ -35,19 +40,20 @@ use super::fifo::{
     fifo_bclr, fifo_bval, fifo_dtln, fifo_for_pipe, fifo_is_ready, fifo_select_pipe,
     hw_to_sw_fifo, sw_to_hw_fifo,
 };
-use super::pipe::{PIPE_COUNT, pipe_brdy_disable};
-use super::regs::usb;
+use super::pipe::{PIPE_COUNT, pipe_brdy_disable, pipe_iso_in_activate};
+use super::regs::{PIPECTR_PID_BUF, PIPECTR_PID_MASK, pipectr, usb};
 use crate::pac::usb::Usb;
 
-/// Receives an iso OUT endpoint's packets, in the USB interrupt with interrupts masked: keep it
-/// short and integer-only (the interrupt saves no VFP state).
+/// Receives an iso OUT endpoint's packets, in the USB interrupt (which only a higher-priority
+/// interrupt can preempt): keep it short.
 pub trait IsoOutConsumer: Send {
     /// One received packet (never empty).
     fn on_packet(&mut self, packet: &[u8]);
 }
 
-/// Supplies an iso IN endpoint's packets, in the USB interrupt with interrupts masked (and twice
-/// in task context when the endpoint is enabled, to prime both FIFO planes).
+/// Supplies an iso IN endpoint's packets, in the USB interrupt (which only a higher-priority
+/// interrupt can preempt), and twice in a critical section when the endpoint is enabled, to prime
+/// both FIFO planes. Keep it short.
 pub trait IsoInProducer: Send {
     /// Fill the next packet into `buf` (its length is the endpoint's max packet size) and return
     /// its length; 0 sends a zero-length packet. A longer return is clamped to `buf.len()`.
@@ -265,6 +271,12 @@ impl Rusb1EndpointIn {
     pub fn into_iso_stream(self, producer: &'static mut dyn IsoInProducer) -> IsoInStream {
         assert!(self.info.ep_type == EndpointType::Isochronous, "usb: into_iso_stream needs an isochronous endpoint");
         bind_in(self.port, self.pipe, self.info.max_packet_size, producer);
+        // Bound after the host enabled the endpoint: start it now, as the enable would have.
+        let u = usb(self.port);
+        if pipectr(u, self.pipe as usize).read() & PIPECTR_PID_MASK == PIPECTR_PID_BUF {
+            // SAFETY: this endpoint's pipe; the activation runs in a critical section.
+            unsafe { pipe_iso_in_activate(u, self.pipe as usize) };
+        }
         IsoInStream { port: self.port, pipe: self.pipe }
     }
 }
@@ -407,8 +419,11 @@ mod tests {
         let _stream = in_ep(1, 294).into_iso_stream(filler(5000));
         test::poke16(usb(0).d0fifoctr().addr(), FIFOCTR_FRDY);
         unsafe { in_brdy(usb(0), 1) };
-        // 294 bytes: 73 words and a 2-byte tail.
-        assert!(fifo_writes() <= 294 / 4 + 2, "{} writes", fifo_writes());
+        // 294 bytes: 73 words, then a 2-byte tail through the byte lanes (D0FIFO + 3, + 2).
+        assert_eq!(fifo_writes(), 73);
+        let lanes = [usb(0).d0fifo().addr() + 3, usb(0).d0fifo().addr() + 2];
+        let tail = test::log().iter().filter(|x| x.write && lanes.contains(&x.addr)).count();
+        assert_eq!(tail, 2);
         assert!(!ctr_written(FIFOCTR_BVAL), "a full packet needs no BVAL");
     }
 

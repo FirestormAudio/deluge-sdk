@@ -5,7 +5,7 @@
 //! existing free-running rings. There is no DMA/SCUX reconfiguration: this
 //! module only reaches the rings through [`crate::audio::with_tx`] / [`crate::audio::with_rx`].
 //! The offset
-//! math and anti-auto-mute dither match the firmware's `iso_out_to_ssi`.
+//! math and anti-auto-mute dither match the firmware's `SpeakerSink`.
 //!
 //! Board-specific concerns (i32↔f32 format, uncached ring access, wrap, dither)
 //! live here; the SDK's `deluge::audio` owns the cadence and the user callback.

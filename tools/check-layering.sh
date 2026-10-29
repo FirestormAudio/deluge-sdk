@@ -63,9 +63,6 @@ if [ -n "$hal_asm_hits" ]; then
   echo "error: rza1-hal contains global_asm!; startup and exception entry belong in rza1-rt" >&2
   exit 1
 fi
-# Board-agnostic crates (spec rule 3): usb/ and drivers/ never name the chip HAL, the board, or
-# any deluge-* crate in code. Their dependencies are checked against Cargo's graph at the end.
-AGNOSTIC_DIRS=(usb drivers)
 # The USB iso hooks are gone (spec decision 3): iso endpoints become `usb::iso` streams.
 iso_hook_hits="$(grep -rnE --include='*.rs' --exclude-dir=target 'register_iso_(in|out)_hook' rza1 crates firmwares hw-tests examples \
   | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)"
@@ -75,6 +72,9 @@ if [ -n "$iso_hook_hits" ]; then
   exit 1
 fi
 
+# Board-agnostic crates (spec rule 3): usb/ and drivers/ never name the chip HAL, the board, or
+# any deluge-* crate in code. Their dependencies are checked against Cargo's graph at the end.
+AGNOSTIC_DIRS=(usb drivers)
 # Audio rings are lent by the caller (spec decision 2): the SSI and SCUX drivers hold no static
 # buffers or descriptors of their own.
 audio_static_hits="$(grep -rnE --include='*.rs' 'static mut' rza1/rza1-hal/src/ssi.rs rza1/rza1-hal/src/scux.rs rza1/rza1-hal/src/scux \

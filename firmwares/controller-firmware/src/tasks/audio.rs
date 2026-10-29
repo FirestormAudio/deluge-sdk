@@ -25,7 +25,7 @@ const WRITE_AHEAD: usize = 2048;
 static PACKET_SEQ: AtomicU32 = AtomicU32::new(0);
 
 /// The ISO OUT stream's consumer: its state is touched only by the USB interrupt
-/// (single producer, IRQs disabled — no locking needed).  `write_off` is the next
+/// (single producer — no locking needed).  `write_off` is the next
 /// TX ring word to write; `lfsr` is the dither generator state carried across
 /// packets.
 struct SpeakerSink {
@@ -92,9 +92,8 @@ pub(crate) fn fill_tx_with_dither() {
 /// Packet format: stereo 16- or 24-bit LE PCM.  SSI expects audio in bits
 /// `[31:8]`; 24-bit shifts left by 8, 16-bit by 16.
 ///
-/// Runs in the BRDY ISR (single producer, IRQs disabled), bound by
-/// [`uac2_task`]'s iso stream.  Uses integer arithmetic only — no VFP state to
-/// preserve.
+/// Runs in the BRDY ISR (single producer; only a higher-priority interrupt can
+/// preempt it), bound by [`uac2_task`]'s iso stream.
 impl IsoOutConsumer for SpeakerSink {
     fn on_packet(&mut self, packet: &[u8]) {
         let (pkt, len) = (packet.as_ptr(), packet.len());
@@ -281,8 +280,8 @@ static MIC_PACKET_SEQ: AtomicU32 = AtomicU32::new(0);
 ///
 /// Bound to the ISO IN stream and called from the BRDY ISR each time a transmit
 /// buffer frees up (and twice at enable, to prime both buffers) — the
-/// continuous-BUF equivalent of the OUT-side [`SpeakerSink`].  Runs with IRQs
-/// disabled; integer arithmetic only — no VFP state to preserve.
+/// continuous-BUF equivalent of the OUT-side [`SpeakerSink`].  Only a
+/// higher-priority interrupt can preempt it.
 impl IsoInProducer for MicSource {
     fn fill_packet(&mut self, packet: &mut [u8]) -> usize {
         let (buf, max) = (packet.as_mut_ptr(), packet.len());

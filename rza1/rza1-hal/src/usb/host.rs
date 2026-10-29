@@ -278,7 +278,9 @@ impl Default for IsoInBuffers {
     }
 }
 
-/// Port n's lent rings; null until a board lends them.
+/// Port n's lent rings; null until a board lends them. (The per-pipe isochronous flags and
+/// wakers, `HCD_PIPE_ISO_IN` and `HCD_PIPE_WAKERS`, are still indexed by pipe alone: one host
+/// port at a time.)
 static ISO_IN: [core::sync::atomic::AtomicPtr<IsoInBuffers>; 2] =
     [const { core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()) }; 2];
 
@@ -3123,8 +3125,6 @@ mod tests {
         assert_eq!(drive(h.xfer_out(1, 0x03, &[0u8; 48]), 3), Some(Ok(())));
     }
 
-    /// An isochronous IN pipe is opened with its packet ring empty, then `packet` simulates one
-    /// arriving (BRDY with `len` bytes of the repeated `word` in D0FIFO).
     /// Lend fresh isochronous IN buffers to port 0, as a board would once.
     fn lend_iso(h: &Rusb1HostDriver<'_>) {
         h.lend_iso_in_buffers(Box::leak(Box::new(IsoInBuffers::new())));
@@ -3141,6 +3141,8 @@ mod tests {
         assert!(h.edpt_open(1, 0x03, EndpointType::Isochronous, 56, 1).is_ok());
     }
 
+    /// An isochronous IN pipe is opened with its packet ring empty, then `packet` simulates one
+    /// arriving (BRDY with `len` bytes of the repeated `word` in D0FIFO).
     fn iso_in_pipe(h: &Rusb1HostDriver<'_>, ep: u8) -> usize {
         use crate::mmio::test;
         lend_iso(h);

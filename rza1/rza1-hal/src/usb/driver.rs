@@ -648,6 +648,14 @@ static SETUP_GEN: [AtomicU32; 2] = [const { AtomicU32::new(0) }; 2];
 static ENABLED_GEN: [[AtomicU32; PIPE_COUNT]; 2] =
     [const { [const { AtomicU32::new(0) }; PIPE_COUNT] }; 2];
 
+/// A SETUP packet arrived on `port`: start a new request generation.
+/// Generation 0 means "never", so a wrap skips it.
+fn next_setup_gen(port: usize) {
+    let _ = SETUP_GEN[port].fetch_update(Ordering::AcqRel, Ordering::Acquire, |g| {
+        Some(g.wrapping_add(1).max(1))
+    });
+}
+
 /// Forget which pipes the current request enabled (a bus reset).
 fn forget_enables(port: usize) {
     for g in &ENABLED_GEN[port] {
@@ -1541,7 +1549,7 @@ pub unsafe fn dcd_int_handler(port: u8) {
                 let cs = critical_section::CriticalSection::new();
                 *SETUP_PKT[p].borrow(cs).get() = pkt;
                 // A new control request: a disable from it may undo only its own enables.
-                SETUP_GEN[p].fetch_add(1, Ordering::AcqRel);
+                next_setup_gen(p);
 
                 // Clear VALID now that the setup packet has been latched.
                 u.intsts(0).write_value(!INTSTS0_VALID);
@@ -1917,6 +1925,68 @@ mod tests {
 
     fn pipes_used() -> u16 {
         critical_section::with(|cs| unsafe { (*PORT_ALLOC[1].borrow(cs).get()).pipes_used })
+    }
+
+    /// Re-selecting alt 1 skips the disable (Task 2), so the mic pipe's own BRDY can still be
+    /// enabled when the next enable primes it: the prime must run with that BRDY masked, or the
+    /// ISR refills the same producer mid-fill.
+    #[test]
+    fn priming_masks_the_pipes_own_brdy() {
+        use std::sync::atomic::{AtomicU16, Ordering};
+        static SEEN: AtomicU16 = AtomicU16::new(0xFFFF);
+        struct Watch;
+        impl super::super::iso::IsoInProducer for Watch {
+            fn fill_packet(&mut self, buf: &mut [u8]) -> usize {
+                SEEN.fetch_and(test::peek16(usb(1).brdyenb().addr()), Ordering::SeqCst);
+                buf.len()
+            }
+        }
+        let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut d = fresh_port1();
+        let ep = d.alloc_endpoint_in(EndpointType::Isochronous, None, 294, 1).unwrap();
+        let (addr, pipe) = (ep.info.addr, ep.pipe as usize);
+        let stream = ep.into_iso_stream(Box::leak(Box::new(Watch)));
+        let u = usb(1);
+        test::poke16(crate::usb::fifo::fifo_for_pipe(u, pipe).ctr.addr(), crate::usb::regs::FIFOCTR_FRDY);
+        test::poke16(u.brdyenb().addr(), 1 << pipe); // left enabled by a skipped disable
+        SEEN.store(0xFFFF, Ordering::SeqCst);
+        let mut bus = Rusb1Bus { port: 1, connected: true };
+        bus.endpoint_set_enabled(addr, true);
+        assert_eq!(SEEN.load(Ordering::SeqCst) & (1 << pipe), 0, "BRDY masked while priming");
+        assert_ne!(test::peek16(u.brdyenb().addr()) & (1 << pipe), 0, "re-armed after");
+        drop(stream);
+    }
+
+    /// Binding a producer to an IN endpoint the host has already enabled starts it at once.
+    #[test]
+    fn binding_an_enabled_in_endpoint_primes_it() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static FILLS: AtomicU32 = AtomicU32::new(0);
+        struct Count;
+        impl super::super::iso::IsoInProducer for Count {
+            fn fill_packet(&mut self, buf: &mut [u8]) -> usize {
+                FILLS.fetch_add(1, Ordering::SeqCst);
+                buf.len()
+            }
+        }
+        let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut d = fresh_port1();
+        let ep = d.alloc_endpoint_in(EndpointType::Isochronous, None, 294, 1).unwrap();
+        let pipe = ep.pipe as usize;
+        let u = usb(1);
+        test::poke16(crate::usb::fifo::fifo_for_pipe(u, pipe).ctr.addr(), crate::usb::regs::FIFOCTR_FRDY);
+        test::poke16(pipectr(u, pipe).addr(), 0b01); // the host already enabled it: PID = BUF
+        FILLS.store(0, Ordering::SeqCst);
+        let stream = ep.into_iso_stream(Box::leak(Box::new(Count)));
+        assert_eq!(FILLS.load(Ordering::SeqCst), 2, "both planes primed on bind");
+        drop(stream);
+    }
+
+    #[test]
+    fn a_wrapping_setup_generation_skips_zero() {
+        SETUP_GEN[0].store(u32::MAX, Ordering::Release);
+        next_setup_gen(0);
+        assert_eq!(SETUP_GEN[0].load(Ordering::Acquire), 1);
     }
 
     /// UAC2's streaming alts 1 and 2 share their endpoint addresses, so they share a pipe.

@@ -72,11 +72,15 @@ pub static PIPE_IS_IN: AtomicU16 = AtomicU16::new(0);
 /// [`pipe_configure`].)
 ///
 /// # Safety
-/// Task context (no transfer in flight on this pipe).
+/// No transfer in flight on this pipe. Runs in a critical section.
 /// For DelugeFirmware's alt-setting workaround until phase 9; not part of the API.
 #[doc(hidden)]
 pub unsafe fn pipe_iso_in_activate(u: Usb, n: usize) {
-    unsafe {
+    // All of it with interrupts masked: pipes 1 and 2 share D0FIFO, so another pipe's BRDY (the
+    // speaker's, every microframe) would re-select the FIFO port under the prime, and this pipe's
+    // own BRDY, left enabled by a skipped disable, would call the producer while it fills.
+    critical_section::with(|_| unsafe {
+        pipe_brdy_disable(u, n);
         // pipe_reset quiesces (PID=NAK, deselect) and pulses ACLRM|SQCLR.
         pipe_reset(u, n);
         // Prime BOTH double-buffer planes while PID is still NAK.  TRM §28.4
@@ -91,7 +95,7 @@ pub unsafe fn pipe_iso_in_activate(u: Usb, n: usize) {
         u.brdysts().write_value(!(1u16 << n));
         pipe_brdy_enable(u, n);
         pipe_enable(u, n); // PID=BUF
-    }
+    })
 }
 
 /// Stage pipe `n`'s next ISO IN packet from its bound [`IsoInProducer`](super::iso::IsoInProducer)
@@ -100,9 +104,8 @@ pub unsafe fn pipe_iso_in_activate(u: Usb, n: usize) {
 /// the FIFO port is not ready.
 ///
 /// # Safety
-/// Single-core IRQ or task context (never both at once —
-/// the enable-time prime runs with BRDY disabled).
-pub unsafe fn pipe_xfer_in_brdy(u: Usb, n: usize) {
+/// The port's USB interrupt, or in a critical section (the enable-time prime).
+pub(crate) unsafe fn pipe_xfer_in_brdy(u: Usb, n: usize) {
     // SAFETY: the caller's contract.
     unsafe { super::iso::in_brdy(u, n) }
 }
