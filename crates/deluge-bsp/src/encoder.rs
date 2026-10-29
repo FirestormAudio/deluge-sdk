@@ -140,7 +140,7 @@ fn enc_irq_handler(index: usize) {
     // Clear the pending edge BEFORE reading the pins: an A edge after the read then raises the
     // interrupt again, rather than being cleared away unread.
     unsafe { rza1_hal::gic::clear_irq_pending(w.irq_num) };
-    let pins = unsafe { rza1_hal::gpio::read_port(1) };
+    let pins = rza1_hal::gpio::read_port(rza1_hal::gpio::Port::P1);
     let edges = critical_section::with(|cs| {
         DECODERS.borrow_ref_mut(cs)[index].observe_a_edge(
             pin(pins, w.irq_pin),
@@ -190,7 +190,7 @@ rza1_hal::bind_interrupts!(struct PollIrqs {
 #[cfg(target_os = "none")]
 fn poll() {
     critical_section::with(|cs| {
-        let pins = unsafe { rza1_hal::gpio::read_port(1) };
+        let pins = rza1_hal::gpio::read_port(rza1_hal::gpio::Port::P1);
         let mut decoders = DECODERS.borrow_ref_mut(cs);
         for (index, w) in WIRING.iter().enumerate() {
             let edges =
@@ -248,7 +248,7 @@ pub unsafe fn irq_init(poll_timer: rza1_hal::Peri<'static, crate::board::Encoder
         }
 
         // Start every decoder at the pins' current levels, so bring-up isn't read as a turn.
-        let pins = rza1_hal::gpio::read_port(1);
+        let pins = rza1_hal::gpio::read_port(rza1_hal::gpio::Port::P1);
         critical_section::with(|cs| {
             let mut decoders = DECODERS.borrow_ref_mut(cs);
             for (decoder, w) in decoders.iter_mut().zip(&WIRING) {

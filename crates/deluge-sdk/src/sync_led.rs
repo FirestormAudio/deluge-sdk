@@ -2,11 +2,13 @@
 
 use embedded_hal::digital::{OutputPin, StatefulOutputPin};
 #[cfg(target_os = "none")]
-use rza1_hal::gpio::{Output, Pin};
+#[allow(deprecated)]
+use rza1_hal::gpio::{OutputMode, TypedPin};
 
 /// The SYNC LED is wired to port 6, pin 7.
 #[cfg(target_os = "none")]
-type SyncLedPin = Pin<6, 7, Output>;
+#[allow(deprecated)]
+type SyncLedPin = TypedPin<6, 7, OutputMode>;
 
 /// The Deluge SYNC LED (P6_7).
 ///

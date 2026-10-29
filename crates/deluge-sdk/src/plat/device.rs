@@ -18,7 +18,8 @@ use embassy_time::Instant;
 #[cfg(not(feature = "audio-irq"))]
 use embassy_time::{Duration, Ticker};
 use embedded_hal::digital::{OutputPin, StatefulOutputPin};
-use rza1_hal::gpio::{Output, Pin};
+#[allow(deprecated)]
+use rza1_hal::gpio::{OutputMode, TypedPin};
 
 /// Run `f` over every audio block, forever.
 pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame]) + Send + 'static>(
@@ -61,7 +62,8 @@ pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame]) + Send 
 }
 
 /// The SYNC LED is wired to port 6, pin 7.
-type SyncLedPin = Pin<6, 7, Output>;
+#[allow(deprecated)]
+type SyncLedPin = TypedPin<6, 7, OutputMode>;
 
 /// Bring up RSPI0, which the OLED and the CV DAC share, the first time either needs it, unless
 /// the app already did.
