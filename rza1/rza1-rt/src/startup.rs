@@ -1,62 +1,40 @@
-//! Reset vector, bootloader metadata, exception handlers and the GIC IRQ entry
-//! stub for the RZ/A1L, in ARM-mode assembly.
+//! Reset vector, exception handlers and the GIC IRQ entry stub for the RZ/A1L, in ARM-mode
+//! assembly.
 //!
 //! The reset handler invalidates caches/TLBs, installs the vector table via
 //! VBAR, parks secondary cores, unlocks retention RAM, enables VFP/NEON, sets
-//! up the per-mode stacks, zeroes BSS and calls `main`.
+//! up the per-mode stacks, zeroes BSS and calls `main` (`#[rza1_rt::entry]`).
 //!
 //! Every fault vector (undefined instruction, SVC, prefetch abort, data abort, reserved) works out
 //! the address of the faulting instruction and, with the `rtt` feature, first dumps the fault
-//! registers to RTT channel 0. With the `app-fault-reporter` feature it then hands over to the
-//! application's `rza1_cpu_fault_report`; without it, or for a consumer that has no reporter, it
-//! blinks the board's status LED (named in its memory.x) in a repeating pattern (1 = undefined
-//! instruction, 2 = SVC, 3 = prefetch abort, 4 = data abort, 5 = reserved).
+//! registers to RTT channel 0. It then hands over to `rza1_cpu_fault_report` (`#[rza1_rt::fault]`),
+//! or, in an image that defines none, parks the core.
+//!
+//! The vector table is 8 branches and nothing else: a board's boot header (the words and
+//! signature its first-stage loader checks) goes in the `.boot_header` section, which link.x
+//! places straight after it, at `_start + 0x20`.
 
 use core::arch::global_asm;
 
 global_asm!(
     r#"
     /*
-     * Vector table — must be section .vector_table so the linker places it
-     * at 0x20020000 (first bytes of the binary loaded into SRAM).
-     *
-     * IMPORTANT: ORIGIN(RAM) must be >= 0x20020000. The bootloader (spibsc_init2.c)
-     * reads CODE_START from flash+0x20 and skips the entire copy if the destination
-     * is below 0x20020000. 0x20000000–0x2001FFFF is data-retention RAM that the
-     * bootloader explicitly excludes from the valid firmware destination range.
-     *
-     * Layout after the 8 vector entries (offset 0x20 onward):
-     *   code_start   .word _start            — bootloader: copy-from address
-     *   code_end     .word end               — bootloader: end of image
-     *   code_execute .word _start            — bootloader: jump target
-     *                .asciz "..."            — bootloader validation signature
-     *
-     * The literal pool for the LDR pc,=label instructions is placed by the
-     * assembler via .ltorg, after the metadata so it does not land between
-     * the vector entries and the bootloader words.
+     * Vector table: section .vector_table, the first loadable bytes of the image. Branches
+     * rather than `ldr pc, =label`, so there is no literal pool to land between the table and
+     * a board's `.boot_header` at +0x20.
      */
     .section .vector_table, "ax"
     .code 32
     .global _start
 _start:
-    ldr pc, =_reset_handler       /* 0x00  Reset                   */
-    ldr pc, =_undef_handler       /* 0x04  Undefined instruction  */
-    ldr pc, =_svc_handler         /* 0x08  Supervisor call        */
-    ldr pc, =_prefetch_handler    /* 0x0C  Prefetch abort         */
-    ldr pc, =_abort_handler       /* 0x10  Data abort             */
-    ldr pc, =_reserved_handler    /* 0x14  Reserved               */
-    ldr pc, =_irq_handler         /* 0x18  IRQ                    */
-    ldr pc, =_fiq_handler         /* 0x1C  FIQ                    */
-
-    /* Bootloader metadata — fixed offsets from _start */
-    .word _start                  /* 0x20  code_start             */
-    .word __metadata_code_end     /* 0x24  code_end (FSB copies _start..code_end to SRAM) */
-    .word _start                  /* 0x28  code_execute           */
-    .asciz ".BootLoad_ValidProgramTest."   /* 0x2C  signature      */
-    .align 4
-
-    /* Force literal pool here so it follows the metadata, not before it */
-    .ltorg
+    b _reset_handler              /* 0x00  Reset                   */
+    b _undef_handler              /* 0x04  Undefined instruction  */
+    b _svc_handler                /* 0x08  Supervisor call        */
+    b _prefetch_handler           /* 0x0C  Prefetch abort         */
+    b _abort_handler              /* 0x10  Data abort             */
+    b _reserved_handler           /* 0x14  Reserved               */
+    b _irq_handler                /* 0x18  IRQ                    */
+    b _fiq_handler                /* 0x1C  FIQ                    */
 
     /*
      * Reset handler — minimal startup for first-milestone bare-metal boot.
@@ -68,7 +46,7 @@ _start:
      *   3. Enable NEON/VFP coprocessor access
      *   4. Set up per-mode stacks
      *   5. Zero BSS
-     *   6. Branch to rust_main
+     *   6. Branch to `main` (`#[rza1_rt::entry]`)
      */
     .section .text._reset_handler, "ax"
     .code 32
@@ -78,12 +56,6 @@ _reset_handler:
      * left CPSR with interrupts enabled. With VBAR=0 any stray exception
      * would branch into SPI flash (the old bootloader at 0x00000000). */
     cpsid aif
-
-    /* Configure the board's status LED as a plain GPIO immediately so any
-     * early exception can signal a visible fault pattern without relying on
-     * Rust, the allocator, RTT, or later board init. */
-    bl _boot_led_setup
-    bl _boot_led_write_low
 
     /*
      * 1. Stop every DMAC channel the previous program left running. A debugger
@@ -341,69 +313,8 @@ _dmac_stop_group:
     bne 2b
     bx lr
 
-_boot_led_setup:
-    /* The board's status LED (memory.x: RZA1_STATUS_LED_PORT/PIN; link.x derives the
-     * registers) as a software-controlled GPIO output: its PMC bit (port mode), PM bit
-     * (output) and PIPC bit (software control) cleared. Clobbers r0-r2. */
-    ldr r2, =__rza1_status_led_mask
-    ldr r0, =__rza1_status_led_pmc
-    ldrh r1, [r0]
-    bic r1, r1, r2
-    strh r1, [r0]
-
-    ldr r0, =__rza1_status_led_pm
-    ldrh r1, [r0]
-    bic r1, r1, r2
-    strh r1, [r0]
-
-    ldr r0, =__rza1_status_led_pipc
-    ldrh r1, [r0]
-    bic r1, r1, r2
-    strh r1, [r0]
-    bx lr
-
-_boot_led_write_high:
-    ldr r2, =__rza1_status_led_mask
-    ldr r0, =__rza1_status_led_p
-    ldrh r1, [r0]
-    orr r1, r1, r2
-    strh r1, [r0]
-    bx lr
-
-_boot_led_write_low:
-    ldr r2, =__rza1_status_led_mask
-    ldr r0, =__rza1_status_led_p
-    ldrh r1, [r0]
-    bic r1, r1, r2
-    strh r1, [r0]
-    bx lr
-
-_boot_delay:
-    subs r0, r0, #1
-    bne _boot_delay
-    bx lr
-
-_boot_fault_loop:
-    /* r4 = number of short blinks in the repeating fault pattern */
-    bl _boot_led_setup
-.Lboot_fault_outer:
-    mov r5, r4
-.Lboot_fault_pulse:
-    bl _boot_led_write_high
-    ldr r0, =0x00800000
-    bl _boot_delay
-    bl _boot_led_write_low
-    ldr r0, =0x00800000
-    bl _boot_delay
-    subs r5, r5, #1
-    bne .Lboot_fault_pulse
-    ldr r0, =0x02000000
-    bl _boot_delay
-    b .Lboot_fault_outer
-
-    /* Fault vectors. Each one sets up the same three registers and then goes on to its RTT dump
+    /* Fault vectors. Each one sets up the same two registers and then goes on to its RTT dump
      * (when the `rtt` feature has one) and the shared tail `_fault_report`:
-     *   r4 = LED blink count, for when there is no reporter to hand over to
      *   r5 = fault type passed to the reporter (0 undefined, 1 prefetch abort,
      *        2 data abort, 3 reserved, 0xF SVC)
      *   r6 = address of the faulting instruction
@@ -419,7 +330,6 @@ _boot_fault_loop:
     .global _reserved_handler
     .global _fiq_handler
 _undef_handler:
-    mov   r4, #1
     mov   r5, #0
     mrs   r6, spsr
     tst   r6, #0x20               /* SPSR.T: faulted in Thumb state */
@@ -428,7 +338,6 @@ _undef_handler:
     b     _undef_rtt
 _svc_handler:
     /* Not a fault as such, but nothing makes system calls: report the SVC itself. */
-    mov   r4, #2
     mov   r5, #0xF
     mrs   r6, spsr
     tst   r6, #0x20
@@ -436,18 +345,15 @@ _svc_handler:
     subeq r6, lr, #4
     b     _fault_report
 _prefetch_handler:
-    mov   r4, #3
     mov   r5, #1
     sub   r6, lr, #4
     b     _pabt_rtt
 _abort_handler:
-    mov   r4, #4
     mov   r5, #2
     sub   r6, lr, #8
     b     _abort_rtt
 _reserved_handler:
     /* Never taken on the Cortex-A9 (it is the Hyp trap vector); LR is reported as it stands. */
-    mov   r4, #5
     mov   r5, #3
     mov   r6, lr
     b     _fault_report
@@ -672,18 +578,16 @@ _undef_rtt:
 );
 
 // The shared tail of every fault vector, entered in the exception's mode with interrupts masked
-// and r4/r5/r6 set up as described at the vectors.
+// and r5/r6 set up as described at the vectors.
 //
-// With `app-fault-reporter` it calls the application's
-// `rza1_cpu_fault_report(fault_pc, fault_type, sys_lr, sys_sp)`, the pad-grid crash reporter
-// (the Deluge firmware's is in `src/deluge/io/debug/fault_pattern.c`). The reference is strong,
-// so an application that enables the feature without providing the reporter fails to link rather
-// than faulting silently. `sys_lr`/`sys_sp` are the interrupted code's LR and SP, read by briefly
+// It calls `rza1_cpu_fault_report(fault_pc, fault_type, sys_lr, sys_sp)`: the image's
+// `#[rza1_rt::fault]` handler, or a C function of that name (the Deluge firmware's pad-grid
+// crash reporter is one). In an image that defines neither, link.x PROVIDEs the default below,
+// which parks the core. `sys_lr`/`sys_sp` are the interrupted code's LR and SP, read by briefly
 // switching to System mode, which shares them with User mode: LR is the return address of the
 // call that went wrong, and SP is where the reporter walks for the rest of the call chain. The
 // reporter runs on the abort stack, never the interrupted one, which may be the very thing that
 // overflowed. It does not return.
-#[cfg(feature = "app-fault-reporter")]
 global_asm!(
     r#"
 _fault_report:
@@ -697,14 +601,16 @@ _fault_report:
     mov  r1, r5                   /* fault_type */
     ldr  r12, =rza1_cpu_fault_report
     bx   r12
-"#
-);
 
-#[cfg(not(feature = "app-fault-reporter"))]
-global_asm!(
-    r#"
-_fault_report:
-    b    _boot_fault_loop
+    /* The default reporter (link.x PROVIDEs it as rza1_cpu_fault_report): park the core. A
+     * PROVIDE rather than a weak symbol, so a reporter in an archive member (a C library's,
+     * say) is still pulled in to resolve the reference. */
+    .pushsection .text.__rza1_rt_default_fault_report, "ax"
+    .global __rza1_rt_default_fault_report
+__rza1_rt_default_fault_report:
+    wfi
+    b    __rza1_rt_default_fault_report
+    .popsection
 "#
 );
 
@@ -768,7 +674,7 @@ _pabt_rtt:
     write_char_p #0x0A
     str  r2, [r0, #0x24]
     pop  {{r5, r6, r7, r8, r9, r10}}
-    b    _boot_fault_loop
+    b    _fault_report
 "#
 );
 

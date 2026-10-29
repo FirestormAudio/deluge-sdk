@@ -27,12 +27,14 @@ fat = ["dep:embedded-sdmmc"]
 default = ["memory-x"]
 ## Put the Deluge's memory layout (`memory.x`, or `memory_rtt.x` with `rtt`) on the linker
 ## search path for rza1-rt's `link.x`. Turn default features off to supply your own `memory.x`;
-## it must define what `link.x`'s header lists, including RZA1_STATUS_LED_PORT/PIN.
+## it must define what `link.x`'s header lists.
 memory-x = []
 ## SEGGER RTT: fault dumps to RTT channel 0 and the RTT memory layout.
 rtt = ["rza1-rt/rtt"]
-## Hand CPU faults to the application's `rza1_cpu_fault_report` (see `rza1-rt`).
-app-fault-reporter = ["rza1-rt/app-fault-reporter"]
+## No effect; kept until the Deluge firmware stops passing it. CPU faults always go to
+## `rza1_cpu_fault_report`: an application defining its own (C, or `#[rza1_rt::fault]`) turns
+## default features off so the BSP's `fault-blink` handler stays out.
+app-fault-reporter = []
 ## Drive `audio::init_direct` from a per-block RX DMA interrupt instead of the
 ## default poll loop. Selected by `deluge/audio-irq`.
 audio-irq = []

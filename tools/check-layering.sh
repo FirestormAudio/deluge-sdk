@@ -56,6 +56,15 @@ if [ -n "$chip_code_hits" ]; then
   echo "error: a chip crate (rza1-pac, rza1-hal, rza1-rt, rza1-alloc) names the Deluge; board facts belong in deluge-bsp" >&2
   exit 1
 fi
+# The boot header and the status LED are the board's (spec decision 4): rza1-rt only places a
+# `.boot_header` section; deluge-bsp emits the Deluge's header and blinks its LED on a fault.
+chip_board_hits="$(grep -rnE --include='*.rs' --include='*.x' --exclude-dir=target 'BootLoad_ValidProgramTest|RZA1_STATUS_LED' "${CHIP_DIRS[@]}" \
+  | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)' || true)"
+if [ -n "$chip_board_hits" ]; then
+  printf '%s\n' "$chip_board_hits"
+  echo "error: a chip crate holds the board's boot header or status LED; they belong in deluge-bsp" >&2
+  exit 1
+fi
 # Startup and exception entry are rza1-rt's: the HAL has no global_asm! (spec, Phase 3 exit).
 hal_asm_hits="$(grep -rn --include='*.rs' 'global_asm' rza1/rza1-hal | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)"
 if [ -n "$hal_asm_hits" ]; then

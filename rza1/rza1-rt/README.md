@@ -7,8 +7,7 @@ script.
 
 A board crate depends on it, links it with `use rza1_rt as _;`, and puts a `memory.x` on the
 linker search path defining the `RAM` (and optionally `SDRAM`) regions, the per-mode stack sizes
-and `INTERNAL_RAM_END`; see the script's header for the full list. It also names the status LED the boot and fault
-handlers blink: `RZA1_STATUS_LED_PORT` (1–11) and `RZA1_STATUS_LED_PIN` (0–15). The application's `build.rs`
+and `INTERNAL_RAM_END`; see the script's header for the full list. The application's `build.rs`
 passes `-Tlink.x` (`cargo:rustc-link-arg-bins=-Tlink.x`).
 
 | Feature | Effect |

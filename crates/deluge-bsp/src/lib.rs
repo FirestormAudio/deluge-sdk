@@ -9,6 +9,9 @@
 // so this is what links it into every image built on the BSP.
 #[cfg(target_os = "none")]
 use rza1_rt as _;
+// The Deluge's boot header, in the `.boot_header` section rza1-rt places after the vector table.
+#[cfg(target_os = "none")]
+mod boot_header;
 
 pub mod audio;
 #[cfg(target_os = "none")]
