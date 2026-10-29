@@ -1,0 +1,126 @@
+//! DMA buffers: memory the DMAC and the CPU see the same way, with no cache maintenance.
+//!
+//! [`Uncached`] (a source) and [`UncachedMut`] (a destination) wrap a byte slice that lies wholly
+//! in a normal non-cacheable section of the HAL's MMU table: the `+0x4000_0000` mirrors of SRAM
+//! and SDRAM ([`memmap::is_uncached_range`]). A DMA driver that takes one can't be handed cached
+//! memory, whose dirty lines would overwrite or hide what the DMAC moves.
+//!
+//! A board gets such memory from a `static` buffer it touches only through its
+//! [`UNCACHED_MIRROR_OFFSET`](crate::UNCACHED_MIRROR_OFFSET) alias, cleaning and invalidating the
+//! cached alias's lines once at boot so no stale line is ever written back over it.
+//!
+//! On the host, where tests run and memory has no mirror, any non-empty slice is accepted.
+
+use crate::memmap;
+
+/// The buffer is empty or not wholly in uncached (DMA-coherent) memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct NotUncached;
+
+fn check(addr: usize, len: usize) -> Result<(), NotUncached> {
+    #[cfg(target_os = "none")]
+    let ok = memmap::is_uncached_range(addr, len);
+    #[cfg(not(target_os = "none"))]
+    let ok = {
+        let _ = (addr, memmap::is_uncached_range);
+        len != 0
+    };
+    if ok { Ok(()) } else { Err(NotUncached) }
+}
+
+/// A DMA source: bytes in uncached memory.
+pub struct Uncached<'a>(&'a [u8]);
+
+impl<'a> Uncached<'a> {
+    /// `buf`, if it is non-empty and wholly in uncached memory.
+    pub fn new(buf: &'a [u8]) -> Result<Self, NotUncached> {
+        check(buf.as_ptr() as usize, buf.len())?;
+        Ok(Self(buf))
+    }
+
+    /// The bytes.
+    pub fn as_slice(&self) -> &[u8] {
+        self.0
+    }
+
+    /// Its length in bytes.
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// The DMAC address of its first byte (the mirror is a real bus alias).
+    pub(crate) fn bus_addr(&self) -> u32 {
+        self.0.as_ptr() as u32
+    }
+}
+
+/// A DMA destination: bytes in uncached memory.
+pub struct UncachedMut<'a>(&'a mut [u8]);
+
+impl<'a> UncachedMut<'a> {
+    /// `buf`, if it is non-empty and wholly in uncached memory.
+    pub fn new(buf: &'a mut [u8]) -> Result<Self, NotUncached> {
+        check(buf.as_ptr() as usize, buf.len())?;
+        Ok(Self(buf))
+    }
+
+    /// The bytes.
+    pub fn as_slice(&self) -> &[u8] {
+        self.0
+    }
+
+    /// The bytes, writable.
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        self.0
+    }
+
+    /// Its length in bytes.
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// The same buffer for a shorter borrow, so one buffer serves transfer after transfer.
+    pub fn reborrow(&mut self) -> UncachedMut<'_> {
+        UncachedMut(self.0)
+    }
+
+    /// Its first `len` bytes (all of it if `len` is larger).
+    pub fn prefix(&mut self, len: usize) -> UncachedMut<'_> {
+        let len = len.min(self.0.len());
+        UncachedMut(&mut self.0[..len])
+    }
+
+    /// The same bytes as a DMA source.
+    pub fn as_source(&self) -> Uncached<'_> {
+        Uncached(self.0)
+    }
+
+    /// The DMAC address of its first byte (the mirror is a real bus alias).
+    pub(crate) fn bus_addr(&self) -> u32 {
+        self.0.as_ptr() as u32
+    }
+}
+
+#[cfg(all(test, not(target_os = "none")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_empty_buffer_is_refused() {
+        assert_eq!(UncachedMut::new(&mut []).err(), Some(NotUncached));
+        assert_eq!(Uncached::new(&[]).err(), Some(NotUncached));
+    }
+
+    #[test]
+    fn reborrow_keeps_the_same_memory() {
+        let mut storage = [0u8; 1024];
+        let mut buf = UncachedMut::new(&mut storage).unwrap();
+        let before = buf.as_slice().as_ptr();
+        let again = buf.reborrow();
+        assert_eq!(again.as_slice().as_ptr(), before);
+        assert_eq!(again.len(), 1024);
+    }
+}
