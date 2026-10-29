@@ -143,13 +143,13 @@ pub extern "C" fn main() -> ! {
     info!("GPIO: heartbeat LED P6_7 configured");
 
     info!("UART: initialising MIDI...");
-    bsp_uart::init_midi(board.midi_uart, board.dma.midi_rx, 31_250);
+    bsp_uart::init_midi(board.midi_uart, board.pins.midi, board.dma.midi_rx, 31_250);
     info!("UART: MIDI ready");
 
     info!("UART: initialising PIC...");
-    bsp_uart::init_pic(board.pic_uart, board.dma.pic_rx, board.dma.pic_tx, 31_250);
+    bsp_uart::init_pic(board.pic_uart, board.pins.pic, board.dma.pic_rx, board.dma.pic_tx, 31_250);
     // The SD slot's controller, once; `sd::init` identifies the card when it is needed.
-    deluge_bsp::sd::init_hw(board.sd_card, board.dma.sd_tx, board.dma.sd_rx);
+    deluge_bsp::sd::init_hw(board.sd_card, board.pins.sd, board.dma.sd_tx, board.dma.sd_rx);
     info!("UART: SCIF0/1 @ 31 250 baud");
 
     info!("audio: initialising SSI0...");
@@ -163,7 +163,7 @@ pub extern "C" fn main() -> ! {
 
     // RSPI0 is shared between OLED (8-bit) and CV DAC (32-bit). The bus brings it up in 32-bit
     // mode; cv_gate::init() runs the DAC's linearity sequence; oled::init() switches to 8-bit.
-    deluge_bsp::bus::init(board.shared_spi, board.dma.oled);
+    deluge_bsp::bus::init(board.shared_spi, board.pins.spi, board.dma.oled);
     unsafe { cv_gate::init() };
     info!("RSPI0: initialised via cv_gate::init");
 

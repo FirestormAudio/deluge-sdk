@@ -80,9 +80,9 @@ pub extern "C" fn main() -> ! {
     unsafe { rza1_hal::gpio::set_as_output(6, 7) };
 
     info!("UART: initialising PIC...");
-    bsp_uart::init_pic(board.pic_uart, board.dma.pic_rx, board.dma.pic_tx, 31_250);
+    bsp_uart::init_pic(board.pic_uart, board.pins.pic, board.dma.pic_rx, board.dma.pic_tx, 31_250);
     // The SD slot's controller, once; `sd::init` identifies the card when it is needed.
-    deluge_bsp::sd::init_hw(board.sd_card, board.dma.sd_tx, board.dma.sd_rx);
+    deluge_bsp::sd::init_hw(board.sd_card, board.pins.sd, board.dma.sd_tx, board.dma.sd_rx);
 
     unsafe { cortex_ar::interrupt::enable() };
     info!("IRQ: enabled — starting Embassy tasks");

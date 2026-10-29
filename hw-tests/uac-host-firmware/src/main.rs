@@ -62,8 +62,8 @@ pub extern "C" fn main() -> ! {
     unsafe { allocator::SDRAM.init(0x0C00_0000 as *mut u8, 64 * 1024 * 1024) };
 
     unsafe { rza1_hal::gpio::set_as_output(6, 7) };
-    bsp_uart::init_pic(board.pic_uart, board.dma.pic_rx, board.dma.pic_tx, 31_250);
-    deluge_bsp::bus::init(board.shared_spi, board.dma.oled);
+    bsp_uart::init_pic(board.pic_uart, board.pins.pic, board.dma.pic_rx, board.dma.pic_tx, 31_250);
+    deluge_bsp::bus::init(board.shared_spi, board.pins.spi, board.dma.oled);
     unsafe { cv_gate::init() };
 
     // The codec through the SCUX, its 2SRC converting the device's 48 kHz to 44.1 kHz; the UAC

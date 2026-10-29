@@ -345,16 +345,41 @@ pub struct Rspi<'d> {
 }
 
 impl<'d> Rspi<'d> {
-    /// Bring RSPI `T` up as an SPI master at no more than `bit_rate` Hz, in 32-bit frames.
-    /// Mirrors `R_RSPI_Create` + `R_RSPI_Start` from the C firmware (apart from the SPI mode; see
+    /// Bring RSPI `T` up as a transmit-only SPI master at no more than `bit_rate` Hz, in 32-bit
+    /// frames, on pins `sck` and `mosi` (put on the RSPI's function first). Mirrors
+    /// `R_RSPI_Create` + `R_RSPI_Start` from the C firmware (apart from the SPI mode; see
     /// `SPCMD0_*`).
     ///
     /// # Panics
     /// If [`crate::clocks::init`] has not been called.
-    pub fn new<T: Instance>(_rspi: Peri<'d, T>, bit_rate: u32) -> Self {
+    pub fn new_txonly<T: Instance>(
+        _rspi: Peri<'d, T>,
+        sck: Peri<'d, impl SckPin<T>>,
+        mosi: Peri<'d, impl MosiPin<T>>,
+        bit_rate: u32,
+    ) -> Self {
+        let (sck_alt, mosi_alt) = (sck.alternate(), mosi.alternate());
+        crate::gpio::mux(sck, sck_alt);
+        crate::gpio::mux(mosi, mosi_alt);
         // SAFETY: RSPI T is owned, so nothing else drives it.
         unsafe { init(T::INDEX, bit_rate) };
         Self { ch: T::INDEX, _rspi: PhantomData }
+    }
+
+    /// [`new_txonly`](Self::new_txonly), with `miso` for receiving too.
+    ///
+    /// # Panics
+    /// If [`crate::clocks::init`] has not been called.
+    pub fn new<T: Instance>(
+        rspi: Peri<'d, T>,
+        sck: Peri<'d, impl SckPin<T>>,
+        mosi: Peri<'d, impl MosiPin<T>>,
+        miso: Peri<'d, impl MisoPin<T>>,
+        bit_rate: u32,
+    ) -> Self {
+        let miso_alt = miso.alternate();
+        crate::gpio::mux(miso, miso_alt);
+        Self::new_txonly(rspi, sck, mosi, bit_rate)
     }
 
     /// RSPI `T` without its singleton, for code that can't reach the owner: a panic handler
@@ -428,8 +453,21 @@ mod tests {
         crate::clocks::init(crate::clocks::TEST_CLOCKS);
         use crate::mmio;
         mmio::test::reset();
-        let _rspi = Rspi::new(unsafe { crate::peripherals::RSPI0::steal() }, 10_000_000);
+        let _rspi = unsafe {
+            Rspi::new_txonly(
+                crate::peripherals::RSPI0::steal(),
+                crate::peripherals::P6_0::steal(),
+                crate::peripherals::P6_2::steal(),
+                10_000_000,
+            )
+        };
         let b = 0xE800_C800usize; // RSPI0
+
+        // RSPCK0 (P6_0) and MOSI0 (P6_2) on alternative 3: PFCE6 set, PFC6/PFCAE6 clear.
+        let pins = (1u16 << 0) | (1 << 2);
+        assert_eq!(mmio::test::peek16(0xFCFE_3618) & pins, pins, "PFCE6");
+        assert_eq!(mmio::test::peek16(0xFCFE_3518) & pins, 0, "PFC6");
+        assert_eq!(mmio::test::peek16(0xFCFE_3A18) & pins, 0, "PFCAE6");
 
         assert_eq!(mmio::test::peek8(b + 0x0A), 3, "baud divider for ~10 MHz");
         assert_eq!(
@@ -459,7 +497,15 @@ mod tests {
     #[test]
     fn switching_to_8_bit_frames_rewrites_length_command_and_buffer_control() {
         crate::clocks::init(crate::clocks::TEST_CLOCKS);
-        let mut rspi = Rspi::new(unsafe { crate::peripherals::RSPI1::steal() }, 4_000_000);
+        let mut rspi = unsafe {
+            Rspi::new(
+                crate::peripherals::RSPI1::steal(),
+                crate::peripherals::P6_12::steal(),
+                crate::peripherals::P6_14::steal(),
+                crate::peripherals::P6_15::steal(),
+                4_000_000,
+            )
+        };
         crate::mmio::test::reset();
         rspi.configure_8bit();
         let b = 0xE800_D000usize; // RSPI1

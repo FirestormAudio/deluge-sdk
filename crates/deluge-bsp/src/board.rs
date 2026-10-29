@@ -55,6 +55,63 @@ pub type SdCard = SDHI1;
 /// SSIF0: the codec's I²S port ([`crate::audio`]).
 pub type AudioSsi = SSIF0;
 
+/// DIN MIDI's pins: TxD0 on P6_15, RxD0 on P6_14 ([`crate::uart::init_midi`]).
+pub struct MidiPins {
+    /// TxD0.
+    pub tx: Peri<'static, P6_15>,
+    /// RxD0.
+    pub rx: Peri<'static, P6_14>,
+}
+
+/// The PIC32 link's pins: TxD1 on P3_15, RxD1 on P1_9 ([`crate::uart::init_pic`]).
+pub struct PicPins {
+    /// TxD1.
+    pub tx: Peri<'static, P3_15>,
+    /// RxD1.
+    pub rx: Peri<'static, P1_9>,
+}
+
+/// The shared SPI bus's pins: RSPCK0 on P6_0, MOSI0 on P6_2 ([`crate::bus`]). The OLED and the
+/// CV DAC only listen, so there is no MISO.
+pub struct SpiPins {
+    /// RSPCK0.
+    pub sck: Peri<'static, P6_0>,
+    /// MOSI0.
+    pub mosi: Peri<'static, P6_2>,
+}
+
+/// The SD slot's pins: SD port 1 on P7_0–P7_7 ([`crate::sd`]).
+pub struct SdPins {
+    /// SD_CLK_1.
+    pub clk: Peri<'static, P7_4>,
+    /// SD_CMD_1.
+    pub cmd: Peri<'static, P7_5>,
+    /// SD_D0_1.
+    pub d0: Peri<'static, P7_3>,
+    /// SD_D1_1.
+    pub d1: Peri<'static, P7_2>,
+    /// SD_D2_1.
+    pub d2: Peri<'static, P7_7>,
+    /// SD_D3_1.
+    pub d3: Peri<'static, P7_6>,
+    /// SD_CD_1, card detect.
+    pub cd: Peri<'static, P7_0>,
+    /// SD_WP_1, write protect.
+    pub wp: Peri<'static, P7_1>,
+}
+
+/// The pins, grouped by the role the Deluge wires them to.
+pub struct BoardPins {
+    /// DIN MIDI.
+    pub midi: MidiPins,
+    /// The PIC32 link.
+    pub pic: PicPins,
+    /// The shared SPI bus (OLED, CV DAC).
+    pub spi: SpiPins,
+    /// The SD slot.
+    pub sd: SdPins,
+}
+
 /// Every DMA channel, by the role the Deluge gives it.
 ///
 /// Each role's driver takes its channel (`bus::init`, `uart::init_*`, `sd::init_hw`, `audio::init*`);
@@ -99,6 +156,8 @@ pub struct Board {
     /// SSIF0, the codec's I²S port.
     pub audio_ssi: Peri<'static, AudioSsi>,
     pub dma: BoardDma,
+    /// The pins, by role.
+    pub pins: BoardPins,
 }
 
 /// The priority of the interrupts of USB, the MIDI and PIC UARTs and the SD card: one level, as
@@ -193,6 +252,21 @@ impl Board {
                 midi_rx: p.DMA_CH13,
                 sd_rx: p.DMA_CH14,
                 scux_ffd3: p.DMA_CH15,
+            },
+            pins: BoardPins {
+                midi: MidiPins { tx: p.P6_15, rx: p.P6_14 },
+                pic: PicPins { tx: p.P3_15, rx: p.P1_9 },
+                spi: SpiPins { sck: p.P6_0, mosi: p.P6_2 },
+                sd: SdPins {
+                    clk: p.P7_4,
+                    cmd: p.P7_5,
+                    d0: p.P7_3,
+                    d1: p.P7_2,
+                    d2: p.P7_7,
+                    d3: p.P7_6,
+                    cd: p.P7_0,
+                    wp: p.P7_1,
+                },
             },
         }
     }

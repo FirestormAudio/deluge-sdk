@@ -25,16 +25,22 @@ pub struct Parts {
     pub shared_spi: Option<Peri<'static, SharedSpi>>,
     /// The OLED's DMA channel, for `deluge_bsp::bus::init`.
     pub oled_dma: Option<Peri<'static, OledDma>>,
+    /// RSPI0's pins, for `deluge_bsp::bus::init`.
+    pub spi_pins: Option<deluge_bsp::board::SpiPins>,
     /// SCIF0, for `deluge_bsp::uart::init_midi`.
     pub midi_uart: Option<Peri<'static, MidiScif>>,
     /// MIDI's receive DMA channel, for `deluge_bsp::uart::init_midi`.
     pub midi_rx_dma: Option<Peri<'static, MidiRxDma>>,
+    /// SCIF0's pins, for `deluge_bsp::uart::init_midi`.
+    pub midi_pins: Option<deluge_bsp::board::MidiPins>,
     /// SCIF1, for `deluge_bsp::uart::init_pic`.
     pub pic_uart: Option<Peri<'static, PicScif>>,
     /// The PIC link's receive DMA channel, for `deluge_bsp::uart::init_pic`.
     pub pic_rx_dma: Option<Peri<'static, PicRxDma>>,
     /// The PIC link's transmit DMA channel, for `deluge_bsp::uart::init_pic`.
     pub pic_tx_dma: Option<Peri<'static, PicTxDma>>,
+    /// SCIF1's pins, for `deluge_bsp::uart::init_pic`.
+    pub pic_pins: Option<deluge_bsp::board::PicPins>,
     /// MTU2 channel 2, for `deluge_bsp::midi_gate::setup`.
     pub gate_timer: Option<Peri<'static, GateTimer>>,
     /// MTU2 channel 3, for `deluge_bsp::encoder::irq_init`.
@@ -45,6 +51,8 @@ pub struct Parts {
     pub sd_tx_dma: Option<Peri<'static, SdTxDma>>,
     /// The SD card's receive DMA channel, for `deluge_bsp::sd::init_hw`.
     pub sd_rx_dma: Option<Peri<'static, SdRxDma>>,
+    /// The SD slot's pins, for `deluge_bsp::sd::init_hw`.
+    pub sd_pins: Option<deluge_bsp::board::SdPins>,
     /// SSIF0, the codec's I²S port, for `deluge_bsp::audio::{init, init_with_scux}`.
     pub audio_ssi: Option<Peri<'static, AudioSsi>>,
     /// SSI's transmit DMA channel, for `deluge_bsp::audio::init`.

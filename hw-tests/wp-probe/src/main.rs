@@ -80,14 +80,14 @@ pub extern "C" fn main() -> ! {
     unsafe { rza1_hal::gpio::set_as_output(6, 7) };
 
     info!("UART: initialising PIC...");
-    bsp_uart::init_pic(board.pic_uart, board.dma.pic_rx, board.dma.pic_tx, 31_250);
+    bsp_uart::init_pic(board.pic_uart, board.pins.pic, board.dma.pic_rx, board.dma.pic_tx, 31_250);
     // The SD slot's controller, once; `sd::init` identifies the card when it is needed.
-    deluge_bsp::sd::init_hw(board.sd_card, board.dma.sd_tx, board.dma.sd_rx);
+    deluge_bsp::sd::init_hw(board.sd_card, board.pins.sd, board.dma.sd_tx, board.dma.sd_rx);
 
     // RSPI0 is shared between OLED (8-bit) and CV DAC (32-bit). The bus brings it up;
     // cv_gate::init() runs the DAC's linearity sequence; oled::init() then switches
     // it to 8-bit mode for the panel.
-    deluge_bsp::bus::init(board.shared_spi, board.dma.oled);
+    deluge_bsp::bus::init(board.shared_spi, board.pins.spi, board.dma.oled);
     unsafe { cv_gate::init() };
     info!("RSPI0: initialised via cv_gate::init");
 

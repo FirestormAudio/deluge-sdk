@@ -1528,14 +1528,24 @@ pub struct Sdhi<'d> {
 }
 
 impl<'d> Sdhi<'d> {
-    /// Bring SDHI `T` up: module clock, soft reset, interrupt masks, `sd_option` (bus width and
-    /// timeouts), 512-byte blocks, identification clock. Binds and enables its status and
+    /// Bring SDHI `T` up on its eight pins (put on the SDHI's function first): module clock, soft
+    /// reset, interrupt masks, `sd_option` (bus width and timeouts), 512-byte blocks,
+    /// identification clock. Binds and enables its status and
     /// operation interrupts; SDIO stays masked.
     ///
     /// `rx_dma` must have its completion interrupt (a block read waits for its last burst);
     /// `tx_dma` needs none.
+    #[allow(clippy::too_many_arguments)]
     pub fn new<T: Instance>(
         _sdhi: Peri<'d, T>,
+        clk: Peri<'d, impl ClkPin<T>>,
+        cmd: Peri<'d, impl CmdPin<T>>,
+        d0: Peri<'d, impl D0Pin<T>>,
+        d1: Peri<'d, impl D1Pin<T>>,
+        d2: Peri<'d, impl D2Pin<T>>,
+        d3: Peri<'d, impl D3Pin<T>>,
+        cd: Peri<'d, impl CdPin<T>>,
+        wp: Peri<'d, impl WpPin<T>>,
         mut tx_dma: Dma<'d>,
         rx_dma: Dma<'d>,
         irq: impl Binding<T::StatusInterrupt, StatusInterruptHandler<T>>
@@ -1544,6 +1554,24 @@ impl<'d> Sdhi<'d> {
         + 'd,
         sd_option: u16,
     ) -> Self {
+        let alts = [
+            clk.alternate(),
+            cmd.alternate(),
+            d0.alternate(),
+            d1.alternate(),
+            d2.alternate(),
+            d3.alternate(),
+            cd.alternate(),
+            wp.alternate(),
+        ];
+        crate::gpio::mux(clk, alts[0]);
+        crate::gpio::mux(cmd, alts[1]);
+        crate::gpio::mux(d0, alts[2]);
+        crate::gpio::mux(d1, alts[3]);
+        crate::gpio::mux(d2, alts[4]);
+        crate::gpio::mux(d3, alts[5]);
+        crate::gpio::mux(cd, alts[6]);
+        crate::gpio::mux(wp, alts[7]);
         // A write never waits for its DMA completion (DATA_TRNS ends it), so its line stays off.
         tx_dma.mask_interrupt();
         // SAFETY: SDHI T is owned.
@@ -1833,7 +1861,24 @@ mod typed_tests {
     fn sdhi1() -> Sdhi<'static> {
         let tx = Dma::new_without_interrupt(unsafe { DMA_CH11::steal() });
         let rx = Dma::new(unsafe { DMA_CH14::steal() }, Irqs);
-        Sdhi::new(unsafe { SDHI1::steal() }, tx, rx, Irqs, 0x00BD)
+        use crate::peripherals::*;
+        unsafe {
+            Sdhi::new(
+                SDHI1::steal(),
+                P7_4::steal(),
+                P7_5::steal(),
+                P7_3::steal(),
+                P7_2::steal(),
+                P7_7::steal(),
+                P7_6::steal(),
+                P7_0::steal(),
+                P7_1::steal(),
+                tx,
+                rx,
+                Irqs,
+                0x00BD,
+            )
+        }
     }
 
     #[test]
@@ -1841,6 +1886,10 @@ mod typed_tests {
         test::reset();
         test::poke8(0xFCFE_0444, 0xFF);
         let _sdhi = sdhi1();
+        // SD port 1's eight pins (P7_0–P7_7) on alternative 3: PFCE7 set, PFC7/PFCAE7 clear.
+        assert_eq!(test::peek16(0xFCFE_361C) & 0xFF, 0xFF, "PFCE7");
+        assert_eq!(test::peek16(0xFCFE_351C) & 0xFF, 0, "PFC7");
+        assert_eq!(test::peek16(0xFCFE_3A1C) & 0xFF, 0, "PFCAE7");
         // SDHI1's clocks (STBCR12 bits 1:0) run; SDHI0's stay stopped.
         assert_eq!(test::peek8(0xFCFE_0444), 0xFF & !STBCR12_SDHI1_MASK);
         assert_eq!(test::peek16(0xE804_E828), 0x00BD);

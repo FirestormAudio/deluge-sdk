@@ -128,7 +128,7 @@ mod device {
     use rza1_hal::sdhi::{self, Sdhi};
 
     use super::SdError;
-    use crate::board::{SdCard, SdRxDma, SdTxDma};
+    use crate::board::{SdCard, SdPins, SdRxDma, SdTxDma};
     use crate::system::SD_DMA_MAX_SECTORS;
 
     rza1_hal::bind_interrupts!(struct Irqs {
@@ -149,22 +149,20 @@ mod device {
     /// [`init`] then identifies the card, and runs again after a card change.
     pub fn init_hw(
         card: Peri<'static, SdCard>,
+        pins: SdPins,
         tx: Peri<'static, SdTxDma>,
         rx: Peri<'static, SdRxDma>,
     ) {
-        // SAFETY: P7_0–7 are the SD slot's, mux 3 (SDHI1).
-        unsafe {
-            rza1_hal::gpio::set_pin_mux(7, 0, 3); // SD_CD1  — card detect
-            rza1_hal::gpio::set_pin_mux(7, 1, 3); // SD_WP1  — write protect
-            rza1_hal::gpio::set_pin_mux(7, 2, 3); // SD_D11  — data bit 1
-            rza1_hal::gpio::set_pin_mux(7, 3, 3); // SD_D01  — data bit 0
-            rza1_hal::gpio::set_pin_mux(7, 4, 3); // SD_CLK1 — clock
-            rza1_hal::gpio::set_pin_mux(7, 5, 3); // SD_CMD1 — command
-            rza1_hal::gpio::set_pin_mux(7, 6, 3); // SD_D31  — data bit 3
-            rza1_hal::gpio::set_pin_mux(7, 7, 3); // SD_D21  — data bit 2
-        }
         let sdhi = Sdhi::new(
             card,
+            pins.clk,
+            pins.cmd,
+            pins.d0,
+            pins.d1,
+            pins.d2,
+            pins.d3,
+            pins.cd,
+            pins.wp,
             Dma::new_without_interrupt(tx),
             Dma::new(rx, Irqs),
             Irqs,

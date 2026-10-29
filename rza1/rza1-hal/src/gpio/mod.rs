@@ -429,6 +429,12 @@ impl<'d> Output<'d> {
     }
 }
 
+/// Put `pin` on alternative function `alt`, its direction driven by the function: what a driver
+/// does with each pin it takes.
+pub(crate) fn mux(pin: Peri<'_, impl Pin>, alt: Alternate) {
+    Flex::new(pin).set_as_alternate(alt);
+}
+
 /// All 16 pin levels of `port` in one PPRn read; bit `m` is pin `m`. Reading changes nothing, so
 /// it needs no pin ownership (an interrupt handler can read several pins at once this way). A
 /// pin's level is only visible with its input buffer on.

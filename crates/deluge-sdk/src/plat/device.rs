@@ -73,7 +73,8 @@ fn ensure_shared_spi() {
     }
     let spi = crate::parts::take("RSPI0 (the OLED and CV bus)", |p| p.shared_spi.take());
     let dma = crate::parts::take("the OLED DMA channel", |p| p.oled_dma.take());
-    deluge_bsp::bus::init(spi, dma);
+    let pins = crate::parts::take("RSPI0's pins", |p| p.spi_pins.take());
+    deluge_bsp::bus::init(spi, pins, dma);
 }
 
 pub(crate) async fn oled_init_panel() {
@@ -127,7 +128,8 @@ pub(crate) fn pic_ensure_started(spawner: Spawner) {
     let uart = crate::parts::take("SCIF1 (the PIC link)", |p| p.pic_uart.take());
     let rx = crate::parts::take("the PIC receive DMA channel", |p| p.pic_rx_dma.take());
     let tx = crate::parts::take("the PIC transmit DMA channel", |p| p.pic_tx_dma.take());
-    bsp_uart::init_pic(uart, rx, tx, PIC_BAUD);
+    let pins = crate::parts::take("the PIC link's pins", |p| p.pic_pins.take());
+    bsp_uart::init_pic(uart, pins, rx, tx, PIC_BAUD);
     // `#[embassy_executor::task]` returns a Result in this Embassy version; the
     // only failure is pool exhaustion, impossible for this single spawn.
     spawner.spawn(pic_pump().unwrap());
@@ -204,7 +206,8 @@ pub(crate) fn midi_init() {
     // Runs once. Binds SCIF0's handlers before it enables their sources, so it is safe at runtime.
     let uart = crate::parts::take("SCIF0 (DIN MIDI)", |p| p.midi_uart.take());
     let rx = crate::parts::take("the MIDI receive DMA channel", |p| p.midi_rx_dma.take());
-    deluge_bsp::uart::init_midi(uart, rx, MIDI_BAUD);
+    let pins = crate::parts::take("DIN MIDI's pins", |p| p.midi_pins.take());
+    deluge_bsp::uart::init_midi(uart, pins, rx, MIDI_BAUD);
 }
 pub(crate) async fn midi_send(data: &[u8]) {
     deluge_bsp::uart::write_midi(data).await;
@@ -277,7 +280,8 @@ pub(crate) async fn sd_init_card() -> Result<(), deluge_bsp::sd::SdError> {
         let card = crate::parts::take("SDHI1 (the SD card slot)", |p| p.sd_card.take());
         let tx = crate::parts::take("the SD transmit DMA channel", |p| p.sd_tx_dma.take());
         let rx = crate::parts::take("the SD receive DMA channel", |p| p.sd_rx_dma.take());
-        deluge_bsp::sd::init_hw(card, tx, rx);
+        let pins = crate::parts::take("the SD slot's pins", |p| p.sd_pins.take());
+        deluge_bsp::sd::init_hw(card, pins, tx, rx);
     }
     deluge_bsp::sd::init().await
 }

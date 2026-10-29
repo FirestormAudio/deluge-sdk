@@ -85,10 +85,10 @@ pub extern "C" fn main() -> ! {
     unsafe { rza1_hal::gpio::set_as_output(6, 7) };
 
     info!("UART: initialising PIC...");
-    bsp_uart::init_pic(board.pic_uart, board.dma.pic_rx, board.dma.pic_tx, 31_250);
+    bsp_uart::init_pic(board.pic_uart, board.pins.pic, board.dma.pic_rx, board.dma.pic_tx, 31_250);
 
     // RSPI0 is shared between OLED (8-bit) and CV DAC (32-bit); the bus brings it up.
-    deluge_bsp::bus::init(board.shared_spi, board.dma.oled);
+    deluge_bsp::bus::init(board.shared_spi, board.pins.spi, board.dma.oled);
     unsafe { cv_gate::init() };
     info!("RSPI0: initialised via cv_gate::init");
 
