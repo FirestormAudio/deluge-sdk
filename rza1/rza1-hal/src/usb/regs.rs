@@ -10,7 +10,7 @@
 //! ```
 //!
 //! ## Bit constants
-//! All bitmask constants are declared in this module as `pub const u16`.
+//! All bitmask constants are declared in this module as `pub(crate) const u16`.
 //! Naming follows the C `usb_iobitmask.h` file with the `USB_` prefix removed
 //! and snake_case used for the shift variants.
 

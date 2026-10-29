@@ -56,6 +56,8 @@ cargo build "${BUILD_STD[@]}" -p rza1-hal --features rza1l,log
 cargo build "${BUILD_STD[@]}" -p rza1-hal --features rza1l,defmt
 # With no logging, every log argument must still be consumed: no unused-variable warnings.
 cargo rustc "${BUILD_STD[@]}" -p rza1-hal --lib --features rza1l -- -D unused
+# Nor in a host build (the QEMU tests' and the simulator's), where device-only code drops out.
+cargo rustc --target "$QEMU" -p rza1-hal --lib --features rza1l -- -D unused
 # No dead code either with the time driver left out (the application brings its own).
 cargo rustc "${BUILD_STD[@]}" -p rza1-hal --lib --no-default-features --features rza1l,rt,critical-section-impl -- -D unused
 # Every public `unsafe fn` says what its caller must uphold.
@@ -66,6 +68,8 @@ HOST=$(rustc -vV | sed -n 's/^host: //p')
 doc() { RUSTDOCFLAGS="-D warnings" cargo doc --no-deps "$@"; }
 doc "${BUILD_STD[@]}" -p rza1-pac --features rza1l
 doc "${BUILD_STD[@]}" -p rza1-pac --features rza1h
+# The host build too: its register shadow (`mmio::test`) is host-only.
+doc --target "$QEMU" -p rza1-pac --features rza1l
 for f in rza1h rza1l,log rza1l,defmt; do doc "${BUILD_STD[@]}" -p rza1-hal --features "$f"; done
 doc "${BUILD_STD[@]}" -p rza1-hal --no-default-features --features rza1l,rt,critical-section-impl
 doc "${BUILD_STD[@]}" -p rza1-rt -p rza1-alloc
@@ -91,6 +95,8 @@ tools/check-pac.sh
 
 echo "==> rza1: host tests (the runtime's macros and fault types)"
 cargo test --target "$HOST" -p rza1-rt-macros -p rza1-rt
+# `test = false` keeps plain `cargo test` off the allocator's lib; `--lib` runs its host tests.
+cargo test --target "$HOST" -p rza1-alloc --lib
 
 echo "==> rza1: QEMU ARM tests"
 cargo test --target "$QEMU" -p rza1-pac --features rza1l --lib

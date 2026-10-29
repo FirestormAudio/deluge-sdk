@@ -7,9 +7,9 @@
 //!   - Interval timer (CTL = 0x00): counts down from CMP, fires interrupt at 0
 //!   - Free-running  (CTL = 0x02): counts up from 0, optionally fires at CMP
 //!
-//! The time driver (`time_driver`, with the `time-driver-ostm` feature) owns both channels: OSTM0 free-runs as the clock,
-//! OSTM1 is the alarm. Code that needs a busy-wait (with interrupts masked, or before the
-//! executor runs) uses [`delay_ms`] or [`Delay`] on OSTM0's counter.
+//! The time driver (`time_driver`, with `time-driver-ostm`) owns both channels: OSTM0 free-runs as
+//! the clock, OSTM1 is the alarm. Code that needs a busy-wait (with interrupts masked, or before
+//! the executor runs) uses [`delay_ms`] or [`Delay`] on OSTM0's counter.
 
 // The start/stop/alarm half of this module is the time driver's; without it (on a host, or with
 // `time-driver-ostm` off) only the delays are used.
@@ -26,6 +26,8 @@ use crate::pac::{CPG, ostm};
 
 // CTL mode values
 const CTL_INTERVAL: u8 = 0x00; // count-down interval timer, optional interrupt
+#[expect(dead_code, reason = "OSTMnCTL's free-running mode without interrupt, for completeness")]
+const CTL_FREE_RUN: u8 = 0x02; // free-running counter up, no interrupt
 const CTL_FREE_RUN_INT: u8 = 0x03; // free-running with compare interrupt
 
 // ------- CPG standby control (clock gating) ----------------------------------

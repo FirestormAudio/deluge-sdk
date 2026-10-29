@@ -56,7 +56,7 @@ unstable-pac = []
 ## Export `gic_dispatch`, the function `rza1-rt`'s IRQ entry calls. Turn off only to dispatch
 ## interrupts yourself.
 rt = []
-## Provide the `critical-section` implementation (single-core: IRQ and FIQ masking). Turn off to
+## Provide the `critical-section` implementation (single-core: IRQ masking; FIQ stays enabled). Turn off to
 ## bring your own.
 critical-section-impl = ["cortex-ar/critical-section-single-core"]
 ## `Dma::steal`, `Rspi::steal` and `UartRx::steal`: for panic and fault paths that must reach an

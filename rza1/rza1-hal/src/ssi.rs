@@ -87,12 +87,14 @@ const SSIFCR_RTRG_4: u32 = 0b10 << 4; // = 0x20
 const SSIFCR_INIT: u32 = SSIFCR_TFRST | SSIFCR_RFRST | SSIFCR_TTRG_4 | SSIFCR_RTRG_4;
 
 /// CPG SWRSTCR1 bits 6 to 3: the software resets of SSIF0 to SSIF3.
+#[cfg(any(target_os = "none", test))]
 const SWRSTCR1_SSI_ALL: u8 = 0b0111_1000;
 
 /// Software-reset all four SSI channels, ending any transfer a warm start left running.
 ///
 /// # Safety
 /// Writes CPG SWRSTCR1. No SSI channel may be in use.
+#[cfg(any(target_os = "none", test))]
 pub(crate) unsafe fn reset_all() {
     let swrstcr = CPG.swrstcr1();
     swrstcr.write_value(Swrstcr1(swrstcr.read().0 | SWRSTCR1_SSI_ALL));

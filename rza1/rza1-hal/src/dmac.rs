@@ -69,6 +69,7 @@ static INTERRUPT_PRIORITY: core::sync::atomic::AtomicU8 =
     core::sync::atomic::AtomicU8::new(Priority::DEFAULT as u8);
 
 /// Store the priority later [`Dma::new`]/[`BlockDma::new`] give their channel's interrupt.
+#[cfg(any(target_os = "none", test))]
 pub(crate) fn set_interrupt_priority(priority: Priority) {
     INTERRUPT_PRIORITY.store(priority as u8, core::sync::atomic::Ordering::Relaxed);
 }

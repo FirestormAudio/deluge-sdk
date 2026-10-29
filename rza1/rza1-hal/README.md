@@ -147,7 +147,7 @@ it, and `tools/check-register-tables.sh` checks the whole crate for hand-written
 | `rza1l` | | The RZ/A1L (R7S721020 and family). Enable exactly one chip feature. |
 | `rza1h` | | The RZ/A1H: its extra driver instances (RSPI3/RSPI4, the larger interrupt table). Not hardware-validated; its pin tables are not filled in yet. |
 | `rt` | yes | Export `gic_dispatch`, which `rza1-rt`'s IRQ entry calls. Turn off only to dispatch interrupts yourself (`#[rza1_rt::irq]`). |
-| `critical-section-impl` | yes | The `critical-section` implementation (single core: IRQ and FIQ masking). Turn off to bring your own. |
+| `critical-section-impl` | yes | The `critical-section` implementation (single core: IRQ masking; FIQ stays enabled). Turn off to bring your own. |
 | `time-driver-ostm` | yes | The Embassy time driver on OSTM0 and OSTM1 (`time_driver`). Turn off to bring your own driver; OSTM0/OSTM1 are then in `Peripherals`. |
 | `log` | | Log through the `log` crate. |
 | `defmt` | | Log through `defmt`, and derive `defmt::Format` on the public types. Not with `log`. |

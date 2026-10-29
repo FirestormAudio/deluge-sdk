@@ -1144,7 +1144,7 @@ impl ControlPipe for Rusb1ControlPipe {
 pub struct Rusb1EndpointOut {
     /// The USB port (0 or 1).
     pub port: u8,
-    /// The RUSB1 pipe the endpoint runs on (1-9).
+    /// The RUSB1 pipe the endpoint runs on (1-15).
     pub pipe: u8,
     /// The endpoint's address, type, max packet size and interval.
     pub info: EndpointInfo,
@@ -1313,7 +1313,7 @@ impl EndpointOut for Rusb1EndpointOut {
 pub struct Rusb1EndpointIn {
     /// The USB port (0 or 1).
     pub port: u8,
-    /// The RUSB1 pipe the endpoint runs on (1-9).
+    /// The RUSB1 pipe the endpoint runs on (1-15).
     pub pipe: u8,
     /// The endpoint's address, type, max packet size and interval.
     pub info: EndpointInfo,

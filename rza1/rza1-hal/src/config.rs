@@ -364,6 +364,7 @@ impl ModuleClocks {
     }
 
     /// STBCR2–STBCR12, in order.
+    #[cfg(any(target_os = "none", test))]
     pub(crate) const fn stbcr_all(&self) -> [u8; 11] {
         self.0
     }

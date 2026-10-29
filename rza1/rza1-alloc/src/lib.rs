@@ -306,6 +306,7 @@ pub static SDRAM: CsHeap = CsHeap::empty();
 mod tests {
     use super::*;
     use core::alloc::Layout;
+    use std::boxed::Box;
 
     #[test]
     fn empty_heap_reports_zero() {

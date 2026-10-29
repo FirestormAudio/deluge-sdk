@@ -196,9 +196,6 @@ pub(crate) struct DvuConfig {
     pub zero_cross_mute: bool,
 }
 
-impl DvuConfig {
-}
-
 /// IPC input path selection (written to IPSLR_IPC0_n, TRM §37.3.2).
 ///
 /// Encodes the `IPC_PASS_SEL` field (bits 2:0):

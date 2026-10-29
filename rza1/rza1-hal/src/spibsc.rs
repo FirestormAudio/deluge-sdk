@@ -303,6 +303,7 @@ unsafe fn to_read_mode() {
 ///
 /// # Safety
 /// Bring-up only: nothing may be mid-transfer in manual mode.
+#[cfg(any(target_os = "none", test))]
 pub(crate) unsafe fn restore_read_mode() {
     unsafe { to_read_mode() }
 }

@@ -239,11 +239,12 @@ static STATE: [SdhiState; NUM_PORTS] = [
 // GIC IRQ IDs
 // ---------------------------------------------------------------------------
 
-/// GIC IDs for SDHI1: status-change, operation, SDIO. (The bindings name them; the test pins
-/// the numbers against the manual.)
+/// GIC IDs for SDHI0 and SDHI1: status-change, operation, SDIO. (The bindings name them; the
+/// tests pin the numbers against the manual.)
+#[cfg(test)]
+const SDHI0_IRQS: [u16; 3] = [302, 303, 304];
 #[cfg(test)]
 const SDHI1_IRQS: [u16; 3] = [305, 306, 307];
-
 
 // ---------------------------------------------------------------------------
 // STBCR12 clock-gate bit masks
@@ -1705,6 +1706,11 @@ mod tests {
     #[test]
     fn gic_ids_for_sdhi1() {
         assert_eq!(SDHI1_IRQS, [305, 306, 307]);
+    }
+
+    #[test]
+    fn gic_ids_for_sdhi0() {
+        assert_eq!(SDHI0_IRQS, [302, 303, 304]);
     }
 
     #[test]

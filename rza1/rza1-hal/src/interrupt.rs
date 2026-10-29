@@ -195,6 +195,7 @@ pub mod typelevel {
 
     // OSTM channel n's interrupt. With `time-driver-ostm` the time driver owns both, so they are
     // the HAL's own.
+    #[cfg(any(not(feature = "time-driver-ostm"), target_os = "none", test))]
     mod ostm {
         interrupts! { OSTMI0 = 134, OSTMI1 = 135 }
     }

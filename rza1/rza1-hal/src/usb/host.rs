@@ -220,7 +220,7 @@ impl Drop for DrainGuard {
 #[repr(align(32))]
 struct Bounce(
     #[cfg_attr(
-        target_os = "none",
+        not(test),
         expect(dead_code, reason = "the DMAC writes it and the CPU reads it by address, through the uncached alias")
     )]
     [u32; 256],
