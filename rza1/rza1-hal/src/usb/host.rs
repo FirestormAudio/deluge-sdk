@@ -1845,7 +1845,7 @@ impl<'d> Rusb1HostDriver<'d> {
     ///
     /// A bulk endpoint's sends go through the port's shared send pipe, one at a time: each
     /// re-points the pipe at its endpoint if another one last used it. Each may take at most
-    /// [`SHARED_SEND_TIMEOUT_MS`], or fails with [`PipeError::Timeout`].
+    /// `SHARED_SEND_TIMEOUT_MS` (100 ms), or fails with [`PipeError::Timeout`].
     pub async fn xfer_out(&self, dev_addr: u8, ep_addr: u8, buf: &[u8]) -> Result<(), PipeError> {
         let pipe = self
             .ep_to_pipe(dev_addr, ep_addr)

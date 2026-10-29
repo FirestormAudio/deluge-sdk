@@ -7,7 +7,7 @@
 //!   - Interval timer (CTL = 0x00): counts down from CMP, fires interrupt at 0
 //!   - Free-running  (CTL = 0x02): counts up from 0, optionally fires at CMP
 //!
-//! The time driver ([`crate::time_driver`]) owns both channels: OSTM0 free-runs as the clock,
+//! The time driver (`time_driver`, with the `time-driver-ostm` feature) owns both channels: OSTM0 free-runs as the clock,
 //! OSTM1 is the alarm. Code that needs a busy-wait (with interrupts masked, or before the
 //! executor runs) uses [`delay_ms`] or [`Delay`] on OSTM0's counter.
 

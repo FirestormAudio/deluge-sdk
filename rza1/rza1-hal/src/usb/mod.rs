@@ -8,7 +8,7 @@
 //!   [`Rusb1Driver`], [`Rusb1Bus`], [`Rusb1ControlPipe`], endpoints.
 //! - [`host`] — host mode (`embassy_usb_driver::host::UsbHostController`):
 //!   [`Rusb1HostDriver`], [`Rusb1Allocator`], [`Rusb1Pipe`].
-//! - [`pipe`], [`fifo`], [`regs`] — shared pipe/FIFO/register layers.
+//! - `pipe`, `fifo`, `regs` — the shared pipe/FIFO/register layers (crate-private).
 //!
 //! USB *class* implementations (UAC2 audio, MIDI, MSC) and the Bulk-Only
 //! Transport engine live in the board-support crate (`deluge_bsp::usb`),

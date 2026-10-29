@@ -1,7 +1,7 @@
 //! RUSB1 peripheral register map for Renesas RZ/A1L.
 //!
 //! The registers themselves come from `crate::pac::USB200` / `USB201`, through [`usb`]
-//! (and [`pipectr`] for the DCPCTR / PIPEnCTR family); every access goes through the
+//! (and `pipectr` for the DCPCTR / PIPEnCTR family); every access goes through the
 //! PAC's `Reg` and so through the MMIO seam.
 //!
 //! ## Usage

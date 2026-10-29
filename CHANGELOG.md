@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `rza1` crates docs and lint sweep (phase 8 of the pre-0.1 API pass):
+  - **Lints.** All five crates are `#![deny(missing_docs)]`.
+    - The PAC's generated chip code is exempt, at the module that includes it.
+    - `rza1-hal` has no crate-wide `allow(dead_code)`. `rza1/tools/test.sh` builds it with
+      `-D unused`, with and without the time driver, and checks
+      `clippy::missing_safety_doc`.
+  - **`no_std`.** `rza1-pac`, `rza1-hal` and `rza1-alloc` are `#![no_std]` unconditionally.
+    `std` comes in for tests, and for the PAC's host register shadow.
+  - **Docs.** `cargo doc` is warning-free under `-D warnings` across the chip, logging and
+    no-time-driver configurations, and `test.sh` checks it. Every crate's README names every
+    feature (`tools/check-readme-features.py`). New README for `rza1-rt-macros`. `rza1-hal`'s
+    README feature table and Safety section are rewritten for the current API.
+  - **Visibility.**
+    - `usb::fifo`, the `usb::regs` bit constants and `pipectr`, and the `usb::pipe`
+      internals are crate-private.
+    - So are `dcd_int_handler`, `hcd_int_handler`, `usb::{module_clock_enable, int_enable,
+      int_disable}`.
+    - Kept `#[doc(hidden)]` for DelugeFirmware until phase 9: `usb::regs::usb` and
+      `usb::pipe::{pipe_reset, pipe_enable, pipe_brdy_enable, pipe_iso_in_activate}`. The
+      `unstable_paths` test pins them.
+  - **Removed:**
+    - the `unlock-bootloader` feature and its `spibsc::{force_erase_range, force_program}`
+      (spec §4; nothing enabled it);
+    - the unused SDHI polling path (`send_cmd_poll`, `read_blocks_poll`, `write_blocks_poll`);
+    - `ostm::start_free_running`, `usb::module_clock_disable`, `DvuConfig::BYPASS`;
+    - `rza1-alloc`'s `#![feature(allocator_api)]`, which this toolchain no longer needs.
+  - Fixed an order-dependent host test: `isochronous_pipes_raise_no_nrdy_interrupts` now lends
+    its own iso IN rings.
+
 - `rza1-rt` attribute macros and board-supplied boot header (phase 7 of the pre-0.1 API pass):
   - New crate `rza1-rt-macros`, re-exported as `rza1_rt::{entry, fault, irq}`.
     - `#[entry] fn main() -> !` exports `main`.

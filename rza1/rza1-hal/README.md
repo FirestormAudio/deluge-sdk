@@ -1,7 +1,7 @@
 # rza1-hal
 
-Register-level HAL for the **Renesas RZ/A1L** (Cortex-A9, R7S721020),
-written in `no_std` Rust with async support via [Embassy].
+Embassy HAL for the **Renesas RZ/A1L** (Cortex-A9, R7S721020) and, untested on hardware, the
+RZ/A1H: `no_std` Rust with async drivers over owned peripherals.
 
 Developed for the [Synthstrom Deluge] open-source firmware port, but kept
 board-agnostic where possible — board-specific configuration is passed in
@@ -39,7 +39,6 @@ peripheral as `Peri<'d, T>`.
 | `interrupt`   | Typed GIC interrupts (`interrupt::typelevel`), `Priority`, `Handler`/`Binding` and `bind_interrupts!`. Each interrupt type has `enable`/`disable`/`pend`/`unpend`/`set_priority`/`get_priority`. A driver's constructor takes the binding, installs its handler and enables it; its priority is the application's. |
 | `bsc`         | Bus State Controller CS0/CS1 timing (NOR flash). |
 | `memmap`      | Pure memory-map and cache-line arithmetic shared by `mmu` and `cache` (host-testable). |
-| `mmio`        | Memory-mapped I/O seam: `Reg8` / `Reg16` / `Reg32` handles and `read32` / `write32`; volatile on the device, a shadow memory with an access log in host tests. |
 
 ### Memory
 
@@ -64,7 +63,7 @@ without explicit cache maintenance.
 
 | Module | Description |
 |--------|-------------|
-| `dmac` | 16-channel DMAC (channels 0–15). Register-mode (one-shot) and link-descriptor (circular) transfers. Owned channels: `Dma::new(Peri<DMA_CHn>, Irqs)` for awaited transfers, `Dma::new_without_interrupt` for polled rings (DMAINT stays masked), `BlockDma::new(Peri<DMA_CHn>, Irqs)` with a `BlockInterruptHandler` for per-block descriptor rings; `Dma::steal`/`stop_all` for fault and hand-off code. Drivers hold their `Dma` handles. |
+| `dmac` | 16-channel DMAC (channels 0–15). Register-mode (one-shot) and link-descriptor (circular) transfers. Owned channels: `Dma::new(Peri<DMA_CHn>, Irqs)` for awaited transfers, `Dma::new_without_interrupt` for polled rings (DMAINT stays masked), `BlockDma::new(Peri<DMA_CHn>, Irqs)` with a `BlockInterruptHandler` for per-block descriptor rings; `stop_all` for hand-off code. Drivers hold their `Dma` handles. |
 
 DMAC resource selectors (DMARS values) are peripheral-specific constants
 documented in each peripheral module.
@@ -87,7 +86,7 @@ documented in each peripheral module.
 | `gpio`  | Owned pins: every pin is a `Peripherals` singleton (`P0_0`…`P9_5`), taken into `Input`, `Output` (`OutputCapable` pins only) or `Flex`, which implement the `embedded-hal` digital traits. Levels go through PSRn/PNOTn; `Flex::set_as_alternate` selects a function for pins no driver takes. Pin-function traits (`uart::TxPin<T>` …) are generated from the manual by `rza1/tools/gen-pins.py`. `read_port(Port)` reads a whole port. |
 | `adc`   | 12-bit A/D converter, single-scan polled. |
 | `spibsc` | SPI Multi-I/O Bus Controller — manual-command NOR-flash erase/program/read, with erase and program refused outside the board's writable windows. |
-| `usb` | RUSB1 USB 2.0 dual-role driver: chip plumbing (bases, IRQs, STBCR7 clock gates) plus full `embassy-usb-driver` **device** (`usb::driver`) and **host** (`usb::host`) implementations over shared `regs`/`fifo`/`pipe` layers. `usb::init_device_mode(Peri<USBn>, Irqs)` / `usb::init_host_mode(Peri<USBn>, Irqs)` are the entry points, bound to a `DeviceInterruptHandler`, `HostInterruptHandler` or `DualRoleInterruptHandler`; the drivers borrow the port (`Rusb1Driver<'d>`). Isochronous endpoints can become `usb::iso` streams (`into_iso_stream`), whose consumer runs in the USB interrupt; the host's isochronous IN rings are lent with `Rusb1HostDriver::lend_iso_in_buffers`. USB *class* code (UAC2/MIDI/MSC/BOT) lives in `deluge_bsp::usb`. |
+| `usb` | RUSB1 USB 2.0 dual-role driver: chip plumbing (bases, IRQs, STBCR7 clock gates) plus full `embassy-usb-driver` **device** (`usb::driver`) and **host** (`usb::host`) implementations over crate-private pipe/FIFO/register layers. `usb::init_device_mode(Peri<USBn>, Irqs)` / `usb::init_host_mode(Peri<USBn>, Irqs)` are the entry points, bound to a `DeviceInterruptHandler`, `HostInterruptHandler` or `DualRoleInterruptHandler`; the drivers borrow the port (`Rusb1Driver<'d>`). Isochronous endpoints can become `usb::iso` streams (`into_iso_stream`), whose consumer runs in the USB interrupt; the host's isochronous IN rings are lent with `Rusb1HostDriver::lend_iso_in_buffers`. USB *class* code (UAC2/MIDI/MSC/BOT) lives in `deluge_bsp::usb`. |
 
 ---
 
@@ -134,8 +133,8 @@ singleton and binding. The SSI and SCUX drivers hold no buffers: their rings are
 Register addresses come from [`rza1-pac`](../rza1-pac/README.md), re-exported as
 `rza1_hal::pac` and built with its `rza1l` feature: chiptool output from the vendor SVD (an RZ/A1H
 SVD) minus what the RZ/A1L lacks, generated and checked against the RZ/A1L manual's register list
-by `tools/gen-pac.sh`. Every access goes through the MMIO seam (`rza1_hal::mmio`, which now lives
-in the PAC), so register sequences are testable on the host. Every module takes its registers from
+by `tools/gen-pac.sh`. Every access goes through the PAC's MMIO seam (`rza1_pac::mmio`), so
+register sequences are testable on the host. Every module takes its registers from
 it, and `tools/check-register-tables.sh` checks the whole crate for hand-written addresses (only
 `memmap.rs` and `mmu.rs`, which describe memory rather than registers, are exempt).
 
@@ -143,21 +142,30 @@ it, and `tools/check-register-tables.sh` checks the whole crate for hand-written
 
 ## Features
 
-| Feature | Description |
-|---------|-------------|
-| `rtt`   | Enables RTT (SEGGER Real-Time Transfer) logging via `rtt-target`. |
-| `unlock-bootloader` | Adds `spibsc` routines that bypass the writable-window guard, so a JTAG-loaded recovery tool can rewrite the protected boot regions. Never enable it in normal firmware. |
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `rza1l` | | The RZ/A1L (R7S721020 and family). Enable exactly one chip feature. |
+| `rza1h` | | The RZ/A1H: its extra driver instances (RSPI3/RSPI4, the larger interrupt table). Not hardware-validated; its pin tables are not filled in yet. |
+| `rt` | yes | Export `gic_dispatch`, which `rza1-rt`'s IRQ entry calls. Turn off only to dispatch interrupts yourself (`#[rza1_rt::irq]`). |
+| `critical-section-impl` | yes | The `critical-section` implementation (single core: IRQ and FIQ masking). Turn off to bring your own. |
+| `time-driver-ostm` | yes | The Embassy time driver on OSTM0 and OSTM1 (`time_driver`). Turn off to bring your own driver; OSTM0/OSTM1 are then in `Peripherals`. |
+| `log` | | Log through the `log` crate. |
+| `defmt` | | Log through `defmt`, and derive `defmt::Format` on the public types. Not with `log`. |
+| `unstable-pac` | | Re-export the register-level PAC as `rza1_hal::pac`. Not covered by semver. |
+
+`unstable-driver-steal` (hidden, not covered by semver) adds `Dma::steal`, `Rspi::steal` and
+`UartRx::steal`, for panic and fault paths that must reach an initialised driver without its
+owner.
 
 ---
 
 ## Safety
 
-Nearly all functions in this crate are `unsafe`. The caller is responsible for:
-
-- Calling init functions **exactly once**, from a single-threaded boot context.
-- Not calling peripheral functions **concurrently** on the same channel.
-- Ensuring DMA buffers reside in **uncached memory** (use `UNCACHED_MIRROR_OFFSET`).
-- Registering GIC IRQs before enabling the corresponding interrupt source.
+Drivers are safe to construct and use: each takes its peripheral singleton and its interrupt
+binding, so two owners of one peripheral can't exist. The `unsafe fn`s left are system-level
+(`mmu`, `cache`, `gic` set-up, `bsc`, `spibsc` flash writes, `dmac::stop_all`), and each says in
+its `# Safety` section what the caller upholds. DMA buffers are `dma_buf::{Uncached,
+UncachedMut}`, checked to lie in uncached memory.
 
 ---
 

@@ -255,7 +255,7 @@ mod sealed {
 pub trait Instance: crate::PeripheralType + sealed::Sealed + 'static {
     /// The channel number, 0–4.
     const CH: u8;
-    /// Its compare-match-A interrupt, TGI<CH>A.
+    /// Its compare-match-A interrupt, `TGI<CH>A`.
     type Interrupt: Interrupt;
 }
 

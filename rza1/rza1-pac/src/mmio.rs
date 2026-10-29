@@ -21,7 +21,7 @@
 //! ```
 //!
 //! The shadow is **thread-local**, and cargo reuses test threads, so each test
-//! that uses the seam must call [`test::reset`] first for a clean slate.
+//! that uses the seam must call `test::reset` (host builds only) first for a clean slate.
 
 // ── Register handles ───────────────────────────────────────────────────────
 //

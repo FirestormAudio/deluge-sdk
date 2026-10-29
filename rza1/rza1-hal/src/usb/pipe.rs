@@ -2,13 +2,13 @@
 //!
 //! This module manages the 16 hardware pipes (DCP + pipes 1-15):
 //!
-//! - [`PipeConfig`]: describes how a pipe is configured (endpoint, type, MPS,
+//! - `PipeConfig`: describes how a pipe is configured (endpoint, type, MPS,
 //!   packet buffer allocation).
-//! - [`PipeXferState`]: runtime transfer state (active buffer pointer,
+//! - `PipeXferState`: runtime transfer state (active buffer pointer,
 //!   remaining bytes).
-//! - [`PIPE_WAKERS`]: one [`AtomicWaker`] per pipe; the ISR wakes the
+//! - `PIPE_WAKERS`: one `AtomicWaker` per pipe; the ISR wakes the
 //!   appropriate waker when a transfer completes (BRDY/BEMP).
-//! - [`BufAllocator`]: first-fit allocator over the 128 × 64-byte packet buffer.
+//! - `BufAllocator`: first-fit allocator over the 128 × 64-byte packet buffer.
 //!
 //! All mutable access to the per-pipe state in IRQ + task must go through
 //! critical sections (`critical_section::with`).

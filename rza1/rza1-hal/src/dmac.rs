@@ -119,7 +119,7 @@ mod sealed {
 pub trait Channel: crate::PeripheralType + sealed::Sealed + 'static {
     /// The channel number, 0–15.
     const NUMBER: u8;
-    /// Its completion interrupt (DMAINT<NUMBER>).
+    /// Its completion interrupt (`DMAINT<NUMBER>`).
     type Interrupt: Interrupt;
 }
 

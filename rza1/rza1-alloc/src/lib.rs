@@ -35,8 +35,12 @@
 //! deadlocks caused by IRQ handlers that also allocate, at the cost of a
 //! brief IRQ-latency bump.
 
-#![cfg_attr(target_os = "none", no_std)]
-#![feature(allocator_api)]
+#![no_std]
+#![deny(missing_docs)]
+
+#[cfg(test)]
+#[macro_use]
+extern crate std;
 
 use core::alloc::{AllocError, Allocator, Layout};
 use core::cell::UnsafeCell;
