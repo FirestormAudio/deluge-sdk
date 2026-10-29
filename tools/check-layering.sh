@@ -102,6 +102,15 @@ for lib in deluge-sdk deluge-grid-toolkit; do
   fi
 done
 
+# DelugeFirmware's hidden paths into the USB internals are retired (phase 9): the pipe and register
+# layers are the drivers' alone.
+usb_hidden_hits="$(grep -n 'doc(hidden)' rza1/rza1-hal/src/usb/mod.rs rza1/rza1-hal/src/usb/pipe.rs rza1/rza1-hal/src/usb/regs.rs || true)"
+if [ -n "$usb_hidden_hits" ]; then
+  printf '%s\n' "$usb_hidden_hits"
+  echo "error: rza1-hal's USB pipe/register internals are public again (#[doc(hidden)]); keep them crate-private" >&2
+  exit 1
+fi
+
 # Board-agnostic crates (spec rule 3): usb/ and drivers/ never name the chip HAL, the board, or
 # any deluge-* crate in code. Their dependencies are checked against Cargo's graph at the end.
 AGNOSTIC_DIRS=(usb drivers)

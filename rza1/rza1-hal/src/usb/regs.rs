@@ -292,7 +292,7 @@ pub(crate) const BUSWAIT_VALUE: u16 = 0x000F;
 
 /// USB port `port`'s registers: `USB200` for port 0, `USB201` for port 1.
 #[inline]
-pub fn usb(port: u8) -> Usb {
+pub(crate) fn usb(port: u8) -> Usb {
     if port == 0 { USB200 } else { USB201 }
 }
 

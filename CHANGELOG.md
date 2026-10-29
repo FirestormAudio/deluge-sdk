@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- DelugeFirmware is on the pre-0.1 API (phase 9 of the pass), so the paths kept for it go:
+  - `rza1_hal::usb::pipe` and `rza1_hal::usb::regs` are crate-private, including
+    `pipe_reset`, `pipe_enable`, `pipe_brdy_enable`, `pipe_iso_in_activate` and `regs::usb`.
+  - `deluge-bsp`'s no-op `app-fault-reporter` feature is gone.
+  - `rza1-alloc` keeps `#![feature(allocator_api)]` (with `stable_features` allowed), which phase 8
+    dropped: DelugeFirmware's toolchain (dbt, rustc 1.99 nightly) still needs the gate.
+
 - `deluge-bsp`: `BoardPins` hands out the battery LED (`battery_led`, P1_1, open-drain) and the
   battery-voltage sense input (`volt_sense`, P1_13). `battery::init(volt_sense)` muxes P1_13 to the
   ADC's AN5. DelugeFirmware drove both with the raw GPIO functions, which phase 2 removed.
