@@ -1,3 +1,4 @@
+use deluge_bsp::jacks::{self, Jack};
 use embassy_time::Timer;
 use log::info;
 
@@ -8,16 +9,8 @@ use log::info;
 /// firmware-owned policy: the speaker amplifier is enabled only when neither
 /// headphone nor line-out is inserted.
 #[embassy_executor::task]
-pub(crate) async fn jack_detect_task(poll_interval_ms: u64) {
-    unsafe {
-        rza1_hal::gpio::set_as_input(6, 5);
-        rza1_hal::gpio::set_as_input(6, 6);
-        rza1_hal::gpio::set_as_input(7, 9);
-        rza1_hal::gpio::set_as_input(6, 3);
-        rza1_hal::gpio::set_as_input(6, 4);
-        rza1_hal::gpio::set_as_output(4, 1);
-        rza1_hal::gpio::write(4, 1, false);
-    }
+pub(crate) async fn jack_detect_task(pins: deluge_bsp::board::JackPins, poll_interval_ms: u64) {
+    jacks::init(pins);
 
     let mut prev_hp = false;
     let mut prev_li = false;
@@ -28,14 +21,14 @@ pub(crate) async fn jack_detect_task(poll_interval_ms: u64) {
     info!("jack_detect_task: started");
 
     loop {
-        let hp = unsafe { rza1_hal::gpio::read_pin(6, 5) };
-        let li = unsafe { rza1_hal::gpio::read_pin(6, 6) };
-        let mic = unsafe { rza1_hal::gpio::read_pin(7, 9) };
-        let lol = unsafe { rza1_hal::gpio::read_pin(6, 3) };
-        let lor = unsafe { rza1_hal::gpio::read_pin(6, 4) };
+        let hp = jacks::is_inserted(Jack::Headphone);
+        let li = jacks::is_inserted(Jack::LineIn);
+        let mic = jacks::is_inserted(Jack::Mic);
+        let lol = jacks::is_inserted(Jack::LineOutL);
+        let lor = jacks::is_inserted(Jack::LineOutR);
         let speaker_enable = !(hp || lol || lor);
 
-        unsafe { rza1_hal::gpio::write(4, 1, speaker_enable) };
+        jacks::set_speaker_enable(speaker_enable);
 
         if hp != prev_hp || li != prev_li || mic != prev_mic || lol != prev_lol || lor != prev_lor {
             prev_hp = hp;

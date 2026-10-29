@@ -38,8 +38,9 @@ pub(crate) async fn probe_task() {
     info!("WP-PROBE: bringing up SDHI");
     let _ = sd::init().await;
 
-    // Let PPR reflect the live P7_1 level without taking the pin off SD_WP1.
-    unsafe { rza1_hal::gpio::enable_input_buffer(7, 1) };
+    // Let PPR reflect the live P7_1 level without taking the pin off SD_WP1. The SD driver owns
+    // P7_1 (it muxed it to SD_WP1); this probe borrows it only to turn its input buffer on.
+    rza1_hal::gpio::Flex::new(unsafe { rza1_hal::peripherals::P7_1::steal() }).enable_input_buffer();
 
     let mut fb = oled::FrameBuffer::new();
     loop {
@@ -48,7 +49,7 @@ pub(crate) async fn probe_task() {
         // SDHI's view: INFO7 != 0 (the driver's "write protected" test).
         let info7 = sd::controller().card_write_protected();
         // Raw live pin level on P7_1.
-        let pin_high = unsafe { rza1_hal::gpio::read_pin(7, 1) };
+        let pin_high = rza1_hal::gpio::read_port(rza1_hal::gpio::Port::P7) & (1 << 1) != 0;
 
         info!(
             "WP-PROBE: card={} ready={} INFO7={} P7_1={}",

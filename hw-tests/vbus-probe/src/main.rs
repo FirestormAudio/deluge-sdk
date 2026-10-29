@@ -82,7 +82,7 @@ pub extern "C" fn main() -> ! {
     unsafe { allocator::SDRAM.init(0x0C00_0000 as *mut u8, 64 * 1024 * 1024) };
 
     // Heartbeat LED pin (unused beyond init; keeps parity with other firmwares).
-    unsafe { rza1_hal::gpio::set_as_output(6, 7) };
+    rza1_hal::gpio::Output::new(board.pins.sync_led, rza1_hal::gpio::Level::Low);
 
     info!("UART: initialising PIC...");
     bsp_uart::init_pic(board.pic_uart, board.pins.pic, board.dma.pic_rx, board.dma.pic_tx, 31_250);

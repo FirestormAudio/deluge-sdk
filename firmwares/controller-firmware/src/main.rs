@@ -139,7 +139,8 @@ pub extern "C" fn main() -> ! {
     info!("SDRAM heap: initialised (64 MB)");
 
     info!("GPIO: configuring heartbeat LED...");
-    unsafe { rza1_hal::gpio::set_as_output(6, 7) };
+    tasks::cdc::set_sync_led(rza1_hal::gpio::Output::new(board.pins.sync_led, rza1_hal::gpio::Level::Low));
+    let jack_pins = board.pins.jacks;
     info!("GPIO: heartbeat LED P6_7 configured");
 
     info!("UART: initialising MIDI...");
@@ -310,7 +311,7 @@ pub extern "C" fn main() -> ! {
         // Hardware service + host-driven rendering tasks ───────────────────
         spawner.spawn(tasks::pic::pic_task().unwrap());
         spawner.spawn(tasks::encoder::encoder_task().unwrap());
-        spawner.spawn(tasks::jack_detect::jack_detect_task(200).unwrap());
+        spawner.spawn(tasks::jack_detect::jack_detect_task(jack_pins, 200).unwrap());
         spawner.spawn(tasks::oled::oled_task().unwrap());
         spawner.spawn(tasks::sd::sd_task().unwrap());
     });

@@ -111,7 +111,7 @@ pub extern "C" fn main() -> ! {
     info!("SDRAM heap: initialised (64 MB)");
 
     info!("GPIO: configuring heartbeat LED...");
-    unsafe { rza1_hal::gpio::set_as_output(6, 7) };
+    let sync_led = rza1_hal::gpio::Output::new(board.pins.sync_led, rza1_hal::gpio::Level::Low);
 
     info!("UART: initialising PIC...");
     bsp_uart::init_pic(board.pic_uart, board.pins.pic, board.dma.pic_rx, board.dma.pic_tx, 31_250);
@@ -171,7 +171,7 @@ pub extern "C" fn main() -> ! {
         EXECUTOR.assume_init_mut()
     };
     executor.run(|spawner: Spawner| {
-        spawner.spawn(tasks::blink::blink_task().unwrap());
+        spawner.spawn(tasks::blink::blink_task(sync_led).unwrap());
         spawner.spawn(tasks::usb::usb_task(usb_device).unwrap());
         spawner.spawn(tasks::msc::msc_task(ep_in, ep_out).unwrap());
         spawner.spawn(tasks::pic::pic_task().unwrap());

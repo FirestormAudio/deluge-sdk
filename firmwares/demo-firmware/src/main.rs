@@ -77,8 +77,6 @@ fn setup() {
     info!("Deluge demo firmware starting");
     info!("Pad paint demo: press pads to toggle, buttons 0/1/2 to clear/fill/invert");
 
-    info!("GPIO: configuring heartbeat LED...");
-    unsafe { rza1_hal::gpio::set_as_output(6, 7) };
 
     info!("UART: initialising MIDI...");
     let (midi, midi_pins, midi_rx) =
@@ -250,7 +248,11 @@ async fn main(dlg: Deluge) {
 
     // ── Spawn tasks ──────────────────────────────────────────────────────────
     info!("starting Embassy tasks");
-    spawner.spawn(tasks::blink::blink_task().unwrap());
+    let sync_led = deluge::parts::with(|p| p.sync_led.take()).expect("the SYNC LED is free");
+    spawner.spawn(
+        tasks::blink::blink_task(rza1_hal::gpio::Output::new(sync_led, rza1_hal::gpio::Level::Low))
+            .unwrap(),
+    );
 
     // USB-mode-specific tasks ─────────────────────────────────────────────────
     if let Some(hd) = usb_host_driver {
@@ -278,7 +280,8 @@ async fn main(dlg: Deluge) {
     // Tasks common to both modes ───────────────────────────────────────────────
     spawner.spawn(tasks::pic::pic_task().unwrap());
     spawner.spawn(tasks::encoder::encoder_task().unwrap());
-    spawner.spawn(tasks::jack_detect::jack_detect_task(200).unwrap());
+    let jack_pins = deluge::parts::with(|p| p.jack_pins.take()).expect("the jack pins are free");
+    spawner.spawn(tasks::jack_detect::jack_detect_task(jack_pins, 200).unwrap());
     spawner.spawn(tasks::analysis::analysis_task().unwrap());
     spawner.spawn(tasks::rgb::rgb_task().unwrap());
     spawner.spawn(tasks::oled::oled_task().unwrap());

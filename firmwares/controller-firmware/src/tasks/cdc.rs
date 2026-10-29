@@ -317,9 +317,7 @@ async fn handle_message(type_byte: u8, data: &[u8]) {
             // Controls the GPIO "synced" LED (P6.7).
             if !data.is_empty() {
                 let on = data[0] != 0;
-                unsafe {
-                    rza1_hal::gpio::write(6, 7, on);
-                }
+                drive_sync_led(on);
             }
         }
         MSG_TO_CLEAR_ALL_LEDS => {
@@ -330,9 +328,7 @@ async fn handle_message(type_byte: u8, data: &[u8]) {
             pic::set_gold_knob_indicators(0, [0; 4]).await;
             pic::set_gold_knob_indicators(1, [0; 4]).await;
             // Also clear the synced LED.
-            unsafe {
-                rza1_hal::gpio::write(6, 7, false);
-            }
+            drive_sync_led(false);
         }
         MSG_TO_SET_BRIGHTNESS => {
             // [level: 0–25]  0=dimmest, 25=brightest.
@@ -474,4 +470,23 @@ pub(crate) async fn cdc_task(class: CdcAcmClass<'static, Rusb1Driver<'static>>) 
         // into the next session.
         while REPLY_CHANNEL.try_receive().is_ok() {}
     }
+}
+
+/// The SYNC LED (P6_7), which the host drives over CDC; `main` hands it over at boot.
+static SYNC_LED: embassy_sync::blocking_mutex::Mutex<
+    embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
+    core::cell::RefCell<Option<rza1_hal::gpio::Output<'static>>>,
+> = embassy_sync::blocking_mutex::Mutex::new(core::cell::RefCell::new(None));
+
+/// Give the CDC handler the SYNC LED.
+pub(crate) fn set_sync_led(led: rza1_hal::gpio::Output<'static>) {
+    SYNC_LED.lock(|cell| cell.replace(Some(led)));
+}
+
+fn drive_sync_led(on: bool) {
+    SYNC_LED.lock(|cell| {
+        if let Some(led) = cell.borrow_mut().as_mut() {
+            led.set_level(on.into());
+        }
+    });
 }
