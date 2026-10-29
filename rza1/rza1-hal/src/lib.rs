@@ -1,6 +1,8 @@
 //! `rza1-hal` — Embassy HAL for the Renesas RZ/A1 (Cortex-A9): the RZ/A1L (`rza1l` feature) and
 //! the RZ/A1H (`rza1h`). Enable exactly one chip feature.
 //!
+//! Requires a nightly Rust toolchain (the workspace's `rust-toolchain.toml` pins one).
+//!
 //! `rza1h` is experimental: it compiles, but is not validated on hardware, and its pin tables are
 //! not filled in, so drivers that take pins are RZ/A1L-only for now.
 //!

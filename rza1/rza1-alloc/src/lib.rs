@@ -1,5 +1,8 @@
 //! Separate heap allocators for on-chip SRAM and external SDRAM.
 //!
+//! Requires a nightly Rust toolchain (the workspace's `rust-toolchain.toml` pins one); the
+//! `Allocator` impls use `allocator_api`.
+//!
 //! Two [`CsHeap`] instances – [`SRAM`] and [`SDRAM`] – provide distinct
 //! allocation arenas, each protected by a critical-section lock (IRQ-safe).
 //!

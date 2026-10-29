@@ -23,3 +23,5 @@ every read and write through `mmio`: real volatile accesses on the device, a sha
 access log under host tests, so drivers' register sequences can be tested.
 
 [chiptool]: https://github.com/embassy-rs/chiptool
+
+Requires a nightly Rust toolchain (the workspace's `rust-toolchain.toml` pins one).

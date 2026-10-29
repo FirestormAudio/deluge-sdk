@@ -1,4 +1,6 @@
 //! Attribute macros for `rza1-rt`. Use them through `rza1_rt::{entry, irq, fault}`.
+//!
+//! Requires a nightly Rust toolchain (the workspace's `rust-toolchain.toml` pins one).
 #![deny(missing_docs)]
 
 use proc_macro::TokenStream;

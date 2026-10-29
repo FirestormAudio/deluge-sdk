@@ -2,6 +2,8 @@
 //! and the transforms in `transforms/` (`tools/gen-pac.sh` regenerates `src/chips/`). Enable exactly
 //! one chip feature: `rza1l` or `rza1h`.
 //!
+//! Requires a nightly Rust toolchain (the workspace's `rust-toolchain.toml` pins one).
+//!
 //! Every peripheral is a `Copy` handle (`CPG`, `SCIF0`, `INTC`, …); its methods return
 //! [`common::Reg`] handles whose reads and writes go through [`mmio`], so a host test can drive
 //! register sequences and inspect them.

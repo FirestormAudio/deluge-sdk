@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Every rza1 crate's README and crate docs say it needs a nightly Rust toolchain (the workspace's
+  `rust-toolchain.toml` pins one); `check-readme-features.py` keeps them saying so.
 - `rza1h` is documented as experimental: it compiles, is not validated on hardware, and its pin
   tables are not filled in, so drivers that take pins are RZ/A1L-only for now. `rza1-hal`'s QEMU
   tests now build and run under `rza1h` too (`rza1/tools/test.sh`), with the pin-dependent tests

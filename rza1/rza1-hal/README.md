@@ -9,6 +9,8 @@ at runtime rather than compiled in.
 
 ---
 
+Requires a nightly Rust toolchain (the workspace's `rust-toolchain.toml` pins one).
+
 ## Target
 
 | Property       | Value                              |

@@ -9,6 +9,8 @@ linker search path defining the `RAM` (and optionally `SDRAM`) regions, the per-
 and `INTERNAL_RAM_END`; see the script's header for the full list. The application's `build.rs`
 passes `-Tlink.x` (`cargo:rustc-link-arg-bins=-Tlink.x`).
 
+Requires a nightly Rust toolchain (the workspace's `rust-toolchain.toml` pins one).
+
 ## Attributes
 
 - `#[entry]` on `fn() -> !`: the image's entry, which the reset handler calls once BSS is zeroed,

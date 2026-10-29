@@ -15,3 +15,5 @@ depends on `rza1-rt`. `#[irq]` is for an image that turns off `rza1-hal`'s `rt` 
 otherwise provides `gic_dispatch`.
 
 Licensed under either of Apache-2.0 or MIT at your option.
+
+Requires a nightly Rust toolchain (the workspace's `rust-toolchain.toml` pins one).
