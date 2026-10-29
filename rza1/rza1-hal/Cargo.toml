@@ -65,8 +65,9 @@ unstable-driver-steal = []
 ## The chip: enable exactly one.
 ## The RZ/A1L (R7S721020 and family).
 rza1l = ["rza1-pac/rza1l"]
-## The RZ/A1H. Compiles and exposes the A1H's extra driver instances (RSPI3/RSPI4, the larger
-## interrupt table); not hardware-validated, and its pin tables are not yet filled in.
+## The RZ/A1H, with its extra driver instances (RSPI3/RSPI4, the larger interrupt table).
+## Experimental: compiles, not validated on hardware; its pin tables are not filled in, so drivers
+## that take pins are RZ/A1L-only for now.
 rza1h = ["rza1-pac/rza1h"]
 ## The Embassy time driver on OSTM0 (free-running count) and OSTM1 (alarm): `time_driver`.
 ## Turn default features off to bring your own driver.

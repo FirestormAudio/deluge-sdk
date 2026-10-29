@@ -17,15 +17,17 @@
 //!
 //! The copy cursor doesn't see window writes: use one or the other on a ring.
 //!
-//! The ring is lent for `'d` and the DMAC runs over it until the ring is dropped, which halts the
-//! channel first. Leaking a ring (`mem::forget`, reachable from safe code) leaves the DMAC running
-//! over memory whose borrow has ended: the same gap as embassy's ring-buffered drivers. A
-//! `'static` buffer, as a board crate usually lends, can't be freed under it.
+//! The ring and its descriptor table are lent for `'d`, and the DMAC runs over them until the ring
+//! is dropped, which halts the channel first. Leaking a ring (`mem::forget`, reachable from safe
+//! code) leaves the DMAC running over memory whose borrow has ended: the same gap as embassy's
+//! ring-buffered drivers. Through a reused descriptor table that is worse than stale samples: the
+//! DMAC follows whatever the memory now holds. A `'static` buffer and table, as a board crate
+//! usually lends, can't be freed under it.
 //!
 //! Each ring has one waker: wait on it from one task at a time (one [`BlockSignal`], or the copy
 //! API's `write`/`read`), or the waiters steal each other's wake.
 
-use crate::dma_buf::UncachedMut;
+use crate::dma_buf::{NotUncached, UncachedMut};
 use crate::dmac::BlockDma;
 use crate::dmac::ring::RingDma;
 
@@ -51,14 +53,59 @@ impl core::fmt::Display for Error {
 
 impl core::error::Error for Error {}
 
+/// One DMAC link descriptor. A ring of n blocks needs n of them, lent through the uncached alias
+/// the DMAC reads them by (see [`RingDescs::new`]); the HAL writes them there. 32-byte aligned, so
+/// a descriptor never shares a cache line with other data.
+#[repr(C, align(32))]
+pub struct RingDesc(pub(crate) [u32; 8]);
+
+impl RingDesc {
+    /// A zeroed descriptor, for a table's initializer: `[RingDesc::NEW; 8]`.
+    pub const NEW: RingDesc = RingDesc([0; 8]);
+}
+
+/// A lent table of ring descriptors, checked to lie in DMA-reachable memory. One ring at a time:
+/// it is a unique borrow.
+pub struct RingDescs<'d>(&'d mut [RingDesc]);
+
+impl<'d> RingDescs<'d> {
+    /// Lend `descs`, which must lie wholly in uncached (DMA-coherent) memory, the same check as
+    /// [`UncachedMut::new`]: a table in cached SRAM or SDRAM is lent through its uncached mirror,
+    /// after a clean and invalidate of its lines, as a ring is.
+    pub fn new(descs: &'d mut [RingDesc]) -> Result<Self, NotUncached> {
+        crate::dma_buf::check_bytes(descs.as_ptr() as usize, core::mem::size_of_val(descs))?;
+        Ok(Self(descs))
+    }
+
+    /// How many descriptors the table holds.
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Descriptor `i`'s first word.
+    pub(crate) fn word_ptr(&mut self, i: usize) -> *mut u32 {
+        self.0[i].0.as_mut_ptr()
+    }
+}
+
+/// A leaked table of `n` descriptors, for tests.
+#[cfg(all(test, not(target_os = "none")))]
+pub(crate) fn test_descs(n: usize) -> RingDescs<'static> {
+    RingDescs::new((0..n).map(|_| RingDesc::NEW).collect::<std::vec::Vec<_>>().leak()).unwrap()
+}
+
 /// What a driver takes for one direction: a DMA channel with its block interrupt bound, the lent
-/// ring, and how many blocks (each ending with an interrupt) to split it into.
+/// ring, a descriptor per block, and how many blocks (each ending with an interrupt) to split the
+/// ring into.
 pub struct RingBuf<'d> {
     /// The channel.
     pub dma: BlockDma<'d>,
     /// The ring: whole blocks of whole frames.
     pub buf: UncachedMut<'d, u32>,
-    /// Blocks, 1 to 16.
+    /// The ring's descriptors: at least `blocks` of them.
+    pub descs: RingDescs<'d>,
+    /// Blocks, 2 to 16.
     pub blocks: usize,
 }
 
@@ -295,7 +342,18 @@ mod tests {
         let buf = UncachedMut::new(std::vec![0u32; 64].leak()).unwrap();
         let base = buf.as_slice().as_ptr() as u32;
         let dma = BlockDma::new(unsafe { DMA_CH9::steal() }, Irqs);
-        (RingDma::start(dma, buf, 4, 2, 0x8000_0001, dir, 0xE1), base)
+        (RingDma::start(dma, buf, test_descs(4), 4, 2, 0x8000_0001, dir, 0xE1), base)
+    }
+
+    #[test]
+    fn a_descriptor_table_runs_dma_bufs_check_over_its_whole_byte_range() {
+        // On the host only an empty range fails `dma_buf`'s check, so this proves the check runs
+        // and over which bytes; the target's refusal of cached memory is `memmap`'s, tested there.
+        assert_eq!(RingDescs::new(&mut []).err(), Some(NotUncached));
+        let descs = test_descs(3);
+        assert_eq!(descs.len(), 3);
+        let checked = crate::dma_buf::LAST_CHECKED_LEN.with(|l| l.get());
+        assert_eq!(checked, 3 * 32, "3 descriptors checked as 96 bytes");
     }
 
     fn writable() -> (WritableRing<'static>, u32) {

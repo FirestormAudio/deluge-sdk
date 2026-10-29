@@ -229,6 +229,7 @@ impl embedded_hal_async::digital::Wait for ExtiInput<'_> {
     }
 }
 
+#[cfg(feature = "rza1l")]
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
     use super::*;

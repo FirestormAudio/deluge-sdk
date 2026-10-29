@@ -875,6 +875,7 @@ impl<'d, C: ChannelId> Channel<'d, C> {
         let rx = RingDma::start(
             ffu.dma,
             ffu.buf,
+            ffu.descs,
             ffu.blocks,
             frame,
             ffu_chcfg(ffu_ch) & !crate::dmac::CHCFG_DEM,
@@ -998,6 +999,7 @@ fn start_ffd<'d>(n: u8, ffd: RingBuf<'d>, frame: usize) -> RingDma<'d> {
     RingDma::start(
         ffd.dma,
         ffd.buf,
+        ffd.descs,
         ffd.blocks,
         frame,
         ffd_chcfg(ch),
@@ -1305,6 +1307,7 @@ mod path_tests {
         RingBuf {
             dma: BlockDma::new(ch, Irqs),
             buf: UncachedMut::new(std::vec![0u32; words].leak()).unwrap(),
+            descs: crate::ring_buffer::test_descs(4),
             blocks: 4,
         }
     }
@@ -1447,18 +1450,25 @@ mod path_tests {
 #[cfg(all(test, not(target_os = "none")))]
 mod ssi_path_tests {
     use super::*;
-    use crate::dma_buf::UncachedMut;
-    use crate::dmac::{BlockDma, BlockInterruptHandler};
-    use crate::mmio::test;
-    use crate::peripherals::{DMA_CH0, DMA_CH3, DMA_CH7, P6_8, P6_9, P6_10, P6_11, SSIF0};
-    use crate::ring_buffer::RingBuf;
+    use crate::peripherals::SSIF0;
+    // The SSI pins are RZ/A1L-only so far, and so is everything that builds an SSI.
+    #[cfg(feature = "rza1l")]
+    use crate::{
+        dma_buf::UncachedMut,
+        dmac::{BlockDma, BlockInterruptHandler},
+        mmio::test,
+        peripherals::{DMA_CH0, DMA_CH3, DMA_CH7, P6_8, P6_9, P6_10, P6_11},
+        ring_buffer::RingBuf,
+    };
 
+    #[cfg(feature = "rza1l")]
     crate::bind_interrupts!(struct Irqs {
         DMAINT0 => BlockInterruptHandler<DMA_CH0>;
         DMAINT3 => BlockInterruptHandler<DMA_CH3>;
         DMAINT7 => BlockInterruptHandler<DMA_CH7>;
     });
 
+    #[cfg(feature = "rza1l")]
     fn ring<C: crate::dmac::Channel>(ch: crate::Peri<'static, C>) -> RingBuf<'static>
     where
         Irqs: crate::interrupt::Binding<C::Interrupt, BlockInterruptHandler<C>>,
@@ -1466,10 +1476,12 @@ mod ssi_path_tests {
         RingBuf {
             dma: BlockDma::new(ch, Irqs),
             buf: UncachedMut::new(std::vec![0u32; 512].leak()).unwrap(),
+            descs: crate::ring_buffer::test_descs(4),
             blocks: 4,
         }
     }
 
+    #[cfg(feature = "rza1l")]
     fn scux_output() -> (crate::ssi::ScuxOutput<'static, SSIF0>, crate::ssi::SsiRx<'static>) {
         unsafe {
             crate::ssi::Ssi::new_with_scux_tx(
@@ -1484,9 +1496,12 @@ mod ssi_path_tests {
         }
     }
 
+    #[cfg(feature = "rza1l")]
     const SSICR: usize = 0xE820_B000;
+    #[cfg(feature = "rza1l")]
     const SSICR_TEN: u32 = 1 << 1;
 
+    #[cfg(feature = "rza1l")]
     #[test]
     fn the_dvu_path_routes_ch0_to_ssif0() {
         let _serial = super::path_tests::serial();
@@ -1529,6 +1544,7 @@ mod ssi_path_tests {
         assert_eq!(test::peek32(SCUX.futsel(0).addr()), 0, "FUTSEL0 back to its reset value");
     }
 
+    #[cfg(feature = "rza1l")]
     #[test]
     fn dropping_a_ch1_to_ssif0_control_restores_sosel0() {
         let _serial = super::path_tests::serial();
@@ -1571,6 +1587,7 @@ mod ssi_path_tests {
         assert_eq!([ssictrl_tx_bit(0), ssictrl_tx_bit(1), ssictrl_tx_bit(3)], [1 << 14, 1 << 13, 1 << 30]);
     }
 
+    #[cfg(feature = "rza1l")]
     #[test]
     fn an_async_src_into_an_ssi_paces_its_input_from_usb_x1() {
         let _serial = super::path_tests::serial();

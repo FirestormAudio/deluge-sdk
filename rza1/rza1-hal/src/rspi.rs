@@ -1019,6 +1019,7 @@ mod tests {
         assert_eq!(<crate::peripherals::RSPI2 as Instance>::INDEX, 2);
     }
 
+    #[cfg(feature = "rza1l")]
     /// `Rspi::new` programs the master-mode SPI config through the seam: the key registers end
     /// up with the expected values for a 10 MHz setup.
     #[test]
@@ -1060,6 +1061,7 @@ mod tests {
         assert_eq!(spcr & SPCR_SPE, SPCR_SPE, "SPI enabled (R_RSPI_Start)");
     }
 
+    #[cfg(feature = "rza1l")]
     fn config(frequency: u32, mode: embedded_hal::spi::Mode) -> Config {
         let mut c = Config::default();
         c.frequency = frequency;
@@ -1067,16 +1069,22 @@ mod tests {
         c
     }
 
+    #[cfg(feature = "rza1l")]
     const B0: usize = 0xE800_C800; // RSPI0
+    #[cfg(feature = "rza1l")]
     const SPSR: usize = B0 + 0x03;
+    #[cfg(feature = "rza1l")]
     const SPDR: usize = B0 + 0x04;
+    #[cfg(feature = "rza1l")]
     const SPBFCR: usize = B0 + 0x20;
 
+    #[cfg(feature = "rza1l")]
     fn serial() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    #[cfg(feature = "rza1l")]
     fn rspi0(c: Config) -> Rspi<'static, crate::mode::Blocking> {
         crate::clocks::init(crate::clocks::TEST_CLOCKS);
         crate::mmio::test::reset();
@@ -1098,6 +1106,7 @@ mod tests {
         assert_eq!(c.mode, embedded_hal::spi::MODE_0);
     }
 
+    #[cfg(feature = "rza1l")]
     #[test]
     fn config_mode_sets_cpol_cpha() {
         let _serial = serial();
@@ -1110,6 +1119,7 @@ mod tests {
         assert_eq!(crate::mmio::test::peek16(B0 + 0x10) & 0b11, 0b01);
     }
 
+    #[cfg(feature = "rza1l")]
     #[test]
     fn config_frequency_sets_spbr() {
         let _serial = serial();
@@ -1117,6 +1127,7 @@ mod tests {
         assert_eq!(crate::mmio::test::peek8(B0 + 0x0A), 8);
     }
 
+    #[cfg(feature = "rza1l")]
     #[test]
     fn transfer_resets_the_rx_buffer_first() {
         use embedded_hal::spi::SpiBus;
@@ -1144,6 +1155,7 @@ mod tests {
         assert_eq!(read, [0x3C]);
     }
 
+    #[cfg(feature = "rza1l")]
     /// A transmit-only caller may leave frames shifting (`send8` doesn't wait): the receive
     /// buffer is reset only after TEND, or their bytes land after the reset.
     #[test]
@@ -1163,6 +1175,7 @@ mod tests {
         assert!(tend < reset, "TEND checked before the reset");
     }
 
+    #[cfg(feature = "rza1l")]
     #[test]
     fn word_size_switches_the_frame_width() {
         use embedded_hal::spi::SpiBus;
@@ -1176,6 +1189,7 @@ mod tests {
         assert_eq!(crate::mmio::test::peek32(SPDR), 0x1234_5678);
     }
 
+    #[cfg(feature = "rza1l")]
     #[test]
     fn overrun_is_reported() {
         use embedded_hal::spi::{Error as _, ErrorKind};
@@ -1191,6 +1205,7 @@ mod tests {
         assert_eq!(Error::ModeFault.kind(), ErrorKind::ModeFault);
     }
 
+    #[cfg(feature = "rza1l")]
     #[test]
     fn a_stale_overrun_is_cleared_before_a_transfer() {
         use embedded_hal::spi::SpiBus;
@@ -1208,6 +1223,7 @@ mod tests {
         assert!(crate::mmio::test::log().is_empty());
     }
 
+    #[cfg(feature = "rza1l")]
     #[test]
     fn switching_to_8_bit_frames_rewrites_length_command_and_buffer_control() {
         crate::clocks::init(crate::clocks::TEST_CLOCKS);
@@ -1280,6 +1296,7 @@ mod tests {
     }
 }
 
+#[cfg(feature = "rza1l")]
 #[cfg(all(test, not(target_os = "none")))]
 mod async_tests {
     use super::*;

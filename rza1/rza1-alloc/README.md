@@ -23,3 +23,6 @@ let buf: Box<[u8; 4096], _> = Box::new_in([0u8; 4096], &SDRAM);
 
 Part of the [`deluge-sdk`](https://github.com/FirestormAudio/deluge-sdk)
 workspace.
+
+Requires a nightly Rust toolchain (the workspace's `rust-toolchain.toml` pins one); the
+`Allocator` impls use `allocator_api`.

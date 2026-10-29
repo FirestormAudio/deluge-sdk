@@ -590,9 +590,11 @@ pub unsafe extern "C" fn gic_dispatch(icciar: u32) {
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
+    #[cfg(feature = "rza1l")]
+    use super::init;
     use super::{
-        ICDICFR_INIT, INT_ID_TOTAL, SDRAM_CODE_AREAS, init, is_plausible_code_address,
-        is_plausible_in, most_urgent_active, set_irq_both_edges, set_sdram_code_window,
+        ICDICFR_INIT, INT_ID_TOTAL, SDRAM_CODE_AREAS, is_plausible_code_address, is_plausible_in,
+        most_urgent_active, set_irq_both_edges, set_sdram_code_window,
     };
 
     #[test]
@@ -728,6 +730,7 @@ mod tests {
 
     /// The RZ/A1L's distributor: interrupt IDs 0–537 (manual Table 7.3), so 17 words of enable
     /// bits, 135 of priorities and 34 of configuration (Table 46.1).
+    #[cfg(feature = "rza1l")]
     #[test]
     fn the_gic_is_sized_for_the_rza1l() {
         assert_eq!(INT_ID_TOTAL, 538);
@@ -736,6 +739,7 @@ mod tests {
         assert!(std::panic::catch_unwind(|| crate::pac::INTC.icdipr(135)).is_err());
     }
 
+    #[cfg(feature = "rza1l")]
     #[test]
     fn init_masks_everything_then_enables_the_interfaces_last() {
         crate::mmio::test::reset();

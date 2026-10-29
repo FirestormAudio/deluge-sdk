@@ -53,10 +53,15 @@ std::thread_local! {
 
 /// Check `buf`'s whole byte range.
 fn check_words<W: Word>(buf: &[W]) -> Result<(), NotUncached> {
-    let bytes = core::mem::size_of_val(buf);
+    check_bytes(buf.as_ptr() as usize, core::mem::size_of_val(buf))
+}
+
+/// Check `bytes` bytes from `addr`: any DMA-read memory a driver is lent, such as a descriptor
+/// table.
+pub(crate) fn check_bytes(addr: usize, bytes: usize) -> Result<(), NotUncached> {
     #[cfg(all(test, not(target_os = "none")))]
     LAST_CHECKED_LEN.with(|l| l.set(bytes));
-    check(buf.as_ptr() as usize, bytes)
+    check(addr, bytes)
 }
 
 /// A DMA source: words (bytes by default) in uncached memory.

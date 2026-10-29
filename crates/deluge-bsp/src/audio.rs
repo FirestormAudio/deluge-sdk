@@ -13,7 +13,7 @@ use rza1_hal::dma_buf::UncachedMut;
 use rza1_hal::dmac::{BlockDma, BlockInterruptHandler};
 use rza1_hal::gpio::{Alternate, Flex, Level, Output};
 use rza1_hal::ostm;
-use rza1_hal::ring_buffer::{BlockSignal, ReadableRing, RingBuf, WritableRing};
+use rza1_hal::ring_buffer::{BlockSignal, ReadableRing, RingBuf, RingDesc, RingDescs, WritableRing};
 use rza1_hal::scux::{AudioInfo, Ch0, Channel, Dvu, Src};
 use rza1_hal::ssi::{Ssi, SsiRx, SsiTx};
 
@@ -47,6 +47,10 @@ pub(crate) struct Ring<const N: usize>(pub(crate) [u32; N]);
 static mut SSI_TX_BUF: Ring<SSI_TX_WORDS> = Ring([0; SSI_TX_WORDS]);
 static mut SSI_RX_BUF: Ring<SSI_RX_WORDS> = Ring([0; SSI_RX_WORDS]);
 static mut DVU_BUF: Ring<DVU_WORDS> = Ring([0; DVU_WORDS]);
+// SAFETY (all three): as the rings; one descriptor per block.
+static mut SSI_TX_DESCS: [RingDesc; 8] = [RingDesc::NEW; 8];
+static mut SSI_RX_DESCS: [RingDesc; 16] = [RingDesc::NEW; 16];
+static mut DVU_DESCS: [RingDesc; 16] = [RingDesc::NEW; 16];
 
 /// `buf` through its uncached mirror, as a DMA ring. Its cached alias is cleaned and invalidated
 /// first, defensively: no line of it may be dirty when the DMAC owns the memory (rza1-rt zeroes
@@ -68,16 +72,37 @@ pub(crate) unsafe fn lend<const N: usize>(buf: *mut Ring<N>) -> UncachedMut<'sta
     UncachedMut::new(words).expect("an audio ring's mirror is uncached memory")
 }
 
-/// Channel `ch` with its block interrupt bound, over `buf` in `blocks` blocks.
+/// `table` through its uncached mirror, as a ring's descriptors, after the same clean and
+/// invalidate as [`lend`].
+///
+/// # Safety
+/// Called once per table; nothing else touches it afterwards.
+pub(crate) unsafe fn lend_descs<const N: usize>(table: *mut [RingDesc; N]) -> RingDescs<'static> {
+    let start = table as usize;
+    #[cfg(target_os = "none")]
+    // SAFETY: the table's own lines; nothing has used it yet.
+    unsafe {
+        rza1_hal::cache::dma_clean_inv_range(start, start + core::mem::size_of::<[RingDesc; N]>());
+    }
+    #[cfg(target_os = "none")]
+    let start = start + rza1_hal::UNCACHED_MIRROR_OFFSET;
+    // SAFETY: the caller's contract; the mirror is the same memory, uncached.
+    let descs = unsafe { core::slice::from_raw_parts_mut(start as *mut RingDesc, N) };
+    RingDescs::new(descs).expect("a descriptor table's mirror is uncached memory")
+}
+
+/// Channel `ch` with its block interrupt bound, over `buf` in one block per descriptor of
+/// `descs`.
 fn ring<C: rza1_hal::dmac::Channel>(
     ch: Peri<'static, C>,
     buf: UncachedMut<'static, u32>,
-    blocks: usize,
+    descs: RingDescs<'static>,
 ) -> RingBuf<'static>
 where
     Irqs: rza1_hal::interrupt::Binding<C::Interrupt, BlockInterruptHandler<C>>,
 {
-    RingBuf { dma: BlockDma::new(ch, Irqs), buf, blocks }
+    let blocks = descs.len();
+    RingBuf { dma: BlockDma::new(ch, Irqs), buf, descs, blocks }
 }
 
 /// The transmit ring: the SSI's own, or the SCUX DVU path's FFD.
@@ -198,9 +223,15 @@ fn bring_up_scux(
     src: Src,
 ) {
     let power = codec_off(pins.xout, pins.codec_power);
-    // SAFETY: each buffer is lent once, here.
+    // SAFETY: each buffer and table is lent once, here.
     let (rx_buf, dvu_buf) = unsafe {
         (lend(core::ptr::addr_of_mut!(SSI_RX_BUF)), lend(core::ptr::addr_of_mut!(DVU_BUF)))
+    };
+    let (rx_descs, dvu_descs) = unsafe {
+        (
+            lend_descs(core::ptr::addr_of_mut!(SSI_RX_DESCS)),
+            lend_descs(core::ptr::addr_of_mut!(DVU_DESCS)),
+        )
     };
     let (out, rx) = Ssi::new_with_scux_tx(
         ssi,
@@ -208,11 +239,12 @@ fn bring_up_scux(
         pins.ws,
         pins.tx,
         pins.rx,
-        ring(rx, rx_buf, 16),
+        ring(rx, rx_buf, rx_descs),
         crate::system::codec_ssi_config(),
     );
     let dvu = Dvu::Volume { volume: 0x0010_0000, ramp: None, zero_cross_mute: false };
-    let path = ch0.into_ssi_path(AudioInfo::STEREO_24, ring(ffd0, dvu_buf, 16), src, dvu, out);
+    let dvu_ring = ring(ffd0, dvu_buf, dvu_descs);
+    let path = ch0.into_ssi_path(AudioInfo::STEREO_24, dvu_ring, src, dvu, out);
     let (control, tx, _) = path.split();
     scux_dvu_path::install(control);
     install(Tx::Scux(tx), rx);
@@ -228,9 +260,15 @@ pub fn init(
     rx: Peri<'static, SsiRxDma>,
 ) {
     let power = codec_off(pins.xout, pins.codec_power);
-    // SAFETY: each buffer is lent once, here.
+    // SAFETY: each buffer and table is lent once, here.
     let (tx_buf, rx_buf) = unsafe {
         (lend(core::ptr::addr_of_mut!(SSI_TX_BUF)), lend(core::ptr::addr_of_mut!(SSI_RX_BUF)))
+    };
+    let (tx_descs, rx_descs) = unsafe {
+        (
+            lend_descs(core::ptr::addr_of_mut!(SSI_TX_DESCS)),
+            lend_descs(core::ptr::addr_of_mut!(SSI_RX_DESCS)),
+        )
     };
     let (tx, rx) = Ssi::new(
         ssi,
@@ -238,8 +276,8 @@ pub fn init(
         pins.ws,
         pins.tx,
         pins.rx,
-        ring(tx, tx_buf, 8),
-        ring(rx, rx_buf, 16),
+        ring(tx, tx_buf, tx_descs),
+        ring(rx, rx_buf, rx_descs),
         crate::system::codec_ssi_config(),
     );
     install(Tx::Ssi(tx), rx);

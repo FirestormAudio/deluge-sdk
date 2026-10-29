@@ -9,6 +9,8 @@ at runtime rather than compiled in.
 
 ---
 
+Requires a nightly Rust toolchain (the workspace's `rust-toolchain.toml` pins one).
+
 ## Target
 
 | Property       | Value                              |
@@ -74,7 +76,7 @@ documented in each peripheral module.
 |--------|-------------|
 | `ssi`  | SSIF (I²S) driver on SSIF0/1/3: `Ssi::new` (full duplex), `new_rx_only`, `new_with_scux_tx`, each taking the channel, its pins, a `ring_buffer::RingBuf` per direction and an `ssi::Config`. The rings are `ring_buffer::{WritableRing, ReadableRing}`. |
 | `scux` | Sample Rate Conversion Unit. `Scux::new` splits it into four channels; a channel becomes a `Path` (FFD ring → SRC → DVU → FFU ring, or → an SSI on the routes the hardware has, checked at compile time). `Path::split` gives its `Control` (volume, ramps, input rate) and its rings. |
-| `ring_buffer` | DMA rings lent by the caller (`dma_buf::UncachedMut<u32>`): an embassy-style copy API (`write`/`read`, `Underrun`/`Overrun`) and a positional window (`position()`, the whole ring) usable from interrupt context. |
+| `ring_buffer` | DMA rings lent by the caller (`dma_buf::UncachedMut<u32>`, with a `RingDescs` table of one `RingDesc` link descriptor per block): an embassy-style copy API (`write`/`read`, `Underrun`/`Overrun`) and a positional window (`position()`, the whole ring) usable from interrupt context. |
 
 ### Peripherals
 
@@ -126,7 +128,8 @@ fn main() -> ! {
 
 Drivers take their peripheral singleton (`Peri<'d, T>`) and the interrupt binding they need, so
 `Rspi::new`, `Uart::new` and `OneShot::new` are safe. Every driver takes its
-singleton and binding. The SSI and SCUX drivers hold no buffers: their rings are the caller's.
+singleton and binding. The SSI and SCUX drivers hold no buffers: their rings, and the rings' DMA
+descriptors, are the caller's.
 
 ### Registers
 
@@ -145,7 +148,7 @@ it, and `tools/check-register-tables.sh` checks the whole crate for hand-written
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `rza1l` | | The RZ/A1L (R7S721020 and family). Enable exactly one chip feature. |
-| `rza1h` | | The RZ/A1H: its extra driver instances (RSPI3/RSPI4, the larger interrupt table). Not hardware-validated; its pin tables are not filled in yet. |
+| `rza1h` | | The RZ/A1H: its extra driver instances (RSPI3/RSPI4, the larger interrupt table). Experimental: compiles, not validated on hardware; its pin tables are not filled in, so drivers that take pins are RZ/A1L-only for now. |
 | `rt` | yes | Export `gic_dispatch`, which `rza1-rt`'s IRQ entry calls. Turn off only to dispatch interrupts yourself (`#[rza1_rt::irq]`). |
 | `critical-section-impl` | yes | The `critical-section` implementation (single core: IRQ masking; FIQ stays enabled). Turn off to bring your own. |
 | `time-driver-ostm` | yes | The Embassy time driver on OSTM0 and OSTM1 (`time_driver`). Turn off to bring your own driver; OSTM0/OSTM1 are then in `Peripherals`. |
