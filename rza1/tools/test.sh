@@ -68,6 +68,8 @@ for page in dmac/struct.Dma.html rspi/struct.Rspi.html uart/struct.UartRx.html; 
 done
 
 tools/check-register-tables.sh
+# The generated pin-function table matches the manual (skips without the manual).
+python3 tools/gen-pins.py --check
 tools/check-pac.sh
 
 echo "==> rza1: QEMU ARM tests"

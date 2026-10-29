@@ -10,6 +10,19 @@
 // them.
 mod fmt;
 
+/// Declare a pin-function trait: a pin that can carry one of `$instance`'s signals. Its impls
+/// come from the generated `gpio::rza1l_functions` table.
+macro_rules! pin_trait {
+    ($(#[$doc:meta])* $name:ident, $instance:path) => {
+        $(#[$doc])*
+        pub trait $name<T: $instance>: crate::gpio::Pin {
+            /// The alternative function that routes the signal to this pin.
+            #[doc(hidden)]
+            fn alternate(&self) -> crate::gpio::Alternate;
+        }
+    };
+}
+
 #[cfg(not(any(feature = "rza1l", feature = "rza1h")))]
 compile_error!("rza1-hal: enable exactly one chip feature: rza1l or rza1h");
 #[cfg(all(feature = "rza1l", feature = "rza1h"))]

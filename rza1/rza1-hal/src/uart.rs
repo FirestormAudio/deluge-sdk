@@ -391,6 +391,15 @@ mod sealed {
     pub trait Sealed {}
 }
 
+pin_trait!(
+    /// A pin that can carry SCIF `T`'s transmit data (TxDn).
+    TxPin, Instance
+);
+pin_trait!(
+    /// A pin that can carry SCIF `T`'s receive data (RxDn).
+    RxPin, Instance
+);
+
 /// A SCIF channel singleton (`peripherals::SCIF0`–`SCIF4`).
 pub trait Instance: crate::PeripheralType + sealed::Sealed + 'static {
     /// The channel number, 0–4.

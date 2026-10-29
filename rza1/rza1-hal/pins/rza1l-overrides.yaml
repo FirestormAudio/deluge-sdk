@@ -1,0 +1,11 @@
+# Rows of the RZ/A1L manual's port tables (ch41) that the PDF-to-Markdown extraction mangled,
+# resolved by hand. Each entry replaces the row's alternatives; list only the signals rza1-hal has
+# pin traits for, and say where each value comes from.
+
+P0_1:
+  source: >-
+    ch41's Table 41.11 puts ADTRG (4th alternative) in the header's blank spare column. The PDF
+    text's pin-function list (r01uh0437ej0700_rz_a1l.txt, P0_1: MD_, -, RxD2, SSIRxD3, ADTRG)
+    gives RxD2 as the 2nd alternative, as the table's P0_0/P0_2/P0_3 rows give RxD0/1/3.
+  alternates:
+    2: RxD2

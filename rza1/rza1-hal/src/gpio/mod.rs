@@ -18,6 +18,23 @@ use crate::{Peri, PeripheralType};
 
 mod pins;
 
+/// One row of the generated pin-function table: `$pin` carries `$instance`'s `$trait` signal on
+/// alternative `$alt`.
+#[cfg(feature = "rza1l")]
+macro_rules! pin_function {
+    ($($trait:ident)::+, $instance:ident, $pin:ident, $alt:ident) => {
+        impl $($trait)::+<crate::peripherals::$instance> for crate::peripherals::$pin {
+            fn alternate(&self) -> Alternate {
+                Alternate::$alt
+            }
+        }
+    };
+}
+
+// The RZ/A1L's pin functions, generated from its manual by rza1/tools/gen-pins.py.
+#[cfg(feature = "rza1l")]
+include!("rza1l_functions.rs");
+
 // ── Registers ──────────────────────────────────────────────────────────────────
 
 /// Port Mode Register n (PMn): bit=0 → output, bit=1 → input. `port` is 1–9.
@@ -790,6 +807,52 @@ mod owned_pin_tests {
     fn read_port_reads_one_ppr() {
         test::poke32(0xFCFE_3204, 0xA5A5);
         assert_eq!(read_port(Port::P1), 0xA5A5);
+    }
+}
+
+#[cfg(all(test, not(target_os = "none"), feature = "rza1l"))]
+mod pin_function_tests {
+    use super::Alternate;
+    use crate::peripherals::*;
+    use crate::{rspi, sdhi, uart};
+
+    fn tx<T: uart::Instance>(p: &impl uart::TxPin<T>) -> Alternate { p.alternate() }
+    fn rx<T: uart::Instance>(p: &impl uart::RxPin<T>) -> Alternate { p.alternate() }
+    fn sck<T: rspi::Instance>(p: &impl rspi::SckPin<T>) -> Alternate { p.alternate() }
+    fn mosi<T: rspi::Instance>(p: &impl rspi::MosiPin<T>) -> Alternate { p.alternate() }
+    fn clk<T: sdhi::Instance>(p: &impl sdhi::ClkPin<T>) -> Alternate { p.alternate() }
+    fn cmd<T: sdhi::Instance>(p: &impl sdhi::CmdPin<T>) -> Alternate { p.alternate() }
+    fn d0<T: sdhi::Instance>(p: &impl sdhi::D0Pin<T>) -> Alternate { p.alternate() }
+    fn d1<T: sdhi::Instance>(p: &impl sdhi::D1Pin<T>) -> Alternate { p.alternate() }
+    fn d2<T: sdhi::Instance>(p: &impl sdhi::D2Pin<T>) -> Alternate { p.alternate() }
+    fn d3<T: sdhi::Instance>(p: &impl sdhi::D3Pin<T>) -> Alternate { p.alternate() }
+    fn cd<T: sdhi::Instance>(p: &impl sdhi::CdPin<T>) -> Alternate { p.alternate() }
+    fn wp<T: sdhi::Instance>(p: &impl sdhi::WpPin<T>) -> Alternate { p.alternate() }
+
+    #[test]
+    fn deluge_pin_functions_match_the_known_working_muxes() {
+        // Every function the Deluge muxes today with set_pin_mux(port, pin, n), and its n.
+        let p = unsafe {
+            (
+                P6_15::steal(), P6_14::steal(), P3_15::steal(), P1_9::steal(), P6_0::steal(),
+                P6_2::steal(), P7_0::steal(), P7_1::steal(), P7_2::steal(), P7_3::steal(),
+                P7_4::steal(), P7_5::steal(), P7_6::steal(), P7_7::steal(),
+            )
+        };
+        assert_eq!(tx::<SCIF0>(&*p.0), Alternate::Alt5, "MIDI TxD0 on P6_15");
+        assert_eq!(rx::<SCIF0>(&*p.1), Alternate::Alt5, "MIDI RxD0 on P6_14");
+        assert_eq!(tx::<SCIF1>(&*p.2), Alternate::Alt5, "PIC TxD1 on P3_15 (the override)");
+        assert_eq!(rx::<SCIF1>(&*p.3), Alternate::Alt3, "PIC RxD1 on P1_9");
+        assert_eq!(sck::<RSPI0>(&*p.4), Alternate::Alt3, "RSPCK0 on P6_0");
+        assert_eq!(mosi::<RSPI0>(&*p.5), Alternate::Alt3, "MOSI0 on P6_2");
+        assert_eq!(cd::<SDHI1>(&*p.6), Alternate::Alt3, "SD_CD_1 on P7_0");
+        assert_eq!(wp::<SDHI1>(&*p.7), Alternate::Alt3, "SD_WP_1 on P7_1");
+        assert_eq!(d1::<SDHI1>(&*p.8), Alternate::Alt3, "SD_D1_1 on P7_2");
+        assert_eq!(d0::<SDHI1>(&*p.9), Alternate::Alt3, "SD_D0_1 on P7_3");
+        assert_eq!(clk::<SDHI1>(&*p.10), Alternate::Alt3, "SD_CLK_1 on P7_4");
+        assert_eq!(cmd::<SDHI1>(&*p.11), Alternate::Alt3, "SD_CMD_1 on P7_5");
+        assert_eq!(d3::<SDHI1>(&*p.12), Alternate::Alt3, "SD_D3_1 on P7_6");
+        assert_eq!(d2::<SDHI1>(&*p.13), Alternate::Alt3, "SD_D2_1 on P7_7");
     }
 }
 

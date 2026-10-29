@@ -301,6 +301,23 @@ mod sealed {
     pub trait Sealed {}
 }
 
+pin_trait!(
+    /// A pin that can carry RSPI `T`'s clock (RSPCKn).
+    SckPin, Instance
+);
+pin_trait!(
+    /// A pin that can carry RSPI `T`'s master-out data (MOSIn).
+    MosiPin, Instance
+);
+pin_trait!(
+    /// A pin that can carry RSPI `T`'s master-in data (MISOn).
+    MisoPin, Instance
+);
+pin_trait!(
+    /// A pin that can carry RSPI `T`'s slave select 0 (SSLn0).
+    SslPin, Instance
+);
+
 /// An RSPI channel singleton (`peripherals::RSPI0`–`RSPI2` on the RZ/A1L, `RSPI0`–`RSPI4` on the
 /// RZ/A1H).
 pub trait Instance: crate::PeripheralType + sealed::Sealed + 'static {

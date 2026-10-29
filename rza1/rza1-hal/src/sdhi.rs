@@ -1430,6 +1430,39 @@ mod sealed {
     pub trait Sealed {}
 }
 
+pin_trait!(
+    /// A pin that can carry SD port `T`'s clock (SD_CLK_n).
+    ClkPin, Instance
+);
+pin_trait!(
+    /// A pin that can carry SD port `T`'s command line (SD_CMD_n).
+    CmdPin, Instance
+);
+pin_trait!(
+    /// A pin that can carry SD port `T`'s data bit 0 (SD_D0_n).
+    D0Pin, Instance
+);
+pin_trait!(
+    /// A pin that can carry SD port `T`'s data bit 1 (SD_D1_n).
+    D1Pin, Instance
+);
+pin_trait!(
+    /// A pin that can carry SD port `T`'s data bit 2 (SD_D2_n).
+    D2Pin, Instance
+);
+pin_trait!(
+    /// A pin that can carry SD port `T`'s data bit 3 (SD_D3_n).
+    D3Pin, Instance
+);
+pin_trait!(
+    /// A pin that can carry SD port `T`'s card detect (SD_CD_n).
+    CdPin, Instance
+);
+pin_trait!(
+    /// A pin that can carry SD port `T`'s write protect (SD_WP_n).
+    WpPin, Instance
+);
+
 /// An SDHI channel singleton (`peripherals::SDHI0`, `SDHI1`).
 pub trait Instance: crate::PeripheralType + sealed::Sealed + 'static {
     /// The port number, 0 or 1.
