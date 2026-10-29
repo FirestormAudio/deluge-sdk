@@ -56,6 +56,7 @@
 pub mod driver;
 pub mod fifo;
 pub mod host;
+pub mod iso;
 pub mod pipe;
 pub mod regs;
 

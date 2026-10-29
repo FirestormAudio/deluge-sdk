@@ -52,7 +52,7 @@ use super::fifo::{
 };
 use super::pipe::{
     BufAllocator, PIPE_COUNT, PIPE_DONE, PIPE_IS_IN, PIPE_NRDY, PIPE_WAKERS, PIPE_XFER, PipeConfig,
-    XferType, is_iso_in_hook_pipe, pipe_bemp_disable, pipe_bemp_enable, pipe_brdy_disable,
+    XferType, pipe_bemp_disable, pipe_bemp_enable, pipe_brdy_disable,
     pipe_brdy_enable, pipe_configure, pipe_disable, pipe_enable, pipe_iso_in_activate, pipe_reset,
     pipe_stall, pipe_xfer_in_bemp, pipe_xfer_in_brdy, pipe_xfer_in_start, pipe_xfer_out_brdy,
 };
@@ -783,7 +783,7 @@ impl Bus for Rusb1Bus {
                     // device must do the same or every IN packet goes out with
                     // the wrong DATAx phase and the host ACKs but discards it as
                     // a duplicate.  pipe_reset leaves PID=NAK.
-                    if is_iso_in_hook_pipe(p) && ep_addr.direction() == Direction::In {
+                    if super::iso::in_bound(self.port, p) && ep_addr.direction() == Direction::In {
                         // Continuous ISO IN (mic/capture): activate in IFIS mode so
                         // the SIE flushes the IN buffer each microframe, generating
                         // the BRDY that drives the hook refill (as TinyUSB's
@@ -1565,7 +1565,7 @@ pub unsafe fn dcd_int_handler(port: u8) {
                     // Signal data_out() which is waiting on PIPE0_BRDY.
                     PIPE0_BRDY[p].store(1, Ordering::Release);
                     CTRL_WAKERS[p].wake();
-                } else if is_iso_in_hook_pipe(n) {
+                } else if super::iso::in_bound(port, n) {
                     // Continuous ISO IN (mic): a transmit buffer freed up — stage
                     // the next packet from the hook and keep the pipe armed.
                     pipe_xfer_in_brdy(u, n);
@@ -1884,6 +1884,38 @@ mod tests {
 
     fn pipes_used() -> u16 {
         critical_section::with(|cs| unsafe { (*PORT_ALLOC[1].borrow(cs).get()).pipes_used })
+    }
+
+    /// Enabling an iso IN endpoint with a bound producer (SET_INTERFACE, or again after a bus
+    /// reset) primes both FIFO planes before releasing the pipe to BUF, or BRDY never fires for
+    /// the second plane (TRM §28.4, BRDY transmitting condition 4).
+    #[test]
+    fn re_enabling_a_bound_in_pipe_primes_both_planes() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static FILLS: AtomicU32 = AtomicU32::new(0);
+        struct Count;
+        impl super::super::iso::IsoInProducer for Count {
+            // Full packets: a short one's BVAL write would clear FRDY in the shadow's single
+            // FIFOCTR cell (the hardware keeps it), hiding the second plane.
+            fn fill_packet(&mut self, buf: &mut [u8]) -> usize {
+                FILLS.fetch_add(1, Ordering::SeqCst);
+                buf.len()
+            }
+        }
+        let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut d = fresh_port1();
+        let ep = d.alloc_endpoint_in(EndpointType::Isochronous, None, 294, 1).unwrap();
+        let (addr, pipe) = (ep.info.addr, ep.pipe as usize);
+        let stream = ep.into_iso_stream(Box::leak(Box::new(Count)));
+        let u = usb(1);
+        let fifo = crate::usb::fifo::fifo_for_pipe(u, pipe);
+        test::poke16(fifo.ctr.addr(), crate::usb::regs::FIFOCTR_FRDY);
+        FILLS.store(0, Ordering::SeqCst);
+        let mut bus = Rusb1Bus { port: 1, connected: true };
+        bus.endpoint_set_enabled(addr, true);
+        assert_eq!(FILLS.load(Ordering::SeqCst), 2, "both planes primed");
+        assert_eq!(test::peek16(pipectr(u, pipe).addr()) & 0b11, 0b01, "PID = BUF");
+        drop(stream);
     }
 
     #[test]
