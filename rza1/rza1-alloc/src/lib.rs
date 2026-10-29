@@ -37,6 +37,11 @@
 
 #![no_std]
 #![deny(missing_docs)]
+// `Allocator` is behind `allocator_api` on the nightlies DelugeFirmware builds with (dbt's 1.99);
+// newer ones have stabilised part of it and flag the gate, so the lint is allowed rather than the
+// gate dropped.
+#![allow(stable_features)]
+#![feature(allocator_api)]
 
 #[cfg(test)]
 #[macro_use]
