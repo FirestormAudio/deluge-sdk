@@ -175,6 +175,12 @@ impl<'d> RingDma<'d> {
     }
 }
 
+/// Wait for the next block on channel `ch`'s ring, without its [`RingDma`]: a task waits while
+/// an interrupt owns the ring.
+pub(crate) async fn wait_block_on(ch: u8) {
+    super::raw::wait_block(ch).await
+}
+
 impl Drop for RingDma<'_> {
     fn drop(&mut self) {
         if !super::halt_channel(self.dma.number()) {
