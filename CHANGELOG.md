@@ -496,5 +496,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its offsets are past the end. Before, a dump wrote at `WrOff` unchecked, running past the
   buffer's end or through a stale control block. Startup now zeroes `.rtt_buffer` (NOLOAD, so
   it outlives a reset), so a fault before `rtt_init` finds no ring.
+- `rza1-rt` with `rtt`: the undefined-instruction dump's `STK:` line stops at the top of the
+  stack (`program_stack_end`). Before, it always read 16 words up from SP, so a fault in a
+  shallow frame read past the end of on-chip RAM and nested a data abort instead of the line.
 
 [Unreleased]: https://github.com/FirestormAudio/deluge-sdk

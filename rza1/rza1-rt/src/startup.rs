@@ -632,13 +632,20 @@ _undef_rtt:
     write_char_u #0x4B   /* K */
     write_char_u #0x3A   /* : */
     mov  r11, #16
+    /* No further than the top of the stack: a fault in a shallow frame has fewer than 16 words
+       above SP, and the word past program_stack_end is the end of on-chip RAM (reading it nests
+       a data abort). */
+    ldr  r12, =program_stack_end
 .Lstk_u:
+    cmp  r6, r12
+    bhs  .Lstk_u_end
     ldr  r5, [r6]
     add  r6, r6, #4
     write_char_u #0x20   /* space */
     write_hex8_u r5
     subs r11, r11, #1
     bne  .Lstk_u
+.Lstk_u_end:
     write_char_u #0x0A
     str  r2, [r0, #0x24]
 .Lundef_rtt_skip:
