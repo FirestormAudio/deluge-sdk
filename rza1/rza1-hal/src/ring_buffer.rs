@@ -92,7 +92,13 @@ impl<'d> RingDescs<'d> {
 /// A leaked table of `n` descriptors, for tests.
 #[cfg(all(test, not(target_os = "none")))]
 pub(crate) fn test_descs(n: usize) -> RingDescs<'static> {
-    RingDescs::new((0..n).map(|_| RingDesc::NEW).collect::<std::vec::Vec<_>>().leak()).unwrap()
+    RingDescs::new(
+        (0..n)
+            .map(|_| RingDesc::NEW)
+            .collect::<std::vec::Vec<_>>()
+            .leak(),
+    )
+    .unwrap()
 }
 
 /// What a driver takes for one direction: a DMA channel with its block interrupt bound, the lent
@@ -148,7 +154,11 @@ pub struct WritableRing<'d> {
 impl<'d> WritableRing<'d> {
     pub(crate) fn new(ring: RingDma<'d>) -> Self {
         let lead = ring.len() / 2 - (ring.len() / 2) % ring.frame_words();
-        Self { ring, cursor: None, lead }
+        Self {
+            ring,
+            cursor: None,
+            lead,
+        }
     }
 
     /// The ring's length in words.
@@ -181,7 +191,9 @@ impl<'d> WritableRing<'d> {
 
     /// Waits for this ring's blocks without borrowing it.
     pub fn block_signal(&self) -> BlockSignal {
-        BlockSignal { ch: self.ring.channel() }
+        BlockSignal {
+            ch: self.ring.channel(),
+        }
     }
 
     /// How far ahead of the DMAC the copy API starts writing, and starts again after an
@@ -190,7 +202,12 @@ impl<'d> WritableRing<'d> {
     /// # Panics
     /// If `words` isn't less than the ring.
     pub fn set_lead(&mut self, words: usize) {
-        assert!(words < self.len(), "ring lead of {} words in a {}-word ring", words, self.len());
+        assert!(
+            words < self.len(),
+            "ring lead of {} words in a {}-word ring",
+            words,
+            self.len()
+        );
         self.lead = words - words % self.frame_words();
         self.cursor = None;
     }
@@ -211,7 +228,11 @@ impl<'d> WritableRing<'d> {
         let free = len - (cursor - hw) as usize;
         let n = free.min(data.len());
         let n = n - n % self.frame_words();
-        copy_in(self.ring.buf_mut(), (cursor % len as u64) as usize, &data[..n]);
+        copy_in(
+            self.ring.buf_mut(),
+            (cursor % len as u64) as usize,
+            &data[..n],
+        );
         self.cursor = Some(cursor + n as u64);
         Ok(n)
     }
@@ -268,7 +289,9 @@ impl<'d> ReadableRing<'d> {
 
     /// Waits for this ring's blocks without borrowing it.
     pub fn block_signal(&self) -> BlockSignal {
-        BlockSignal { ch: self.ring.channel() }
+        BlockSignal {
+            ch: self.ring.channel(),
+        }
     }
 
     /// Copy as many whole frames as have arrived into `out` and return how many words that was.
@@ -291,7 +314,11 @@ impl<'d> ReadableRing<'d> {
         };
         let n = ((hw - cursor) as usize).min(out.len());
         let n = n - n % self.frame_words();
-        copy_out(self.ring.buf(), (cursor % len as u64) as usize, &mut out[..n]);
+        copy_out(
+            self.ring.buf(),
+            (cursor % len as u64) as usize,
+            &mut out[..n],
+        );
         self.cursor = Some(cursor + n as u64);
         Ok(n)
     }
@@ -342,7 +369,10 @@ mod tests {
         let buf = UncachedMut::new(std::vec![0u32; 64].leak()).unwrap();
         let base = buf.as_slice().as_ptr() as u32;
         let dma = BlockDma::new(unsafe { DMA_CH9::steal() }, Irqs);
-        (RingDma::start(dma, buf, test_descs(4), 4, 2, 0x8000_0001, dir, 0xE1), base)
+        (
+            RingDma::start(dma, buf, test_descs(4), 4, 2, 0x8000_0001, dir, 0xE1),
+            base,
+        )
     }
 
     #[test]
@@ -418,7 +448,11 @@ mod tests {
         dma_at(base, 16, 5); // absolute 80: past the cursor (20)
         assert_eq!(tx.write_immediate(&[9, 9]), Err(Error::Underrun));
         assert_eq!(tx.write_immediate(&[9, 9]), Ok(2));
-        assert_eq!(&tx.ring_mut()[32..34], &[9, 9], "lead (16) ahead of 80, mod 64");
+        assert_eq!(
+            &tx.ring_mut()[32..34],
+            &[9, 9],
+            "lead (16) ahead of 80, mod 64"
+        );
     }
 
     #[test]
@@ -485,7 +519,10 @@ mod tests {
         let mut fut = core::pin::pin!(tx.write(&data));
         assert!(fut.as_mut().poll(&mut cx).is_pending());
         dma_at(base, 16, 1);
-        assert!(count.0.load(Ordering::SeqCst) >= 1, "the block end woke the writer");
+        assert!(
+            count.0.load(Ordering::SeqCst) >= 1,
+            "the block end woke the writer"
+        );
         assert_eq!(fut.as_mut().poll(&mut cx), Poll::Ready(Ok(16)));
     }
 

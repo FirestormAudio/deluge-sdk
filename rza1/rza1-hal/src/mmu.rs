@@ -74,8 +74,7 @@ pub unsafe fn init_and_enable() {
         let table_ptr = core::ptr::addr_of_mut!(TTB) as *mut u32;
         debug!(
             "mmu: building TTB ({} entries) at {:#010x}",
-            4096usize,
-            table_ptr as usize
+            4096usize, table_ptr as usize
         );
         // Descriptor[n] = (n_mb << 20) | attr  →  flat VA=PA mapping.
         let mut idx: u32 = 0;

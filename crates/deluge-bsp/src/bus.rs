@@ -37,7 +37,6 @@ use crate::board::{OledDma, SharedSpi, SpiPins};
 /// cycle), but the 2026 batch of these panels, the same model, glitches at 8.5 MHz and above; 4 MHz is safe.
 const RATE_HZ: u32 = 4_000_000;
 
-
 rza1_hal::bind_interrupts!(struct Irqs {
     DMAINT4 => dmac::InterruptHandler<OledDma>;
 });
@@ -148,7 +147,10 @@ pub type Rspi0Guard = MappedMutexGuard<'static, CriticalSectionRawMutex, Rspi0>;
 /// If the bus is already up (only reachable with stolen peripherals).
 pub fn init(spi: Peri<'static, SharedSpi>, pins: SpiPins, oled_dma: Peri<'static, OledDma>) {
     // Before touching RSPI0: reconfiguring a live bus would corrupt its transfer in flight.
-    assert!(!is_initialised(), "RSPI0's bus is already up: bus::init runs once");
+    assert!(
+        !is_initialised(),
+        "RSPI0's bus is already up: bus::init runs once"
+    );
     let mut config = rspi::Config::default();
     config.frequency = RATE_HZ;
     let rspi = Rspi::new_blocking_txonly(spi, pins.sck, pins.mosi, config);
@@ -162,7 +164,11 @@ pub fn init(spi: Peri<'static, SharedSpi>, pins: SpiPins, oled_dma: Peri<'static
             crate::oled::OLED_DMA_DMARS,
         )
     };
-    let bus = Rspi0 { mode: Mode::Bits32, rspi, oled_dma };
+    let bus = Rspi0 {
+        mode: Mode::Bits32,
+        rspi,
+        oled_dma,
+    };
     match RSPI0.try_lock() {
         // Checked empty above, and nothing can fill it in between: RSPI0 is owned once.
         Ok(mut slot) => *slot = Some(bus),
@@ -232,7 +238,12 @@ mod tests {
     use rza1_hal::peripherals::{DMA_CH4, P6_0, P6_2, RSPI0};
 
     fn test_pins() -> SpiPins {
-        unsafe { SpiPins { sck: P6_0::steal(), mosi: P6_2::steal() } }
+        unsafe {
+            SpiPins {
+                sck: P6_0::steal(),
+                mosi: P6_2::steal(),
+            }
+        }
     }
 
     #[test]
@@ -244,7 +255,9 @@ mod tests {
         // Before init there is no bus: locking one must panic, not hand out an unconfigured RSPI0.
         assert!(std::panic::catch_unwind(|| try_lock_rspi0().is_some()).is_err());
 
-        init(unsafe { RSPI0::steal() }, test_pins(), unsafe { DMA_CH4::steal() });
+        init(unsafe { RSPI0::steal() }, test_pins(), unsafe {
+            DMA_CH4::steal()
+        });
         assert!(is_initialised());
         let bus = try_lock_rspi0().expect("nobody holds the bus");
         assert_eq!(bus.mode, Mode::Bits32);
@@ -257,7 +270,14 @@ mod tests {
         drop(bus);
 
         // A second bus over the same RSPI0 would silently drop the live one and its DMA channel.
-        let again = std::panic::catch_unwind(|| init(unsafe { RSPI0::steal() }, test_pins(), unsafe { DMA_CH4::steal() }));
-        assert!(again.is_err(), "bus::init must refuse to replace a live bus");
+        let again = std::panic::catch_unwind(|| {
+            init(unsafe { RSPI0::steal() }, test_pins(), unsafe {
+                DMA_CH4::steal()
+            })
+        });
+        assert!(
+            again.is_err(),
+            "bus::init must refuse to replace a live bus"
+        );
     }
 }

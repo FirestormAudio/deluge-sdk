@@ -458,7 +458,10 @@ mod tests {
         let chstat = crate::pac::DMAC.ch(14).chstat().addr();
         crate::mmio::test::reset();
         crate::mmio::test::poke32(chstat, 1 << 2); // EN clear, TACT set
-        assert!(!halt_channel(14), "a transaction still active is not a stop");
+        assert!(
+            !halt_channel(14),
+            "a transaction still active is not a stop"
+        );
         crate::mmio::test::poke32(chstat, 0);
         assert!(halt_channel(14));
     }

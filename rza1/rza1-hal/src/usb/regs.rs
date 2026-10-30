@@ -16,7 +16,10 @@
 
 // The bit map is transcribed whole from the manual and `usb_iobitmask.h`, so the next driver
 // change finds the bit it needs; not every bit is used today.
-#![expect(dead_code, reason = "the RUSB1 bit map is complete; the drivers use a subset")]
+#![expect(
+    dead_code,
+    reason = "the RUSB1 bit map is complete; the drivers use a subset"
+)]
 
 use crate::pac::common::{RW, Reg};
 use crate::pac::usb::Usb;

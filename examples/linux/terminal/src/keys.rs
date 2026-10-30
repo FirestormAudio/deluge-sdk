@@ -38,8 +38,20 @@ pub fn encoder_bytes(id: u8, delta: i16) -> Vec<u8> {
         return Vec::new();
     }
     let arrow: &[u8] = match id {
-        controls::encoder::SELECT => if delta > 0 { b"\x1b[A" } else { b"\x1b[B" }, // up / down
-        controls::encoder::TEMPO => if delta > 0 { b"\x1b[C" } else { b"\x1b[D" },  // right / left
+        controls::encoder::SELECT => {
+            if delta > 0 {
+                b"\x1b[A"
+            } else {
+                b"\x1b[B"
+            }
+        } // up / down
+        controls::encoder::TEMPO => {
+            if delta > 0 {
+                b"\x1b[C"
+            } else {
+                b"\x1b[D"
+            }
+        } // right / left
         _ => return Vec::new(),
     };
     arrow.repeat(delta.unsigned_abs() as usize)

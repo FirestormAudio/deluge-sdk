@@ -37,8 +37,8 @@ use embassy_usb_driver::EndpointType;
 
 use super::driver::{Rusb1EndpointIn, Rusb1EndpointOut};
 use super::fifo::{
-    fifo_bclr, fifo_bval, fifo_dtln, fifo_for_pipe, fifo_is_ready, fifo_select_pipe,
-    hw_to_sw_fifo, sw_to_hw_fifo,
+    fifo_bclr, fifo_bval, fifo_dtln, fifo_for_pipe, fifo_is_ready, fifo_select_pipe, hw_to_sw_fifo,
+    sw_to_hw_fifo,
 };
 use super::pipe::{PIPE_COUNT, pipe_brdy_disable, pipe_iso_in_activate};
 use super::regs::{PIPECTR_PID_BUF, PIPECTR_PID_MASK, pipectr, usb};
@@ -100,7 +100,11 @@ fn binding(port: usize, pipe: usize) -> Binding {
 fn bind(port: u8, pipe: u8, b: Binding) {
     critical_section::with(|cs| {
         let slot = BINDINGS[port as usize][pipe as usize].borrow(cs);
-        assert!(matches!(slot.get(), Binding::None), "usb: pipe {} already has an iso stream", pipe);
+        assert!(
+            matches!(slot.get(), Binding::None),
+            "usb: pipe {} already has an iso stream",
+            pipe
+        );
         slot.set(b);
     });
 }
@@ -110,7 +114,9 @@ fn unbind(port: u8, pipe: u8) {
     critical_section::with(|cs| {
         // SAFETY: masking one pipe's interrupt; the binding goes in the same critical section.
         unsafe { pipe_brdy_disable(usb(port), pipe as usize) };
-        BINDINGS[port as usize][pipe as usize].borrow(cs).set(Binding::None);
+        BINDINGS[port as usize][pipe as usize]
+            .borrow(cs)
+            .set(Binding::None);
     });
 }
 
@@ -140,7 +146,8 @@ pub(crate) unsafe fn out_brdy(u: Usb, n: usize) -> bool {
                 BAD_PACKETS[port][n].fetch_add(1, Ordering::Relaxed);
                 fifo_bclr(&fifo);
             } else {
-                let scratch: &mut [u8; SCRATCH_LEN] = &mut (&mut *core::ptr::addr_of_mut!(OUT_SCRATCH))[port];
+                let scratch: &mut [u8; SCRATCH_LEN] =
+                    &mut (&mut *core::ptr::addr_of_mut!(OUT_SCRATCH))[port];
                 if len > 0 {
                     hw_to_sw_fifo(&fifo, scratch.as_mut_ptr(), len);
                 }
@@ -256,9 +263,15 @@ impl Rusb1EndpointOut {
     /// # Panics
     /// If the endpoint isn't isochronous, or its pipe already has a stream.
     pub fn into_iso_stream(self, consumer: &'static mut dyn IsoOutConsumer) -> IsoOutStream {
-        assert!(self.info.ep_type == EndpointType::Isochronous, "usb: into_iso_stream needs an isochronous endpoint");
+        assert!(
+            self.info.ep_type == EndpointType::Isochronous,
+            "usb: into_iso_stream needs an isochronous endpoint"
+        );
         bind_out(self.port, self.pipe, consumer);
-        IsoOutStream { port: self.port, pipe: self.pipe }
+        IsoOutStream {
+            port: self.port,
+            pipe: self.pipe,
+        }
     }
 }
 
@@ -269,7 +282,10 @@ impl Rusb1EndpointIn {
     /// # Panics
     /// If the endpoint isn't isochronous, or its pipe already has a stream.
     pub fn into_iso_stream(self, producer: &'static mut dyn IsoInProducer) -> IsoInStream {
-        assert!(self.info.ep_type == EndpointType::Isochronous, "usb: into_iso_stream needs an isochronous endpoint");
+        assert!(
+            self.info.ep_type == EndpointType::Isochronous,
+            "usb: into_iso_stream needs an isochronous endpoint"
+        );
         bind_in(self.port, self.pipe, self.info.max_packet_size, producer);
         // Bound after the host enabled the endpoint: start it now, as the enable would have.
         let u = usb(self.port);
@@ -277,18 +293,21 @@ impl Rusb1EndpointIn {
             // SAFETY: this endpoint's pipe; the activation runs in a critical section.
             unsafe { pipe_iso_in_activate(u, self.pipe as usize) };
         }
-        IsoInStream { port: self.port, pipe: self.pipe }
+        IsoInStream {
+            port: self.port,
+            pipe: self.pipe,
+        }
     }
 }
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
-    use std::boxed::Box;
     use super::*;
     use crate::mmio::test;
     use crate::usb::driver::{Rusb1EndpointIn, Rusb1EndpointOut};
     use crate::usb::regs::{FIFOCTR_BCLR, FIFOCTR_BVAL, FIFOCTR_FRDY, usb};
     use embassy_usb_driver::{Direction, EndpointAddress, EndpointInfo, EndpointType};
+    use std::boxed::Box;
 
     fn serial() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -296,15 +315,29 @@ mod tests {
     }
 
     fn info(dir: Direction, ep_type: EndpointType, mps: u16) -> EndpointInfo {
-        EndpointInfo { addr: EndpointAddress::from_parts(1, dir), ep_type, max_packet_size: mps, interval_ms: 1 }
+        EndpointInfo {
+            addr: EndpointAddress::from_parts(1, dir),
+            ep_type,
+            max_packet_size: mps,
+            interval_ms: 1,
+        }
     }
 
     fn out_ep(pipe: u8) -> Rusb1EndpointOut {
-        Rusb1EndpointOut { port: 0, pipe, info: info(Direction::Out, EndpointType::Isochronous, 288) }
+        Rusb1EndpointOut {
+            port: 0,
+            pipe,
+            info: info(Direction::Out, EndpointType::Isochronous, 288),
+        }
     }
 
     fn in_ep(pipe: u8, mps: u16) -> Rusb1EndpointIn {
-        Rusb1EndpointIn { port: 0, pipe, info: info(Direction::In, EndpointType::Isochronous, mps), buf_bytes: mps }
+        Rusb1EndpointIn {
+            port: 0,
+            pipe,
+            info: info(Direction::In, EndpointType::Isochronous, mps),
+            buf_bytes: mps,
+        }
     }
 
     /// A packet of `len` bytes, each 32-bit FIFO read returning `word`, waits in D0FIFO.
@@ -316,17 +349,25 @@ mod tests {
 
     fn fifo_reads() -> usize {
         let a = usb(0).d0fifo().addr();
-        test::log().iter().filter(|x| !x.write && x.addr == a).count()
+        test::log()
+            .iter()
+            .filter(|x| !x.write && x.addr == a)
+            .count()
     }
 
     fn fifo_writes() -> usize {
         let a = usb(0).d0fifo().addr();
-        test::log().iter().filter(|x| x.write && x.addr == a).count()
+        test::log()
+            .iter()
+            .filter(|x| x.write && x.addr == a)
+            .count()
     }
 
     fn ctr_written(bit: u16) -> bool {
         let a = usb(0).d0fifoctr().addr();
-        test::log().iter().any(|x| x.write && x.addr == a && x.val as u16 & bit != 0)
+        test::log()
+            .iter()
+            .any(|x| x.write && x.addr == a && x.val as u16 & bit != 0)
     }
 
     #[derive(Default)]
@@ -423,7 +464,10 @@ mod tests {
         // 294 bytes: 73 words, then a 2-byte tail through the byte lanes (D0FIFO + 3, + 2).
         assert_eq!(fifo_writes(), 73);
         let lanes = [usb(0).d0fifo().addr() + 3, usb(0).d0fifo().addr() + 2];
-        let tail = test::log().iter().filter(|x| x.write && lanes.contains(&x.addr)).count();
+        let tail = test::log()
+            .iter()
+            .filter(|x| x.write && lanes.contains(&x.addr))
+            .count();
         assert_eq!(tail, 2);
         assert!(!ctr_written(FIFOCTR_BVAL), "a full packet needs no BVAL");
     }
@@ -437,7 +481,11 @@ mod tests {
         let stream = out_ep(1).into_iso_stream(rec);
         test::poke16(usb(0).brdyenb().addr(), 1 << 1);
         drop(stream);
-        assert_eq!(test::peek16(usb(0).brdyenb().addr()) & (1 << 1), 0, "BRDY masked");
+        assert_eq!(
+            test::peek16(usb(0).brdyenb().addr()) & (1 << 1),
+            0,
+            "BRDY masked"
+        );
         packet(0x0403_0201, 288);
         assert!(!unsafe { out_brdy(usb(0), 1) });
         assert_eq!(unsafe { &*rec_ptr }.calls, 0);
@@ -447,7 +495,11 @@ mod tests {
     #[should_panic(expected = "isochronous")]
     fn binding_a_bulk_endpoint_panics() {
         let _serial = serial();
-        let ep = Rusb1EndpointOut { port: 0, pipe: 3, info: info(Direction::Out, EndpointType::Bulk, 512) };
+        let ep = Rusb1EndpointOut {
+            port: 0,
+            pipe: 3,
+            info: info(Direction::Out, EndpointType::Bulk, 512),
+        };
         let _ = ep.into_iso_stream(recorder());
     }
 

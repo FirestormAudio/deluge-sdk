@@ -221,7 +221,10 @@ impl Drop for DrainGuard {
 struct Bounce(
     #[cfg_attr(
         not(test),
-        expect(dead_code, reason = "the DMAC writes it and the CPU reads it by address, through the uncached alias")
+        expect(
+            dead_code,
+            reason = "the DMAC writes it and the CPU reads it by address, through the uncached alias"
+        )
     )]
     [u32; 256],
 );
@@ -274,7 +277,9 @@ pub struct IsoInBuffers {
 impl IsoInBuffers {
     /// Empty rings, for a `static`.
     pub const fn new() -> Self {
-        Self { rings: [IsoInRing::EMPTY, IsoInRing::EMPTY] }
+        Self {
+            rings: [IsoInRing::EMPTY, IsoInRing::EMPTY],
+        }
     }
 }
 
@@ -479,7 +484,14 @@ impl HcdAlloc {
                 shared.owner = None;
             }
         }
-        if self.shared_out.as_ref().unwrap().users.iter().any(|u| u.is_some()) {
+        if self
+            .shared_out
+            .as_ref()
+            .unwrap()
+            .users
+            .iter()
+            .any(|u| u.is_some())
+        {
             true
         } else {
             self.shared_out = None;
@@ -1043,9 +1055,7 @@ impl<'d> Rusb1HostDriver<'d> {
         let speed = self.bus_reset().await;
         info!(
             "usb{}: probe: line {:02b}, bus reset → {:?}",
-            self.port,
-            lnst,
-            speed
+            self.port, lnst, speed
         );
         if speed.is_some() {
             self.watch_for_detach();
@@ -2960,8 +2970,8 @@ impl<T: pipe::Type, D: pipe::Direction> UsbPipe<T, D> for Rusb1Pipe<T, D> {
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
-    use std::{boxed::Box, vec::Vec};
     use super::*;
+    use std::{boxed::Box, vec::Vec};
 
     /// The attach tests share the module's event statics; run them one at a time.
     static ATTACH_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -3143,9 +3153,15 @@ mod tests {
         let h = unsafe { Rusb1HostDriver::new(0) };
         forget_iso_in_buffers(0);
         critical_section::with(|cs| unsafe { *HCD_ALLOC[0].borrow(cs).get() = HcdAlloc::new() });
-        assert!(h.edpt_open(1, 0x83, EndpointType::Isochronous, 56, 1).is_err());
+        assert!(
+            h.edpt_open(1, 0x83, EndpointType::Isochronous, 56, 1)
+                .is_err()
+        );
         // An isochronous OUT pipe needs no ring.
-        assert!(h.edpt_open(1, 0x03, EndpointType::Isochronous, 56, 1).is_ok());
+        assert!(
+            h.edpt_open(1, 0x03, EndpointType::Isochronous, 56, 1)
+                .is_ok()
+        );
     }
 
     /// An isochronous IN pipe is opened with its packet ring empty, then `packet` simulates one
@@ -3645,7 +3661,6 @@ mod tests {
         assert!(pipe_layout(EndpointType::Interrupt, false, (1 << 11) | 88).is_err());
     }
 
-
     /// Over 512 bytes (a Digitakt II's 1012-byte IN endpoint) only pipes 1-2 take the size.
     #[test]
     fn an_interrupt_endpoint_over_512_bytes_needs_pipe_1_or_2() {
@@ -3781,7 +3796,11 @@ mod tests {
         assert_eq!(cfg & PIPECFG_TYPE_MASK, PIPECFG_TYPE_INTR);
         assert_ne!(cfg & PIPECFG_DIR, 0, "OUT: host sends");
         assert_eq!(maxp & PIPEMAXP_MXPS_MASK, 64);
-        assert_eq!(peri & PIPEPERI_IITV_MASK, 0, "bInterval 1: every microframe");
+        assert_eq!(
+            peri & PIPEPERI_IITV_MASK,
+            0,
+            "bInterval 1: every microframe"
+        );
     }
 
     #[test]
@@ -3940,7 +3959,14 @@ mod tests {
         h.device_close(1);
         let (used, users, gone, kept) = critical_section::with(|cs| unsafe {
             let a = &*HCD_ALLOC[0].borrow(cs).get();
-            let n = a.shared_out.as_ref().unwrap().users.iter().flatten().count();
+            let n = a
+                .shared_out
+                .as_ref()
+                .unwrap()
+                .users
+                .iter()
+                .flatten()
+                .count();
             (a.pipes_used, n, a.shared_user(1, 1), a.shared_user(2, 1))
         });
         assert_ne!(used & (1 << shared), 0, "the pipe is still allocated");
@@ -3950,7 +3976,8 @@ mod tests {
         assert_eq!(h.ep_to_pipe(2, 0x01), Some(shared));
         h.device_close(2);
         assert_eq!(shared_pipe(0), None);
-        let used = critical_section::with(|cs| unsafe { (*HCD_ALLOC[0].borrow(cs).get()).pipes_used });
+        let used =
+            critical_section::with(|cs| unsafe { (*HCD_ALLOC[0].borrow(cs).get()).pipes_used });
         assert_eq!(used, 0x0001);
     }
 

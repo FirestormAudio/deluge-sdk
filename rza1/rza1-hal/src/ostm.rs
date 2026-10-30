@@ -15,7 +15,10 @@
 // `time-driver-ostm` off) only the delays are used.
 #![cfg_attr(
     not(all(target_os = "none", feature = "time-driver-ostm")),
-    allow(dead_code, reason = "the timer set-up is the time driver's, which this build leaves out")
+    allow(
+        dead_code,
+        reason = "the timer set-up is the time driver's, which this build leaves out"
+    )
 )]
 
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -26,7 +29,10 @@ use crate::pac::{CPG, ostm};
 
 // CTL mode values
 const CTL_INTERVAL: u8 = 0x00; // count-down interval timer, optional interrupt
-#[expect(dead_code, reason = "OSTMnCTL's free-running mode without interrupt, for completeness")]
+#[expect(
+    dead_code,
+    reason = "OSTMnCTL's free-running mode without interrupt, for completeness"
+)]
 const CTL_FREE_RUN: u8 = 0x02; // free-running counter up, no interrupt
 const CTL_FREE_RUN_INT: u8 = 0x03; // free-running with compare interrupt
 
@@ -184,7 +190,10 @@ fn ms_ticks_if_clocked(clocks: Option<crate::clocks::ClockConfig>, ms: u32) -> O
 /// If OSTM0 isn't running (the time driver starts it), or [`crate::clocks::init`] has not been
 /// called.
 pub fn delay_ms(ms: u32) {
-    assert!(running(), "ostm::delay_ms: OSTM0 isn't running; the time driver starts it");
+    assert!(
+        running(),
+        "ostm::delay_ms: OSTM0 isn't running; the time driver starts it"
+    );
     // SAFETY: reads OSTM0's counter, which the time driver owns and never writes after start.
     unsafe { delay_ticks(ms_to_ticks(crate::clocks::get().p0_hz(), ms)) }
 }
@@ -226,7 +235,10 @@ impl embedded_hal::delay::DelayNs for Delay {
     /// # Panics
     /// As [`delay_ms`].
     fn delay_ns(&mut self, ns: u32) {
-        assert!(running(), "ostm::Delay: OSTM0 isn't running; the time driver starts it");
+        assert!(
+            running(),
+            "ostm::Delay: OSTM0 isn't running; the time driver starts it"
+        );
         let ticks = ns_to_ticks(crate::clocks::get().p0_hz(), ns);
         // SAFETY: as in `delay_ms`.
         unsafe { delay_ticks(ticks) };

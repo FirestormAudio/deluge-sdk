@@ -40,7 +40,8 @@ pub(crate) async fn probe_task() {
 
     // Let PPR reflect the live P7_1 level without taking the pin off SD_WP1. The SD driver owns
     // P7_1 (it muxed it to SD_WP1); this probe borrows it only to turn its input buffer on.
-    rza1_hal::gpio::Flex::new(unsafe { rza1_hal::peripherals::P7_1::steal() }).enable_input_buffer();
+    rza1_hal::gpio::Flex::new(unsafe { rza1_hal::peripherals::P7_1::steal() })
+        .enable_input_buffer();
 
     let mut fb = oled::FrameBuffer::new();
     loop {

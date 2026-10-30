@@ -37,7 +37,9 @@ pub(crate) fn cmd_new(args: &[String]) -> Result<(), String> {
 
     // Point the new app at the SDK checkout it was created in, if any;
     // otherwise at the published crate.
-    let sdk = env::current_dir().ok().and_then(|d| find_sdk_deluge_from(&d));
+    let sdk = env::current_dir()
+        .ok()
+        .and_then(|d| find_sdk_deluge_from(&d));
     if sdk.is_none() {
         eprintln!(
             "note: not inside an SDK checkout; depending on the published \
@@ -65,7 +67,9 @@ fn validate_app_name(name: &str) -> Result<(), String> {
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
     {
-        return Err(format!("invalid app name `{name}` (use letters, digits, _ or -)"));
+        return Err(format!(
+            "invalid app name `{name}` (use letters, digits, _ or -)"
+        ));
     }
     Ok(())
 }
@@ -287,13 +291,23 @@ mod tests {
 
         let cargo = fs::read_to_string(app.join("Cargo.toml")).unwrap();
         assert_eq!(parse_package_name(&cargo).as_deref(), Some("my-app"));
-        assert!(fs::read_to_string(app.join(".gitignore")).unwrap().contains("/target"));
+        assert!(
+            fs::read_to_string(app.join(".gitignore"))
+                .unwrap()
+                .contains("/target")
+        );
 
         // launch.json must have the app name substituted in (the debug ELF path)
         // and no leftover placeholder.
         let launch = fs::read_to_string(app.join(".vscode/launch.json")).unwrap();
-        assert!(launch.contains("debug/my-app"), "app name not substituted: {launch}");
-        assert!(!launch.contains("__APP_NAME__"), "placeholder left in launch.json");
+        assert!(
+            launch.contains("debug/my-app"),
+            "app name not substituted: {launch}"
+        );
+        assert!(
+            !launch.contains("__APP_NAME__"),
+            "placeholder left in launch.json"
+        );
     }
 
     #[test]
@@ -315,9 +329,15 @@ mod tests {
         let local = deluge_dep(Some(Path::new("/sdk/crates/deluge-sdk")));
         assert!(local.starts_with("deluge = {"), "{local}");
         assert!(local.contains("package = \"deluge-sdk\""), "{local}");
-        assert!(local.contains("path = \"/sdk/crates/deluge-sdk\""), "{local}");
+        assert!(
+            local.contains("path = \"/sdk/crates/deluge-sdk\""),
+            "{local}"
+        );
         let published = deluge_dep(None);
-        assert!(published.contains("package = \"deluge-sdk\""), "{published}");
+        assert!(
+            published.contains("package = \"deluge-sdk\""),
+            "{published}"
+        );
         assert!(published.contains("version = \"0.1\""), "{published}");
     }
 

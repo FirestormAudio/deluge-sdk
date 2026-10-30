@@ -25,9 +25,9 @@ use log::{error, info};
 
 use embassy_executor::{Executor, Spawner};
 
-use rza1_alloc as allocator;
 use deluge_bsp::cv_gate;
 use deluge_bsp::uart as bsp_uart;
+use rza1_alloc as allocator;
 
 rza1_hal::bind_interrupts!(struct UsbIrqs {
     USB0 => rza1_hal::usb::HostInterruptHandler<rza1_hal::peripherals::USB0>;
@@ -87,7 +87,13 @@ fn main() -> ! {
     sync_led.set_as_output(sync_led.is_set_high().into());
 
     info!("UART: initialising PIC...");
-    bsp_uart::init_pic(board.pic_uart, board.pins.pic, board.dma.pic_rx, board.dma.pic_tx, 31_250);
+    bsp_uart::init_pic(
+        board.pic_uart,
+        board.pins.pic,
+        board.dma.pic_rx,
+        board.dma.pic_tx,
+        31_250,
+    );
 
     // RSPI0 is shared between OLED (8-bit) and CV DAC (32-bit); the bus brings it up.
     deluge_bsp::bus::init(board.shared_spi, board.pins.spi, board.dma.oled);

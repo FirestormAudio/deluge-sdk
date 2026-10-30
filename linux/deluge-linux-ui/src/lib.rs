@@ -10,5 +10,5 @@ pub mod oled;
 pub use oled::{OledTarget, FRAME_BYTES, HEIGHT, WIDTH};
 
 pub mod pads;
-pub use pads::{PadTarget, PAD_FRAME_BYTES};
 pub use deluge_grid_toolkit;
+pub use pads::{PadTarget, PAD_FRAME_BYTES};

@@ -300,9 +300,8 @@ impl<'d> OneShot<'d> {
         prescaler: u16,
         irq: impl Binding<T::Interrupt, H> + 'd,
     ) -> Self {
-        let code = tpsc(T::CH, prescaler).unwrap_or_else(|| {
-            panic!("MTU2 channel {} has no /{} prescaler", T::CH, prescaler)
-        });
+        let code = tpsc(T::CH, prescaler)
+            .unwrap_or_else(|| panic!("MTU2 channel {} has no /{} prescaler", T::CH, prescaler));
         interrupt::bind(irq);
         // SAFETY: channel T is owned. TRWER opens channels 3 and 4's registers and is harmless
         // to write again.
@@ -310,7 +309,10 @@ impl<'d> OneShot<'d> {
             enable_write();
             setup_one_shot(T::CH, code);
         }
-        Self { ch: T::CH, _timer: PhantomData }
+        Self {
+            ch: T::CH,
+            _timer: PhantomData,
+        }
     }
 
     /// Fire once `ticks` from now: the counter restarts from 0, a stale match flag is cleared, and

@@ -351,7 +351,10 @@ mod tests {
         assert!(block[4..32].iter().all(|&b| b == 0));
         assert_eq!(&block[32..40], &[0x01, 0, 0, 0, 0xFF, 0, 0, 0]);
         assert_eq!(&block[56..64], &[0, 0, 0, 5, 0, 0, 0, 6]);
-        assert!(block[64..].iter().all(|&b| b == 0xAA), "nothing past the block");
+        assert!(
+            block[64..].iter().all(|&b| b == 0xAA),
+            "nothing past the block"
+        );
     }
 
     /// A device-to-host block built byte by byte, independently of the encoder: header 0x0700,

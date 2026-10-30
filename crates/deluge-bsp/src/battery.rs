@@ -51,7 +51,11 @@ mod tests {
             test::poke16(r, 0xFFFF);
         }
         init(unsafe { rza1_hal::peripherals::P1_13::steal() });
-        assert_ne!(test::peek16(PMC1) & (1 << 13), 0, "P1_13 in alternative mode");
+        assert_ne!(
+            test::peek16(PMC1) & (1 << 13),
+            0,
+            "P1_13 in alternative mode"
+        );
         for r in [PFC1, PFCE1, PFCAE1] {
             assert_eq!(test::peek16(r) & (1 << 13), 0, "alternative 1 at {r:#x}");
         }

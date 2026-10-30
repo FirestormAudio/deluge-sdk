@@ -151,9 +151,20 @@ fn main() -> ! {
     info!("UART: MIDI ready");
 
     info!("UART: initialising PIC...");
-    bsp_uart::init_pic(board.pic_uart, board.pins.pic, board.dma.pic_rx, board.dma.pic_tx, 31_250);
+    bsp_uart::init_pic(
+        board.pic_uart,
+        board.pins.pic,
+        board.dma.pic_rx,
+        board.dma.pic_tx,
+        31_250,
+    );
     // The SD slot's controller, once; `sd::init` identifies the card when it is needed.
-    deluge_bsp::sd::init_hw(board.sd_card, board.pins.sd, board.dma.sd_tx, board.dma.sd_rx);
+    deluge_bsp::sd::init_hw(
+        board.sd_card,
+        board.pins.sd,
+        board.dma.sd_tx,
+        board.dma.sd_rx,
+    );
     info!("UART: SCIF0/1 @ 31 250 baud");
 
     info!("audio: initialising SSI0...");

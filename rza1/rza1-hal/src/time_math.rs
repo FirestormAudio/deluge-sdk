@@ -8,7 +8,10 @@
 // Only the time driver uses this arithmetic; its tests run everywhere.
 #![cfg_attr(
     not(all(target_os = "none", feature = "time-driver-ostm")),
-    allow(dead_code, reason = "the time driver, its only user, is left out of this build")
+    allow(
+        dead_code,
+        reason = "the time driver, its only user, is left out of this build"
+    )
 )]
 
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -180,7 +183,10 @@ mod tests {
         assert_eq!(TEST_RATIO.max_arm_ticks(), 3_300_000);
         // A full-range arm is u32::MAX ticks = 129.898353 s; the cap must be far below that.
         let full_range_us = TEST_RATIO.ticks_to_us(u32::MAX as u64);
-        assert!((129_898_000..=129_899_000).contains(&full_range_us), "got {full_range_us}");
+        assert!(
+            (129_898_000..=129_899_000).contains(&full_range_us),
+            "got {full_range_us}"
+        );
         let capped_us = TEST_RATIO.ticks_to_us(TEST_RATIO.max_arm_ticks() as u64);
         assert!((99_000..=101_000).contains(&capped_us), "got {capped_us}");
         assert!(TEST_RATIO.max_arm_ticks() < u32::MAX / 1000);
@@ -214,8 +220,22 @@ mod tests {
     fn ticks_to_us_matches_u128_reference_across_crystals() {
         for extal in CRYSTALS {
             let r = TickRatio::from_clocks(&ClockConfig::new(extal));
-            for ticks in [0, 1, r.num - 1, r.num, r.num + 1, 1 << 32, 1 << 50, 1 << 62, u64::MAX] {
-                assert_eq!(r.ticks_to_us(ticks), ref_ticks_to_us(r, ticks), "extal {extal} ticks {ticks}");
+            for ticks in [
+                0,
+                1,
+                r.num - 1,
+                r.num,
+                r.num + 1,
+                1 << 32,
+                1 << 50,
+                1 << 62,
+                u64::MAX,
+            ] {
+                assert_eq!(
+                    r.ticks_to_us(ticks),
+                    ref_ticks_to_us(r, ticks),
+                    "extal {extal} ticks {ticks}"
+                );
             }
         }
     }
@@ -224,8 +244,21 @@ mod tests {
     fn us_to_ticks_matches_u128_reference_across_crystals() {
         for extal in CRYSTALS {
             let r = TickRatio::from_clocks(&ClockConfig::new(extal));
-            for us in [0, 1, r.den - 1, r.den, r.den + 1, 1 << 32, 1 << 50, u64::MAX] {
-                assert_eq!(r.us_to_ticks(us), ref_us_to_ticks(r, us), "extal {extal} us {us}");
+            for us in [
+                0,
+                1,
+                r.den - 1,
+                r.den,
+                r.den + 1,
+                1 << 32,
+                1 << 50,
+                u64::MAX,
+            ] {
+                assert_eq!(
+                    r.us_to_ticks(us),
+                    ref_us_to_ticks(r, us),
+                    "extal {extal} us {us}"
+                );
             }
         }
     }
@@ -258,7 +291,10 @@ mod tests {
     #[test]
     fn atomic_ratio_round_trips_the_largest_ratio() {
         // num < 2^27 and den < 2^21 for any accepted crystal (ClockConfig::p0_ticks_per_us).
-        let big = TickRatio { num: (1 << 27) - 1, den: (1 << 21) - 1 };
+        let big = TickRatio {
+            num: (1 << 27) - 1,
+            den: (1 << 21) - 1,
+        };
         let a = AtomicTickRatio::unset();
         a.store(big);
         assert_eq!(a.load(), big);

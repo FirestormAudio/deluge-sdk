@@ -65,7 +65,12 @@ pub fn spawn_cmd(prog: &str, argv: &[&str], cols: u16, rows: u16) -> io::Result<
     }
 
     let mut master: libc::c_int = 0;
-    let ws = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
+    let ws = libc::winsize {
+        ws_row: rows,
+        ws_col: cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
     let pid = unsafe { libc::forkpty(&mut master, ptr::null_mut(), ptr::null(), &ws) };
     if pid < 0 {
         return Err(io::Error::last_os_error());
@@ -75,18 +80,29 @@ pub fn spawn_cmd(prog: &str, argv: &[&str], cols: u16, rows: u16) -> io::Result<
         // `argv_ptrs` were built in the parent above and are COW-inherited,
         // remaining valid until execv.
         unsafe {
-            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong, 0, 0, 0);
+            libc::prctl(
+                libc::PR_SET_PDEATHSIG,
+                libc::SIGKILL as libc::c_ulong,
+                0,
+                0,
+                0,
+            );
             libc::execv(cprog.as_ptr(), argv_ptrs.as_ptr());
             libc::_exit(127);
         }
     }
-    Ok(Pty { master, child: pid, reaped: AtomicBool::new(false) })
+    Ok(Pty {
+        master,
+        child: pid,
+        reaped: AtomicBool::new(false),
+    })
 }
 
 impl Pty {
     pub fn write_all(&self, mut buf: &[u8]) -> io::Result<()> {
         while !buf.is_empty() {
-            let n = unsafe { libc::write(self.master, buf.as_ptr() as *const libc::c_void, buf.len()) };
+            let n =
+                unsafe { libc::write(self.master, buf.as_ptr() as *const libc::c_void, buf.len()) };
             if n < 0 {
                 return Err(io::Error::last_os_error());
             }
@@ -96,7 +112,13 @@ impl Pty {
     }
 
     pub fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
-        let n = unsafe { libc::read(self.master, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+        let n = unsafe {
+            libc::read(
+                self.master,
+                buf.as_mut_ptr() as *mut libc::c_void,
+                buf.len(),
+            )
+        };
         if n < 0 {
             Err(io::Error::last_os_error())
         } else {
@@ -158,6 +180,8 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(acc.contains("hello"), "pty did not echo; got {:?}", acc);
-        unsafe { libc::kill(pty.child, libc::SIGKILL); }
+        unsafe {
+            libc::kill(pty.child, libc::SIGKILL);
+        }
     }
 }

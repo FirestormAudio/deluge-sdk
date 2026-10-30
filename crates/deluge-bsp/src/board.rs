@@ -324,19 +324,48 @@ impl Board {
     pub(crate) fn split(p: rza1_hal::Peripherals) -> (Self, SdramPins) {
         let sdram = SdramPins {
             address: [
-                p.P3_0.into(), p.P3_1.into(), p.P3_2.into(), p.P3_3.into(), p.P3_4.into(),
-                p.P3_5.into(), p.P3_6.into(), p.P3_7.into(), p.P3_8.into(), p.P3_9.into(),
-                p.P3_10.into(), p.P3_11.into(), p.P3_12.into(), p.P3_13.into(), p.P3_14.into(),
+                p.P3_0.into(),
+                p.P3_1.into(),
+                p.P3_2.into(),
+                p.P3_3.into(),
+                p.P3_4.into(),
+                p.P3_5.into(),
+                p.P3_6.into(),
+                p.P3_7.into(),
+                p.P3_8.into(),
+                p.P3_9.into(),
+                p.P3_10.into(),
+                p.P3_11.into(),
+                p.P3_12.into(),
+                p.P3_13.into(),
+                p.P3_14.into(),
             ],
             data: [
-                p.P5_0.into(), p.P5_1.into(), p.P5_2.into(), p.P5_3.into(), p.P5_4.into(),
-                p.P5_5.into(), p.P5_6.into(), p.P5_7.into(), p.P5_8.into(), p.P5_9.into(),
-                p.P5_10.into(), p.P5_11.into(), p.P5_12.into(), p.P5_13.into(), p.P5_14.into(),
+                p.P5_0.into(),
+                p.P5_1.into(),
+                p.P5_2.into(),
+                p.P5_3.into(),
+                p.P5_4.into(),
+                p.P5_5.into(),
+                p.P5_6.into(),
+                p.P5_7.into(),
+                p.P5_8.into(),
+                p.P5_9.into(),
+                p.P5_10.into(),
+                p.P5_11.into(),
+                p.P5_12.into(),
+                p.P5_13.into(),
+                p.P5_14.into(),
                 p.P5_15.into(),
             ],
             control: [
-                p.P2_0.into(), p.P2_1.into(), p.P2_2.into(), p.P2_3.into(), p.P2_4.into(),
-                p.P2_5.into(), p.P2_6.into(),
+                p.P2_0.into(),
+                p.P2_1.into(),
+                p.P2_2.into(),
+                p.P2_3.into(),
+                p.P2_4.into(),
+                p.P2_5.into(),
+                p.P2_6.into(),
             ],
         };
         let board = Self {
@@ -369,9 +398,18 @@ impl Board {
                 scux_ffd3: p.DMA_CH15,
             },
             pins: BoardPins {
-                midi: MidiPins { tx: p.P6_15, rx: p.P6_14 },
-                pic: PicPins { tx: p.P3_15, rx: p.P1_9 },
-                spi: SpiPins { sck: p.P6_0, mosi: p.P6_2 },
+                midi: MidiPins {
+                    tx: p.P6_15,
+                    rx: p.P6_14,
+                },
+                pic: PicPins {
+                    tx: p.P3_15,
+                    rx: p.P1_9,
+                },
+                spi: SpiPins {
+                    sck: p.P6_0,
+                    mosi: p.P6_2,
+                },
                 sd: SdPins {
                     clk: p.P7_4,
                     cmd: p.P7_5,
@@ -407,12 +445,20 @@ impl Board {
                 },
                 encoders: EncoderPins {
                     irq: [
-                        p.P1_11.into(), p.P1_6.into(), p.P1_0.into(),
-                        p.P1_5.into(), p.P1_8.into(), p.P1_3.into(),
+                        p.P1_11.into(),
+                        p.P1_6.into(),
+                        p.P1_0.into(),
+                        p.P1_5.into(),
+                        p.P1_8.into(),
+                        p.P1_3.into(),
                     ],
                     comp: [
-                        p.P1_12.into(), p.P1_7.into(), p.P1_15.into(),
-                        p.P1_4.into(), p.P1_10.into(), p.P1_2.into(),
+                        p.P1_12.into(),
+                        p.P1_7.into(),
+                        p.P1_15.into(),
+                        p.P1_4.into(),
+                        p.P1_10.into(),
+                        p.P1_2.into(),
                     ],
                 },
                 trigger: p.P1_14,
@@ -434,7 +480,10 @@ mod tests {
         use rza1_hal::gpio::Pin;
         let (board, _) = super::Board::split(unsafe { rza1_hal::Peripherals::steal() });
         let a = &board.pins.audio;
-        assert_eq!((a.sck.bit(), a.ws.bit(), a.tx.bit(), a.rx.bit()), (8, 9, 10, 11));
+        assert_eq!(
+            (a.sck.bit(), a.ws.bit(), a.tx.bit(), a.rx.bit()),
+            (8, 9, 10, 11)
+        );
     }
 
     #[test]
@@ -460,7 +509,12 @@ mod tests {
         let pins = &board.pins;
         let mut got: std::vec::Vec<(u8, u8)> = std::vec::Vec::new();
         let mut add = |port: rza1_hal::gpio::Port, bit: u8| got.push((port as u8, bit));
-        for p in sdram.address.iter().chain(&sdram.data).chain(&sdram.control) {
+        for p in sdram
+            .address
+            .iter()
+            .chain(&sdram.data)
+            .chain(&sdram.control)
+        {
             add(p.port(), p.bit());
         }
         add(pins.midi.tx.port(), pins.midi.tx.bit());
@@ -566,7 +620,8 @@ mod tests {
     fn bound_interrupts(src: &str) -> std::vec::Vec<std::string::String> {
         let mut names = std::vec::Vec::new();
         let mut in_block = false;
-        let is_ident = |n: &str| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+        let is_ident =
+            |n: &str| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
         for line in src.lines() {
             let line = line.trim();
             if line.starts_with("//") {
@@ -621,7 +676,10 @@ mod tests {
                 }
             }
         }
-        assert!(missing.is_empty(), "bound but given no board priority: {missing:?}");
+        assert!(
+            missing.is_empty(),
+            "bound but given no board priority: {missing:?}"
+        );
     }
 
     #[test]

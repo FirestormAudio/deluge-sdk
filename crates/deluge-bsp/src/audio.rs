@@ -13,7 +13,9 @@ use rza1_hal::dma_buf::UncachedMut;
 use rza1_hal::dmac::{BlockDma, BlockInterruptHandler};
 use rza1_hal::gpio::{Alternate, Flex, Level, Output};
 use rza1_hal::ostm;
-use rza1_hal::ring_buffer::{BlockSignal, ReadableRing, RingBuf, RingDesc, RingDescs, WritableRing};
+use rza1_hal::ring_buffer::{
+    BlockSignal, ReadableRing, RingBuf, RingDesc, RingDescs, WritableRing,
+};
 use rza1_hal::scux::{AudioInfo, Ch0, Channel, Dvu, Src};
 use rza1_hal::ssi::{Ssi, SsiRx, SsiTx};
 
@@ -102,7 +104,12 @@ where
     Irqs: rza1_hal::interrupt::Binding<C::Interrupt, BlockInterruptHandler<C>>,
 {
     let blocks = descs.len();
-    RingBuf { dma: BlockDma::new(ch, Irqs), buf, descs, blocks }
+    RingBuf {
+        dma: BlockDma::new(ch, Irqs),
+        buf,
+        descs,
+        blocks,
+    }
 }
 
 /// The transmit ring: the SSI's own, or the SCUX DVU path's FFD.
@@ -178,7 +185,10 @@ fn install(tx: Tx, rx: SsiRx<'static>) {
 }
 
 /// Put AUDIO_XOUT (P7_11, the codec's master clock) on its function, and hold the codec off.
-fn codec_off(xout: Peri<'static, rza1_hal::peripherals::P7_11>, power: Peri<'static, rza1_hal::peripherals::P6_12>) -> Output<'static> {
+fn codec_off(
+    xout: Peri<'static, rza1_hal::peripherals::P7_11>,
+    power: Peri<'static, rza1_hal::peripherals::P6_12>,
+) -> Output<'static> {
     Flex::new(xout).set_as_alternate(Alternate::Alt6);
     Output::new(power, Level::Low)
 }
@@ -211,7 +221,17 @@ pub fn init_with_scux_src(
     ch0: Channel<'static, Ch0>,
     engine_hz: u32,
 ) {
-    bring_up_scux(ssi, pins, rx, ffd0, ch0, Src::Async { input_hz: engine_hz, output_hz: SSI_HZ });
+    bring_up_scux(
+        ssi,
+        pins,
+        rx,
+        ffd0,
+        ch0,
+        Src::Async {
+            input_hz: engine_hz,
+            output_hz: SSI_HZ,
+        },
+    );
 }
 
 fn bring_up_scux(
@@ -225,7 +245,10 @@ fn bring_up_scux(
     let power = codec_off(pins.xout, pins.codec_power);
     // SAFETY: each buffer and table is lent once, here.
     let (rx_buf, dvu_buf) = unsafe {
-        (lend(core::ptr::addr_of_mut!(SSI_RX_BUF)), lend(core::ptr::addr_of_mut!(DVU_BUF)))
+        (
+            lend(core::ptr::addr_of_mut!(SSI_RX_BUF)),
+            lend(core::ptr::addr_of_mut!(DVU_BUF)),
+        )
     };
     let (rx_descs, dvu_descs) = unsafe {
         (
@@ -242,7 +265,11 @@ fn bring_up_scux(
         ring(rx, rx_buf, rx_descs),
         crate::system::codec_ssi_config(),
     );
-    let dvu = Dvu::Volume { volume: 0x0010_0000, ramp: None, zero_cross_mute: false };
+    let dvu = Dvu::Volume {
+        volume: 0x0010_0000,
+        ramp: None,
+        zero_cross_mute: false,
+    };
     let dvu_ring = ring(ffd0, dvu_buf, dvu_descs);
     let path = ch0.into_ssi_path(AudioInfo::STEREO_24, dvu_ring, src, dvu, out);
     let (control, tx, _) = path.split();
@@ -262,7 +289,10 @@ pub fn init(
     let power = codec_off(pins.xout, pins.codec_power);
     // SAFETY: each buffer and table is lent once, here.
     let (tx_buf, rx_buf) = unsafe {
-        (lend(core::ptr::addr_of_mut!(SSI_TX_BUF)), lend(core::ptr::addr_of_mut!(SSI_RX_BUF)))
+        (
+            lend(core::ptr::addr_of_mut!(SSI_TX_BUF)),
+            lend(core::ptr::addr_of_mut!(SSI_RX_BUF)),
+        )
     };
     let (tx_descs, rx_descs) = unsafe {
         (
@@ -311,6 +341,9 @@ mod tests {
 
     #[test]
     fn codec_ssi_config_is_the_bench_value() {
-        assert_eq!(rza1_hal::ssi::ssicr(&crate::system::codec_ssi_config()), 0x002B_C020);
+        assert_eq!(
+            rza1_hal::ssi::ssicr(&crate::system::codec_ssi_config()),
+            0x002B_C020
+        );
     }
 }

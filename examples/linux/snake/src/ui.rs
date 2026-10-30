@@ -14,11 +14,21 @@ pub fn render(game: &Game, target: &mut OledTarget) {
     let style = TextStyle::new(Font::FontApple).with_color(BinaryColor::On);
     match game.state() {
         State::Playing => {
-            let _ = draw_text(target, &format!("SCORE {}", game.score()), Point::new(3, 16), style);
+            let _ = draw_text(
+                target,
+                &format!("SCORE {}", game.score()),
+                Point::new(3, 16),
+                style,
+            );
         }
         State::GameOver => {
             let _ = draw_text(target, "GAME OVER", Point::new(3, 16), style);
-            let _ = draw_text(target, &format!("SCORE {}", game.score()), Point::new(3, 26), style);
+            let _ = draw_text(
+                target,
+                &format!("SCORE {}", game.score()),
+                Point::new(3, 26),
+                style,
+            );
             let _ = draw_text(target, "TEMPO = RESTART", Point::new(3, 36), style);
         }
     }

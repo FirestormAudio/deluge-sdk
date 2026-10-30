@@ -86,16 +86,29 @@ fn main() -> ! {
     config.baudrate = 115_200;
     #[allow(static_mut_refs)]
     let rx_buf = unsafe { &mut *core::ptr::addr_of_mut!(RX_BUF) };
-    let (rx, tx) =
-        Uart::new(board.midi_uart, board.pins.midi.tx, board.pins.midi.rx, Irqs, rx_buf, None, config)
-            .split();
+    let (rx, tx) = Uart::new(
+        board.midi_uart,
+        board.pins.midi.tx,
+        board.pins.midi.rx,
+        Irqs,
+        rx_buf,
+        None,
+        config,
+    )
+    .split();
     // SCFCR.LOOP: TxD to RxD inside the SCIF.
     let fcr = rza1_hal::pac::SCIF0.fcr();
     fcr.write_value(rza1_hal::pac::scif::regs::Fcr(fcr.read().0 | 1));
 
     let mut spi_config = rspi::Config::default();
     spi_config.frequency = 4_000_000;
-    let spi = Rspi::new_txonly(board.shared_spi, board.pins.spi.sck, board.pins.spi.mosi, Irqs, spi_config);
+    let spi = Rspi::new_txonly(
+        board.shared_spi,
+        board.pins.spi.sck,
+        board.pins.spi.mosi,
+        Irqs,
+        spi_config,
+    );
     // SPPCR.SPLP: the shift register's output looped, inverted, to its input; MOSI cut off.
     rza1_hal::pac::RSPI0.sppcr().write_value(1);
 
@@ -112,7 +125,11 @@ fn main() -> ! {
 }
 
 #[embassy_executor::task]
-async fn probe(mut rx: UartRx<'static, Async>, tx: UartTx<'static, Async>, mut spi: Rspi<'static, Async>) {
+async fn probe(
+    mut rx: UartRx<'static, Async>,
+    tx: UartTx<'static, Async>,
+    mut spi: Rspi<'static, Async>,
+) {
     let mut failures = 0u32;
 
     // ---- UART: RXI into the lent buffer ----
@@ -128,7 +145,10 @@ async fn probe(mut rx: UartRx<'static, Async>, tx: UartTx<'static, Async>, mut s
                 break;
             }
             Err(_) => {
-                error!("loopback: FAIL uart byte {}: no byte within 50 ms (RXI never woke the reader?)", i);
+                error!(
+                    "loopback: FAIL uart byte {}: no byte within 50 ms (RXI never woke the reader?)",
+                    i
+                );
                 failures += 1;
                 break;
             }
@@ -145,10 +165,18 @@ async fn probe(mut rx: UartRx<'static, Async>, tx: UartTx<'static, Async>, mut s
     use embedded_hal_async::spi::SpiBus;
     let out8 = [0xA5u8, 0x3C, 0x00, 0xFF, 0x81];
     let mut in8 = [0u8; 5];
-    match with_timeout(Duration::from_millis(50), SpiBus::<u8>::transfer(&mut spi, &mut in8, &out8)).await {
+    match with_timeout(
+        Duration::from_millis(50),
+        SpiBus::<u8>::transfer(&mut spi, &mut in8, &out8),
+    )
+    .await
+    {
         Ok(Ok(())) if in8 == out8.map(|w| !w) => info!("loopback: rspi u8 OK (complements back)"),
         Ok(Ok(())) => {
-            error!("loopback: FAIL rspi u8 got {:02x?}, sent {:02x?}", in8, out8);
+            error!(
+                "loopback: FAIL rspi u8 got {:02x?}, sent {:02x?}",
+                in8, out8
+            );
             failures += 1;
         }
         Ok(Err(e)) => {
@@ -162,10 +190,20 @@ async fn probe(mut rx: UartRx<'static, Async>, tx: UartTx<'static, Async>, mut s
     }
     let out32 = [0x1234_5678u32, 0xDEAD_BEEF];
     let mut in32 = [0u32; 2];
-    match with_timeout(Duration::from_millis(50), SpiBus::<u32>::transfer(&mut spi, &mut in32, &out32)).await {
-        Ok(Ok(())) if in32 == out32.map(|w| !w) => info!("loopback: rspi u32 OK (complements back)"),
+    match with_timeout(
+        Duration::from_millis(50),
+        SpiBus::<u32>::transfer(&mut spi, &mut in32, &out32),
+    )
+    .await
+    {
+        Ok(Ok(())) if in32 == out32.map(|w| !w) => {
+            info!("loopback: rspi u32 OK (complements back)")
+        }
         Ok(Ok(())) => {
-            error!("loopback: FAIL rspi u32 got {:08x?}, sent {:08x?}", in32, out32);
+            error!(
+                "loopback: FAIL rspi u32 got {:08x?}, sent {:08x?}",
+                in32, out32
+            );
             failures += 1;
         }
         Ok(Err(e)) => {

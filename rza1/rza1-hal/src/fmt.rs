@@ -112,7 +112,10 @@ mod tests {
 
     #[test]
     fn bytes_debug_prints_two_digit_hex() {
-        assert_eq!(format!("{:?}", Bytes(&[0x80, 0x06, 0x00, 0x01])), "[80, 06, 00, 01]");
+        assert_eq!(
+            format!("{:?}", Bytes(&[0x80, 0x06, 0x00, 0x01])),
+            "[80, 06, 00, 01]"
+        );
         assert_eq!(format!("{:?}", Bytes(&[])), "[]");
     }
 }

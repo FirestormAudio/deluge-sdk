@@ -83,7 +83,9 @@ impl View {
     /// the SD. Replaced by `render_safe_to_power_off` once the card is safe.
     pub fn render_shutting_down(&self, target: &mut OledTarget) {
         target.clear_frame();
-        let _ = Title::new("SHUTTING DOWN").with_separator(true).draw(target);
+        let _ = Title::new("SHUTTING DOWN")
+            .with_separator(true)
+            .draw(target);
     }
 
     /// Final resting frame: "SAFE TO / POWER OFF", two centred bold lines.
@@ -199,6 +201,9 @@ mod tests {
         // the bottom line around y≈23..36. Assert content in each band so a
         // single mispositioned line can't pass this on its own.
         assert!(any_set_in_rows(target.frame(), 7, 20), "top line 'SAFE TO'");
-        assert!(any_set_in_rows(target.frame(), 23, 36), "bottom line 'POWER OFF'");
+        assert!(
+            any_set_in_rows(target.frame(), 23, 36),
+            "bottom line 'POWER OFF'"
+        );
     }
 }

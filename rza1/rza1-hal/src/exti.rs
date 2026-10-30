@@ -59,7 +59,8 @@ channels! {
 
 pin_trait!(
     /// A pin that can carry external interrupt `T` (IRQn).
-    IrqPin, Channel
+    IrqPin,
+    Channel
 );
 
 /// IRQn's waiting task.
@@ -110,7 +111,11 @@ impl<'d> ExtiInput<'d> {
         pin.enable_input_buffer();
         C::Interrupt::disable();
         interrupt::bind::<C::Interrupt, InterruptHandler<C>>(irq);
-        Self { pin, number: C::NUMBER, irq: C::Interrupt::ID }
+        Self {
+            pin,
+            number: C::NUMBER,
+            irq: C::Interrupt::ID,
+        }
     }
 
     /// Whether the pin reads high.
@@ -284,7 +289,10 @@ mod tests {
             assert!(fut.as_mut().poll(&mut cx).is_pending());
             assert_eq!(icr1_bits(3), 0b10, "rising edge");
             // GICD_ISENABLER1 (0xE820_1104): IRQ3 = 35 is bit 3.
-            assert!(test::writes().contains(&(0xE820_1104, 1 << 3)), "IRQ3 enabled");
+            assert!(
+                test::writes().contains(&(0xE820_1104, 1 << 3)),
+                "IRQ3 enabled"
+            );
             test::poke16(irqrr, 1 << 3);
             unsafe {
                 <InterruptHandler<EXTI3> as crate::interrupt::Handler<
@@ -314,7 +322,10 @@ mod tests {
         test::poke16(crate::pac::GPIO.ppr(1).addr(), 1 << 7);
         assert!(input.is_high());
         let mut fut = core::pin::pin!(input.wait_for_high());
-        assert_eq!(fut.as_mut().poll(&mut Context::from_waker(Waker::noop())), Poll::Ready(()));
+        assert_eq!(
+            fut.as_mut().poll(&mut Context::from_waker(Waker::noop())),
+            Poll::Ready(())
+        );
     }
 
     #[test]

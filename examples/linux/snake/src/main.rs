@@ -19,7 +19,10 @@ const EV_ENCODER: u8 = 2;
 
 /// Seed the RNG from the monotonic clock (no `rand` crate).
 fn seed() -> u64 {
-    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     // SAFETY: writing a valid timespec we own; CLOCK_MONOTONIC always exists.
     unsafe {
         libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);

@@ -164,7 +164,11 @@ mod tests {
             let (num, den) = c.p0_ticks_per_us();
             assert_eq!(gcd(num as u64, den as u64), 1, "extal {extal}: not reduced");
             // num/den ticks per µs × 1e6 µs = P0φ, truncated to whole Hz.
-            assert_eq!(num as u64 * 1_000_000 / den as u64, c.p0_hz() as u64, "extal {extal}");
+            assert_eq!(
+                num as u64 * 1_000_000 / den as u64,
+                c.p0_hz() as u64,
+                "extal {extal}"
+            );
         }
     }
 

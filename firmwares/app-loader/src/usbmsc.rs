@@ -18,9 +18,7 @@ use log::info;
 
 use deluge_bsp::oled::{self, text};
 use deluge_bsp::usb::sd_block::SdBlock;
-use rza1_hal::usb::{
-    Rusb1Driver, Rusb1EndpointIn, Rusb1EndpointOut, disconnect, init_device_mode,
-};
+use rza1_hal::usb::{Rusb1Driver, Rusb1EndpointIn, Rusb1EndpointOut, disconnect, init_device_mode};
 use usb_classes::bot::{self, BlockDevice};
 use usb_classes::msc::MscClass;
 

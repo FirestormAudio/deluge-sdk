@@ -66,7 +66,10 @@ mod tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        assert_eq!(passthrough_args(&a), &["--extra".to_string(), "1".to_string()]);
+        assert_eq!(
+            passthrough_args(&a),
+            &["--extra".to_string(), "1".to_string()]
+        );
 
         let none: Vec<String> = vec!["debug".to_string(), "--release".to_string()];
         assert!(passthrough_args(&none).is_empty());

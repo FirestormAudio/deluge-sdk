@@ -19,7 +19,6 @@ use embassy_time::Instant;
 use embassy_time::{Duration, Ticker};
 use embedded_hal::digital::{OutputPin, StatefulOutputPin};
 
-
 /// Run `f` over every audio block, forever.
 pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame]) + Send + 'static>(
     mut f: F,
@@ -190,7 +189,9 @@ pub(crate) fn cv_gate_init() {
     // linearity init (poll-based delays). Acquire CV/gate before entering a
     // loop that also drives the OLED, so this one-time RSPI0 setup can't race an
     // in-flight OLED transfer (see docs/advanced-guide.md §7).
-    let pins = crate::parts::take("the CV chip select and the gates", |p| p.cv_gate_pins.take());
+    let pins = crate::parts::take("the CV chip select and the gates", |p| {
+        p.cv_gate_pins.take()
+    });
     deluge_bsp::cv_gate::init(pins);
 }
 pub(crate) async fn cv_set(ch: u8, code: u16) {
@@ -252,7 +253,9 @@ pub(crate) fn clock_in_last_edge() -> Option<Instant> {
 
 pub(crate) fn jacks_init() {
     // Runs once. The five jack-detect inputs and the speaker-enable output (left disabled).
-    let pins = crate::parts::take("the jack detects and the speaker enable", |p| p.jack_pins.take());
+    let pins = crate::parts::take("the jack detects and the speaker enable", |p| {
+        p.jack_pins.take()
+    });
     jacks::init(pins);
 }
 pub(crate) fn jacks_headphone() -> bool {
@@ -334,8 +337,9 @@ pub(crate) fn input_start_pump(spawner: Spawner) {
     }
     // SAFETY: runs once (guarded above). `irq_init` registers each encoder's GIC
     // handler before enabling its source, so it is safe with interrupts enabled.
-    let poll_timer =
-        crate::parts::take("MTU2 channel 3 (the encoder poll)", |p| p.encoder_poll_timer.take());
+    let poll_timer = crate::parts::take("MTU2 channel 3 (the encoder poll)", |p| {
+        p.encoder_poll_timer.take()
+    });
     let pins = crate::parts::take("the encoders' pins", |p| p.encoder_pins.take());
     unsafe { encoder::irq_init(poll_timer, pins) };
     spawner.spawn(encoder_pump().unwrap());

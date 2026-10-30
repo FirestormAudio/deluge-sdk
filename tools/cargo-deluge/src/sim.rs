@@ -44,9 +44,15 @@ pub(crate) fn cmd_sim(args: &[String]) -> Result<(), String> {
     // controller-firmware over USB-CDC as an additional panel for the in-process
     // brain. `--hardware <port>` names the serial device; bare `--hardware`
     // auto-detects by USB VID/PID. Read by `run_in_process`.
-    if args.iter().any(|a| a == "--hardware" || a.starts_with("--hardware=")) {
+    if args
+        .iter()
+        .any(|a| a == "--hardware" || a.starts_with("--hardware="))
+    {
         let port = flag_value(args, "--hardware").filter(|v| !v.starts_with('-'));
-        cmd.env("DELUGE_SIM_HARDWARE", port.unwrap_or_else(|| "auto".to_string()));
+        cmd.env(
+            "DELUGE_SIM_HARDWARE",
+            port.unwrap_or_else(|| "auto".to_string()),
+        );
     }
 
     // Headless mode: no window — replay a script and dump golden-frame snapshots.
@@ -110,7 +116,9 @@ fn absolute(p: &str) -> PathBuf {
     if path.is_absolute() {
         path
     } else {
-        std::env::current_dir().map(|d| d.join(&path)).unwrap_or(path)
+        std::env::current_dir()
+            .map(|d| d.join(&path))
+            .unwrap_or(path)
     }
 }
 
@@ -136,7 +144,10 @@ mod tests {
     fn sim_builds_for_the_host_with_the_sim_feature() {
         let args = sim_cargo_args("x86_64-unknown-linux-gnu", false);
         assert_eq!(args[..3], ["run", "--target", "x86_64-unknown-linux-gnu"]);
-        let i = args.iter().position(|a| a == "--features").expect("no --features");
+        let i = args
+            .iter()
+            .position(|a| a == "--features")
+            .expect("no --features");
         assert_eq!(args[i + 1], "sim");
         assert!(!args.contains(&"--release".to_string()));
         assert!(sim_cargo_args("h", true).contains(&"--release".to_string()));

@@ -40,7 +40,10 @@ mod tests {
         // Standard CRC-32/ISO-HDLC check values.
         assert_eq!(crc32(b""), 0x0000_0000);
         assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
-        assert_eq!(crc32(b"The quick brown fox jumps over the lazy dog"), 0x414F_A339);
+        assert_eq!(
+            crc32(b"The quick brown fox jumps over the lazy dog"),
+            0x414F_A339
+        );
     }
 
     /// The host framing CRC must agree byte-for-byte with the device's

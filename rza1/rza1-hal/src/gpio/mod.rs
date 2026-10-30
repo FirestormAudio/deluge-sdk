@@ -174,15 +174,7 @@ const fn set_reset(mask: u16, value: bool) -> u32 {
 /// Read-modify-write of a register with no set/reset twin, in a critical section so an interrupt
 /// touching another pin of the port can't undo it.
 fn modify_bit(r: Reg<u16, RW>, mask: u16, set: bool) {
-    critical_section::with(|_| {
-        r.modify(|v| {
-            if set {
-                *v |= mask
-            } else {
-                *v &= !mask
-            }
-        })
-    });
+    critical_section::with(|_| r.modify(|v| if set { *v |= mask } else { *v &= !mask }));
 }
 
 /// A pin that can be an input, an output or an alternative function, and change between them.
@@ -304,7 +296,8 @@ impl<'d> Flex<'d> {
     /// Drive `level` (PSRn).
     #[inline]
     pub fn set_level(&mut self, level: Level) {
-        GPIO.psr(self.n()).write_value(set_reset(self.mask(), level.into()));
+        GPIO.psr(self.n())
+            .write_value(set_reset(self.mask(), level.into()));
     }
 
     /// Drive high.
@@ -507,7 +500,10 @@ mod owned_pin_tests {
         test::reset();
         led.set_low();
         led.toggle();
-        assert_eq!(test::writes(), [(0xFCFE_3118, 1 << 23), (0xFCFE_3718, 1 << 7)]);
+        assert_eq!(
+            test::writes(),
+            [(0xFCFE_3118, 1 << 23), (0xFCFE_3718, 1 << 7)]
+        );
     }
 
     #[test]
@@ -539,11 +535,19 @@ mod owned_pin_tests {
         let mut pin = Flex::new(unsafe { P1_7::steal() });
         pin.set_as_alternate(Alternate::Alt6);
         let bit = 1u16 << 7;
-        assert_eq!(test::peek16(0xFCFE_3A04), bit, "PFCAE set (alternative 5 or above)");
+        assert_eq!(
+            test::peek16(0xFCFE_3A04),
+            bit,
+            "PFCAE set (alternative 5 or above)"
+        );
         assert_eq!(test::peek16(0xFCFE_3604), 0, "PFCE clear");
         assert_eq!(test::peek16(0xFCFE_3504), bit, "PFC set");
         assert_eq!(test::peek16(0xFCFE_3404), bit, "PMC set (alternative mode)");
-        assert_eq!(test::peek16(0xFCFE_7204), bit, "PIPC set (the function drives direction)");
+        assert_eq!(
+            test::peek16(0xFCFE_7204),
+            bit,
+            "PIPC set (the function drives direction)"
+        );
     }
 
     #[test]
@@ -555,7 +559,11 @@ mod owned_pin_tests {
         let mut pin = Flex::new(unsafe { P6_10::steal() });
         pin.set_as_alternate_software_io(Alternate::Alt3, true);
         let bit = 1u16 << 10;
-        assert_eq!(test::peek16(0xFCFE_7218) & bit, 0, "PIPC clear (Table 41.7)");
+        assert_eq!(
+            test::peek16(0xFCFE_7218) & bit,
+            0,
+            "PIPC clear (Table 41.7)"
+        );
         assert_eq!(test::peek16(0xFCFE_3318) & bit, 0, "PM clear (output)");
         assert_eq!(test::peek16(0xFCFE_3418) & bit, bit, "PMC set");
     }
@@ -568,7 +576,11 @@ mod owned_pin_tests {
         Flex::new(unsafe { P1_9::steal() }).set_as_alternate(Alternate::Alt3);
         Flex::new(unsafe { P1_14::steal() }).set_as_alternate(Alternate::Alt2);
         let pmc1 = test::peek16(0xFCFE_3404);
-        assert_eq!(pmc1 & ((1 << 9) | (1 << 14)), (1 << 9) | (1 << 14), "PMC1 = {pmc1:#06x}");
+        assert_eq!(
+            pmc1 & ((1 << 9) | (1 << 14)),
+            (1 << 9) | (1 << 14),
+            "PMC1 = {pmc1:#06x}"
+        );
     }
 
     #[test]
@@ -578,10 +590,21 @@ mod owned_pin_tests {
         test::reset();
         Input::new(unsafe { P0_0::steal() });
         Flex::new(unsafe { P0_2::steal() }).set_as_alternate(Alternate::Alt2);
-        let missing = [0xFCFE_3000, 0xFCFE_3100, 0xFCFE_3300, 0xFCFE_3800, 0xFCFE_7200];
-        let bad: std::vec::Vec<_> =
-            test::writes().into_iter().filter(|(a, _)| missing.contains(a)).collect();
-        assert!(bad.is_empty(), "writes to port 0 registers that don't exist: {bad:x?}");
+        let missing = [
+            0xFCFE_3000,
+            0xFCFE_3100,
+            0xFCFE_3300,
+            0xFCFE_3800,
+            0xFCFE_7200,
+        ];
+        let bad: std::vec::Vec<_> = test::writes()
+            .into_iter()
+            .filter(|(a, _)| missing.contains(a))
+            .collect();
+        assert!(
+            bad.is_empty(),
+            "writes to port 0 registers that don't exist: {bad:x?}"
+        );
     }
 
     #[test]
@@ -628,32 +651,71 @@ mod pin_function_tests {
     use crate::peripherals::*;
     use crate::{rspi, sdhi, uart};
 
-    fn tx<T: uart::Instance>(p: &impl uart::TxPin<T>) -> Alternate { p.alternate() }
-    fn rx<T: uart::Instance>(p: &impl uart::RxPin<T>) -> Alternate { p.alternate() }
-    fn sck<T: rspi::Instance>(p: &impl rspi::SckPin<T>) -> Alternate { p.alternate() }
-    fn mosi<T: rspi::Instance>(p: &impl rspi::MosiPin<T>) -> Alternate { p.alternate() }
-    fn clk<T: sdhi::Instance>(p: &impl sdhi::ClkPin<T>) -> Alternate { p.alternate() }
-    fn cmd<T: sdhi::Instance>(p: &impl sdhi::CmdPin<T>) -> Alternate { p.alternate() }
-    fn d0<T: sdhi::Instance>(p: &impl sdhi::D0Pin<T>) -> Alternate { p.alternate() }
-    fn d1<T: sdhi::Instance>(p: &impl sdhi::D1Pin<T>) -> Alternate { p.alternate() }
-    fn d2<T: sdhi::Instance>(p: &impl sdhi::D2Pin<T>) -> Alternate { p.alternate() }
-    fn d3<T: sdhi::Instance>(p: &impl sdhi::D3Pin<T>) -> Alternate { p.alternate() }
-    fn cd<T: sdhi::Instance>(p: &impl sdhi::CdPin<T>) -> Alternate { p.alternate() }
-    fn wp<T: sdhi::Instance>(p: &impl sdhi::WpPin<T>) -> Alternate { p.alternate() }
+    fn tx<T: uart::Instance>(p: &impl uart::TxPin<T>) -> Alternate {
+        p.alternate()
+    }
+    fn rx<T: uart::Instance>(p: &impl uart::RxPin<T>) -> Alternate {
+        p.alternate()
+    }
+    fn sck<T: rspi::Instance>(p: &impl rspi::SckPin<T>) -> Alternate {
+        p.alternate()
+    }
+    fn mosi<T: rspi::Instance>(p: &impl rspi::MosiPin<T>) -> Alternate {
+        p.alternate()
+    }
+    fn clk<T: sdhi::Instance>(p: &impl sdhi::ClkPin<T>) -> Alternate {
+        p.alternate()
+    }
+    fn cmd<T: sdhi::Instance>(p: &impl sdhi::CmdPin<T>) -> Alternate {
+        p.alternate()
+    }
+    fn d0<T: sdhi::Instance>(p: &impl sdhi::D0Pin<T>) -> Alternate {
+        p.alternate()
+    }
+    fn d1<T: sdhi::Instance>(p: &impl sdhi::D1Pin<T>) -> Alternate {
+        p.alternate()
+    }
+    fn d2<T: sdhi::Instance>(p: &impl sdhi::D2Pin<T>) -> Alternate {
+        p.alternate()
+    }
+    fn d3<T: sdhi::Instance>(p: &impl sdhi::D3Pin<T>) -> Alternate {
+        p.alternate()
+    }
+    fn cd<T: sdhi::Instance>(p: &impl sdhi::CdPin<T>) -> Alternate {
+        p.alternate()
+    }
+    fn wp<T: sdhi::Instance>(p: &impl sdhi::WpPin<T>) -> Alternate {
+        p.alternate()
+    }
 
     #[test]
     fn pin_functions_match_a_known_working_board() {
         // Every function a known-working board muxes, with the alternative it uses.
         let p = unsafe {
             (
-                P6_15::steal(), P6_14::steal(), P3_15::steal(), P1_9::steal(), P6_0::steal(),
-                P6_2::steal(), P7_0::steal(), P7_1::steal(), P7_2::steal(), P7_3::steal(),
-                P7_4::steal(), P7_5::steal(), P7_6::steal(), P7_7::steal(),
+                P6_15::steal(),
+                P6_14::steal(),
+                P3_15::steal(),
+                P1_9::steal(),
+                P6_0::steal(),
+                P6_2::steal(),
+                P7_0::steal(),
+                P7_1::steal(),
+                P7_2::steal(),
+                P7_3::steal(),
+                P7_4::steal(),
+                P7_5::steal(),
+                P7_6::steal(),
+                P7_7::steal(),
             )
         };
         assert_eq!(tx::<SCIF0>(&*p.0), Alternate::Alt5, "MIDI TxD0 on P6_15");
         assert_eq!(rx::<SCIF0>(&*p.1), Alternate::Alt5, "MIDI RxD0 on P6_14");
-        assert_eq!(tx::<SCIF1>(&*p.2), Alternate::Alt5, "PIC TxD1 on P3_15 (the override)");
+        assert_eq!(
+            tx::<SCIF1>(&*p.2),
+            Alternate::Alt5,
+            "PIC TxD1 on P3_15 (the override)"
+        );
         assert_eq!(rx::<SCIF1>(&*p.3), Alternate::Alt3, "PIC RxD1 on P1_9");
         assert_eq!(sck::<RSPI0>(&*p.4), Alternate::Alt3, "RSPCK0 on P6_0");
         assert_eq!(mosi::<RSPI0>(&*p.5), Alternate::Alt3, "MOSI0 on P6_2");

@@ -532,12 +532,12 @@ pub mod __rt {
     pub use ::embassy_executor;
     pub use embassy_executor::task;
 
-    /// Device entry points used by the `#[deluge::app]` expansion on the Deluge.
-    #[cfg(target_os = "none")]
-    pub use device::{panic, run};
     /// The entry attribute the `#[deluge::app]` expansion puts on the device `main`.
     #[cfg(target_os = "none")]
     pub use deluge_bsp::entry;
+    /// Device entry points used by the `#[deluge::app]` expansion on the Deluge.
+    #[cfg(target_os = "none")]
+    pub use device::{panic, run};
 
     /// The bare-metal platform runtime: heaps, clocks, interrupts, executor.
     #[cfg(target_os = "none")]

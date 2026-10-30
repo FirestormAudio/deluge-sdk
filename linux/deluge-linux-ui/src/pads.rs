@@ -6,7 +6,7 @@
 //! `row*54 + col*3` holds `[r, g, b]` for pad (row, col).
 
 use deluge_grid_toolkit::imode::PadInput;
-use deluge_grid_toolkit::{Grid, GRID_COLS, GRID_ROWS, Pad};
+use deluge_grid_toolkit::{Grid, Pad, GRID_COLS, GRID_ROWS};
 use deluge_hal_linux::{Deluge, Error, Event};
 
 pub const STRIDE: usize = GRID_COLS * 3; // 54
@@ -21,7 +21,9 @@ pub struct PadTarget {
 
 impl PadTarget {
     pub fn new() -> Self {
-        Self { buf: [0; PAD_FRAME_BYTES] }
+        Self {
+            buf: [0; PAD_FRAME_BYTES],
+        }
     }
 
     pub fn frame(&self) -> &[u8; PAD_FRAME_BYTES] {
@@ -99,7 +101,15 @@ mod tests {
     #[test]
     fn blit_packs_rgb_at_stride_54() {
         let mut g = Grid::new();
-        g.set_pad(0, 0, Color { r: 10, g: 20, b: 30 });
+        g.set_pad(
+            0,
+            0,
+            Color {
+                r: 10,
+                g: 20,
+                b: 30,
+            },
+        );
         g.set_pad(1, 2, Color { r: 1, g: 2, b: 3 });
         let mut t = PadTarget::new();
         t.blit(&g);
@@ -109,7 +119,14 @@ mod tests {
     }
 
     fn ev(kind: u8, value: i16, x: u16, y: u16) -> Event {
-        Event { kind, id: 0, value, x, y, pressure: 0 }
+        Event {
+            kind,
+            id: 0,
+            value,
+            x,
+            y,
+            pressure: 0,
+        }
     }
 
     #[test]

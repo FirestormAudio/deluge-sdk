@@ -17,8 +17,7 @@ pub(crate) fn cmd_deploy(args: &[String]) -> Result<(), String> {
             let apps = Path::new(&root).join("APPS");
             fs::create_dir_all(&apps).map_err(|e| format!("creating {}: {e}", apps.display()))?;
             let target = apps.join(&file_name);
-            fs::copy(&elf, &target)
-                .map_err(|e| format!("copying to {}: {e}", target.display()))?;
+            fs::copy(&elf, &target).map_err(|e| format!("copying to {}: {e}", target.display()))?;
             println!("deployed -> {}", target.display());
             println!("power-cycle the Deluge (or re-enter the app menu) to run it.");
         }

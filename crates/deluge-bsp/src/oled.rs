@@ -47,11 +47,10 @@
 //! ```
 
 #[cfg(target_os = "none")]
-use rza1_hal::UNCACHED_MIRROR_OFFSET;
-#[cfg(target_os = "none")]
-
 #[cfg(target_os = "none")]
 use crate::pic;
+#[cfg(target_os = "none")]
+use rza1_hal::UNCACHED_MIRROR_OFFSET;
 
 // ── OLED SPI DMA constants ────────────────────────────────────────────────────
 
@@ -619,7 +618,8 @@ pub async fn send_frame(fb: &FrameBuffer) {
         // bus address the DMAC will read from — same physical RAM as the cached
         // alias but coherent since we wrote through the uncached window above.
         let src_uncached = dst_uncached as u32;
-        bus.oled_dma().start_transfer(src_uncached, FRAME_BYTES as u32);
+        bus.oled_dma()
+            .start_transfer(src_uncached, FRAME_BYTES as u32);
     }
 
     // Await DMA completion interrupt (still holding the RSPI0 guard).

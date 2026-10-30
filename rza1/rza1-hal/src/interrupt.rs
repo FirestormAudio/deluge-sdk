@@ -395,7 +395,11 @@ mod tests {
     fn rspi_interrupt_ids_match_the_hardware_manual() {
         // SPEIn/SPRIn/SPTIn = 270/271/272 + 3n (Table 7.3).
         assert_eq!(
-            [typelevel::SPEI0::ID, typelevel::SPRI0::ID, typelevel::SPTI0::ID],
+            [
+                typelevel::SPEI0::ID,
+                typelevel::SPRI0::ID,
+                typelevel::SPTI0::ID
+            ],
             [270, 271, 272]
         );
         assert_eq!(typelevel::SPEI1::ID, 273);

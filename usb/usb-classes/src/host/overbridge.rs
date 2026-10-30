@@ -694,7 +694,11 @@ mod tests {
         for t in 0..3 {
             block_on(rx.receive_once(&h, t * 146)).unwrap();
         }
-        assert_eq!(state.log.borrow().sent.len(), 2 * 88, "only the priming blocks");
+        assert_eq!(
+            state.log.borrow().sent.len(),
+            2 * 88,
+            "only the priming blocks"
+        );
         block_on(tx.send_once(&h)).unwrap();
         let s = h.stats();
         assert_eq!((s.blocks_in, s.blocks_out, s.counter_gaps), (3, 1, 0));
@@ -747,7 +751,10 @@ mod tests {
     fn an_out_limit_too_small_for_one_frame_is_refused() {
         let state = MockState::leak();
         let mut host = digitakt(state);
-        assert!(matches!(host.limit_out_packet(39), Err(OverbridgeError::BadBlockSize)));
+        assert!(matches!(
+            host.limit_out_packet(39),
+            Err(OverbridgeError::BadBlockSize)
+        ));
         assert!(host.limit_out_packet(40).is_ok());
     }
 

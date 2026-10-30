@@ -159,7 +159,8 @@ impl PipeXferState {
 }
 
 /// Per-port array of transfer states.  Index 0 = DCP (pipe 0).
-pub(crate) static PIPE_XFER: [critical_section::Mutex<core::cell::UnsafeCell<PipeXferState>>; PIPE_COUNT] = {
+pub(crate) static PIPE_XFER: [critical_section::Mutex<core::cell::UnsafeCell<PipeXferState>>;
+    PIPE_COUNT] = {
     use core::cell::UnsafeCell;
     use critical_section::Mutex;
     #[allow(clippy::declare_interior_mutable_const)]

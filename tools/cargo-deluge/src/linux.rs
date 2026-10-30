@@ -96,7 +96,11 @@ pub(crate) fn cmd_linux(args: &[String]) -> Result<(), String> {
     // `--bare` binaries aren't image-size-constrained but are stripped too
     // for a smaller card footprint.
     let no_strip = args.iter().any(|a| a == "--no-strip");
-    let packed_bin = if no_strip { bin.clone() } else { strip_elf(&bin)? };
+    let packed_bin = if no_strip {
+        bin.clone()
+    } else {
+        strip_elf(&bin)?
+    };
 
     let mut mk = Command::new(&mkimage);
     mk.arg(&packed_bin);
@@ -119,7 +123,11 @@ pub(crate) fn cmd_linux(args: &[String]) -> Result<(), String> {
         mk.arg("-o").arg(&p);
         p
     };
-    if !mk.status().map_err(|e| format!("deluge-mkimage: {e}"))?.success() {
+    if !mk
+        .status()
+        .map_err(|e| format!("deluge-mkimage: {e}"))?
+        .success()
+    {
         return Err("deluge-mkimage failed".to_string());
     }
     println!("packed {}", product.display());

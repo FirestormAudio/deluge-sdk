@@ -40,10 +40,10 @@
 //! ```
 
 use crate::dma_buf::{Uncached, UncachedMut};
-use embassy_hal_internal::drop::OnDrop;
 use core::future::poll_fn;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, Ordering};
 use core::task::Poll;
+use embassy_hal_internal::drop::OnDrop;
 
 use embassy_sync::waitqueue::AtomicWaker;
 
@@ -202,8 +202,15 @@ const CD_INSERTED: u8 = 1 << 1;
 
 /// The `cd_events` bits for the card-detect edges in an INFO1 value.
 const fn cd_bits(info1: u16) -> u8 {
-    (if info1 & INFO1_REM_CD != 0 { CD_REMOVED } else { 0 })
-        | (if info1 & INFO1_INS_CD != 0 { CD_INSERTED } else { 0 })
+    (if info1 & INFO1_REM_CD != 0 {
+        CD_REMOVED
+    } else {
+        0
+    }) | (if info1 & INFO1_INS_CD != 0 {
+        CD_INSERTED
+    } else {
+        0
+    })
 }
 
 struct SdhiState {
@@ -1016,7 +1023,11 @@ async unsafe fn read_blocks_dma(
         // On an error the SD_BUF DMA request stays asserted (HW manual ch. 38, DMA transfer): stop
         // the DMAC before returning, or it keeps writing into the caller's buffer.
         if data_result.is_err() && !crate::dmac::halt_channel(dma.number()) {
-            warn!("sdhi{}: DMA channel {} didn't stop after a read error", port, dma.number());
+            warn!(
+                "sdhi{}: DMA channel {} didn't stop after a read error",
+                port,
+                dma.number()
+            );
         }
 
         // 5b. For RX: wait for the DMAC to drain its final burst into memory.
@@ -1103,7 +1114,11 @@ async unsafe fn write_blocks_dma(
         // On an error the SD_BUF DMA request stays asserted (HW manual ch. 38, DMA transfer): stop
         // the DMAC before returning.
         if data_result.is_err() && !crate::dmac::halt_channel(dma.number()) {
-            warn!("sdhi{}: DMA channel {} didn't stop after a write error", port, dma.number());
+            warn!(
+                "sdhi{}: DMA channel {} didn't stop after a write error",
+                port,
+                dma.number()
+            );
         }
 
         // No separate card-busy wait is needed here: per the RZ/A1 TRM (§38.2.6,
@@ -1272,35 +1287,43 @@ mod sealed {
 
 pin_trait!(
     /// A pin that can carry SD port `T`'s clock (SD_CLK_n).
-    ClkPin, Instance
+    ClkPin,
+    Instance
 );
 pin_trait!(
     /// A pin that can carry SD port `T`'s command line (SD_CMD_n).
-    CmdPin, Instance
+    CmdPin,
+    Instance
 );
 pin_trait!(
     /// A pin that can carry SD port `T`'s data bit 0 (SD_D0_n).
-    D0Pin, Instance
+    D0Pin,
+    Instance
 );
 pin_trait!(
     /// A pin that can carry SD port `T`'s data bit 1 (SD_D1_n).
-    D1Pin, Instance
+    D1Pin,
+    Instance
 );
 pin_trait!(
     /// A pin that can carry SD port `T`'s data bit 2 (SD_D2_n).
-    D2Pin, Instance
+    D2Pin,
+    Instance
 );
 pin_trait!(
     /// A pin that can carry SD port `T`'s data bit 3 (SD_D3_n).
-    D3Pin, Instance
+    D3Pin,
+    Instance
 );
 pin_trait!(
     /// A pin that can carry SD port `T`'s card detect (SD_CD_n).
-    CdPin, Instance
+    CdPin,
+    Instance
 );
 pin_trait!(
     /// A pin that can carry SD port `T`'s write protect (SD_WP_n).
-    WpPin, Instance
+    WpPin,
+    Instance
 );
 
 /// An SDHI channel singleton (`peripherals::SDHI0`, `SDHI1`).
@@ -1629,8 +1652,14 @@ impl<'d> Sdhi<'d> {
         // SAFETY: `buf` is `count * 512` bytes of uncached memory, borrowed for the transfer (and
         // the guard stops the DMAC before the borrow ends if the transfer is dropped).
         let r = unsafe {
-            read_blocks_dma(self.port, cmd_val, buf.as_mut_slice().as_mut_ptr(), count, &mut rx)
-                .await
+            read_blocks_dma(
+                self.port,
+                cmd_val,
+                buf.as_mut_slice().as_mut_ptr(),
+                count,
+                &mut rx,
+            )
+            .await
         };
         guard.defuse();
         r
@@ -1806,7 +1835,9 @@ mod typed_tests {
 
     /// Poll `f` once, without a waker that does anything.
     fn poll_once<F: core::future::Future>(f: core::pin::Pin<&mut F>) -> Poll<F::Output> {
-        f.poll(&mut core::task::Context::from_waker(core::task::Waker::noop()))
+        f.poll(&mut core::task::Context::from_waker(
+            core::task::Waker::noop(),
+        ))
     }
 
     /// The response-end and access-end flags the operation interrupt would record.
@@ -1825,7 +1856,11 @@ mod typed_tests {
 
     fn info1_mask_writes() -> std::vec::Vec<u32> {
         let m = sdhi(1).sd_info1_mask().addr();
-        test::writes().into_iter().filter(|&(a, _)| a == m).map(|(_, v)| v).collect()
+        test::writes()
+            .into_iter()
+            .filter(|&(a, _)| a == m)
+            .map(|(_, v)| v)
+            .collect()
     }
 
     /// Every SD_INFO1_MASK write leaves card detect unmasked, and the controller idles at
@@ -1837,19 +1872,27 @@ mod typed_tests {
         let mut storage = [0u8; 512];
         test::reset();
         {
-            let read = sdhi.read_blocks_dma(17, crate::dma_buf::UncachedMut::new(&mut storage).unwrap());
+            let read =
+                sdhi.read_blocks_dma(17, crate::dma_buf::UncachedMut::new(&mut storage).unwrap());
             let mut read = core::pin::pin!(read);
             assert!(poll_once(read.as_mut()).is_pending());
             interrupt_saw(INFO1_RESP);
             assert!(poll_once(read.as_mut()).is_pending());
             interrupt_saw(INFO1_DATA_TRNS);
-            test::poke32(crate::pac::DMAC.ch(14).chstat().addr(), crate::dmac::CHSTAT_TC);
+            test::poke32(
+                crate::pac::DMAC.ch(14).chstat().addr(),
+                crate::dmac::CHSTAT_TC,
+            );
             assert!(poll_once(read.as_mut()).is_ready());
         }
         let masks = info1_mask_writes();
         assert!(!masks.is_empty());
         for m in &masks {
-            assert_eq!(*m as u16 & INFO1_DET_CD, 0, "card detect masked by {m:#06x}");
+            assert_eq!(
+                *m as u16 & INFO1_DET_CD,
+                0,
+                "card detect masked by {m:#06x}"
+            );
         }
         assert_eq!(*masks.last().unwrap(), 0xFFE7, "idle mask");
     }
@@ -1873,14 +1916,21 @@ mod typed_tests {
         test::reset();
         let _ = sdhi.take_card_detect_events();
         {
-            let read = sdhi.read_blocks_dma(17, crate::dma_buf::UncachedMut::new(&mut storage).unwrap());
+            let read =
+                sdhi.read_blocks_dma(17, crate::dma_buf::UncachedMut::new(&mut storage).unwrap());
             let mut read = core::pin::pin!(read);
             assert!(poll_once(read.as_mut()).is_pending());
             // The response and a removal land in one status interrupt.
             status_irq_with(INFO1_RESP | INFO1_REM_CD);
-            assert!(poll_once(read.as_mut()).is_pending(), "into its data phase, not failed");
+            assert!(
+                poll_once(read.as_mut()).is_pending(),
+                "into its data phase, not failed"
+            );
             interrupt_saw(INFO1_DATA_TRNS);
-            test::poke32(crate::pac::DMAC.ch(14).chstat().addr(), crate::dmac::CHSTAT_TC);
+            test::poke32(
+                crate::pac::DMAC.ch(14).chstat().addr(),
+                crate::dmac::CHSTAT_TC,
+            );
             assert!(matches!(poll_once(read.as_mut()), Poll::Ready(Ok(()))));
         }
         assert_eq!(sdhi.take_card_detect_events(), (true, false));
@@ -1942,8 +1992,16 @@ mod typed_tests {
         test::poke16(s.sd_info2().addr(), INFO2_BRE);
         STATE[1].info2.store(0, Ordering::Release);
         status_irq_with(INFO1_REM_CD);
-        assert_ne!(test::peek16(s.sd_info2().addr()) & INFO2_BRE, 0, "BRE still latched");
-        assert_eq!(STATE[1].info2.load(Ordering::Acquire) & INFO2_BRE, 0, "not taken by the ISR");
+        assert_ne!(
+            test::peek16(s.sd_info2().addr()) & INFO2_BRE,
+            0,
+            "BRE still latched"
+        );
+        assert_eq!(
+            STATE[1].info2.load(Ordering::Acquire) & INFO2_BRE,
+            0,
+            "not taken by the ISR"
+        );
         assert_eq!(sdhi.take_card_detect_events(), (true, false));
     }
 
@@ -1953,16 +2011,25 @@ mod typed_tests {
         let _serial = serial();
         test::reset();
         let sdhi = sdhi1();
-        assert_eq!(*info1_mask_writes().last().unwrap() as u16 & INFO1_DET_CD, 0, "after init");
+        assert_eq!(
+            *info1_mask_writes().last().unwrap() as u16 & INFO1_DET_CD,
+            0,
+            "after init"
+        );
         let mut storage = [0u8; 512];
         test::reset();
         {
-            let read = sdhi.read_blocks_dma(17, crate::dma_buf::UncachedMut::new(&mut storage).unwrap());
+            let read =
+                sdhi.read_blocks_dma(17, crate::dma_buf::UncachedMut::new(&mut storage).unwrap());
             let mut read = core::pin::pin!(read);
             assert!(poll_once(read.as_mut()).is_pending());
         }
         assert!(sdhi.take_aborted(), "the drop aborted");
-        assert_eq!(*info1_mask_writes().last().unwrap() as u16 & INFO1_DET_CD, 0, "after the abort");
+        assert_eq!(
+            *info1_mask_writes().last().unwrap() as u16 & INFO1_DET_CD,
+            0,
+            "after the abort"
+        );
     }
 
     #[test]
@@ -1981,8 +2048,10 @@ mod typed_tests {
         let dma = crate::pac::DMAC.ch(14).chctrl().addr();
         let w = test::writes();
         (
-            w.iter().any(|&(a, v)| a == s.sd_stop().addr() && v & 1 != 0),
-            w.iter().any(|&(a, v)| a == s.soft_rst().addr() && v == SOFT_RST_DEASSERT as u32),
+            w.iter()
+                .any(|&(a, v)| a == s.sd_stop().addr() && v & 1 != 0),
+            w.iter()
+                .any(|&(a, v)| a == s.soft_rst().addr() && v == SOFT_RST_DEASSERT as u32),
             w.iter().any(|&(a, v)| a == dma && v & (1 << 1) != 0),
         )
     }
@@ -1994,17 +2063,28 @@ mod typed_tests {
         let mut storage = [0u8; 512];
         test::reset();
         {
-            let read = sdhi.read_blocks_dma(17, crate::dma_buf::UncachedMut::new(&mut storage).unwrap());
+            let read =
+                sdhi.read_blocks_dma(17, crate::dma_buf::UncachedMut::new(&mut storage).unwrap());
             let mut read = core::pin::pin!(read);
-            assert!(poll_once(read.as_mut()).is_pending(), "waits for the response");
+            assert!(
+                poll_once(read.as_mut()).is_pending(),
+                "waits for the response"
+            );
         }
         let (stp, reset, _) = abort_writes();
         assert!(stp && reset, "SD_STOP.STP and a soft reset");
         // STP stays set until the soft reset (HW manual §38.2.3 note 3: don't clear STP while a
         // CMD12 sequence may still run); SDRST itself ends the sequence.
         let stop = super::sdhi(1).sd_stop().addr();
-        let last_stop = test::writes().into_iter().filter(|&(a, _)| a == stop).last();
-        assert_eq!(last_stop.map(|(_, v)| v), Some(SD_STOP_STP as u32), "STP not cleared by hand");
+        let last_stop = test::writes()
+            .into_iter()
+            .filter(|&(a, _)| a == stop)
+            .last();
+        assert_eq!(
+            last_stop.map(|(_, v)| v),
+            Some(SD_STOP_STP as u32),
+            "STP not cleared by hand"
+        );
         assert!(sdhi.take_aborted());
         assert!(!sdhi.take_aborted(), "taken once");
     }
@@ -2016,14 +2096,18 @@ mod typed_tests {
         let mut storage = [0u8; 1024];
         test::reset();
         {
-            let read = sdhi.read_blocks_dma(18, crate::dma_buf::UncachedMut::new(&mut storage).unwrap());
+            let read =
+                sdhi.read_blocks_dma(18, crate::dma_buf::UncachedMut::new(&mut storage).unwrap());
             let mut read = core::pin::pin!(read);
             assert!(poll_once(read.as_mut()).is_pending());
             interrupt_saw(INFO1_RESP);
             assert!(poll_once(read.as_mut()).is_pending(), "waits for the data");
         }
         let (stp, reset, dma_halted) = abort_writes();
-        assert!(stp && reset && dma_halted, "STP {stp}, reset {reset}, DMA halted {dma_halted}");
+        assert!(
+            stp && reset && dma_halted,
+            "STP {stp}, reset {reset}, DMA halted {dma_halted}"
+        );
         assert!(sdhi.take_aborted());
     }
 
@@ -2054,7 +2138,8 @@ mod typed_tests {
         let mut storage = [0u8; 512];
         test::reset();
         {
-            let read = sdhi.read_blocks_dma(17, crate::dma_buf::UncachedMut::new(&mut storage).unwrap());
+            let read =
+                sdhi.read_blocks_dma(17, crate::dma_buf::UncachedMut::new(&mut storage).unwrap());
             let mut read = core::pin::pin!(read);
             assert!(poll_once(read.as_mut()).is_pending());
             interrupt_saw(INFO1_RESP);
@@ -2074,14 +2159,18 @@ mod typed_tests {
         let mut storage = [0u8; 512];
         test::reset();
         {
-            let read = sdhi.read_blocks_dma(17, crate::dma_buf::UncachedMut::new(&mut storage).unwrap());
+            let read =
+                sdhi.read_blocks_dma(17, crate::dma_buf::UncachedMut::new(&mut storage).unwrap());
             let mut read = core::pin::pin!(read);
             assert!(poll_once(read.as_mut()).is_pending());
             interrupt_saw(INFO1_RESP);
             assert!(poll_once(read.as_mut()).is_pending());
             interrupt_saw(INFO1_DATA_TRNS);
             // The DMAC's last burst landed: CHSTAT.TC.
-            test::poke32(crate::pac::DMAC.ch(14).chstat().addr(), crate::dmac::CHSTAT_TC);
+            test::poke32(
+                crate::pac::DMAC.ch(14).chstat().addr(),
+                crate::dmac::CHSTAT_TC,
+            );
             assert!(poll_once(read.as_mut()).is_ready(), "completes");
         }
         let (stp, reset, _) = abort_writes();

@@ -54,7 +54,11 @@ mod tests {
         assert_eq!(seen, [(0xFCFE_3418, 2), (0xFCFE_0444, 1), (0xE820_1104, 4)]);
         assert_eq!(
             mmio::test::writes(),
-            [(0xFCFE_3418, 0x0005), (0xFCFE_0444, 0xF0), (0xE820_1104, 1 << 13)]
+            [
+                (0xFCFE_3418, 0x0005),
+                (0xFCFE_0444, 0xF0),
+                (0xE820_1104, 1 << 13)
+            ]
         );
         mmio::test::poke16(0xFCFE_3218, 0x00A0);
         assert_eq!(GPIO.ppr(6).read(), 0x00A0);
@@ -63,8 +67,14 @@ mod tests {
     #[test]
     fn a_register_knows_its_address_and_width() {
         assert_eq!((CPG.frqcr().addr(), CPG.frqcr().width()), (0xFCFE_0010, 2));
-        assert_eq!((RSPI0.spdr_byte().addr(), RSPI0.spdr_byte().width()), (0xE800_C804, 1));
-        assert_eq!((INTC.icdipr(37).addr(), INTC.icdipr(37).width()), (0xE820_1494, 4));
+        assert_eq!(
+            (RSPI0.spdr_byte().addr(), RSPI0.spdr_byte().width()),
+            (0xE800_C804, 1)
+        );
+        assert_eq!(
+            (INTC.icdipr(37).addr(), INTC.icdipr(37).width()),
+            (0xE820_1494, 4)
+        );
     }
 
     /// The RZ/A1L has ten ports, the RZ/A1H twelve.
@@ -100,10 +110,19 @@ mod tests {
 
     #[test]
     fn dmac_channels_8_to_15_sit_past_the_group_gap() {
-        assert_eq!((DMAC.ch(0).n0sa().addr(), DMAC.ch(0).n0sa().width()), (0xE820_0000, 4));
+        assert_eq!(
+            (DMAC.ch(0).n0sa().addr(), DMAC.ch(0).n0sa().width()),
+            (0xE820_0000, 4)
+        );
         assert_eq!(DMAC.ch(7).chctrl().addr(), 0xE820_0000 + 7 * 64 + 0x28);
-        assert_eq!(DMAC.ch(8).chctrl().addr(), 0xE820_0000 + 8 * 64 + 0x200 + 0x28);
-        assert_eq!(DMAC.ch(15).nxla().addr(), 0xE820_0000 + 15 * 64 + 0x200 + 0x38);
+        assert_eq!(
+            DMAC.ch(8).chctrl().addr(),
+            0xE820_0000 + 8 * 64 + 0x200 + 0x28
+        );
+        assert_eq!(
+            DMAC.ch(15).nxla().addr(),
+            0xE820_0000 + 15 * 64 + 0x200 + 0x38
+        );
         assert_eq!(DMAC.dctrl(0).addr(), 0xE820_0300);
         assert_eq!(DMAC.dctrl(1).addr(), 0xE820_0700);
         assert_eq!(DMAC.dmars(3).addr(), 0xFCFE_100C);
@@ -117,15 +136,27 @@ mod tests {
         // 2SRC converter 2·unit + pair: unit stride 0x100, pair stride 0x34.
         assert_eq!(SCUX.src(0).srcir().addr(), 0xE820_9000);
         assert_eq!(SCUX.src(1).srcir().addr(), 0xE820_9034);
-        assert_eq!(SCUX.src(3).ifsvr().addr(), 0xE820_9000 + 0x100 + 0x34 + 0x10);
-        assert_eq!(SCUX.dvu(1).volr(7).addr(), 0xE820_9200 + 0x100 + 0x24 + 7 * 4);
+        assert_eq!(
+            SCUX.src(3).ifsvr().addr(),
+            0xE820_9000 + 0x100 + 0x34 + 0x10
+        );
+        assert_eq!(
+            SCUX.dvu(1).volr(7).addr(),
+            0xE820_9200 + 0x100 + 0x24 + 7 * 4
+        );
         assert_eq!(SCUX.swrsr_cim().addr(), 0xE820_9700);
     }
 
     #[test]
     fn usb_fifo_ports_have_byte_views_over_their_lanes() {
-        assert_eq!((USB200.cfifo().addr(), USB200.cfifo().width()), (0xE801_0014, 4));
-        assert_eq!((USB200.cfifo_b(3).addr(), USB200.cfifo_b(3).width()), (0xE801_0017, 1));
+        assert_eq!(
+            (USB200.cfifo().addr(), USB200.cfifo().width()),
+            (0xE801_0014, 4)
+        );
+        assert_eq!(
+            (USB200.cfifo_b(3).addr(), USB200.cfifo_b(3).width()),
+            (0xE801_0017, 1)
+        );
         assert_eq!(USB201.d1fifo_b(0).addr(), 0xE820_701C);
         assert_eq!(USB200.pipectr(0).addr(), 0xE801_0070); // PIPE1CTR
         assert_eq!(USB200.pipectr(14).addr(), 0xE801_008C); // PIPEFCTR
@@ -136,8 +167,14 @@ mod tests {
     #[cfg(feature = "rza1l")]
     #[test]
     fn sdhi_comes_from_the_rza1l_manual() {
-        assert_eq!((SDHI0.sd_cmd().addr(), SDHI0.sd_cmd().width()), (0xE804_E000, 2));
-        assert_eq!((SDHI1.sd_buf0().addr(), SDHI1.sd_buf0().width()), (0xE804_E830, 4));
+        assert_eq!(
+            (SDHI0.sd_cmd().addr(), SDHI0.sd_cmd().width()),
+            (0xE804_E000, 2)
+        );
+        assert_eq!(
+            (SDHI1.sd_buf0().addr(), SDHI1.sd_buf0().width()),
+            (0xE804_E830, 4)
+        );
         assert_eq!(SDHI1.ext_swap().addr(), 0xE804_E8F0);
     }
 }

@@ -651,8 +651,7 @@ mod runtime {
             }
         }
         loop {
-            let e = match select(stream_overbridge(&mut host, stems), ROOT_AUDIO_STOP.wait())
-                .await
+            let e = match select(stream_overbridge(&mut host, stems), ROOT_AUDIO_STOP.wait()).await
             {
                 Either::First(e) => e,
                 Either::Second(()) => break,

@@ -140,7 +140,10 @@ pub(crate) enum SrcMode {
     Async,
     /// Synchronous — SCUX uses an external (SSI) clock reference.  The
     /// interpolation ratio is computed from INTIFS.
-    #[expect(dead_code, reason = "SRCCR's sync mode; no path builds a synchronous SRC yet")]
+    #[expect(
+        dead_code,
+        reason = "SRCCR's sync mode; no path builds a synchronous SRC yet"
+    )]
     Sync,
 }
 
@@ -206,7 +209,10 @@ pub(crate) struct DvuConfig {
 /// - `101–111` = no operation
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(u32)]
-#[expect(dead_code, reason = "IPC_PASS_SEL's encodings, in full; the paths use only FFD→2SRC async")]
+#[expect(
+    dead_code,
+    reason = "IPC_PASS_SEL's encodings, in full; the paths use only FFD→2SRC async"
+)]
 pub(crate) enum IpcSel {
     /// Input path disabled.
     None = 0b000,
@@ -231,7 +237,10 @@ pub(crate) enum IpcSel {
 /// SRC+DVU, or SRC+DVU+MIX). DVU/MIX routing is configured separately.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(u32)]
-#[expect(dead_code, reason = "OPC_PASS_SEL's encodings, in full; no path disables the output")]
+#[expect(
+    dead_code,
+    reason = "OPC_PASS_SEL's encodings, in full; no path disables the output"
+)]
 pub(crate) enum OpcSel {
     /// Output path disabled.
     None = 0b000,
@@ -562,8 +571,6 @@ pub(crate) unsafe fn configure_mix(cfg: MixConfig) {
     }
 }
 
-
-
 /// FDTSEL/FUTSEL SCKSEL: the USB_X1 clock (TRM §37.3.68).
 pub const FDTSEL_SCKSEL_USB_X1: u32 = 0b0011;
 /// USB_X1: the USB module's clock, 48 MHz (UCKSEL=0, as the Deluge runs it, requires it).
@@ -586,14 +593,6 @@ pub fn input_timing(input_hz: u32) -> u32 {
         _ => FDTSEL_SCKSEL_SSIF0_WS,
     }
 }
-
-
-
-
-
-
-
-
 
 /// Take the masked units out of INIT in the TRM §37.4.2 start order: FFD (then BOOT), FFU, 2SRC,
 /// DVU, MIX, then IPC and OPC last.
@@ -735,8 +734,6 @@ pub(crate) unsafe fn stop_path(
     });
 }
 
-
-
 // ── Owned paths ───────────────────────────────────────────────────────────────
 
 use crate::dmac::ring::{Dir, RingDma};
@@ -851,7 +848,8 @@ struct Units {
 unsafe fn enable_units(u: Units) {
     critical_section::with(|_| {
         let dmacr = SCUX.dmacr_cim().read();
-        SCUX.dmacr_cim().write_value(dmacr | u.ffd as u32 | ((u.ffu as u32) << 4));
+        SCUX.dmacr_cim()
+            .write_value(dmacr | u.ffd as u32 | ((u.ffu as u32) << 4));
     });
     // SAFETY: the caller's contract.
     unsafe { clear_inits(u.ffd, u.ffu, u.src, u.dvu, false, u.ipc, u.opc) };
@@ -879,7 +877,9 @@ impl<'d, C: ChannelId> Channel<'d, C> {
             ffu.blocks,
             frame,
             ffu_chcfg(ffu_ch) & !crate::dmac::CHCFG_DEM,
-            Dir::PeriphToMem { src: SCUX.dmatu(n as usize).addr() as u32 },
+            Dir::PeriphToMem {
+                src: SCUX.dmatu(n as usize).addr() as u32,
+            },
             DMARS_SCURXI0 + 4 * n as u32,
         );
         // SAFETY: channel n's units are this path's.
@@ -893,7 +893,11 @@ impl<'d, C: ChannelId> Channel<'d, C> {
             control.after_start();
             control
         };
-        Path { control, tx: WritableRing::new(tx), rx: Some(ReadableRing::new(rx)) }
+        Path {
+            control,
+            tx: WritableRing::new(tx),
+            rx: Some(ReadableRing::new(rx)),
+        }
     }
 }
 
@@ -939,7 +943,10 @@ const fn ssictrl_tx_bit(ssi: u8) -> u32 {
 }
 
 /// Read-modify-write a SCUX register shared between channels, with interrupts masked.
-fn shared_update(reg: rza1_pac::common::Reg<u32, rza1_pac::common::RW>, f: impl FnOnce(u32) -> u32) {
+fn shared_update(
+    reg: rza1_pac::common::Reg<u32, rza1_pac::common::RW>,
+    f: impl FnOnce(u32) -> u32,
+) {
     critical_section::with(|_| reg.write_value(f(reg.read())));
 }
 
@@ -987,9 +994,16 @@ impl<'d, C: ChannelId> Channel<'d, C> {
         };
         out.enable();
         // The control stops the SSI's transmit when it drops.
-        control.route = Some(SsiRoute { ssi: S::INDEX, sosel_shift: C::SOSEL_SHIFT });
+        control.route = Some(SsiRoute {
+            ssi: S::INDEX,
+            sosel_shift: C::SOSEL_SHIFT,
+        });
         core::mem::forget(out);
-        Path { control, tx: WritableRing::new(tx), rx: None }
+        Path {
+            control,
+            tx: WritableRing::new(tx),
+            rx: None,
+        }
     }
 }
 
@@ -1003,7 +1017,9 @@ fn start_ffd<'d>(n: u8, ffd: RingBuf<'d>, frame: usize) -> RingDma<'d> {
         ffd.blocks,
         frame,
         ffd_chcfg(ch),
-        Dir::MemToPeriph { dst: SCUX.dmatd(n as usize).addr() as u32 },
+        Dir::MemToPeriph {
+            dst: SCUX.dmatd(n as usize).addr() as u32,
+        },
         DMARS_SCUTXI0 + 4 * n as u32,
     )
 }
@@ -1023,20 +1039,40 @@ unsafe fn configure_src_dvu<'d>(
     let bit = 1u8 << n;
     let (bypass, intifs, output_hz) = match src {
         Src::Bypass => (true, INTIFS_44100_TO_44100, None),
-        Src::Async { input_hz, output_hz } => (false, intifs(input_hz, output_hz), Some(output_hz)),
+        Src::Async {
+            input_hz,
+            output_hz,
+        } => (false, intifs(input_hz, output_hz), Some(output_hz)),
     };
     // SAFETY: the caller's contract.
     unsafe {
         configure_src(
             n / 2,
             n % 2,
-            SrcConfig { mode: SrcMode::Async, audio: format, bypass, intifs, mnfsr: 0, buf_size: 0 },
+            SrcConfig {
+                mode: SrcMode::Async,
+                audio: format,
+                bypass,
+                intifs,
+                mnfsr: 0,
+                buf_size: 0,
+            },
         );
     }
     let dvu_cfg = match dvu {
         Dvu::Bypass => None,
-        Dvu::Volume { volume, ramp, zero_cross_mute } => {
-            let cfg = DvuConfig { audio: format, bypass: false, volumes: [volume; 8], ramp, zero_cross_mute };
+        Dvu::Volume {
+            volume,
+            ramp,
+            zero_cross_mute,
+        } => {
+            let cfg = DvuConfig {
+                audio: format,
+                bypass: false,
+                volumes: [volume; 8],
+                ramp,
+                zero_cross_mute,
+            };
             // SAFETY: the caller's contract.
             unsafe { configure_dvu(n, cfg) };
             Some(cfg)
@@ -1044,7 +1080,12 @@ unsafe fn configure_src_dvu<'d>(
     };
     // Both legacy paths set the MIX to bypass, though no path runs through it.
     // SAFETY: the caller's contract.
-    unsafe { configure_mix(MixConfig { audio: format, bypass: true }) };
+    unsafe {
+        configure_mix(MixConfig {
+            audio: format,
+            bypass: true,
+        })
+    };
     Control {
         n,
         channels: format.channels,
@@ -1141,7 +1182,9 @@ impl Control<'_> {
     /// # Panics
     /// On a path whose SRC is bypassed.
     pub fn set_input_rate(&mut self, input_hz: u32) {
-        let output_hz = self.output_hz.expect("scux: set_input_rate on a bypassed SRC");
+        let output_hz = self
+            .output_hz
+            .expect("scux: set_input_rate on a bypassed SRC");
         // SAFETY: this path's SRC register.
         unsafe { src_update_intifs(self.n / 2, self.n % 2, intifs(input_hz, output_hz)) }
     }
@@ -1167,8 +1210,8 @@ impl Drop for Control<'_> {
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
-    use std::vec::Vec;
     use super::*;
+    use std::vec::Vec;
 
     #[test]
     fn an_input_rate_usb_x1_divides_is_paced_by_usb_x1() {
@@ -1212,10 +1255,6 @@ mod tests {
     // The path tests that run a legacy `init` hold the same lock and empty the FIFO tables
     // before releasing it, so every path is in its never-initialised state here. Reading the pointer then must panic
     // rather than read DMA registers at channel `u8::MAX`.
-
-
-
-
 
     #[test]
     fn the_pac_names_the_same_scux_registers() {
@@ -1324,28 +1363,64 @@ mod path_tests {
     /// Every SCUX register the legacy `scux::src_path::init(.., 48_000, 44_100)` wrote, with its final value
     /// (recorded from it before it was removed).
     const LEGACY_SRC_PATH: &[(usize, u32)] = &[
-        (0xE8208100, 0x00000000), (0xE8208104, 0x00000003), (0xE8208500, 0x00000000),
-        (0xE8208504, 0x00000003), (0xE8208900, 0x00000000), (0xE8208904, 0x00000002),
-        (0xE8208908, 0x00000008), (0xE820890C, 0x00000001), (0xE8208910, 0x00000001),
-        (0xE8208914, 0x00000000), (0xE8208D00, 0x00000000), (0xE8208D04, 0x00000002),
-        (0xE8208D08, 0x00000008), (0xE8208D0C, 0x00000001), (0xE8208D10, 0x00000000),
-        (0xE8209034, 0x00000000), (0xE8209038, 0x00000002), (0xE820903C, 0x00000000),
-        (0xE8209040, 0x00000001), (0xE8209044, 0x0045A8EC), (0xE8209048, 0x00010110),
-        (0xE820904C, 0x00000000), (0xE8209050, 0x00000000), (0xE8209068, 0x00000000),
-        (0xE8209604, 0x00000002), (0xE8209608, 0x00000001), (0xE8209704, 0x00000022),
+        (0xE8208100, 0x00000000),
+        (0xE8208104, 0x00000003),
+        (0xE8208500, 0x00000000),
+        (0xE8208504, 0x00000003),
+        (0xE8208900, 0x00000000),
+        (0xE8208904, 0x00000002),
+        (0xE8208908, 0x00000008),
+        (0xE820890C, 0x00000001),
+        (0xE8208910, 0x00000001),
+        (0xE8208914, 0x00000000),
+        (0xE8208D00, 0x00000000),
+        (0xE8208D04, 0x00000002),
+        (0xE8208D08, 0x00000008),
+        (0xE8208D0C, 0x00000001),
+        (0xE8208D10, 0x00000000),
+        (0xE8209034, 0x00000000),
+        (0xE8209038, 0x00000002),
+        (0xE820903C, 0x00000000),
+        (0xE8209040, 0x00000001),
+        (0xE8209044, 0x0045A8EC),
+        (0xE8209048, 0x00010110),
+        (0xE820904C, 0x00000000),
+        (0xE8209050, 0x00000000),
+        (0xE8209068, 0x00000000),
+        (0xE8209604, 0x00000002),
+        (0xE8209608, 0x00000001),
+        (0xE8209704, 0x00000022),
     ];
 
     /// The same for the legacy `scux::usb_tx_path::init(.., 48_000, 44_100)`.
     const LEGACY_USB_TX_PATH: &[(usize, u32)] = &[
-        (0xE8208200, 0x00000000), (0xE8208204, 0x00000003), (0xE8208600, 0x00000000),
-        (0xE8208604, 0x00000003), (0xE8208A00, 0x00000000), (0xE8208A04, 0x00000002),
-        (0xE8208A08, 0x00000008), (0xE8208A0C, 0x00000001), (0xE8208A10, 0x00000001),
-        (0xE8208A14, 0x00000000), (0xE8208E00, 0x00000000), (0xE8208E04, 0x00000002),
-        (0xE8208E08, 0x00000008), (0xE8208E0C, 0x00000001), (0xE8208E10, 0x00000000),
-        (0xE8209100, 0x00000000), (0xE8209104, 0x00000002), (0xE8209108, 0x00000000),
-        (0xE820910C, 0x00000001), (0xE8209110, 0x0045A8EC), (0xE8209114, 0x00010110),
-        (0xE8209118, 0x00000000), (0xE820911C, 0x00000000), (0xE8209168, 0x00000000),
-        (0xE8209604, 0x00000002), (0xE8209608, 0x00000001), (0xE8209704, 0x00000044),
+        (0xE8208200, 0x00000000),
+        (0xE8208204, 0x00000003),
+        (0xE8208600, 0x00000000),
+        (0xE8208604, 0x00000003),
+        (0xE8208A00, 0x00000000),
+        (0xE8208A04, 0x00000002),
+        (0xE8208A08, 0x00000008),
+        (0xE8208A0C, 0x00000001),
+        (0xE8208A10, 0x00000001),
+        (0xE8208A14, 0x00000000),
+        (0xE8208E00, 0x00000000),
+        (0xE8208E04, 0x00000002),
+        (0xE8208E08, 0x00000008),
+        (0xE8208E0C, 0x00000001),
+        (0xE8208E10, 0x00000000),
+        (0xE8209100, 0x00000000),
+        (0xE8209104, 0x00000002),
+        (0xE8209108, 0x00000000),
+        (0xE820910C, 0x00000001),
+        (0xE8209110, 0x0045A8EC),
+        (0xE8209114, 0x00010110),
+        (0xE8209118, 0x00000000),
+        (0xE820911C, 0x00000000),
+        (0xE8209168, 0x00000000),
+        (0xE8209604, 0x00000002),
+        (0xE8209608, 0x00000001),
+        (0xE8209704, 0x00000044),
     ];
 
     /// Every register `legacy` wrote ends with the same value under `new`.
@@ -1370,7 +1445,10 @@ mod path_tests {
         let path = chs.ch1.into_ffu_path(
             AudioInfo::STEREO_24,
             ring(unsafe { DMA_CH3::steal() }, 512),
-            Src::Async { input_hz: 48_000, output_hz: 44_100 },
+            Src::Async {
+                input_hz: 48_000,
+                output_hz: 44_100,
+            },
             Dvu::Bypass,
             ring(unsafe { DMA_CH5::steal() }, 512),
         );
@@ -1391,13 +1469,20 @@ mod path_tests {
         let _path = chs.ch2.into_ffu_path(
             AudioInfo::STEREO_24,
             ring(unsafe { DMA_CH2::steal() }, 512),
-            Src::Async { input_hz: 48_000, output_hz: 44_100 },
+            Src::Async {
+                input_hz: 48_000,
+                output_hz: 44_100,
+            },
             Dvu::Bypass,
             ring(unsafe { DMA_CH8::steal() }, 512),
         );
         assert_covers(&legacy, &scux_writes());
         assert_eq!((dmars(2), dmars(8)), (0x109, 0x10A), "FFD2 / FFU2 requests");
-        assert_eq!(SCUX.dmacr_cim().read() & 0xFF, 0b0100 | (0b0100 << 4), "only channel 2's");
+        assert_eq!(
+            SCUX.dmacr_cim().read() & 0xFF,
+            0b0100 | (0b0100 << 4),
+            "only channel 2's"
+        );
     }
 
     #[test]
@@ -1406,7 +1491,10 @@ mod path_tests {
         crate::clocks::init(crate::clocks::TEST_CLOCKS);
         test::reset();
         let chs = Scux::new(unsafe { crate::peripherals::SCUX::steal() });
-        let src = Src::Async { input_hz: 48_000, output_hz: 44_100 };
+        let src = Src::Async {
+            input_hz: 48_000,
+            output_hz: 44_100,
+        };
         let a = chs.ch1.into_ffu_path(
             AudioInfo::STEREO_24,
             ring(unsafe { DMA_CH3::steal() }, 512),
@@ -1424,7 +1512,11 @@ mod path_tests {
         assert_eq!(SCUX.dmacr_cim().read() & 0xFF, 0b0110 | (0b0110 << 4));
         let (control_a, _, _) = a.split();
         drop(control_a);
-        assert_eq!(SCUX.dmacr_cim().read() & 0xFF, 0b0100 | (0b0100 << 4), "dropping one stops only it");
+        assert_eq!(
+            SCUX.dmacr_cim().read() & 0xFF,
+            0b0100 | (0b0100 << 4),
+            "dropping one stops only it"
+        );
         drop(b);
     }
 
@@ -1438,7 +1530,11 @@ mod path_tests {
             AudioInfo::STEREO_24,
             ring(unsafe { DMA_CH2::steal() }, 512),
             Src::Bypass,
-            Dvu::Volume { volume: 0x0010_0000, ramp: None, zero_cross_mute: false },
+            Dvu::Volume {
+                volume: 0x0010_0000,
+                ramp: None,
+                zero_cross_mute: false,
+            },
             ring(unsafe { DMA_CH8::steal() }, 512),
         );
         let (mut control, _, _) = path.split();
@@ -1482,7 +1578,10 @@ mod ssi_path_tests {
     }
 
     #[cfg(feature = "rza1l")]
-    fn scux_output() -> (crate::ssi::ScuxOutput<'static, SSIF0>, crate::ssi::SsiRx<'static>) {
+    fn scux_output() -> (
+        crate::ssi::ScuxOutput<'static, SSIF0>,
+        crate::ssi::SsiRx<'static>,
+    ) {
         unsafe {
             crate::ssi::Ssi::new_with_scux_tx(
                 SSIF0::steal(),
@@ -1513,16 +1612,33 @@ mod ssi_path_tests {
             AudioInfo::STEREO_24,
             ring(unsafe { DMA_CH0::steal() }),
             Src::Bypass,
-            Dvu::Volume { volume: 0x0010_0000, ramp: None, zero_cross_mute: false },
+            Dvu::Volume {
+                volume: 0x0010_0000,
+                ramp: None,
+                zero_cross_mute: false,
+            },
             out,
         );
-        assert_eq!(test::peek32(SCUX.ipc(0).ipslr().addr()), IpcSel::FfdToSrcAsync as u32);
-        assert_eq!(test::peek32(SCUX.opc(0).opslr().addr()), OpcSel::ToSsi as u32);
-        assert_eq!(test::peek32(SCUX.ssirsel_cim().addr()) & 0b11, 0b00, "SOSEL0: SRC0");
+        assert_eq!(
+            test::peek32(SCUX.ipc(0).ipslr().addr()),
+            IpcSel::FfdToSrcAsync as u32
+        );
+        assert_eq!(
+            test::peek32(SCUX.opc(0).opslr().addr()),
+            OpcSel::ToSsi as u32
+        );
+        assert_eq!(
+            test::peek32(SCUX.ssirsel_cim().addr()) & 0b11,
+            0b00,
+            "SOSEL0: SRC0"
+        );
         let tsel = FDTSEL_DIVEN | FDTSEL_SCKSEL_SSIF0_WS;
         assert_eq!(test::peek32(SCUX.fdtsel(0).addr()), tsel);
         assert_eq!(test::peek32(SCUX.futsel(0).addr()), tsel);
-        assert_eq!(test::peek32(SCUX.ssictrl_cim().addr()) & SSICTRL_SSI0TX, SSICTRL_SSI0TX);
+        assert_eq!(
+            test::peek32(SCUX.ssictrl_cim().addr()) & SSICTRL_SSI0TX,
+            SSICTRL_SSI0TX
+        );
         assert_eq!(test::peek32(SCUX.dvu(0).volr(0).addr()), 0x0010_0000);
         let log = test::log();
         let opc_start = log
@@ -1538,10 +1654,26 @@ mod ssi_path_tests {
         assert!(rx.is_none());
         assert!(!control.converts(), "a bypassed SRC converts nothing");
         drop(control);
-        assert_eq!(test::peek32(SSICR) & SSICR_TEN, 0, "dropping the control stops transmit");
-        assert_eq!(test::peek32(SCUX.ssictrl_cim().addr()) & SSICTRL_SSI0TX, 0, "direct TX off");
-        assert_eq!(test::peek32(SCUX.fdtsel(0).addr()), 0, "FDTSEL0 back to its reset value");
-        assert_eq!(test::peek32(SCUX.futsel(0).addr()), 0, "FUTSEL0 back to its reset value");
+        assert_eq!(
+            test::peek32(SSICR) & SSICR_TEN,
+            0,
+            "dropping the control stops transmit"
+        );
+        assert_eq!(
+            test::peek32(SCUX.ssictrl_cim().addr()) & SSICTRL_SSI0TX,
+            0,
+            "direct TX off"
+        );
+        assert_eq!(
+            test::peek32(SCUX.fdtsel(0).addr()),
+            0,
+            "FDTSEL0 back to its reset value"
+        );
+        assert_eq!(
+            test::peek32(SCUX.futsel(0).addr()),
+            0,
+            "FUTSEL0 back to its reset value"
+        );
     }
 
     #[cfg(feature = "rza1l")]
@@ -1555,20 +1687,34 @@ mod ssi_path_tests {
         let path = chs.ch1.into_ssi_path(
             AudioInfo::STEREO_24,
             ring(unsafe { DMA_CH3::steal() }),
-            Src::Async { input_hz: 48_000, output_hz: 44_100 },
+            Src::Async {
+                input_hz: 48_000,
+                output_hz: 44_100,
+            },
             Dvu::Bypass,
             out,
         );
-        assert_eq!(test::peek32(SCUX.ssirsel_cim().addr()) & 0b11, 0b01, "SOSEL0: SRC1");
+        assert_eq!(
+            test::peek32(SCUX.ssirsel_cim().addr()) & 0b11,
+            0b01,
+            "SOSEL0: SRC1"
+        );
         let (control, _tx, _) = path.split();
         assert!(control.converts());
         drop(control);
-        assert_eq!(test::peek32(SCUX.ssirsel_cim().addr()) & 0b11, 0b00, "SOSEL0 back to SRC0");
+        assert_eq!(
+            test::peek32(SCUX.ssirsel_cim().addr()) & 0b11,
+            0b00,
+            "SOSEL0 back to SRC0"
+        );
     }
 
     #[test]
     fn ch0_to_ssif3_selects_sosel3_01() {
-        assert_eq!(<Ch0 as RoutesTo<crate::peripherals::SSIF3>>::SOSEL_SHIFT, 12);
+        assert_eq!(
+            <Ch0 as RoutesTo<crate::peripherals::SSIF3>>::SOSEL_SHIFT,
+            12
+        );
         assert_eq!(<Ch0 as RoutesTo<crate::peripherals::SSIF3>>::SOSEL, 0b01);
     }
 
@@ -1581,10 +1727,31 @@ mod ssi_path_tests {
     #[test]
     fn the_route_table_matches_ssirsel() {
         use crate::peripherals::{SSIF1, SSIF3};
-        assert_eq!((<Ch0 as RoutesTo<SSIF0>>::SOSEL_SHIFT, <Ch0 as RoutesTo<SSIF0>>::SOSEL), (0, 0));
-        assert_eq!((<Ch2 as RoutesTo<SSIF1>>::SOSEL_SHIFT, <Ch2 as RoutesTo<SSIF1>>::SOSEL), (4, 0));
-        assert_eq!((<Ch1 as RoutesTo<SSIF3>>::SOSEL_SHIFT, <Ch1 as RoutesTo<SSIF3>>::SOSEL), (12, 0));
-        assert_eq!([ssictrl_tx_bit(0), ssictrl_tx_bit(1), ssictrl_tx_bit(3)], [1 << 14, 1 << 13, 1 << 30]);
+        assert_eq!(
+            (
+                <Ch0 as RoutesTo<SSIF0>>::SOSEL_SHIFT,
+                <Ch0 as RoutesTo<SSIF0>>::SOSEL
+            ),
+            (0, 0)
+        );
+        assert_eq!(
+            (
+                <Ch2 as RoutesTo<SSIF1>>::SOSEL_SHIFT,
+                <Ch2 as RoutesTo<SSIF1>>::SOSEL
+            ),
+            (4, 0)
+        );
+        assert_eq!(
+            (
+                <Ch1 as RoutesTo<SSIF3>>::SOSEL_SHIFT,
+                <Ch1 as RoutesTo<SSIF3>>::SOSEL
+            ),
+            (12, 0)
+        );
+        assert_eq!(
+            [ssictrl_tx_bit(0), ssictrl_tx_bit(1), ssictrl_tx_bit(3)],
+            [1 << 14, 1 << 13, 1 << 30]
+        );
     }
 
     #[cfg(feature = "rza1l")]
@@ -1598,11 +1765,20 @@ mod ssi_path_tests {
         let _path = chs.ch0.into_ssi_path(
             AudioInfo::STEREO_24,
             ring(unsafe { DMA_CH0::steal() }),
-            Src::Async { input_hz: 48_000, output_hz: 44_100 },
+            Src::Async {
+                input_hz: 48_000,
+                output_hz: 44_100,
+            },
             Dvu::Bypass,
             out,
         );
-        assert_eq!(test::peek32(SCUX.fdtsel(0).addr()), input_timing(48_000) | FDTSEL_DIVEN);
-        assert_eq!(test::peek32(SCUX.futsel(0).addr()), FDTSEL_DIVEN | FDTSEL_SCKSEL_SSIF0_WS);
+        assert_eq!(
+            test::peek32(SCUX.fdtsel(0).addr()),
+            input_timing(48_000) | FDTSEL_DIVEN
+        );
+        assert_eq!(
+            test::peek32(SCUX.futsel(0).addr()),
+            FDTSEL_DIVEN | FDTSEL_SCKSEL_SSIF0_WS
+        );
     }
 }

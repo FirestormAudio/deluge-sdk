@@ -50,7 +50,6 @@
 //! | 247  | ENABLE_OLED                | —                               |
 
 #[cfg(target_os = "none")]
-
 #[cfg(target_os = "none")]
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 #[cfg(target_os = "none")]

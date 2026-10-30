@@ -122,7 +122,11 @@ pub struct Config {
 impl Default for Config {
     /// 115 200 bps, 8N1.
     fn default() -> Self {
-        Self { baudrate: 115_200, parity: Parity::None, stop_bits: StopBits::One }
+        Self {
+            baudrate: 115_200,
+            parity: Parity::None,
+            stop_bits: StopBits::One,
+        }
     }
 }
 
@@ -223,7 +227,6 @@ fn rx_ring(ring: usize) -> *mut u8 {
     unsafe { core::ptr::addr_of_mut!(DMA_RX_BUF[ring].0[0]) as *mut u8 }
 }
 
-
 // ---------------------------------------------------------------------------
 // DMA TX static storage
 // ---------------------------------------------------------------------------
@@ -296,7 +299,6 @@ fn scif(ch: usize) -> crate::pac::scif::Scif {
     ][ch]
 }
 
-
 // ---------------------------------------------------------------------------
 // Baud rate calculation
 // ---------------------------------------------------------------------------
@@ -336,7 +338,10 @@ fn scbrr(p1_hz: u32, baud: u32) -> u8 {
 unsafe fn configure(ch: usize, config: &Config) {
     debug_assert!(ch < NUM_CHANNELS);
     let brr = scbrr(crate::clocks::get().p1_hz(), config.baudrate);
-    debug!("uart: ch{} init at {} bps (SCBRR={})", ch, config.baudrate, brr);
+    debug!(
+        "uart: ch{} init at {} bps (SCBRR={})",
+        ch, config.baudrate, brr
+    );
     let sc = scif(ch);
 
     // 1. Stop all SCIF operations.
@@ -551,7 +556,11 @@ fn latch_rx_errors(ch: usize) {
         bits |= LATCH_OVERRUN;
     }
     if scfsr & ER != 0 {
-        bits |= if scfsr & PER != 0 && scfsr & FER == 0 { LATCH_PARITY } else { LATCH_FRAMING };
+        bits |= if scfsr & PER != 0 && scfsr & FER == 0 {
+            LATCH_PARITY
+        } else {
+            LATCH_FRAMING
+        };
     }
     if scfsr & BRK != 0 {
         bits |= LATCH_BREAK;
@@ -631,11 +640,13 @@ mod sealed {
 
 pin_trait!(
     /// A pin that can carry SCIF `T`'s transmit data (TxDn).
-    TxPin, Instance
+    TxPin,
+    Instance
 );
 pin_trait!(
     /// A pin that can carry SCIF `T`'s receive data (RxDn).
-    RxPin, Instance
+    RxPin,
+    Instance
 );
 
 /// A SCIF channel singleton (`peripherals::SCIF0`–`SCIF4`).
@@ -815,7 +826,10 @@ impl<'d> Uart<'d, Async> {
         sc.scr().write_value(Scr(scscr | RIE | RE | TE));
         let rx = UartRx {
             ch,
-            path: RxPath::Irq { rxi: T::RxInterrupt::ID, _buf: PhantomData },
+            path: RxPath::Irq {
+                rxi: T::RxInterrupt::ID,
+                _buf: PhantomData,
+            },
             _mode: PhantomData,
         };
         let tx = UartTx::new(ch, tx_dma);
@@ -870,7 +884,6 @@ impl<'d> Uart<'d, Async> {
         let tx = UartTx::new(T::INDEX, tx_dma);
         Self { rx, tx }
     }
-
 }
 
 impl<'d, M: Mode> Uart<'d, M> {
@@ -992,13 +1005,15 @@ impl<'d> UartRx<'d, Async> {
             sc.scr().write_value(Scr(TIE | RIE | RE | TE));
             debug!(
                 "uart: ch{} DMA RX active (dma_ch={}, buf={:#010x})",
-                ch,
-                dma_ch,
-                buf_base
+                ch, dma_ch, buf_base
             );
             Self {
                 ch,
-                path: RxPath::Dma(DmaRing { ring: T::RING, dma, base: buf_base }),
+                path: RxPath::Dma(DmaRing {
+                    ring: T::RING,
+                    dma,
+                    base: buf_base,
+                }),
                 _mode: PhantomData,
             }
         }
@@ -1046,7 +1061,8 @@ impl<'d> UartRx<'d, Async> {
     /// it never rewinds what the stolen receiver consumed.
     #[doc(hidden)]
     #[cfg(any(feature = "unstable-driver-steal", test))]
-    pub unsafe fn steal<T: RxDmaInstance, C: crate::dmac::Channel>() -> Option<UartRx<'static, Async>> {
+    pub unsafe fn steal<T: RxDmaInstance, C: crate::dmac::Channel>()
+    -> Option<UartRx<'static, Async>> {
         if !RX_DMA_ACTIVE[T::INDEX].load(Ordering::Acquire) {
             return None;
         }
@@ -1118,7 +1134,11 @@ impl<'d> UartTx<'d, Async> {
             }
             info!("uart: ch{} DMA TX active (dma_ch={})", ch, dma.number());
         }
-        Self { ch, dma: Mutex::new(dma), _mode: PhantomData }
+        Self {
+            ch,
+            dma: Mutex::new(dma),
+            _mode: PhantomData,
+        }
     }
 
     /// Send `buf`: by DMA, one transfer per 64 bytes, waking once per transfer; or without a DMA
@@ -1172,7 +1192,6 @@ impl<'d> UartTx<'d, Async> {
         }
         n
     }
-
 }
 
 impl<'d, M: Mode> UartTx<'d, M> {
@@ -1192,7 +1211,6 @@ impl<'d, M: Mode> UartTx<'d, M> {
 }
 
 // ── Blocking mode ─────────────────────────────────────────────────────────────
-
 
 impl<'d> Uart<'d, Blocking> {
     /// Bring SCIF `T` up with `config` on pins `tx` and `rx`, polled: no interrupt, no DMA. Any
@@ -1216,8 +1234,16 @@ impl<'d> Uart<'d, Blocking> {
         // Errors an earlier driver of this SCIF left latched aren't this one's.
         RX_ERROR[ch].store(0, Ordering::Release);
         Self {
-            rx: UartRx { ch, path: RxPath::Fifo, _mode: PhantomData },
-            tx: UartTx { ch, dma: Mutex::new(None), _mode: PhantomData },
+            rx: UartRx {
+                ch,
+                path: RxPath::Fifo,
+                _mode: PhantomData,
+            },
+            tx: UartTx {
+                ch,
+                dma: Mutex::new(None),
+                _mode: PhantomData,
+            },
         }
     }
 }
@@ -1404,7 +1430,6 @@ impl embedded_hal_nb::serial::Write<u8> for UartTx<'_, Blocking> {
 }
 
 // ── embedded-io-async impls ───────────────────────────────────────────────────
-
 
 impl embedded_io_async::ErrorType for UartRx<'_, Async> {
     type Error = Error;
@@ -1666,7 +1691,11 @@ mod typed_tests {
         test::poke16(b + 0x10, FER | ER);
         test::poke16(b + 0x24, 1);
         on_eri(2);
-        assert_eq!(test::peek16(b + 0x10) & ER, 0, "ER cleared (FER is read-only)");
+        assert_eq!(
+            test::peek16(b + 0x10) & ER,
+            0,
+            "ER cleared (FER is read-only)"
+        );
         assert_eq!(test::peek16(b + 0x24) & 1, 0, "ORER cleared");
         assert_eq!(take_error(2), Some(Error::Overrun));
         assert_eq!(take_error(2), Some(Error::Framing));
@@ -1771,7 +1800,10 @@ mod typed_tests {
                 rx_dma,
                 Some(tx_dma),
                 Irqs,
-                Config { baudrate: 31_250, ..Config::default() },
+                Config {
+                    baudrate: 31_250,
+                    ..Config::default()
+                },
             )
         }
         .split();
@@ -1811,12 +1843,24 @@ mod typed_tests {
             assert_eq!(*desc.add(2), rx.ring_base());
             assert_eq!(*desc.add(7), desc as u32);
         }
-        assert_eq!(RX_READ[0].load(Ordering::Relaxed), 0, "the ring starts empty");
+        assert_eq!(
+            RX_READ[0].load(Ordering::Relaxed),
+            0,
+            "the ring starts empty"
+        );
         // The ring raises no completion interrupt, so its DMAINT stays masked at the GIC as it was
         // before typed DMA; the transmit channel's is how a write learns it finished.
         // GICD_ICENABLER1 (0xE820_1184): DMAINT13 = 54 is bit 22, DMAINT10 = 51 is bit 19.
-        assert_ne!(test::peek32(0xE820_1184) & (1 << 22), 0, "receive DMAINT masked");
-        assert_eq!(test::peek32(0xE820_1184) & (1 << 19), 0, "transmit DMAINT left enabled");
+        assert_ne!(
+            test::peek32(0xE820_1184) & (1 << 22),
+            0,
+            "receive DMAINT masked"
+        );
+        assert_eq!(
+            test::peek32(0xE820_1184) & (1 << 19),
+            0,
+            "transmit DMAINT left enabled"
+        );
 
         // A write is one DMA transfer from the staging buffer; the DMAC's TC flag (CHSTAT bit 6),
         // set here as the hardware would, completes it.
@@ -1842,7 +1886,10 @@ mod typed_tests {
         assert!(scfsr_reads() > before, "flush checked TEND");
 
         // A baud change keeps both DMA requests enabled.
-        tx.set_config(&Config { baudrate: 200_000, ..Config::default() });
+        tx.set_config(&Config {
+            baudrate: 200_000,
+            ..Config::default()
+        });
         assert_eq!(
             test::peek8(b + 0x04),
             scbrr(crate::clocks::TEST_CLOCKS.p1_hz(), 200_000)
@@ -1865,7 +1912,10 @@ mod typed_tests {
                 rx_dma,
                 None,
                 Irqs,
-                Config { baudrate: 31_250, ..Config::default() },
+                Config {
+                    baudrate: 31_250,
+                    ..Config::default()
+                },
             )
         }
         .split();
@@ -2144,7 +2194,10 @@ mod irq_tests {
         test::poke16(SCFDR, 1);
         test::poke8(SCFRDR, byte);
         test::poke16(SCFSR, RDF);
-        unsafe { <RxInterruptHandler<SCIF2> as Handler<crate::interrupt::typelevel::RXI2>>::on_interrupt() };
+        unsafe {
+            <RxInterruptHandler<SCIF2> as Handler<crate::interrupt::typelevel::RXI2>>::on_interrupt(
+            )
+        };
     }
 
     #[test]
@@ -2199,7 +2252,10 @@ mod irq_tests {
         drop(rx);
         assert_eq!(test::peek16(SCSCR) & RIE, 0, "RIE cleared");
         // GICD_ICENABLER7 (0xE820_119C): RXI2 = 231 is bit 7.
-        assert!(test::writes().contains(&(0xE820_119C, 1 << 7)), "RXI2 masked");
+        assert!(
+            test::writes().contains(&(0xE820_119C, 1 << 7)),
+            "RXI2 masked"
+        );
         receive(0x99);
         // SAFETY: the leaked buffer outlives the test; nothing writes it now.
         assert_eq!(unsafe { core::slice::from_raw_parts(view, 4) }, [0; 4]);

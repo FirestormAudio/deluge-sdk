@@ -14,6 +14,9 @@ QEMU=armv7-unknown-linux-gnueabihf
 # the configured value instead of merging with it.
 export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_RUNNER="qemu-arm -cpu cortex-a9 -L /usr/arm-linux-gnueabihf"
 
+echo "==> rza1: rustfmt-clean"
+cargo fmt --all -- --check
+
 echo "==> rza1: nothing outside rza1/ in the dependency graph"
 # Every crate either comes from a registry/git source or lives in this workspace: a path dependency
 # reaching back into deluge-sdk (whatever it is named) would build here and break at the split.

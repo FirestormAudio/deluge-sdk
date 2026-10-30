@@ -174,10 +174,16 @@ async fn cancel_probe() {
         let read = sd::read_sectors(BASE, sectors, &mut buf[..(sectors as usize) * 512]);
         match select(read, Timer::after_micros(after_us)).await {
             Either::First(r) => {
-                info!("cancel: the {}-sector read finished first ({:?}); trying sooner", sectors, r)
+                info!(
+                    "cancel: the {}-sector read finished first ({:?}); trying sooner",
+                    sectors, r
+                )
             }
             Either::Second(()) => {
-                info!("cancel: dropped a {}-sector read after {} us", sectors, after_us);
+                info!(
+                    "cancel: dropped a {}-sector read after {} us",
+                    sectors, after_us
+                );
                 cancelled = true;
                 break;
             }
@@ -192,14 +198,20 @@ async fn cancel_probe() {
     let chstat = rza1_hal::pac::DMAC.ch(ch).chstat().read();
     // Stopped: EN (bit 0) clear and no bus transaction in flight (TACT, bit 2).
     if chstat & ((1 << 0) | (1 << 2)) != 0 {
-        error!("cancel: FAIL DMA channel {} still running after the drop (CHSTAT {:#010x})", ch, chstat);
+        error!(
+            "cancel: FAIL DMA channel {} still running after the drop (CHSTAT {:#010x})",
+            ch, chstat
+        );
         return;
     }
 
     match sd::read_sectors(BASE, 1, &mut buf[..512]).await {
         Err(sd::SdError::NotInitialized) => {}
         other => {
-            error!("cancel: FAIL the read after an abort returned {:?}, not NotInitialized", other);
+            error!(
+                "cancel: FAIL the read after an abort returned {:?}, not NotInitialized",
+                other
+            );
             return;
         }
     }
@@ -208,8 +220,14 @@ async fn cancel_probe() {
         return;
     }
     match read_region(BASE, SECTORS).await {
-        Ok(h) if h == reference => info!("cancel: PASS (DMA channel {} stopped, card re-initialised, data intact)", ch),
-        Ok(h) => error!("cancel: FAIL re-read checksum {:016x} != {:016x}", h, reference),
+        Ok(h) if h == reference => info!(
+            "cancel: PASS (DMA channel {} stopped, card re-initialised, data intact)",
+            ch
+        ),
+        Ok(h) => error!(
+            "cancel: FAIL re-read checksum {:016x} != {:016x}",
+            h, reference
+        ),
         Err(e) => error!("cancel: FAIL re-read after init: {:?}", e),
     }
 }

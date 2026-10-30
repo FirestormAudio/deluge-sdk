@@ -1,8 +1,8 @@
 //! The Deluge SYNC LED.
 
-use embedded_hal::digital::{OutputPin, StatefulOutputPin};
 #[cfg(target_os = "none")]
 use crate::plat::SyncLedPin;
+use embedded_hal::digital::{OutputPin, StatefulOutputPin};
 
 /// The Deluge SYNC LED (P6_7).
 ///

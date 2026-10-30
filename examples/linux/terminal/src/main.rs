@@ -57,7 +57,10 @@ impl Session {
 }
 
 fn now_ms() -> u32 {
-    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     // SAFETY: writing a timespec we own; CLOCK_MONOTONIC always exists.
     unsafe {
         libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);
@@ -73,7 +76,10 @@ fn relight_pads(
     pad_target: &mut PadTarget,
     dlg: &mut Deluge,
 ) -> Option<KeyPress> {
-    let key = ui.run(now_ms(), input, |f| keyboard.show(f, shift)).painted().flatten();
+    let key = ui
+        .run(now_ms(), input, |f| keyboard.show(f, shift))
+        .painted()
+        .flatten();
     pad_target.blit(ui.grid());
     let _ = pad_target.flush(dlg);
     key
@@ -108,7 +114,14 @@ fn main() {
     let mut exited: Option<i32> = None;
 
     // Initial paint: light the keyboard on the pads, draw the empty screen.
-    relight_pads(&mut ui, &keyboard, shift, PadInput::new(), &mut pad_target, &mut dlg);
+    relight_pads(
+        &mut ui,
+        &keyboard,
+        shift,
+        PadInput::new(),
+        &mut pad_target,
+        &mut dlg,
+    );
     render::render(&session.term.lock().unwrap().screen, &mut oled);
     let _ = oled.flush(&mut dlg);
 
@@ -140,7 +153,14 @@ fn main() {
                     shift = !shift;
                     // reflect the new shift state on the pad keyboard immediately
                     ui.request_repaint();
-                    relight_pads(&mut ui, &keyboard, shift, PadInput::new(), &mut pad_target, &mut dlg);
+                    relight_pads(
+                        &mut ui,
+                        &keyboard,
+                        shift,
+                        PadInput::new(),
+                        &mut pad_target,
+                        &mut dlg,
+                    );
                 } else if let Some(b) = keys::button_bytes(ev.id) {
                     let _ = session.pty.write_all(b);
                 }

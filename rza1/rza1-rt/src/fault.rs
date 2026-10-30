@@ -52,7 +52,12 @@ impl FaultInfo {
     /// Built by the code `#[fault]` generates, from `rza1_cpu_fault_report`'s arguments.
     #[doc(hidden)]
     pub fn __from_raw(pc: u32, kind: u32, lr: u32, sp: u32) -> Self {
-        Self { pc, kind: FaultKind::from_raw(kind), lr, sp }
+        Self {
+            pc,
+            kind: FaultKind::from_raw(kind),
+            lr,
+            sp,
+        }
     }
 
     /// The faulting address: DFAR for a data abort, IFAR for a prefetch abort, `None` for the

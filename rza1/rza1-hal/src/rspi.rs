@@ -106,7 +106,9 @@ const SPCMD0_32BIT: u16 = 0b0000_0011_0000_0000;
 /// If `bit_rate` is 0, or below the slowest rate SPBR reaches (`P1 / 512`).
 fn spbr_for(p1_hz: u32, bit_rate: u32) -> u8 {
     assert!(bit_rate > 0, "rspi: the frequency is 0");
-    let spbr = (p1_hz as u64).div_ceil(2 * bit_rate as u64).saturating_sub(1);
+    let spbr = (p1_hz as u64)
+        .div_ceil(2 * bit_rate as u64)
+        .saturating_sub(1);
     assert!(
         spbr <= 255,
         "rspi: frequency {} Hz is below the slowest divider at P1 = {} Hz",
@@ -200,7 +202,9 @@ unsafe fn init(ch: u8, config: &Config) {
     let _ = rspi(ch).spbfcr().read();
 
     // SPCMD0: 32-bit frame, mode 0
-    rspi(ch).spcmd0().write_value(SPCMD0_32BIT | mode_bits(config.mode));
+    rspi(ch)
+        .spcmd0()
+        .write_value(SPCMD0_32BIT | mode_bits(config.mode));
     let _ = rspi(ch).spcmd0().read();
 
     // SPCR: master mode, TX interrupt enable (for DMA trigger compatibility)
@@ -351,19 +355,23 @@ mod sealed {
 
 pin_trait!(
     /// A pin that can carry RSPI `T`'s clock (RSPCKn).
-    SckPin, Instance
+    SckPin,
+    Instance
 );
 pin_trait!(
     /// A pin that can carry RSPI `T`'s master-out data (MOSIn).
-    MosiPin, Instance
+    MosiPin,
+    Instance
 );
 pin_trait!(
     /// A pin that can carry RSPI `T`'s master-in data (MISOn).
-    MisoPin, Instance
+    MisoPin,
+    Instance
 );
 pin_trait!(
     /// A pin that can carry RSPI `T`'s slave select 0 (SSLn0).
-    SslPin, Instance
+    SslPin,
+    Instance
 );
 
 /// An RSPI channel singleton (`peripherals::RSPI0`–`RSPI2` on the RZ/A1L, `RSPI0`–`RSPI4` on the
@@ -473,7 +481,10 @@ pub struct Config {
 impl Default for Config {
     /// 1 MHz, SPI mode 0.
     fn default() -> Self {
-        Self { frequency: 1_000_000, mode: embedded_hal::spi::MODE_0 }
+        Self {
+            frequency: 1_000_000,
+            mode: embedded_hal::spi::MODE_0,
+        }
     }
 }
 
@@ -514,7 +525,10 @@ enum Width {
     /// Not known: a stolen handle, until its first switch.
     #[cfg_attr(
         not(any(feature = "unstable-driver-steal", test)),
-        expect(dead_code, reason = "only `Rspi::steal` builds a handle of unknown width")
+        expect(
+            dead_code,
+            reason = "only `Rspi::steal` builds a handle of unknown width"
+        )
     )]
     Unknown,
     Bits8,
@@ -640,7 +654,9 @@ impl<'d, M: Mode> Rspi<'d, M> {
 
     /// SPCMD0's CPOL/CPHA bits, read from SPCMD0 the first time on a stolen handle.
     fn mode_bits(&mut self) -> u16 {
-        *self.mode.get_or_insert_with(|| rspi(self.ch).spcmd0().read() & 0b11)
+        *self
+            .mode
+            .get_or_insert_with(|| rspi(self.ch).spcmd0().read() & 0b11)
     }
 
     /// Get ready for full-duplex frames of `width`: wait for TEND, switch to it if needed, reset the receive
@@ -677,7 +693,9 @@ impl<'d, M: Mode> Rspi<'d, M> {
         } else {
             return None;
         };
-        rspi(self.ch).spsr().write_value(spsr & !(SPSR_OVRF | SPSR_MODF));
+        rspi(self.ch)
+            .spsr()
+            .write_value(spsr & !(SPSR_OVRF | SPSR_MODF));
         Some(err)
     }
 
@@ -1167,7 +1185,10 @@ mod tests {
         let start = crate::mmio::test::log().len();
         SpiBus::<u8>::write(&mut r, &[1]).unwrap();
         let log = crate::mmio::test::log()[start..].to_vec();
-        let tend = log.iter().position(|a| !a.write && a.addr == SPSR).expect("SPSR read");
+        let tend = log
+            .iter()
+            .position(|a| !a.write && a.addr == SPSR)
+            .expect("SPSR read");
         let reset = log
             .iter()
             .position(|a| a.write && a.addr == SPBFCR && a.val & SPBFCR_RX_RESET as u32 != 0)
@@ -1200,7 +1221,11 @@ mod tests {
         r.begin(Width::Bits8);
         crate::mmio::test::poke8(SPSR, SPSR_SPRF | SPSR_TEND | SPSR_SPTEF | SPSR_OVRF);
         assert_eq!(r.frame(0), Err(Error::Overrun));
-        assert_eq!(crate::mmio::test::peek8(SPSR) & SPSR_OVRF, 0, "OVRF cleared");
+        assert_eq!(
+            crate::mmio::test::peek8(SPSR) & SPSR_OVRF,
+            0,
+            "OVRF cleared"
+        );
         assert_eq!(Error::Overrun.kind(), ErrorKind::Overrun);
         assert_eq!(Error::ModeFault.kind(), ErrorKind::ModeFault);
     }
@@ -1219,7 +1244,8 @@ mod tests {
     #[test]
     fn a_stolen_rspi_touches_no_register() {
         crate::mmio::test::reset();
-        let _rspi: Rspi<'_, crate::mode::Blocking> = unsafe { Rspi::steal::<crate::peripherals::RSPI0>() };
+        let _rspi: Rspi<'_, crate::mode::Blocking> =
+            unsafe { Rspi::steal::<crate::peripherals::RSPI0>() };
         assert!(crate::mmio::test::log().is_empty());
     }
 
@@ -1369,7 +1395,11 @@ mod async_tests {
         {
             let mut fut = core::pin::pin!(SpiBus::<u8>::transfer(&mut r, &mut buf, &[0x22]));
             assert!(fut.as_mut().poll(&mut cx).is_pending());
-            assert_eq!(test::peek8(SPCR) & SPCR_SPRIE, SPCR_SPRIE, "waiting on SPRI");
+            assert_eq!(
+                test::peek8(SPCR) & SPCR_SPRIE,
+                SPCR_SPRIE,
+                "waiting on SPRI"
+            );
             test::poke8(SPSR, SPSR_SPTEF | SPSR_TEND | SPSR_SPRF);
             test::poke8(SPDR, 0x11);
             unsafe {
@@ -1399,7 +1429,11 @@ mod async_tests {
             start = test::log().len();
         }
         let spcr = test::peek8(SPCR);
-        assert_eq!(spcr & (SPCR_SPRIE | SPCR_SPTIE | SPCR_SPEIE), 0, "interrupts masked");
+        assert_eq!(
+            spcr & (SPCR_SPRIE | SPCR_SPTIE | SPCR_SPEIE),
+            0,
+            "interrupts masked"
+        );
         assert!(
             test::log()[start..]
                 .iter()

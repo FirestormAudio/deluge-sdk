@@ -20,9 +20,7 @@ pub(super) unsafe fn init_with_link_descriptor(ch: u8, descriptor: *const u32, d
     unsafe {
         trace!(
             "dmac: ch{} init, desc={:#010x}, dmars={:#06x}",
-            ch,
-            descriptor as usize,
-            dmars_val
+            ch, descriptor as usize, dmars_val
         );
         // 1. Clear group DCTRL (priority mode / round-robin reset)
         trace!(
@@ -164,10 +162,7 @@ pub(super) unsafe fn current_dst(ch: u8) -> u32 {
 pub(super) unsafe fn init_register_mode(ch: u8, chcfg: u32, dst: u32, dmars: u32) {
     debug!(
         "dmac: ch{} register-mode init, chcfg={:#010x}, dst={:#010x}, dmars={:#06x}",
-        ch,
-        chcfg,
-        dst,
-        dmars
+        ch, chcfg, dst, dmars
     );
 
     // 1. Clear group DCTRL.
@@ -219,10 +214,7 @@ pub(super) fn on_dma_int(ch: u8) {
 pub(super) unsafe fn init_register_mode_rx(ch: u8, chcfg: u32, src: u32, dmars: u32) {
     debug!(
         "dmac: ch{} register-mode-rx init, chcfg={:#010x}, src={:#010x}, dmars={:#06x}",
-        ch,
-        chcfg,
-        src,
-        dmars
+        ch, chcfg, src, dmars
     );
 
     // 1. Clear group DCTRL.
@@ -263,9 +255,7 @@ pub(super) unsafe fn init_register_mode_rx(ch: u8, chcfg: u32, src: u32, dmars: 
 pub(super) unsafe fn start_transfer_rx(ch: u8, dst: u32, count: u32) {
     trace!(
         "dmac: ch{} start_transfer_rx dst={:#010x} count={}",
-        ch,
-        dst,
-        count
+        ch, dst, count
     );
     DMAC.ch(ch as usize).n0da().write_value(dst);
     DMAC.ch(ch as usize).n0tb().write_value(count);
@@ -285,9 +275,7 @@ pub(super) unsafe fn start_transfer_rx(ch: u8, dst: u32, count: u32) {
 pub(super) unsafe fn start_transfer(ch: u8, src: u32, count: u32) {
     trace!(
         "dmac: ch{} start_transfer src={:#010x} count={}",
-        ch,
-        src,
-        count
+        ch, src, count
     );
     DMAC.ch(ch as usize).n0sa().write_value(src);
     DMAC.ch(ch as usize).n0tb().write_value(count);

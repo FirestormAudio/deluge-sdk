@@ -118,8 +118,9 @@ pub fn init(pins: CvGatePins) {
         log::debug!("cv_gate: gate GPIOs ok");
 
         // ---- RSPI0 is the bus's: hold it for the whole linearity sequence ------
-        let mut bus = crate::bus::try_lock_rspi0()
-            .expect("cv_gate::init found RSPI0 busy: bring CV/gate up before the OLED starts drawing");
+        let mut bus = crate::bus::try_lock_rspi0().expect(
+            "cv_gate::init found RSPI0 busy: bring CV/gate up before the OLED starts drawing",
+        );
         bus.enter_32bit();
 
         // ---- MAX5136 linearity initialisation -----------------------------------
@@ -261,13 +262,21 @@ mod tests {
         };
         init(pins);
         // PSRn is 0xFCFE_3100 + 4n; the upper half selects the bit, the lower half is its level.
-        for (ch, psr, bit) in [(0u8, 0xFCFE_3108, 7), (1, 0xFCFE_3108, 8), (2, 0xFCFE_3108, 9), (3, 0xFCFE_3110, 0)] {
+        for (ch, psr, bit) in [
+            (0u8, 0xFCFE_3108, 7),
+            (1, 0xFCFE_3108, 8),
+            (2, 0xFCFE_3108, 9),
+            (3, 0xFCFE_3110, 0),
+        ] {
             test::reset();
             gate_set(ch, true);
             gate_set(ch, false);
             assert_eq!(
                 test::writes(),
-                [(psr, 1 << (bit + 16)), (psr, (1 << (bit + 16)) | (1 << bit))],
+                [
+                    (psr, 1 << (bit + 16)),
+                    (psr, (1 << (bit + 16)) | (1 << bit))
+                ],
                 "gate {ch}: on = low, off = high"
             );
         }

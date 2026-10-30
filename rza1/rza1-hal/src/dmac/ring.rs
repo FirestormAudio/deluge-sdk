@@ -39,7 +39,11 @@ pub(crate) enum Dir {
 /// divider, and `position` runs in interrupt handlers.
 #[inline]
 fn wrap(x: usize, n: usize) -> usize {
-    if n.is_power_of_two() { x & (n - 1) } else { x % n }
+    if n.is_power_of_two() {
+        x & (n - 1)
+    } else {
+        x % n
+    }
 }
 
 /// A channel sweeping a lent ring in `blocks` blocks, with an absolute position. Dropping it
@@ -124,7 +128,14 @@ impl<'d> RingDma<'d> {
             dma.init_with_link_descriptor(head, dmars);
             dma.channel_start();
         }
-        Self { dma, buf, _descs: descs, blocks, frame_words, dir }
+        Self {
+            dma,
+            buf,
+            _descs: descs,
+            blocks,
+            frame_words,
+            dir,
+        }
     }
 
     /// The ring's length in words.
@@ -144,7 +155,10 @@ impl<'d> RingDma<'d> {
             Dir::MemToPeriph { .. } => self.dma.current_src(),
             Dir::PeriphToMem { .. } => self.dma.current_dst(),
         };
-        let word = wrap((addr.wrapping_sub(self.buf.bus_addr()) / 4) as usize, self.len());
+        let word = wrap(
+            (addr.wrapping_sub(self.buf.bus_addr()) / 4) as usize,
+            self.len(),
+        );
         word - wrap(word, self.frame_words)
     }
 
@@ -207,7 +221,10 @@ impl Drop for RingDma<'_> {
         // A channel that won't halt keeps reading the ring and its descriptors after their borrows
         // end; nothing better than a warning is possible here.
         if !super::halt_channel(self.dma.number()) {
-            warn!("dmac ring: ch{} still active after the halt", self.dma.number());
+            warn!(
+                "dmac ring: ch{} still active after the halt",
+                self.dma.number()
+            );
         }
     }
 }
@@ -234,7 +251,10 @@ mod tests {
 
     /// A leaked table of `n` descriptors.
     fn table(n: usize) -> &'static mut [RingDesc] {
-        (0..n).map(|_| RingDesc::NEW).collect::<std::vec::Vec<_>>().leak()
+        (0..n)
+            .map(|_| RingDesc::NEW)
+            .collect::<std::vec::Vec<_>>()
+            .leak()
     }
 
     /// A 64-word ring in 4 blocks of 2-word frames, feeding 0xE820_B018, on `descs`.
@@ -243,7 +263,16 @@ mod tests {
         let buf = UncachedMut::new(std::vec![0u32; 64].leak()).unwrap();
         let dma = BlockDma::new(unsafe { DMA_CH11::steal() }, Irqs);
         let descs = RingDescs::new(descs).unwrap();
-        RingDma::start(dma, buf, descs, 4, 2, CHCFG, Dir::MemToPeriph { dst: 0xE820_B018 }, 0xE1)
+        RingDma::start(
+            dma,
+            buf,
+            descs,
+            4,
+            2,
+            CHCFG,
+            Dir::MemToPeriph { dst: 0xE820_B018 },
+            0xE1,
+        )
     }
 
     fn ring() -> RingDma<'static> {
@@ -273,8 +302,16 @@ mod tests {
             assert_eq!(word(i, 1), base + i as u32 * 64, "src of block {i}");
             assert_eq!(word(i, 2), 0xE820_B018);
             assert_eq!(word(i, 3), 64);
-            assert_eq!(word(i, 4) & (1 << 24), 0, "DEM clear: an END interrupt per block");
-            assert_eq!(word(i, 7), addr((i + 1) % 4) as u32, "block {i} links to the next");
+            assert_eq!(
+                word(i, 4) & (1 << 24),
+                0,
+                "DEM clear: an END interrupt per block"
+            );
+            assert_eq!(
+                word(i, 7),
+                addr((i + 1) % 4) as u32,
+                "block {i} links to the next"
+            );
         }
         let nxla = crate::pac::DMAC.ch(11).nxla().addr();
         assert_eq!(test::peek32(nxla), addr(0) as u32);
@@ -397,8 +434,13 @@ mod tests {
         let start = test::log().len();
         drop(r);
         let log = test::log()[start..].to_vec();
-        let clren = log.iter().position(|a| a.write && a.addr == chctrl && a.val & 2 != 0);
+        let clren = log
+            .iter()
+            .position(|a| a.write && a.addr == chctrl && a.val & 2 != 0);
         let stat = log.iter().rposition(|a| !a.write && a.addr == chstat);
-        assert!(matches!((clren, stat), (Some(c), Some(s)) if c < s), "CLREN, then CHSTAT polled");
+        assert!(
+            matches!((clren, stat), (Some(c), Some(s)) if c < s),
+            "CLREN, then CHSTAT polled"
+        );
     }
 }

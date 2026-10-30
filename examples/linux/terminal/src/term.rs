@@ -16,7 +16,11 @@ pub struct Screen {
 
 impl Screen {
     pub fn new() -> Self {
-        Self { cells: [[b' '; COLS]; ROWS], cx: 0, cy: 0 }
+        Self {
+            cells: [[b' '; COLS]; ROWS],
+            cx: 0,
+            cy: 0,
+        }
     }
 
     fn scroll_up(&mut self) {
@@ -40,7 +44,11 @@ impl Screen {
             self.line_feed();
         }
         // Only store single-byte printables; anything else becomes '?'.
-        let b = if c.is_ascii() && !c.is_control() { c as u8 } else { b'?' };
+        let b = if c.is_ascii() && !c.is_control() {
+            c as u8
+        } else {
+            b'?'
+        };
         self.cells[self.cy][self.cx] = b;
         self.cx += 1;
     }
@@ -120,7 +128,13 @@ impl Perform for Screen {
         }
     }
 
-    fn csi_dispatch(&mut self, params: &Params, _intermediates: &[u8], _ignore: bool, action: char) {
+    fn csi_dispatch(
+        &mut self,
+        params: &Params,
+        _intermediates: &[u8],
+        _ignore: bool,
+        action: char,
+    ) {
         match action {
             'H' | 'f' => {
                 let row = pn(params, 0).max(1) - 1;
@@ -146,7 +160,10 @@ pub struct Term {
 
 impl Term {
     pub fn new() -> Self {
-        Self { parser: Parser::new(), screen: Screen::new() }
+        Self {
+            parser: Parser::new(),
+            screen: Screen::new(),
+        }
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {

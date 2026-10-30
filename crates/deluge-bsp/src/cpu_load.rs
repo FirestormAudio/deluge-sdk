@@ -34,6 +34,12 @@ pub async fn report_task() {
         let spins = SPINS.swap(0, Ordering::Relaxed);
         idle = idle.max(spins);
         let load_permille = 1000 - (spins as u64 * 1000 / idle.max(1) as u64) as u32;
-        info!("load: {}.{}% (spins {} / idle {})", load_permille / 10, load_permille % 10, spins, idle);
+        info!(
+            "load: {}.{}% (spins {} / idle {})",
+            load_permille / 10,
+            load_permille % 10,
+            spins,
+            idle
+        );
     }
 }

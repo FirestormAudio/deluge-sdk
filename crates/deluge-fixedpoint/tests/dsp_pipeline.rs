@@ -36,7 +36,10 @@ fn fixed_point_gain_matches_scalar_reference() {
     }
 
     // Within Q31 quantisation plus the multiply's dropped LSB.
-    assert!(max_err < 1e-6, "gained signal error {max_err} vs scalar reference");
+    assert!(
+        max_err < 1e-6,
+        "gained signal error {max_err} vs scalar reference"
+    );
 }
 
 #[test]

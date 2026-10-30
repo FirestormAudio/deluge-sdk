@@ -60,10 +60,10 @@ pub mod iso;
 pub(crate) mod pipe;
 pub(crate) mod regs;
 
-pub use driver::{Rusb1Bus, Rusb1ControlPipe, Rusb1Driver, Rusb1EndpointIn, Rusb1EndpointOut};
-pub use host::{Rusb1Allocator, Rusb1HostDriver, Rusb1Pipe};
 use driver::dcd_int_handler;
+pub use driver::{Rusb1Bus, Rusb1ControlPipe, Rusb1Driver, Rusb1EndpointIn, Rusb1EndpointOut};
 use host::hcd_int_handler;
+pub use host::{Rusb1Allocator, Rusb1HostDriver, Rusb1Pipe};
 
 use core::marker::PhantomData;
 

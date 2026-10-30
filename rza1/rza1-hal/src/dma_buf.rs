@@ -123,7 +123,12 @@ impl<'a, W: Word> UncachedMut<'a, W> {
     /// If `len` is larger than the buffer: a transfer sized for more than the buffer holds would
     /// wait for data that never arrives.
     pub fn prefix(&mut self, len: usize) -> UncachedMut<'_, W> {
-        assert!(len <= self.0.len(), "prefix of {} words from a {}-word buffer", len, self.0.len());
+        assert!(
+            len <= self.0.len(),
+            "prefix of {} words from a {}-word buffer",
+            len,
+            self.0.len()
+        );
         UncachedMut(&mut self.0[..len])
     }
 
@@ -147,9 +152,16 @@ mod tests {
         let mut words = [0u32; 4];
         let buf = UncachedMut::<u32>::new(&mut words).unwrap();
         assert_eq!(buf.len(), 4);
-        assert_eq!(LAST_CHECKED_LEN.with(|l| l.get()), 16, "4 words checked as 16 bytes");
+        assert_eq!(
+            LAST_CHECKED_LEN.with(|l| l.get()),
+            16,
+            "4 words checked as 16 bytes"
+        );
         assert_eq!(UncachedMut::<u32>::new(&mut []).err(), Some(NotUncached));
-        assert_eq!(Uncached::<u32>::new(&[7u32; 2]).unwrap().as_slice(), &[7, 7]);
+        assert_eq!(
+            Uncached::<u32>::new(&[7u32; 2]).unwrap().as_slice(),
+            &[7, 7]
+        );
     }
 
     #[test]

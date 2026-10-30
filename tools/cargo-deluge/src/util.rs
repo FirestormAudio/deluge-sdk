@@ -24,7 +24,10 @@ pub(crate) fn locate_objcopy() -> Option<PathBuf> {
         }
     }
 
-    let sysroot = Command::new("rustc").args(["--print", "sysroot"]).output().ok()?;
+    let sysroot = Command::new("rustc")
+        .args(["--print", "sysroot"])
+        .output()
+        .ok()?;
     let sysroot = String::from_utf8(sysroot.stdout).ok()?;
     let verbose = Command::new("rustc").arg("-vV").output().ok()?;
     let verbose = String::from_utf8(verbose.stdout).ok()?;

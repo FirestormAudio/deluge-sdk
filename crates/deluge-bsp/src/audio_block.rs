@@ -12,7 +12,6 @@
 
 #![cfg(target_os = "none")]
 
-
 /// Codec sample rate.
 pub const SAMPLE_RATE_HZ: u32 = 44_100;
 
@@ -67,7 +66,11 @@ impl BlockState {
         let tx_wr = with_tx(|tx| ((tx.position() + TX_WRITE_AHEAD_FRAMES * 2) % tx.len()) & !1)
             .unwrap_or(0);
         let rx_rd = with_rx(|rx| rx.position() & !1).unwrap_or(0);
-        Self { rx_rd, tx_wr, lfsr: 0x1 }
+        Self {
+            rx_rd,
+            tx_wr,
+            lfsr: 0x1,
+        }
     }
 
     /// Fill `out` with the next received frames, if that many have arrived; `false` (and nothing
@@ -134,5 +137,8 @@ impl Default for BlockState {
 /// Before `audio::init`.
 #[cfg(feature = "audio-irq")]
 pub async fn wait_block() {
-    rx_block_signal().expect("audio::init hasn't run").wait().await;
+    rx_block_signal()
+        .expect("audio::init hasn't run")
+        .wait()
+        .await;
 }

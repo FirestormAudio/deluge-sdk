@@ -164,7 +164,9 @@ pub mod cache;
 /// The clock tree, derived from the board's crystal (set once at boot by the BSP).
 pub mod clocks;
 mod config;
-pub use config::{ClockOutput, ClockOutputOnChange, Config, CpgConfig, CpuClockRatio, ModuleClock, ModuleClocks};
+pub use config::{
+    ClockOutput, ClockOutputOnChange, Config, CpgConfig, CpuClockRatio, ModuleClock, ModuleClocks,
+};
 // Clock bring-up, which only the device `init` (and the tests) run.
 #[cfg(any(target_os = "none", test))]
 mod cpg;
@@ -211,7 +213,9 @@ mod init_tests {
     use crate::mmio::test;
 
     /// STBCR2–STBCR12 as the test writes them: arbitrary, so the order check can't pass by luck.
-    const STB: [u8; 11] = [0x6A, 0x80, 0x00, 0x00, 0x00, 0x24, 0x05, 0x00, 0x00, 0xDF, 0xFB];
+    const STB: [u8; 11] = [
+        0x6A, 0x80, 0x00, 0x00, 0x00, 0x24, 0x05, 0x00, 0x00, 0xDF, 0xFB,
+    ];
 
     #[test]
     fn the_pll_is_programmed_before_any_module_clock() {

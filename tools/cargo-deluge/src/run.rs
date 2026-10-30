@@ -149,8 +149,8 @@ fn print_progress(done: usize, total: usize) {
 /// platforms don't expose product strings); ambiguity is reported.
 fn discover_upload_port() -> Result<String, String> {
     use serialport::SerialPortType;
-    let ports = serialport::available_ports()
-        .map_err(|e| format!("enumerating serial ports: {e}"))?;
+    let ports =
+        serialport::available_ports().map_err(|e| format!("enumerating serial ports: {e}"))?;
 
     let mut deluge: Vec<(String, Option<String>)> = Vec::new();
     for p in ports {

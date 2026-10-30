@@ -30,9 +30,9 @@ use log::{debug, error, info};
 
 use embassy_executor::{Executor, Spawner};
 
-use rza1_alloc as allocator;
 use deluge_bsp::cv_gate;
 use deluge_bsp::uart as bsp_uart;
+use rza1_alloc as allocator;
 use rza1_hal::usb::init_device_mode;
 
 rza1_hal::bind_interrupts!(struct UsbIrqs {
@@ -114,9 +114,20 @@ fn main() -> ! {
     let sync_led = rza1_hal::gpio::Output::new(board.pins.sync_led, rza1_hal::gpio::Level::Low);
 
     info!("UART: initialising PIC...");
-    bsp_uart::init_pic(board.pic_uart, board.pins.pic, board.dma.pic_rx, board.dma.pic_tx, 31_250);
+    bsp_uart::init_pic(
+        board.pic_uart,
+        board.pins.pic,
+        board.dma.pic_rx,
+        board.dma.pic_tx,
+        31_250,
+    );
     // The SD slot's controller, once; `sd::init` identifies the card when it is needed.
-    deluge_bsp::sd::init_hw(board.sd_card, board.pins.sd, board.dma.sd_tx, board.dma.sd_rx);
+    deluge_bsp::sd::init_hw(
+        board.sd_card,
+        board.pins.sd,
+        board.dma.sd_tx,
+        board.dma.sd_rx,
+    );
     info!("UART: SCIF1 @ 31 250 baud");
 
     // RSPI0 is shared between OLED (8-bit) and CV DAC (32-bit). The bus brings it up;

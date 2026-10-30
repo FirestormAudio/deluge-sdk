@@ -160,7 +160,10 @@ fn main() {
             view.render_shutting_down(&mut target);
             let _ = target.flush(&mut dlg);
 
-            if run_shutdown("prepare").map(|s| s.success()).unwrap_or(false) {
+            if run_shutdown("prepare")
+                .map(|s| s.success())
+                .unwrap_or(false)
+            {
                 blank_panel(&mut dlg);
                 view.render_safe_to_power_off(&mut target);
                 let _ = target.flush(&mut dlg);

@@ -140,8 +140,8 @@ mod device {
     use rza1_hal::Peri;
     use rza1_hal::UNCACHED_MIRROR_OFFSET;
     use rza1_hal::cache;
-    use rza1_hal::dmac::{self, Dma};
     use rza1_hal::dma_buf::UncachedMut;
+    use rza1_hal::dmac::{self, Dma};
     use rza1_hal::sdhi::{self, Sdhi};
 
     use super::SdError;
@@ -691,7 +691,9 @@ mod device {
         dma.as_mut_slice()[..512].copy_from_slice(buf);
         controller().set_block_count(1);
         controller().set_arg(addr);
-        controller().write_blocks_dma(cmd, dma.prefix(512).as_source()).await?;
+        controller()
+            .write_blocks_dma(cmd, dma.prefix(512).as_source())
+            .await?;
         Ok(())
     }
 
@@ -734,7 +736,9 @@ mod device {
                 controller().set_block_count(chunk);
                 controller().set_arg(chunk_addr);
                 let chunk_bytes = (chunk as usize) * 512;
-                let xfer = controller().read_blocks_dma(cmd, dma.prefix(chunk_bytes)).await;
+                let xfer = controller()
+                    .read_blocks_dma(cmd, dma.prefix(chunk_bytes))
+                    .await;
                 // CMD18 (READ_MULTIPLE_BLOCK) runs in extended mode with auto-CMD12
                 // disabled (CMD18 | 0x7C00, [15:14]=01), so the card keeps streaming
                 // data until it receives STOP_TRANSMISSION.  The SD_STOP SEC bit only
@@ -1535,7 +1539,10 @@ mod tests {
     fn an_aborted_transfer_requires_reinit() {
         use core::sync::atomic::{AtomicBool, Ordering};
         let ready = AtomicBool::new(true);
-        assert_eq!(super::card_usable(true, &ready), Err(super::SdError::NotInitialized));
+        assert_eq!(
+            super::card_usable(true, &ready),
+            Err(super::SdError::NotInitialized)
+        );
         assert!(!ready.load(Ordering::Relaxed));
         assert_eq!(
             super::card_usable(false, &ready),

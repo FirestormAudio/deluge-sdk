@@ -71,7 +71,12 @@ pub unsafe fn init(pins: SdramPins) {
         log::debug!("sdram: init");
         // Address (P3_0–P3_14), data (P5_0–P5_15), then control (P2_0–P2_6: CS3#, RAS#, CAS#,
         // CKE, WE0#, WE1#, RD/!WR), all on alternative 1.
-        for pin in pins.address.into_iter().chain(pins.data).chain(pins.control) {
+        for pin in pins
+            .address
+            .into_iter()
+            .chain(pins.data)
+            .chain(pins.control)
+        {
             Flex::new(pin).set_as_alternate(Alternate::Alt1);
         }
 

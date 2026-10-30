@@ -19,8 +19,8 @@ use log::{error, info};
 
 use embassy_executor::{Executor, Spawner};
 
-use rza1_alloc as allocator;
 use deluge_bsp::uart as bsp_uart;
+use rza1_alloc as allocator;
 
 unsafe extern "C" {
     /// Start of the free SRAM heap region (set by the linker script).
@@ -82,9 +82,20 @@ fn main() -> ! {
     sync_led.set_as_output(sync_led.is_set_high().into());
 
     info!("UART: initialising PIC...");
-    bsp_uart::init_pic(board.pic_uart, board.pins.pic, board.dma.pic_rx, board.dma.pic_tx, 31_250);
+    bsp_uart::init_pic(
+        board.pic_uart,
+        board.pins.pic,
+        board.dma.pic_rx,
+        board.dma.pic_tx,
+        31_250,
+    );
     // The SD slot's controller, once; `sd::init` identifies the card when it is needed.
-    deluge_bsp::sd::init_hw(board.sd_card, board.pins.sd, board.dma.sd_tx, board.dma.sd_rx);
+    deluge_bsp::sd::init_hw(
+        board.sd_card,
+        board.pins.sd,
+        board.dma.sd_tx,
+        board.dma.sd_rx,
+    );
 
     unsafe { cortex_ar::interrupt::enable() };
     info!("IRQ: enabled — starting Embassy tasks");

@@ -385,6 +385,8 @@ mod tests {
         // Fill the output: the next block has no room, and is not rendered.
         while exchange(&mut brain, |_| {}) {}
         assert!(brain.out.vacant_len() < BLOCK_FRAMES);
-        assert!(!exchange(&mut brain, |_| panic!("rendered into a full output")));
+        assert!(!exchange(&mut brain, |_| panic!(
+            "rendered into a full output"
+        )));
     }
 }

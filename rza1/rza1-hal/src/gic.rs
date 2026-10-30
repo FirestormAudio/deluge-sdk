@@ -74,7 +74,8 @@ impl HandlerCell {
         HandlerCell(core::sync::atomic::AtomicUsize::new(0))
     }
     fn set(&self, h: HandlerFn) {
-        self.0.store(h as usize, core::sync::atomic::Ordering::Release);
+        self.0
+            .store(h as usize, core::sync::atomic::Ordering::Release);
     }
     #[cfg(any(target_os = "none", test))]
     fn get(&self) -> Option<HandlerFn> {
@@ -443,8 +444,9 @@ const SGIR_TARGET_SELF: u32 = 0b10 << 24;
 /// set-pending bit.
 pub(crate) fn pend(id: u16) {
     if id < 16 {
-        INTC.icdsgir()
-            .write_value(crate::pac::intc::regs::Icdsgir(SGIR_TARGET_SELF | id as u32));
+        INTC.icdsgir().write_value(crate::pac::intc::regs::Icdsgir(
+            SGIR_TARGET_SELF | id as u32,
+        ));
     } else if (id as usize) < INT_ID_TOTAL {
         INTC.icdispr((id >> 5) as usize)
             .write_value(1u32 << (id & 31));
@@ -570,10 +572,7 @@ pub unsafe extern "C" fn gic_dispatch(icciar: u32) {
                     error!(
                         "GIC: id={} handler pointer {:#010x} is not a code address - REFUSING to call \
                          it. {} of {} slots damaged. The dispatch table has been corrupted at runtime.",
-                        int_id,
-                        f as usize,
-                        damaged,
-                        INT_ID_TOTAL,
+                        int_id, f as usize, damaged, INT_ID_TOTAL,
                     );
                 } else {
                     // Re-enable IRQ to allow higher-priority interrupts to preempt.

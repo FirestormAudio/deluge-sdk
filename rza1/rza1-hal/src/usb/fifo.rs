@@ -314,10 +314,10 @@ pub(crate) unsafe fn fifo_select_pipe(fifo: &FifoPort, pipe_num: usize, isel: bo
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
-    use std::vec::Vec;
     use super::*;
     use crate::mmio::test;
     use crate::usb::regs::usb;
+    use std::vec::Vec;
 
     /// A `FifoPort` moves between contexts (it was `unsafe impl Send`; its `Reg`s now make it so).
     #[test]

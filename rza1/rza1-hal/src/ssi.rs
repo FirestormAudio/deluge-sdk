@@ -188,24 +188,33 @@ instances! {
 
 /// SSIF channel `n`'s registers.
 pub(crate) fn regs(n: u8) -> crate::pac::ssif::Ssif {
-    [crate::pac::SSIF0, crate::pac::SSIF1, crate::pac::SSIF2, crate::pac::SSIF3][n as usize]
+    [
+        crate::pac::SSIF0,
+        crate::pac::SSIF1,
+        crate::pac::SSIF2,
+        crate::pac::SSIF3,
+    ][n as usize]
 }
 
 pin_trait!(
     /// A pin that can carry SSI `T`'s bit clock (SSISCKn).
-    SckPin, Instance
+    SckPin,
+    Instance
 );
 pin_trait!(
     /// A pin that can carry SSI `T`'s word select (SSIWSn).
-    WsPin, Instance
+    WsPin,
+    Instance
 );
 pin_trait!(
     /// A pin that can carry SSI `T`'s transmit data (SSITxDn).
-    TxdPin, Instance
+    TxdPin,
+    Instance
 );
 pin_trait!(
     /// A pin that can carry SSI `T`'s receive data (SSIRxDn).
-    RxdPin, Instance
+    RxdPin,
+    Instance
 );
 
 /// The master clock divider (SSICR.CKDV): the bit clock is the master clock divided by this.
@@ -362,14 +371,32 @@ fn reset_and_configure(n: u8, config: &Config) {
 fn start_tx<T: Instance>(tx: RingBuf<'_>) -> RingDma<'_> {
     let ch = tx.dma.number();
     let dst = regs(T::INDEX).ssiftdr().addr() as u32;
-    RingDma::start(tx.dma, tx.buf, tx.descs, tx.blocks, 2, tx_chcfg(ch), Dir::MemToPeriph { dst }, T::DMARS_TX)
+    RingDma::start(
+        tx.dma,
+        tx.buf,
+        tx.descs,
+        tx.blocks,
+        2,
+        tx_chcfg(ch),
+        Dir::MemToPeriph { dst },
+        T::DMARS_TX,
+    )
 }
 
 /// Start SSIF `T`'s receive ring on `rx` (SSIFRDR as the source).
 fn start_rx<T: Instance>(rx: RingBuf<'_>) -> RingDma<'_> {
     let ch = rx.dma.number();
     let src = regs(T::INDEX).ssifrdr().addr() as u32;
-    RingDma::start(rx.dma, rx.buf, rx.descs, rx.blocks, 2, rx_chcfg(ch), Dir::PeriphToMem { src }, T::DMARS_RX)
+    RingDma::start(
+        rx.dma,
+        rx.buf,
+        rx.descs,
+        rx.blocks,
+        2,
+        rx_chcfg(ch),
+        Dir::PeriphToMem { src },
+        T::DMARS_RX,
+    )
 }
 
 /// Release the transmit FIFO and route its request to the DMAC.
@@ -416,7 +443,16 @@ impl Ssi {
         enable_rx_fifo(n);
         ssicr_update(n, |v| v | SSICR_TEN | SSICR_REN);
         debug!("ssi{}: full duplex streaming", n);
-        (SsiTx { ring: WritableRing::new(tx), n }, SsiRx { ring: ReadableRing::new(rx), n })
+        (
+            SsiTx {
+                ring: WritableRing::new(tx),
+                n,
+            },
+            SsiRx {
+                ring: ReadableRing::new(rx),
+                n,
+            },
+        )
     }
 
     /// Receive only, into `rx`.
@@ -436,7 +472,10 @@ impl Ssi {
         let rx = start_rx::<T>(rx);
         enable_rx_fifo(n);
         ssicr_update(n, |v| v | SSICR_REN);
-        SsiRx { ring: ReadableRing::new(rx), n }
+        SsiRx {
+            ring: ReadableRing::new(rx),
+            n,
+        }
     }
 
     /// Receive into `rx`; transmit is fed by a SCUX path, which takes the [`ScuxOutput`] and
@@ -625,7 +664,11 @@ mod config_tests {
         let mut c = Config::default();
         c.role = Role::Slave;
         assert_eq!(ssicr(&c) & (3 << 14), 0);
-        assert_eq!(ssicr(&c) & (0xF << 4), 0, "no divider without a clock to divide");
+        assert_eq!(
+            ssicr(&c) & (0xF << 4),
+            0,
+            "no divider without a clock to divide"
+        );
     }
 
     #[test]
@@ -651,9 +694,18 @@ mod config_tests {
     #[test]
     fn ssi_instances_know_their_dma_requests() {
         use crate::peripherals::{SSIF0, SSIF1, SSIF3};
-        assert_eq!((SSIF0::INDEX, SSIF0::DMARS_TX, SSIF0::DMARS_RX), (0, 0xE1, 0xE2));
-        assert_eq!((SSIF1::INDEX, SSIF1::DMARS_TX, SSIF1::DMARS_RX), (1, 0xE5, 0xE6));
-        assert_eq!((SSIF3::INDEX, SSIF3::DMARS_TX, SSIF3::DMARS_RX), (3, 0xED, 0xEE));
+        assert_eq!(
+            (SSIF0::INDEX, SSIF0::DMARS_TX, SSIF0::DMARS_RX),
+            (0, 0xE1, 0xE2)
+        );
+        assert_eq!(
+            (SSIF1::INDEX, SSIF1::DMARS_TX, SSIF1::DMARS_RX),
+            (1, 0xE5, 0xE6)
+        );
+        assert_eq!(
+            (SSIF3::INDEX, SSIF3::DMARS_TX, SSIF3::DMARS_RX),
+            (3, 0xED, 0xEE)
+        );
         assert_eq!(regs(3).ssicr().addr(), 0xE820_C800);
     }
 
@@ -728,17 +780,32 @@ mod driver_tests {
     fn ssi_new_programs_the_codec_config_and_starts_both_rings() {
         let _serial = serial();
         let (_tx, _rx) = duplex();
-        assert_eq!(test::peek32(ssicr_addr()), 0x002B_C020 | SSICR_TEN | SSICR_REN);
-        assert_eq!(test::peek32(0xFCFE_100C), 0x00E2_00E1, "DMARS3: ch7 receive, ch6 transmit");
+        assert_eq!(
+            test::peek32(ssicr_addr()),
+            0x002B_C020 | SSICR_TEN | SSICR_REN
+        );
+        assert_eq!(
+            test::peek32(0xFCFE_100C),
+            0x00E2_00E1,
+            "DMARS3: ch7 receive, ch6 transmit"
+        );
         let fcr = test::peek32(crate::pac::SSIF0.ssifcr().addr());
         assert_eq!(fcr & (SSIFCR_TFRST | SSIFCR_RFRST), 0, "FIFOs out of reset");
         assert_eq!(fcr & (SSIFCR_TIE | SSIFCR_RIE), SSIFCR_TIE | SSIFCR_RIE);
         let log = test::log();
-        let cr = log.iter().position(|a| a.write && a.addr == ssicr_addr()).unwrap();
+        let cr = log
+            .iter()
+            .position(|a| a.write && a.addr == ssicr_addr())
+            .unwrap();
         for ch in [6, 7] {
             let chctrl = crate::pac::DMAC.ch(ch).chctrl().addr();
-            let seten = log.iter().position(|a| a.write && a.addr == chctrl && a.val & 1 != 0);
-            assert!(matches!(seten, Some(s) if s > cr), "ch{ch} started after SSICR");
+            let seten = log
+                .iter()
+                .position(|a| a.write && a.addr == chctrl && a.val & 1 != 0);
+            assert!(
+                matches!(seten, Some(s) if s > cr),
+                "ch{ch} started after SSICR"
+            );
         }
     }
 
@@ -756,7 +823,10 @@ mod driver_tests {
                 Config::default(),
             )
         };
-        assert_eq!(test::peek32(ssicr_addr()) & (SSICR_TEN | SSICR_REN), SSICR_REN);
+        assert_eq!(
+            test::peek32(ssicr_addr()) & (SSICR_TEN | SSICR_REN),
+            SSICR_REN
+        );
     }
 
     #[test]
@@ -771,9 +841,18 @@ mod driver_tests {
             .position(|a| a.write && a.addr == ssicr_addr() && a.val & SSICR_TEN == 0)
             .expect("TEN cleared");
         let chctrl6 = crate::pac::DMAC.ch(6).chctrl().addr();
-        let clren = log.iter().position(|a| a.write && a.addr == chctrl6 && a.val & 2 != 0);
-        assert!(matches!(clren, Some(c) if c > ten_off), "TEN off, then the channel halts");
-        assert_eq!(test::peek32(ssicr_addr()) & SSICR_REN, SSICR_REN, "RX keeps running");
+        let clren = log
+            .iter()
+            .position(|a| a.write && a.addr == chctrl6 && a.val & 2 != 0);
+        assert!(
+            matches!(clren, Some(c) if c > ten_off),
+            "TEN off, then the channel halts"
+        );
+        assert_eq!(
+            test::peek32(ssicr_addr()) & SSICR_REN,
+            SSICR_REN,
+            "RX keeps running"
+        );
     }
 
     #[test]

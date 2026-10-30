@@ -42,8 +42,12 @@ pub fn init(
     fout_hz: u32,
 ) {
     // SAFETY: each buffer is lent once, here.
-    let (tx_buf, rx_buf) =
-        unsafe { (lend(core::ptr::addr_of_mut!(TX_BUF)), lend(core::ptr::addr_of_mut!(RX_BUF))) };
+    let (tx_buf, rx_buf) = unsafe {
+        (
+            lend(core::ptr::addr_of_mut!(TX_BUF)),
+            lend(core::ptr::addr_of_mut!(RX_BUF)),
+        )
+    };
     // SAFETY: each table is lent once, here.
     let (tx_descs, rx_descs) = unsafe {
         (
@@ -59,7 +63,10 @@ pub fn init(
             blocks: tx_descs.len(),
             descs: tx_descs,
         },
-        Src::Async { input_hz: fin_hz, output_hz: fout_hz },
+        Src::Async {
+            input_hz: fin_hz,
+            output_hz: fout_hz,
+        },
         Dvu::Bypass,
         RingBuf {
             dma: BlockDma::new(ffu, Irqs),

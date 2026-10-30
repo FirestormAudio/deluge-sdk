@@ -319,7 +319,9 @@ module_clocks! {
 /// STBCR2–STBCR12 at reset: CoreSight, the A/D converter's analog side and the realtime clock
 /// run, everything else is stopped, and every reserved bit (and STBCR2's HIZ) holds the value the
 /// manual says to write. Only MSTP bits ever change from here.
-const RESET_STBCR: [u8; 11] = [0x6A, 0xFD, 0xFF, 0xFF, 0xFE, 0x3F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
+const RESET_STBCR: [u8; 11] = [
+    0x6A, 0xFD, 0xFF, 0xFF, 0xFE, 0x3F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+];
 
 /// Which module clocks run (CPG STBCR2–STBCR12). Starts at the reset state; build the set with
 /// [`with`](Self::with) and [`without`](Self::without).
@@ -383,7 +385,9 @@ mod tests {
     /// STBCR2–STBCR12 at reset (RZ/A1L hardware manual §42.2): CoreSight (MSTP20), the A/D
     /// converter's analog side (MSTP31) and the realtime clock (MSTP60) run; everything else is
     /// stopped, and each reserved bit holds its fixed value.
-    const RESET_STBCR: [u8; 11] = [0x6A, 0xFD, 0xFF, 0xFF, 0xFE, 0x3F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
+    const RESET_STBCR: [u8; 11] = [
+        0x6A, 0xFD, 0xFF, 0xFF, 0xFE, 0x3F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    ];
 
     fn stbcr_all(m: &ModuleClocks) -> [u8; 11] {
         core::array::from_fn(|i| m.stbcr(i as u8 + 2))
@@ -418,10 +422,24 @@ mod tests {
         #[cfg(feature = "rza1h")]
         const STBCR10_RESERVED: u8 = 0x01;
         // Every module running: only the reserved bits are left, at their fixed values.
-        let all = ModuleClock::ALL.iter().fold(ModuleClocks::new(), |m, &c| m.with(c));
+        let all = ModuleClock::ALL
+            .iter()
+            .fold(ModuleClocks::new(), |m, &c| m.with(c));
         assert_eq!(
             stbcr_all(&all),
-            [0x6A, 0x11, 0x07, 0x3C, 0x3C, 0x2C, 0xE1, 0x05, STBCR10_RESERVED, 0xC3, 0xF0]
+            [
+                0x6A,
+                0x11,
+                0x07,
+                0x3C,
+                0x3C,
+                0x2C,
+                0xE1,
+                0x05,
+                STBCR10_RESERVED,
+                0xC3,
+                0xF0
+            ]
         );
     }
 
@@ -453,7 +471,13 @@ mod tests {
         let c = Config::new(crate::clocks::ClockConfig::new(13_333_333));
         assert_eq!(c.cpg, CpgConfig::default());
         assert_eq!(c.module_clocks, ModuleClocks::default());
-        assert_eq!(c.dma_interrupt_priority, crate::interrupt::Priority::DEFAULT);
-        assert_eq!(c.time_interrupt_priority, crate::interrupt::Priority::DEFAULT);
+        assert_eq!(
+            c.dma_interrupt_priority,
+            crate::interrupt::Priority::DEFAULT
+        );
+        assert_eq!(
+            c.time_interrupt_priority,
+            crate::interrupt::Priority::DEFAULT
+        );
     }
 }

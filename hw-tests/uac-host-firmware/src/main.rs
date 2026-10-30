@@ -62,7 +62,13 @@ fn main() -> ! {
     unsafe { allocator::SDRAM.init(0x0C00_0000 as *mut u8, 64 * 1024 * 1024) };
 
     let sync_led = rza1_hal::gpio::Output::new(board.pins.sync_led, rza1_hal::gpio::Level::Low);
-    bsp_uart::init_pic(board.pic_uart, board.pins.pic, board.dma.pic_rx, board.dma.pic_tx, 31_250);
+    bsp_uart::init_pic(
+        board.pic_uart,
+        board.pins.pic,
+        board.dma.pic_rx,
+        board.dma.pic_tx,
+        31_250,
+    );
     deluge_bsp::bus::init(board.shared_spi, board.pins.spi, board.dma.oled);
     cv_gate::init(board.pins.cv_gate);
 

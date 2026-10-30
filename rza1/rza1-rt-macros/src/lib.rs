@@ -16,7 +16,10 @@ fn error(span: Span, msg: &str) -> TokenStream2 {
 /// error to emit in its place.
 fn parse(attr: TokenStream2, item: TokenStream2, name: &str) -> Result<ItemFn, TokenStream2> {
     if !attr.is_empty() {
-        return Err(error(Span::call_site(), &format!("`#[{name}]` takes no arguments")));
+        return Err(error(
+            Span::call_site(),
+            &format!("`#[{name}]` takes no arguments"),
+        ));
     }
     syn::parse2(item).map_err(|e| e.to_compile_error())
 }
@@ -55,7 +58,11 @@ fn expand_entry(attr: TokenStream2, item: TokenStream2) -> TokenStream2 {
         Err(e) => return e,
     };
     let sig = &f.sig;
-    if !plain(sig) || !matches!(sig.safety, Safety::Default) || !sig.inputs.is_empty() || !returns_never(&sig.output) {
+    if !plain(sig)
+        || !matches!(sig.safety, Safety::Default)
+        || !sig.inputs.is_empty()
+        || !returns_never(&sig.output)
+    {
         return error(Span::call_site(), "`#[entry]` expects `fn() -> !`");
     }
     // Renamed and private: the only way in is the reset handler's `bl main`.
@@ -80,8 +87,15 @@ fn expand_irq(attr: TokenStream2, item: TokenStream2) -> TokenStream2 {
         Err(e) => return e,
     };
     let sig = &f.sig;
-    if !plain(sig) || !matches!(sig.safety, Safety::Unsafe(_)) || !only_input_is_u32(sig) || !matches!(sig.output, ReturnType::Default) {
-        return error(Span::call_site(), "`#[irq]` expects `unsafe fn(u32)` (the ICCIAR value)");
+    if !plain(sig)
+        || !matches!(sig.safety, Safety::Unsafe(_))
+        || !only_input_is_u32(sig)
+        || !matches!(sig.output, ReturnType::Default)
+    {
+        return error(
+            Span::call_site(),
+            "`#[irq]` expects `unsafe fn(u32)` (the ICCIAR value)",
+        );
     }
     let name = &sig.ident;
     quote! {
@@ -104,8 +118,15 @@ fn expand_fault(attr: TokenStream2, item: TokenStream2) -> TokenStream2 {
         Err(e) => return e,
     };
     let sig = &f.sig;
-    if !plain(sig) || !matches!(sig.safety, Safety::Default) || !one_typed_input(sig) || !returns_never(&sig.output) {
-        return error(Span::call_site(), "`#[fault]` expects `fn(&FaultInfo) -> !`");
+    if !plain(sig)
+        || !matches!(sig.safety, Safety::Default)
+        || !one_typed_input(sig)
+        || !returns_never(&sig.output)
+    {
+        return error(
+            Span::call_site(),
+            "`#[fault]` expects `fn(&FaultInfo) -> !`",
+        );
     }
     let name = &sig.ident;
     quote! {
@@ -162,7 +183,14 @@ mod tests {
 
     #[test]
     fn entry_exports_main_and_type_checks() {
-        let out = squash(expand_entry(quote!(), quote!(fn main() -> ! { loop {} })));
+        let out = squash(expand_entry(
+            quote!(),
+            quote!(
+                fn main() -> ! {
+                    loop {}
+                }
+            ),
+        ));
         assert!(out.contains("export_name=\"main\""), "{out}");
         assert!(out.contains("fn()->!"), "{out}");
         assert!(!out.contains("compile_error"), "{out}");
@@ -170,43 +198,102 @@ mod tests {
 
     #[test]
     fn entry_rejects_arguments() {
-        let out = expand_entry(quote!(), quote!(fn main(x: u32) -> ! { loop {} })).to_string();
-        assert!(out.contains("compile_error") && out.contains(ENTRY_ERR), "{out}");
+        let out = expand_entry(
+            quote!(),
+            quote!(
+                fn main(x: u32) -> ! {
+                    loop {}
+                }
+            ),
+        )
+        .to_string();
+        assert!(
+            out.contains("compile_error") && out.contains(ENTRY_ERR),
+            "{out}"
+        );
     }
 
     #[test]
     fn entry_rejects_a_return_value() {
-        let out = expand_entry(quote!(), quote!(fn main() {})).to_string();
-        assert!(out.contains("compile_error") && out.contains(ENTRY_ERR), "{out}");
+        let out = expand_entry(
+            quote!(),
+            quote!(
+                fn main() {}
+            ),
+        )
+        .to_string();
+        assert!(
+            out.contains("compile_error") && out.contains(ENTRY_ERR),
+            "{out}"
+        );
     }
 
     #[test]
     fn entry_rejects_async() {
-        let out = expand_entry(quote!(), quote!(async fn main() -> ! { loop {} })).to_string();
-        assert!(out.contains("compile_error") && out.contains(ENTRY_ERR), "{out}");
+        let out = expand_entry(
+            quote!(),
+            quote!(
+                async fn main() -> ! {
+                    loop {}
+                }
+            ),
+        )
+        .to_string();
+        assert!(
+            out.contains("compile_error") && out.contains(ENTRY_ERR),
+            "{out}"
+        );
     }
 
     #[test]
     fn entry_rejects_unsafe_generic_and_extern() {
         for item in [
-            quote!(unsafe fn main() -> ! { loop {} }),
-            quote!(fn main<T>() -> ! { loop {} }),
-            quote!(extern "C" fn main() -> ! { loop {} }),
+            quote!(
+                unsafe fn main() -> ! {
+                    loop {}
+                }
+            ),
+            quote!(
+                fn main<T>() -> ! {
+                    loop {}
+                }
+            ),
+            quote!(
+                extern "C" fn main() -> ! {
+                    loop {}
+                }
+            ),
         ] {
             let out = expand_entry(quote!(), item).to_string();
-            assert!(out.contains("compile_error") && out.contains(ENTRY_ERR), "{out}");
+            assert!(
+                out.contains("compile_error") && out.contains(ENTRY_ERR),
+                "{out}"
+            );
         }
     }
 
     #[test]
     fn entry_rejects_attribute_arguments() {
-        let out = expand_entry(quote!(foo), quote!(fn main() -> ! { loop {} })).to_string();
+        let out = expand_entry(
+            quote!(foo),
+            quote!(
+                fn main() -> ! {
+                    loop {}
+                }
+            ),
+        )
+        .to_string();
         assert!(out.contains("compile_error"), "{out}");
     }
 
     #[test]
     fn irq_exports_gic_dispatch() {
-        let out = squash(expand_irq(quote!(), quote!(unsafe fn on_irq(icciar: u32) {})));
+        let out = squash(expand_irq(
+            quote!(),
+            quote!(
+                unsafe fn on_irq(icciar: u32) {}
+            ),
+        ));
         assert!(out.contains("export_name=\"gic_dispatch\""), "{out}");
         assert!(out.contains("extern\"C\""), "{out}");
         assert!(!out.contains("compile_error"), "{out}");
@@ -214,50 +301,107 @@ mod tests {
 
     #[test]
     fn irq_rejects_a_safe_fn() {
-        let out = expand_irq(quote!(), quote!(fn on_irq(icciar: u32) {})).to_string();
-        assert!(out.contains("compile_error") && out.contains("unsafe fn(u32)"), "{out}");
+        let out = expand_irq(
+            quote!(),
+            quote!(
+                fn on_irq(icciar: u32) {}
+            ),
+        )
+        .to_string();
+        assert!(
+            out.contains("compile_error") && out.contains("unsafe fn(u32)"),
+            "{out}"
+        );
     }
 
     #[test]
     fn fault_exports_the_report_symbol() {
         let out = squash(expand_fault(
             quote!(),
-            quote!(fn on_fault(info: &rza1_rt::FaultInfo) -> ! { loop {} }),
+            quote!(
+                fn on_fault(info: &rza1_rt::FaultInfo) -> ! {
+                    loop {}
+                }
+            ),
         ));
-        assert!(out.contains("export_name=\"rza1_cpu_fault_report\""), "{out}");
+        assert!(
+            out.contains("export_name=\"rza1_cpu_fault_report\""),
+            "{out}"
+        );
         assert!(out.contains("extern\"C\""), "{out}");
         assert!(!out.contains("compile_error"), "{out}");
     }
 
     #[test]
     fn fault_rejects_two_parameters() {
-        let out = expand_fault(quote!(), quote!(fn on_fault(a: u32, b: u32) -> ! { loop {} })).to_string();
-        assert!(out.contains("compile_error") && out.contains("fn(&FaultInfo) -> !"), "{out}");
+        let out = expand_fault(
+            quote!(),
+            quote!(
+                fn on_fault(a: u32, b: u32) -> ! {
+                    loop {}
+                }
+            ),
+        )
+        .to_string();
+        assert!(
+            out.contains("compile_error") && out.contains("fn(&FaultInfo) -> !"),
+            "{out}"
+        );
     }
 
     #[test]
     fn fault_wrapper_arguments_do_not_shadow_the_handler() {
         // A handler named like one of the reporter's arguments must still be the one called.
-        let out = squash(expand_fault(quote!(), quote!(fn pc(info: &rza1_rt::FaultInfo) -> ! { loop {} })));
+        let out = squash(expand_fault(
+            quote!(),
+            quote!(
+                fn pc(info: &rza1_rt::FaultInfo) -> ! {
+                    loop {}
+                }
+            ),
+        ));
         assert!(!out.contains("(pc:u32"), "{out}");
         assert!(out.contains("=pc;"), "{out}");
     }
 
     #[test]
     fn irq_wrapper_argument_does_not_shadow_the_handler() {
-        let out = squash(expand_irq(quote!(), quote!(unsafe fn icciar(v: u32) {})));
+        let out = squash(expand_irq(
+            quote!(),
+            quote!(
+                unsafe fn icciar(v: u32) {}
+            ),
+        ));
         assert!(!out.contains("(icciar:u32"), "{out}");
     }
 
     #[test]
     fn irq_rejects_a_u16_parameter() {
-        let out = expand_irq(quote!(), quote!(unsafe fn on_irq(x: u16) {})).to_string();
-        assert!(out.contains("compile_error") && out.contains("unsafe fn(u32)"), "{out}");
+        let out = expand_irq(
+            quote!(),
+            quote!(
+                unsafe fn on_irq(x: u16) {}
+            ),
+        )
+        .to_string();
+        assert!(
+            out.contains("compile_error") && out.contains("unsafe fn(u32)"),
+            "{out}"
+        );
     }
 
     #[test]
     fn fault_rejects_a_returning_handler() {
-        let out = expand_fault(quote!(), quote!(fn on_fault(info: &rza1_rt::FaultInfo) {})).to_string();
-        assert!(out.contains("compile_error") && out.contains("fn(&FaultInfo) -> !"), "{out}");
+        let out = expand_fault(
+            quote!(),
+            quote!(
+                fn on_fault(info: &rza1_rt::FaultInfo) {}
+            ),
+        )
+        .to_string();
+        assert!(
+            out.contains("compile_error") && out.contains("fn(&FaultInfo) -> !"),
+            "{out}"
+        );
     }
 }

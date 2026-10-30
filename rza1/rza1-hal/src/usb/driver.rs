@@ -52,9 +52,9 @@ use super::fifo::{
 };
 use super::pipe::{
     BufAllocator, PIPE_COUNT, PIPE_DONE, PIPE_IS_IN, PIPE_NRDY, PIPE_WAKERS, PIPE_XFER, PipeConfig,
-    XferType, pipe_bemp_disable, pipe_bemp_enable, pipe_brdy_disable,
-    pipe_brdy_enable, pipe_configure, pipe_disable, pipe_enable, pipe_iso_in_activate, pipe_reset,
-    pipe_stall, pipe_xfer_in_bemp, pipe_xfer_in_brdy, pipe_xfer_in_start, pipe_xfer_out_brdy,
+    XferType, pipe_bemp_disable, pipe_bemp_enable, pipe_brdy_disable, pipe_brdy_enable,
+    pipe_configure, pipe_disable, pipe_enable, pipe_iso_in_activate, pipe_reset, pipe_stall,
+    pipe_xfer_in_bemp, pipe_xfer_in_brdy, pipe_xfer_in_start, pipe_xfer_out_brdy,
 };
 use super::regs::{
     BUSWAIT_VALUE, DCPMAXP_MXPS_MASK, DVSQ_DEFAULT, DVSQ_SUSP0, DVSTCTR0_RHST, DVSTCTR0_RHST_FS,
@@ -529,8 +529,7 @@ impl<'d> Driver<'d> for Rusb1Driver<'d> {
     fn start(self, control_max_packet_size: u16) -> (Self::Bus, Self::ControlPipe) {
         debug!(
             "usb{}: start (ctrl mps={})",
-            self.port,
-            control_max_packet_size
+            self.port, control_max_packet_size
         );
         unsafe {
             let u = usb(self.port);
@@ -731,9 +730,7 @@ impl Bus for Rusb1Bus {
                 if rb == intenb {
                     debug!(
                         "usb{}: INTENB0={:#06x} verified (attempt {})",
-                        self.port,
-                        rb,
-                        attempt
+                        self.port, rb, attempt
                     );
                     break;
                 }
@@ -799,7 +796,10 @@ impl Bus for Rusb1Bus {
                 && generation != 0
                 && ENABLED_GEN[port][p].load(Ordering::Acquire) == generation
             {
-                debug!("usb{} P{} disable skipped: this request's selected alt enabled it", port, p);
+                debug!(
+                    "usb{} P{} disable skipped: this request's selected alt enabled it",
+                    port, p
+                );
                 return;
             }
             if enabled {
@@ -1001,9 +1001,7 @@ impl ControlPipe for Rusb1ControlPipe {
             fifo_bclr(&fifo);
             trace!(
                 "usb{}: data_out read {} bytes (fifo had {})",
-                self.port,
-                len,
-                vld
+                self.port, len, vld
             );
             Ok(len)
         }
@@ -1231,7 +1229,11 @@ impl EndpointOut for Rusb1EndpointOut {
         // For non-ISO: BRDY is disabled between reads so the ISR doesn't fire when no transfer
         // state is set up. For ISO: BRDYENB stays set so we don't lose packets that arrive before
         // the next read() call re-arms the pipe.
-        let _idle = IdleOnDrop { port: self.port, pipe, brdy_off: !is_iso };
+        let _idle = IdleOnDrop {
+            port: self.port,
+            pipe,
+            brdy_off: !is_iso,
+        };
 
         // Clear a completion or error the last transfer on this pipe left behind (its reader
         // dropped, or a bus reset disabled the pipe) before arming this one, as `write` does;
@@ -1397,7 +1399,11 @@ impl EndpointIn for Rusb1EndpointIn {
             state.buf_bytes = self.buf_bytes;
             state.xfer_type = endpoint_type_to_xfer(self.info.ep_type);
         });
-        let _idle = IdleOnDrop { port: self.port, pipe, brdy_off: false };
+        let _idle = IdleOnDrop {
+            port: self.port,
+            pipe,
+            brdy_off: false,
+        };
 
         // Clear any stale completion / error state from a previous transfer
         // before arming this one.  A leftover PIPE_DONE bit (e.g. from a
@@ -1784,9 +1790,7 @@ unsafe fn process_bus_reset(port: u8) {
         };
         info!(
             "usb{}: bus reset — negotiated speed: {} (RHST={:#06x})",
-            port,
-            speed_str,
-            rhst
+            port, speed_str, rhst
         );
 
         // Only keep pipe 0 BRDY/BEMP enabled — pipes 1-15 are re-enabled by
@@ -1893,10 +1897,10 @@ unsafe fn configure_all_pipes(port: u8) {
 
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
-    use std::boxed::Box;
     use super::*;
-    use embassy_usb_driver::Endpoint as _;
     use crate::mmio::test;
+    use embassy_usb_driver::Endpoint as _;
+    use std::boxed::Box;
 
     /// A one-packet control read: the host's status-stage OUT follows the IN data so closely that
     /// the CTRT (control read status stage, ctsq=2) and the pipe-0 BEMP land in one interrupt.
@@ -1991,17 +1995,33 @@ mod tests {
         }
         let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut d = fresh_port1();
-        let ep = d.alloc_endpoint_in(EndpointType::Isochronous, None, 294, 1).unwrap();
+        let ep = d
+            .alloc_endpoint_in(EndpointType::Isochronous, None, 294, 1)
+            .unwrap();
         let (addr, pipe) = (ep.info.addr, ep.pipe as usize);
         let stream = ep.into_iso_stream(Box::leak(Box::new(Watch)));
         let u = usb(1);
-        test::poke16(crate::usb::fifo::fifo_for_pipe(u, pipe).ctr.addr(), crate::usb::regs::FIFOCTR_FRDY);
+        test::poke16(
+            crate::usb::fifo::fifo_for_pipe(u, pipe).ctr.addr(),
+            crate::usb::regs::FIFOCTR_FRDY,
+        );
         test::poke16(u.brdyenb().addr(), 1 << pipe); // left enabled by a skipped disable
         SEEN.store(0xFFFF, Ordering::SeqCst);
-        let mut bus = Rusb1Bus { port: 1, connected: true };
+        let mut bus = Rusb1Bus {
+            port: 1,
+            connected: true,
+        };
         bus.endpoint_set_enabled(addr, true);
-        assert_eq!(SEEN.load(Ordering::SeqCst) & (1 << pipe), 0, "BRDY masked while priming");
-        assert_ne!(test::peek16(u.brdyenb().addr()) & (1 << pipe), 0, "re-armed after");
+        assert_eq!(
+            SEEN.load(Ordering::SeqCst) & (1 << pipe),
+            0,
+            "BRDY masked while priming"
+        );
+        assert_ne!(
+            test::peek16(u.brdyenb().addr()) & (1 << pipe),
+            0,
+            "re-armed after"
+        );
         drop(stream);
     }
 
@@ -2019,14 +2039,23 @@ mod tests {
         }
         let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut d = fresh_port1();
-        let ep = d.alloc_endpoint_in(EndpointType::Isochronous, None, 294, 1).unwrap();
+        let ep = d
+            .alloc_endpoint_in(EndpointType::Isochronous, None, 294, 1)
+            .unwrap();
         let pipe = ep.pipe as usize;
         let u = usb(1);
-        test::poke16(crate::usb::fifo::fifo_for_pipe(u, pipe).ctr.addr(), crate::usb::regs::FIFOCTR_FRDY);
+        test::poke16(
+            crate::usb::fifo::fifo_for_pipe(u, pipe).ctr.addr(),
+            crate::usb::regs::FIFOCTR_FRDY,
+        );
         test::poke16(pipectr(u, pipe).addr(), 0b01); // the host already enabled it: PID = BUF
         FILLS.store(0, Ordering::SeqCst);
         let stream = ep.into_iso_stream(Box::leak(Box::new(Count)));
-        assert_eq!(FILLS.load(Ordering::SeqCst), 2, "both planes primed on bind");
+        assert_eq!(
+            FILLS.load(Ordering::SeqCst),
+            2,
+            "both planes primed on bind"
+        );
         drop(stream);
     }
 
@@ -2039,7 +2068,9 @@ mod tests {
 
     /// UAC2's streaming alts 1 and 2 share their endpoint addresses, so they share a pipe.
     fn shared_alt_out_endpoint(d: &mut Rusb1Driver<'static>) -> EndpointAddress {
-        let alt1 = d.alloc_endpoint_out(EndpointType::Isochronous, None, 288, 1).unwrap();
+        let alt1 = d
+            .alloc_endpoint_out(EndpointType::Isochronous, None, 288, 1)
+            .unwrap();
         let alt2 = d
             .alloc_endpoint_out(EndpointType::Isochronous, Some(alt1.info.addr), 288, 1)
             .unwrap();
@@ -2063,13 +2094,20 @@ mod tests {
         let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut d = fresh_port1();
         let addr = shared_alt_out_endpoint(&mut d);
-        let mut bus = Rusb1Bus { port: 1, connected: true };
+        let mut bus = Rusb1Bus {
+            port: 1,
+            connected: true,
+        };
         next_setup(1);
         bus.endpoint_set_enabled(addr, true);
         bus.endpoint_set_enabled(addr, false);
         assert_eq!(pid(1, addr), 0b01, "PID stays BUF");
         let pipe = ep_addr_to_pipe(1, addr).unwrap();
-        assert_ne!(test::peek16(usb(1).brdyenb().addr()) & (1 << pipe), 0, "BRDY stays enabled");
+        assert_ne!(
+            test::peek16(usb(1).brdyenb().addr()) & (1 << pipe),
+            0,
+            "BRDY stays enabled"
+        );
     }
 
     #[test]
@@ -2077,7 +2115,10 @@ mod tests {
         let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut d = fresh_port1();
         let addr = shared_alt_out_endpoint(&mut d);
-        let mut bus = Rusb1Bus { port: 1, connected: true };
+        let mut bus = Rusb1Bus {
+            port: 1,
+            connected: true,
+        };
         next_setup(1);
         bus.endpoint_set_enabled(addr, true);
         next_setup(1); // SET_INTERFACE to alt 0
@@ -2090,7 +2131,10 @@ mod tests {
         let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut d = fresh_port1();
         let addr = shared_alt_out_endpoint(&mut d);
-        let mut bus = Rusb1Bus { port: 1, connected: true };
+        let mut bus = Rusb1Bus {
+            port: 1,
+            connected: true,
+        };
         next_setup(1);
         bus.endpoint_set_enabled(addr, true);
         forget_enables(1);
@@ -2116,17 +2160,26 @@ mod tests {
         }
         let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut d = fresh_port1();
-        let ep = d.alloc_endpoint_in(EndpointType::Isochronous, None, 294, 1).unwrap();
+        let ep = d
+            .alloc_endpoint_in(EndpointType::Isochronous, None, 294, 1)
+            .unwrap();
         let (addr, pipe) = (ep.info.addr, ep.pipe as usize);
         let stream = ep.into_iso_stream(Box::leak(Box::new(Count)));
         let u = usb(1);
         let fifo = crate::usb::fifo::fifo_for_pipe(u, pipe);
         test::poke16(fifo.ctr.addr(), crate::usb::regs::FIFOCTR_FRDY);
         FILLS.store(0, Ordering::SeqCst);
-        let mut bus = Rusb1Bus { port: 1, connected: true };
+        let mut bus = Rusb1Bus {
+            port: 1,
+            connected: true,
+        };
         bus.endpoint_set_enabled(addr, true);
         assert_eq!(FILLS.load(Ordering::SeqCst), 2, "both planes primed");
-        assert_eq!(test::peek16(pipectr(u, pipe).addr()) & 0b11, 0b01, "PID = BUF");
+        assert_eq!(
+            test::peek16(pipectr(u, pipe).addr()) & 0b11,
+            0b01,
+            "PID = BUF"
+        );
         drop(stream);
     }
 
@@ -2325,7 +2378,9 @@ mod tests {
     fn a_dropped_read_leaves_its_pipe_idle() {
         let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut d = fresh_port1();
-        let mut out = d.alloc_endpoint_out(EndpointType::Bulk, None, 64, 0).unwrap();
+        let mut out = d
+            .alloc_endpoint_out(EndpointType::Bulk, None, 64, 0)
+            .unwrap();
         let pipe = out.pipe as usize;
         let u = usb(1);
         let mut cx = core::task::Context::from_waker(core::task::Waker::noop());
@@ -2334,8 +2389,16 @@ mod tests {
             let mut read = core::pin::pin!(out.read(&mut buf));
             assert!(read.as_mut().poll(&mut cx).is_pending());
         }
-        assert_eq!(xfer_idle(pipe), (0, core::ptr::NonNull::dangling()), "the buffer left armed");
-        assert_eq!(test::peek16(u.brdyenb().addr()) & (1 << pipe), 0, "BRDY left enabled");
+        assert_eq!(
+            xfer_idle(pipe),
+            (0, core::ptr::NonNull::dangling()),
+            "the buffer left armed"
+        );
+        assert_eq!(
+            test::peek16(u.brdyenb().addr()) & (1 << pipe),
+            0,
+            "BRDY left enabled"
+        );
 
         // A packet arrives anyway (BRDY forced on): the ISR leaves it in the FIFO.
         for r in [u.intsts(0).addr(), u.brdysts().addr()] {
@@ -2348,7 +2411,10 @@ mod tests {
         test::poke16(u.brdysts().addr(), 1 << pipe);
         test::poke16(u.brdyenb().addr(), 1 << pipe);
         unsafe { dcd_int_handler(1) };
-        assert_eq!(buf, [0u8; 64], "the ISR wrote into the dropped read's buffer");
+        assert_eq!(
+            buf, [0u8; 64],
+            "the ISR wrote into the dropped read's buffer"
+        );
     }
 
     /// A read dropped after the ISR completed it, before its poll saw the completion: the next
@@ -2357,7 +2423,9 @@ mod tests {
     fn a_read_after_a_dropped_one_waits_for_its_own_packet() {
         let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut d = fresh_port1();
-        let mut out = d.alloc_endpoint_out(EndpointType::Bulk, None, 64, 0).unwrap();
+        let mut out = d
+            .alloc_endpoint_out(EndpointType::Bulk, None, 64, 0)
+            .unwrap();
         let pipe = out.pipe as usize;
         let mut cx = core::task::Context::from_waker(core::task::Waker::noop());
         let mut buf = [0u8; 64];
@@ -2367,7 +2435,10 @@ mod tests {
             PIPE_DONE.fetch_or(1 << pipe, Ordering::Release); // the ISR completes it; nobody polls
         }
         let mut read = core::pin::pin!(out.read(&mut buf));
-        assert!(read.as_mut().poll(&mut cx).is_pending(), "the stale completion ended the read");
+        assert!(
+            read.as_mut().poll(&mut cx).is_pending(),
+            "the stale completion ended the read"
+        );
     }
 
     /// A write's future dropped before it completes leaves its pipe idle: the BEMP ISR sends
@@ -2376,7 +2447,9 @@ mod tests {
     fn a_dropped_write_leaves_its_pipe_idle() {
         let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut d = fresh_port1();
-        let mut inp = d.alloc_endpoint_in(EndpointType::Bulk, None, 64, 0).unwrap();
+        let mut inp = d
+            .alloc_endpoint_in(EndpointType::Bulk, None, 64, 0)
+            .unwrap();
         let pipe = inp.pipe as usize;
         let u = usb(1);
         let mut cx = core::task::Context::from_waker(core::task::Waker::noop());
@@ -2385,7 +2458,11 @@ mod tests {
             let mut write = core::pin::pin!(inp.write(&data));
             assert!(write.as_mut().poll(&mut cx).is_pending());
         }
-        assert_eq!(xfer_idle(pipe), (0, core::ptr::NonNull::dangling()), "the buffer left armed");
+        assert_eq!(
+            xfer_idle(pipe),
+            (0, core::ptr::NonNull::dangling()),
+            "the buffer left armed"
+        );
 
         // The BEMP of a packet already in flight: no more of the buffer goes to the FIFO.
         for r in [u.intsts(0).addr(), u.bempsts().addr()] {
@@ -2399,7 +2476,9 @@ mod tests {
         let from = test::writes().len();
         unsafe { dcd_int_handler(1) };
         assert!(
-            !test::writes()[from..].iter().any(|&(a, _)| a == fifo.data.addr()),
+            !test::writes()[from..]
+                .iter()
+                .any(|&(a, _)| a == fifo.data.addr()),
             "the ISR sent from the dropped write's buffer"
         );
     }

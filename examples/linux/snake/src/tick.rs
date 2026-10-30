@@ -76,7 +76,10 @@ mod tests {
         let mut t = Ticker::new(t0, P);
         for i in 0..1000u32 {
             let now = t0 + Duration::from_micros(50) * i; // all within the period
-            assert!(now < t0 + P, "test setup: events must stay within one period");
+            assert!(
+                now < t0 + P,
+                "test setup: events must stay within one period"
+            );
             assert!(!t.poll(now, P), "early event {i} wrongly triggered a tick");
         }
         // The tick still fires exactly at the original deadline.
@@ -111,7 +114,7 @@ mod tests {
         let late = t0 + 5 * P;
         assert!(t.poll(late, P)); // fires one tick...
         assert!(!t.poll(late, P)); // ...not four more in a burst.
-        // The next tick is one period after the late wake, not a backlog drain.
+                                   // The next tick is one period after the late wake, not a backlog drain.
         assert!(!t.poll(late + P - Duration::from_millis(1), P));
         assert!(t.poll(late + P, P));
     }
@@ -127,7 +130,7 @@ mod tests {
         // The pending deadline (t0 + 2P) is unchanged by the shorter period.
         assert!(!t.poll(t0 + P + fast, fast));
         assert!(t.poll(t0 + 2 * P, fast)); // tick 2 at the original deadline
-        // The interval after it now uses the shorter period.
+                                           // The interval after it now uses the shorter period.
         assert!(!t.poll(t0 + 2 * P + Duration::from_millis(50), fast));
         assert!(t.poll(t0 + 2 * P + fast, fast)); // tick 3 comes 90ms later
     }
