@@ -1187,6 +1187,29 @@ impl embassy_usb_driver::Endpoint for Rusb1EndpointOut {
     }
 }
 
+/// Puts a pipe's transfer back to idle when its `read`/`write` future ends, completed or
+/// dropped (a `select`, a timeout, a session torn down): the ISR must stop filling or sending
+/// from a buffer the caller no longer owns. `brdy_off`: also disable the pipe's BRDY (non-ISO
+/// OUT, which re-arms it per read).
+struct IdleOnDrop {
+    port: u8,
+    pipe: usize,
+    brdy_off: bool,
+}
+
+impl Drop for IdleOnDrop {
+    fn drop(&mut self) {
+        critical_section::with(|cs| {
+            let state = unsafe { &mut *PIPE_XFER[self.pipe].borrow(cs).get() };
+            state.remaining = 0;
+            state.buf = core::ptr::NonNull::dangling();
+            if self.brdy_off {
+                unsafe { pipe_brdy_disable(usb(self.port), self.pipe) };
+            }
+        });
+    }
+}
+
 impl EndpointOut for Rusb1EndpointOut {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, EndpointError> {
         let pipe = self.pipe as usize;
@@ -1205,6 +1228,16 @@ impl EndpointOut for Rusb1EndpointOut {
         });
 
         let is_iso = self.info.ep_type == EndpointType::Isochronous;
+        // For non-ISO: BRDY is disabled between reads so the ISR doesn't fire when no transfer
+        // state is set up. For ISO: BRDYENB stays set so we don't lose packets that arrive before
+        // the next read() call re-arms the pipe.
+        let _idle = IdleOnDrop { port: self.port, pipe, brdy_off: !is_iso };
+
+        // Clear a completion or error the last transfer on this pipe left behind (its reader
+        // dropped, or a bus reset disabled the pipe) before arming this one, as `write` does;
+        // the poll below would otherwise return at once.
+        PIPE_DONE.fetch_and(!(1u16 << pipe), Ordering::Release);
+        PIPE_NRDY.fetch_and(!(1u16 << pipe), Ordering::Release);
 
         // Enable BRDY for this pipe → ISR will call pipe_xfer_out_brdy.
         //
@@ -1295,16 +1328,6 @@ impl EndpointOut for Rusb1EndpointOut {
         })
         .await;
 
-        // For non-ISO: disable BRDY between reads so the ISR doesn't fire when
-        // no transfer state is set up.  For ISO: leave BRDYENB set so we don't
-        // lose packets that arrive before the next read() call re-arms the pipe.
-        if !is_iso {
-            unsafe {
-                let u = usb(self.port);
-                pipe_brdy_disable(u, pipe);
-            }
-        }
-
         nbytes
     }
 }
@@ -1374,6 +1397,7 @@ impl EndpointIn for Rusb1EndpointIn {
             state.buf_bytes = self.buf_bytes;
             state.xfer_type = endpoint_type_to_xfer(self.info.ep_type);
         });
+        let _idle = IdleOnDrop { port: self.port, pipe, brdy_off: false };
 
         // Clear any stale completion / error state from a previous transfer
         // before arming this one.  A leftover PIPE_DONE bit (e.g. from a
@@ -2285,5 +2309,98 @@ mod tests {
         assert_eq!(CTRL_STAGE[1].load(Ordering::Acquire), CTRL_STAGE_NONE);
         assert!(!CTRL_ABORT[1].load(Ordering::Acquire));
         assert_eq!(PIPE0_BRDY[1].load(Ordering::Acquire), 0);
+    }
+
+    fn xfer_idle(pipe: usize) -> (u16, core::ptr::NonNull<u8>) {
+        critical_section::with(|cs| {
+            let s = unsafe { &*PIPE_XFER[pipe].borrow(cs).get() };
+            (s.remaining, s.buf)
+        })
+    }
+
+    /// A read's future dropped before it completes (a `select`, a timeout, a session torn down)
+    /// leaves its pipe idle: BRDY off, and a packet the ISR drains later doesn't land in the
+    /// buffer the caller no longer owns.
+    #[test]
+    fn a_dropped_read_leaves_its_pipe_idle() {
+        let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut d = fresh_port1();
+        let mut out = d.alloc_endpoint_out(EndpointType::Bulk, None, 64, 0).unwrap();
+        let pipe = out.pipe as usize;
+        let u = usb(1);
+        let mut cx = core::task::Context::from_waker(core::task::Waker::noop());
+        let mut buf = [0u8; 64];
+        {
+            let mut read = core::pin::pin!(out.read(&mut buf));
+            assert!(read.as_mut().poll(&mut cx).is_pending());
+        }
+        assert_eq!(xfer_idle(pipe), (0, core::ptr::NonNull::dangling()), "the buffer left armed");
+        assert_eq!(test::peek16(u.brdyenb().addr()) & (1 << pipe), 0, "BRDY left enabled");
+
+        // A packet arrives anyway (BRDY forced on): the ISR leaves it in the FIFO.
+        for r in [u.intsts(0).addr(), u.brdysts().addr()] {
+            test::rcw0(r);
+        }
+        let fifo = crate::usb::fifo::fifo_for_pipe(u, pipe);
+        test::poke16(fifo.ctr.addr(), crate::usb::regs::FIFOCTR_FRDY | 64);
+        test::poke32(fifo.data.addr(), 0xAAAA_AAAA);
+        test::poke16(u.intsts(0).addr(), INTSTS0_BRDY);
+        test::poke16(u.brdysts().addr(), 1 << pipe);
+        test::poke16(u.brdyenb().addr(), 1 << pipe);
+        unsafe { dcd_int_handler(1) };
+        assert_eq!(buf, [0u8; 64], "the ISR wrote into the dropped read's buffer");
+    }
+
+    /// A read dropped after the ISR completed it, before its poll saw the completion: the next
+    /// read waits for its own packet instead of returning the stale completion as `Ok(0)`.
+    #[test]
+    fn a_read_after_a_dropped_one_waits_for_its_own_packet() {
+        let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut d = fresh_port1();
+        let mut out = d.alloc_endpoint_out(EndpointType::Bulk, None, 64, 0).unwrap();
+        let pipe = out.pipe as usize;
+        let mut cx = core::task::Context::from_waker(core::task::Waker::noop());
+        let mut buf = [0u8; 64];
+        {
+            let mut read = core::pin::pin!(out.read(&mut buf));
+            assert!(read.as_mut().poll(&mut cx).is_pending());
+            PIPE_DONE.fetch_or(1 << pipe, Ordering::Release); // the ISR completes it; nobody polls
+        }
+        let mut read = core::pin::pin!(out.read(&mut buf));
+        assert!(read.as_mut().poll(&mut cx).is_pending(), "the stale completion ended the read");
+    }
+
+    /// A write's future dropped before it completes leaves its pipe idle: the BEMP ISR sends
+    /// nothing more from the buffer the caller no longer owns.
+    #[test]
+    fn a_dropped_write_leaves_its_pipe_idle() {
+        let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut d = fresh_port1();
+        let mut inp = d.alloc_endpoint_in(EndpointType::Bulk, None, 64, 0).unwrap();
+        let pipe = inp.pipe as usize;
+        let u = usb(1);
+        let mut cx = core::task::Context::from_waker(core::task::Waker::noop());
+        let data = [0x55u8; 200];
+        {
+            let mut write = core::pin::pin!(inp.write(&data));
+            assert!(write.as_mut().poll(&mut cx).is_pending());
+        }
+        assert_eq!(xfer_idle(pipe), (0, core::ptr::NonNull::dangling()), "the buffer left armed");
+
+        // The BEMP of a packet already in flight: no more of the buffer goes to the FIFO.
+        for r in [u.intsts(0).addr(), u.bempsts().addr()] {
+            test::rcw0(r);
+        }
+        let fifo = crate::usb::fifo::fifo_for_pipe(u, pipe);
+        test::poke16(fifo.ctr.addr(), crate::usb::regs::FIFOCTR_FRDY);
+        test::poke16(u.intsts(0).addr(), INTSTS0_BEMP);
+        test::poke16(u.bempsts().addr(), 1 << pipe);
+        test::poke16(u.bempenb().addr(), 1 << pipe);
+        let from = test::writes().len();
+        unsafe { dcd_int_handler(1) };
+        assert!(
+            !test::writes()[from..].iter().any(|&(a, _)| a == fifo.data.addr()),
+            "the ISR sent from the dropped write's buffer"
+        );
     }
 }

@@ -485,5 +485,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `rza1l-hal` USB host: a high-speed device's interrupt endpoint is polled at the period its
   bInterval asks for (2^(bInterval-1) microframes). It was polled more often: a hub's status
   endpoint at bInterval 12 every 1 ms instead of 16 ms.
+- `rza1-hal` USB device: a `Rusb1EndpointOut::read` or `Rusb1EndpointIn::write` dropped before
+  it completes (a `select`, a timeout, a session torn down) leaves its pipe idle, with BRDY off
+  for a bulk/interrupt OUT pipe. Before, the pipe kept the caller's buffer armed and the
+  interrupt could later fill or send from memory the caller no longer owned. A read also clears
+  the completion a dropped read left behind, which made the next read return `Ok(0)` at once.
 
 [Unreleased]: https://github.com/FirestormAudio/deluge-sdk
