@@ -12,3 +12,25 @@ test = false
 [dependencies]
 deluge-bsp = { path = "../../crates/deluge-bsp" }
 rza1-hal = { path = "../../rza1/rza1-hal", features = ["rza1l"] }
+rtt-target = { workspace = true, optional = true }
+
+# `rtt` must not be a default feature: it turns on `deluge-bsp/rtt` in the runtime every firmware
+# in the workspace links (see uac-host-firmware's manifest).
+[features]
+## SEGGER RTT: the fault handler dumps the fault to RTT channel 0 before the SYNC LED blink.
+rtt = ["dep:rtt-target", "deluge-bsp/rtt"]
+## Before the fault, write more numbered filler than the RTT up-buffer holds (16 KiB), as fast as
+## it goes: the dump finds the ring full of data the host hasn't read and must wait for room
+## rather than overwrite it.
+rtt-full-ring = ["rtt"]
+## Fault first thing, before RTT is set up: the dump must find no control block, skip itself, and
+## still reach the fault handler.
+early = []
+## Corrupt the RTT up-buffer's WrOff (0xFFFF_0000) just before the fault: the dump must check the
+## ring's offsets, skip itself, and still reach the fault handler.
+corrupt-wroff = ["rtt"]
+## A prefetch abort instead of an undefined instruction: branch into a section the MMU marks as a
+## translation fault.
+pabt = []
+## A data abort instead of an undefined instruction: load from that section.
+dabt = []
