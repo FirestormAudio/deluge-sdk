@@ -2,8 +2,7 @@
 
 Checks that only real hardware can answer. Each one lists its setup, what passes, and what to
 record. Record results under the task, with the date, the commit tested and the device's OS
-version. Spec references are to
-[`superpowers/specs/2026-10-15-overbridge-design.md`](superpowers/specs/2026-10-15-overbridge-design.md).
+version. The Overbridge wire format is in [`overbridge.md`](overbridge.md).
 
 ## USB host pipes: MIDI and hubs after the polling change (Overbridge sub-project 1)
 
@@ -29,15 +28,15 @@ often than before.
   only and Off don't. Switching while a hub is attached changes nothing.
 - **Record:** the re-bind time, and anything that needed a replug.
 
-## 1. Digitakt descriptors (spec §8.4 step 1)
+## 1. Digitakt descriptors
 
 - **Setup:** `cargo build-overbridge`, flash, Digitakt in Overbridge USB mode on the back
   port, `log` at debug.
-- **Pass:** the logged configuration descriptor matches spec Appendix A byte for byte.
-- **Record:** the Digitakt's OS version. If the bytes differ, put the new dump in the spec and
+- **Pass:** the logged configuration descriptor matches the descriptor dump in `overbridge.md` byte for byte.
+- **Record:** the Digitakt's OS version. If the bytes differ, put the new dump in `overbridge.md` and
   update `DIGITAKT_CONFIG` in `usb/usb-classes/src/host/overbridge.rs`.
 
-## 2. Digitakt stems (spec §8.4 step 2)
+## 2. Digitakt stems
 
 - **Setup:** as in 1. Play a pattern that uses every track. The harness logs `StreamStats` and
   each stem's peak every second.
@@ -49,7 +48,7 @@ often than before.
   build logs "receive DMA did not finish" or shows `framing_errors`, record how often; the
   CPU build is the fallback.
 
-## 3. Overbridge OUT path (spec §8.4 step 3)
+## 3. Overbridge OUT path
 
 - **Setup:** as in 2. The harness sends a 1 kHz tone at −12 dBFS on both channels to the
   Digitakt. On the Digitakt, route its Overbridge input to its main output.
@@ -77,21 +76,21 @@ often than before.
   shows again, dump PIPE9CTR (H'E801_0080) to see whether the Digitakt is NAKing (PID BUF with
   a full buffer) or the host missed its completion.
 
-## 4. Digitakt II (spec §8.4 step 4, when one is available)
+## 4. Digitakt II (when one is available)
 
 - **Setup:** as in 2–3, with a Digitakt II (42 channels from it, 8 to it).
 - **Pass:** as in 2–3. This also settles whether a 1012-byte bulk-typed pipe on pipes 1–2
-  works (spec §10).
+  works.
 - **Record:** whether the IN pipe opened at MXPS 1012, and any `framing_errors`.
 
-## 5. Outbox 8 (spec §8.4 step 5)
+## 5. Outbox 8
 
 - **Setup:** a device-mode Deluge build using `AudioClass<8>`, into an Elektron Outbox 8.
 - **Pass:** 8 distinct channels on the Outbox's 8 outputs.
-- **Record:** the sample rate and sync mode the Outbox accepts (spec §7.1), and its channel limit
+- **Record:** the sample rate and sync mode the Outbox accepts, and its channel limit
   if it stops short of 8.
 
-## 6. Overbridge device class (spec §8.4 step 6)
+## 6. Overbridge device class
 
 - **Setup:** two Deluges. One runs `overbridge-host-firmware`; the other runs
   `overbridge-device-firmware` built with `--features elektron-id` (`cargo build-overbridge-device

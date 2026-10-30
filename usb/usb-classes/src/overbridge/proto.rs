@@ -2,7 +2,7 @@
 //! frame counter. No USB dependency; the host class and the device class both use it.
 //!
 //! From Overwitch (read for the format only) and the Outbox 8 firmware analysis; see
-//! `docs/superpowers/specs/2026-10-15-overbridge-design.md` §2.
+//! `docs/overbridge.md`.
 
 /// Elektron's USB vendor ID.
 pub const VID_ELEKTRON: u16 = 0x1935;

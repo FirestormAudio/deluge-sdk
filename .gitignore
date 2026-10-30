@@ -41,3 +41,7 @@ __pycache__/
 
 # QEMU core dumps from a crashed host test run (qemu-arm writes them to the cwd).
 *.core
+
+# Superpowers planning docs stay local
+docs/superpowers/
+.superpowers/
