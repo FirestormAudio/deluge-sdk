@@ -132,3 +132,29 @@ often than before.
   theirs back, with at most a 100 ms hiccup per send to the stuck one. When the device accepts
   data again, it receives notes again.
 - **Record:** the devices used, any device that drops notes, and how the NAKing case was made.
+
+## USB drop guard and RTT fault-dump bounds (rza1)
+
+- **Setup:** the pi-top bench (J-Trace PRO, Deluge USB0 on the Pi's hub port `1-1.3`, SD card in
+  the slot). `hw-tests/fault-probe` in each variant; `msc-firmware` and `demo-firmware` with
+  `rtt`.
+- **Pass:**
+  - `fault-probe --features rtt`: an `UNDEF` dump with PC, LR, SP and an `STK:` line that stops
+    at the top of the stack. `rtt,pabt` and `rtt,dabt`: a `PABT`/`DABT` dump with fault status 5
+    at `0x3000_0000`.
+  - `rtt,early` and `corrupt-wroff`: nothing written to RTT; the core reaches
+    `deluge_bsp::fault_blink`.
+  - `rtt-full-ring`: the dump follows the newest filler line and overwrites nothing unread,
+    whether or not the host is reading; the core then reaches `fault_blink`.
+  - `msc-firmware`: a read cut off by disabling the hub port, then re-enabling it, leaves the
+    Deluge re-enumerating as `Deluge SD Card`. Reads only; the card is never written.
+  - `demo-firmware`: a 3 s `arecord` is 529,244 bytes at `S16_LE` and 793,844 at `S24_3LE`.
+- **Result 2026-10-29 (branch `fix/rza1-usb-drop-rtt-bounds`):** all pass.
+  - The bench found the `STK:` walk reading past the end of on-chip RAM (`DFAR=0x2030_0000`, a
+    nested data abort) on a fault in a shallow frame. That was already on `main`, and is fixed
+    in `41985e7a`.
+  - The port-cut test came back in 10 of 11 runs on the branch and 4 of 4 on `main`. The miss
+    was the first run after a J-Link remote-server restart: the firmware idled in the executor,
+    and the Pi never saw it re-attach. It didn't recur in 10 further runs.
+  - Not exercised: the dump's give-up after its bounded wait. The J-Link server keeps reading
+    RTT after the runner exits, so room always appeared.
