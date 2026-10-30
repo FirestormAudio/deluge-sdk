@@ -1971,6 +1971,7 @@ name = "fault-probe"
 version = "0.1.0"
 dependencies = [
  "deluge-bsp",
+ "rtt-target",
  "rza1-hal",
 ]
 
