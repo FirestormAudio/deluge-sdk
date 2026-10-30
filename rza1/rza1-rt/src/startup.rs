@@ -3,7 +3,8 @@
 //!
 //! The reset handler invalidates caches/TLBs, installs the vector table via
 //! VBAR, parks secondary cores, unlocks retention RAM, enables VFP/NEON, sets
-//! up the per-mode stacks, zeroes BSS and calls `main` (`#[rza1_rt::entry]`).
+//! up the per-mode stacks, zeroes BSS (and, with `rtt`, `.rtt_buffer`) and calls `main`
+//! (`#[rza1_rt::entry]`).
 //!
 //! Every fault vector (undefined instruction, SVC, prefetch abort, data abort, reserved) works out
 //! the address of the faulting instruction and, with the `rtt` feature, first dumps the fault
@@ -294,6 +295,10 @@ _reset_handler:
     strlt r2, [r0], #4
     blt .Lbss_loop
 
+    /* 5b. Zero the RTT control block and buffers (with `rtt`; a no-op without): they are NOLOAD
+     * and outlive a reset, and the fault dumps take a zero SizeOfBuffer to mean "no ring yet". */
+    bl _zero_rtt_buffer
+
     /* 6. Branch to Rust entry point (never returns) */
     bl main
     b .                           /* Safety: infinite loop        */
@@ -365,8 +370,9 @@ _fiq_handler:       subs pc, lr, #4
 "#
 );
 
-// RTT-enabled data-abort body: dumps "DABT\n  PC=XXXXXXXX DFAR=XXXXXXXX DFSR=XXXXXXXX\n"
-// (where XXXXXXXX are 8 ASCII hex digits) to RTT channel 0, then halts.
+// RTT-enabled data-abort body: dumps "DABT\n  PC=XXXXXXXX\nDFAR=XXXXXXXX\nDFSR=XXXXXXXX\n"
+// (where XXXXXXXX are 8 ASCII hex digits) to RTT channel 0 when `_rtt_fault_space` finds room,
+// then goes on to the report.
 //
 // On Data Abort entry:
 //   LR_abt = faulting PC + 8  (so faulting PC = LR - 8)
@@ -392,26 +398,13 @@ _abort_rtt:
      *   _SEGGER_RTT + 0x24  acUp[0].write   (AtomicUsize / WrOff)
      */
     ldr  r0, =_SEGGER_RTT
-    ldr  r1, [r0, #0x1C]          /* r1 = buffer base              */
-    ldr  r2, [r0, #0x24]          /* r2 = WrOff                    */
-
-    /* Write "DABT\n  PC=" (9 bytes) */
-    ldr  r3, =0x54424144          /* "DABT"                        */
-    str  r3, [r1, r2]
-    add  r2, r2, #4
-    ldr  r3, =0x43205c6e          /* "\n  C"  (little-endian)      */
-    str  r3, [r1, r2]
-    add  r2, r2, #4
-    ldr  r3, =0x3d435750          /* "PC=C" (we overwrite last C)  */
-    /* Actually write "  PC=" as 5 bytes — easier to do nibble-by-nibble below */
-    /* Restart: write the whole tag line as 4-byte chunks.
-       Prefix header = "DABT\n  PC=" = 10 bytes.
-       Use a simpler byte-by-byte approach via a helper macro. */
-    /* Back up WrOff to redo — overwrite the partial writes with correct data. */
-    ldr  r2, [r0, #0x24]          /* re-read original WrOff        */
+    mov  r8, #47                  /* the dump's length: 5 + 3 x 14 */
+    bl   _rtt_fault_space         /* r1 = buffer, r2 = WrOff, r3 = SizeOfBuffer (the dump wraps there) */
+    cmp  r3, #0
+    beq  .Labort_rtt_skip
 
     /* Inline helper: write_hex8(r1+r2, r_val) — 8 hex chars, advances r2 by 8.
-       Uses r3, r8, r9, r10 as scratch. */
+       Uses r8, r9, r10 as scratch. */
     .macro write_hex8 reg
     mov  r9, \reg
     mov  r10, #28
@@ -423,6 +416,8 @@ _abort_rtt:
     addge r8, r8, #0x37
     strb r8, [r1, r2]
     add  r2, r2, #1
+    cmp  r2, r3                   /* wrap at the buffer's end */
+    movhs r2, #0
     subs r10, r10, #4
     bge  .Lhex_loop_\@
     .endm
@@ -431,6 +426,8 @@ _abort_rtt:
     mov  r8, \ch
     strb r8, [r1, r2]
     add  r2, r2, #1
+    cmp  r2, r3                   /* wrap at the buffer's end */
+    movhs r2, #0
     .endm
 
     /* Write "DABT" */
@@ -465,13 +462,13 @@ _abort_rtt:
     write_char #0x0A
 
     str  r2, [r0, #0x24]          /* WrOff = updated value         */
-
+.Labort_rtt_skip:
     pop  {{r5, r6, r7, r8, r9, r10}}
     b    _fault_report
 "#
 );
 
-// No RTT: nothing to dump, straight on to the report.
+// No RTT: nothing to dump, straight on to the report, and no ring to zero.
 #[cfg(not(feature = "rtt"))]
 global_asm!(
     r#"
@@ -479,10 +476,71 @@ _abort_rtt:
 _undef_rtt:
 _pabt_rtt:
     b    _fault_report
+    .global _zero_rtt_buffer
+_zero_rtt_buffer:
+    bx   lr
 "#
 );
 
-// RTT-enabled undefined-instruction handler: dumps "UNDEF\n  PC=XXXXXXXX\n"
+// The RTT pieces the fault dumps share.
+//
+// `_zero_rtt_buffer` (called at reset, before `main`) zeroes `.rtt_buffer`.
+//
+// `_rtt_fault_space` finds room for a dump of r8 bytes in up-buffer 0 without overwriting data
+// the host hasn't read. In: r0 = &_SEGGER_RTT, r8 = the dump's length. Out: r3 = 0 to skip the
+// dump; otherwise r1 = buffer, r2 = WrOff, r3 = SizeOfBuffer. Clobbers r9, r10 and the flags
+// (and LR, through the caller's `bl`). It never writes RdOff (the host's). Nothing in the control
+// block is trusted: the faulting program may have corrupted it.
+//   - SizeOfBuffer 0: RTT isn't set up (startup zeroed the block): skip.
+//   - WrOff or RdOff >= SizeOfBuffer, on any pass: the block is corrupt: skip. The buffer
+//     pointer is loaded only after both checks.
+//   - Otherwise spin until free = (RdOff - WrOff - 1) mod SizeOfBuffer >= r8, re-reading both
+//     each pass (the block is in the uncached mirror, so the host's RdOff updates are seen). The
+//     spin is bounded by a pass count, on the order of 10 s at 400 MHz (unmeasured: a pass is
+//     two uncached loads and a few ALU ops); a host that isn't draining by then costs the dump,
+//     not the report.
+#[cfg(feature = "rtt")]
+global_asm!(
+    r#"
+    .global _zero_rtt_buffer
+_zero_rtt_buffer:
+    ldr  r0, =__rtt_buffer_start
+    ldr  r1, =__rtt_buffer_end
+    mov  r2, #0
+1:  cmp  r0, r1
+    strlo r2, [r0], #4
+    blo  1b
+    bx   lr
+
+    .global _rtt_fault_space
+_rtt_fault_space:
+    ldr  r3, [r0, #0x20]          /* SizeOfBuffer */
+    cmp  r3, #0
+    bxeq lr                       /* no ring: skip */
+    ldr  r9, =60000000            /* the spin bound */
+1:  ldr  r2, [r0, #0x24]          /* WrOff */
+    ldr  r10, [r0, #0x28]         /* RdOff */
+    cmp  r2, r3
+    cmplo r10, r3
+    movhs r3, #0                  /* an offset past the end: corrupt, skip */
+    bxhs lr
+    sub  r10, r10, r2
+    sub  r10, r10, #1
+    cmp  r10, #0
+    addlt r10, r10, r3            /* free = (RdOff - WrOff - 1) mod SizeOfBuffer */
+    cmp  r10, r8
+    bhs  2f
+    subs r9, r9, #1
+    bne  1b
+    mov  r3, #0                   /* the host never made room: skip */
+    bx   lr
+2:  ldr  r1, [r0, #0x1C]          /* buffer */
+    bx   lr
+"#
+);
+
+// RTT-enabled undefined-instruction handler: dumps "UNDEF\n  PC=XXXXXXXX\nLR=XXXXXXXX\nSP=XXXXXXXX\n",
+// then the 16-word "STK:" line, each part when `_rtt_fault_space` finds room for it.
 #[cfg(feature = "rtt")]
 global_asm!(
     r#"
@@ -507,12 +565,16 @@ _undef_rtt:
     mov  r7, lr                   /* r7 = app LR (wild-call return address) */
     cps  #0x1B                    /* back to Undefined mode */
     ldr  r0, =_SEGGER_RTT
-    ldr  r1, [r0, #0x1C]          /* buffer base */
-    ldr  r2, [r0, #0x24]          /* WrOff */
+    mov  r8, #44                  /* the registers' length: 6 + 14 + 2 x 12 */
+    bl   _rtt_fault_space         /* r1 = buffer, r2 = WrOff, r3 = SizeOfBuffer (the dump wraps there) */
+    cmp  r3, #0
+    beq  .Lundef_rtt_skip
     .macro write_char_u ch
     mov  r8, \ch
     strb r8, [r1, r2]
     add  r2, r2, #1
+    cmp  r2, r3                   /* wrap at the buffer's end */
+    movhs r2, #0
     .endm
     .macro write_hex8_u reg
     mov  r9, \reg
@@ -525,6 +587,8 @@ _undef_rtt:
     addge r8, r8, #0x37
     strb r8, [r1, r2]
     add  r2, r2, #1
+    cmp  r2, r3                   /* wrap at the buffer's end */
+    movhs r2, #0
     subs r10, r10, #4
     bge  .Lhex_loop_u_\@
     .endm
@@ -557,7 +621,12 @@ _undef_rtt:
        (a bad SP would nest a data abort). */
     str  r2, [r0, #0x24]
     /* STK: 16 words from the app stack — scan for code-range return addresses to
-       reconstruct the call chain via the .map file. */
+       reconstruct the call chain via the .map file. Room for it is found afresh, from the
+       WrOff just committed. */
+    mov  r8, #149                 /* the line's length: 4 + 16 x 9 + 1 */
+    bl   _rtt_fault_space
+    cmp  r3, #0
+    beq  .Lundef_rtt_skip
     write_char_u #0x53   /* S */
     write_char_u #0x54   /* T */
     write_char_u #0x4B   /* K */
@@ -572,6 +641,7 @@ _undef_rtt:
     bne  .Lstk_u
     write_char_u #0x0A
     str  r2, [r0, #0x24]
+.Lundef_rtt_skip:
     pop  {{r5, r6, r7, r8, r9, r10, r11}}
     b    _fault_report
 "#
@@ -616,7 +686,8 @@ __rza1_rt_default_fault_report:
 "#
 );
 
-// RTT-enabled prefetch-abort handler: dumps "PABT\n  PC=XXXXXXXX IFSR=XXXXXXXX\n"
+// RTT-enabled prefetch-abort handler: dumps "PABT\n  PC=XXXXXXXX\nIFSR=XXXXXXXX\nIFAR=XXXXXXXX\n"
+// when `_rtt_fault_space` finds room.
 #[cfg(feature = "rtt")]
 global_asm!(
     r#"
@@ -627,12 +698,16 @@ _pabt_rtt:
     mrc  p15, 0, r6, c5, c0, 1   /* IFSR */
     mrc  p15, 0, r7, c6, c0, 2   /* IFAR */
     ldr  r0, =_SEGGER_RTT
-    ldr  r1, [r0, #0x1C]
-    ldr  r2, [r0, #0x24]
+    mov  r8, #47                  /* the dump's length: 5 + 3 x 14 */
+    bl   _rtt_fault_space         /* r1 = buffer, r2 = WrOff, r3 = SizeOfBuffer (the dump wraps there) */
+    cmp  r3, #0
+    beq  .Lpabt_rtt_skip
     .macro write_char_p ch
     mov  r8, \ch
     strb r8, [r1, r2]
     add  r2, r2, #1
+    cmp  r2, r3                   /* wrap at the buffer's end */
+    movhs r2, #0
     .endm
     .macro write_hex8_p reg
     mov  r9, \reg
@@ -645,6 +720,8 @@ _pabt_rtt:
     addge r8, r8, #0x37
     strb r8, [r1, r2]
     add  r2, r2, #1
+    cmp  r2, r3                   /* wrap at the buffer's end */
+    movhs r2, #0
     subs r10, r10, #4
     bge  .Lhex_loop_p_\@
     .endm
@@ -675,6 +752,7 @@ _pabt_rtt:
     write_hex8_p r7
     write_char_p #0x0A
     str  r2, [r0, #0x24]
+.Lpabt_rtt_skip:
     pop  {{r5, r6, r7, r8, r9, r10}}
     b    _fault_report
 "#

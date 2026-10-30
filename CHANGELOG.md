@@ -490,5 +490,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for a bulk/interrupt OUT pipe. Before, the pipe kept the caller's buffer armed and the
   interrupt could later fill or send from memory the caller no longer owned. A read also clears
   the completion a dropped read left behind, which made the next read return `Ok(0)` at once.
+- `rza1-rt` with `rtt`: the fault handlers' RTT dumps stay inside up-buffer 0. Each dump wraps
+  at `SizeOfBuffer` and waits (bounded, on the order of 10 s) for the host to make room rather
+  than overwrite unread data; it skips itself when the ring isn't set up (`SizeOfBuffer` 0) or
+  its offsets are past the end. Before, a dump wrote at `WrOff` unchecked, running past the
+  buffer's end or through a stale control block. Startup now zeroes `.rtt_buffer` (NOLOAD, so
+  it outlives a reset), so a fault before `rtt_init` finds no ring.
 
 [Unreleased]: https://github.com/FirestormAudio/deluge-sdk

@@ -52,12 +52,16 @@ SECTIONS {
        memory_rtt.x). A literal here would silently under- or over-reserve the
        moment that size changed. */
     .rtt_cached_reserve (NOLOAD) : ALIGN(4) { . += LENGTH(RTT_RAM); } > RTT_RAM
+    /* NOLOAD, so it survives a reset holding whatever the last program left: startup zeroes it
+       (__rtt_buffer_start..__rtt_buffer_end) so that a fault before rtt_init finds no ring. */
     .rtt_buffer (NOLOAD) : ALIGN(4) {
+        __rtt_buffer_start = .;
         KEEP(*(.rtt_buffer .rtt_buffer.*))
         /* 32-byte cache line: keeps any cached allocation above the buffer from
            sharing a line with it, so a fill/evict through the cached alias cannot
            write back over what the CPU wrote uncached. */
         . = ALIGN(32);
+        __rtt_buffer_end = .;
     } > NCACHE_RTT_RAM
 
     /* Match the vendor Deluge layout more closely: reserve low SRAM for the
