@@ -15,7 +15,8 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
-mode=(--dry-run)
+# A dry run allows the lockfile edits the patches make; the tree is checked clean below.
+mode=(--dry-run --allow-dirty)
 if [ "${1:-}" = "--publish" ]; then
   mode=()
 elif [ -n "${1:-}" ]; then
