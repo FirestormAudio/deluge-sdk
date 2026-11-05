@@ -3,7 +3,7 @@ OUTPUT_ARCH(arm)
 ENTRY(_start)
 
 /*
- * Linker script for an RZ/A1L image that executes in place (XIP) from the memory-mapped SPI
+ * Linker script for an RZ/A1 image that executes in place (XIP) from the memory-mapped SPI
  * flash window: code and read-only data stay in flash, .data is copied to RAM by the reset
  * handler (from __data_load__), .bss and the per-mode stacks live in RAM.
  *
@@ -26,6 +26,9 @@ PROVIDE(rza1_cpu_fault_report = __rza1_rt_default_fault_report);
 
 /* See link.x: a board's boot header is pulled in by name. */
 EXTERN(__rza1_boot_header)
+
+/* One level-1 translation table, as in link.x. */
+TTB_SIZE = 0x4000;
 
 SECTIONS {
     .vector_table ORIGIN(FLASH) : ALIGN(0x20) {
@@ -72,6 +75,16 @@ SECTIONS {
         *(COMMON)
         . = ALIGN(4);
         __bss_end__ = .;
+    } > RAM
+
+    /* The MMU translation table (rza1_hal::mmu::TTB), as link.x reserves it, so an XIP image that
+     * turns the MMU on gets its 16 KB-aligned table in RAM rather than wherever an orphan section
+     * would land. */
+    .ttb_mmu1 (NOLOAD) : ALIGN(0x4000) {
+        ttb_mmu1_base = .;
+        KEEP(*(.ttb_mmu1 .ttb_mmu1.*))
+        . = ttb_mmu1_base + TTB_SIZE;
+        ttb_mmu1_end = .;
     } > RAM
 
     /* Exception-mode stacks, then the program stack at the top, as link.x places them. */

@@ -7,7 +7,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
-description = "Runtime for the Renesas RZ/A1L (Cortex-A9): reset vector, exception entry and linker script."
+description = "Runtime for the Renesas RZ/A1 (Cortex-A9 with NEON): reset vector, exception entry and linker script."
 categories = ["embedded", "no-std"]
 keywords = ["rza1", "renesas", "cortex-a9", "runtime", "startup"]
 # One vector table and one `_start` per image: Cargo refuses a second copy of this crate.

@@ -23,3 +23,7 @@ PROVIDE(ABT_STACK_SIZE     = 0x2000);   /*  8 KB */
 
 /* Top byte address of on-chip SRAM (used to anchor stack sections) */
 INTERNAL_RAM_END = 0x20300000;
+
+/* The Deluge's first-stage bootloader copies `_start..code_end` from flash into SRAM, in whole
+ * 64 KB blocks: the boot header (`boot_header.rs`) gives it this as code_end. */
+__metadata_code_end = ALIGN(__image_end, 0x10000);

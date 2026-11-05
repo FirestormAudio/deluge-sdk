@@ -1,7 +1,7 @@
-//! `rza1-rt` — the runtime for the Renesas RZ/A1L (Cortex-A9): the vector table, the reset
+//! `rza1-rt` — the runtime for the Renesas RZ/A1 (Cortex-A9): the vector table, the reset
 //! handler, the fault handlers, the GIC IRQ entry stub and the linker script.
 //!
-//! Builds on stable Rust 1.92 or later.
+//! Builds on stable Rust 1.97 or later.
 //!
 //! Link it once per image: the board crate does `use rza1_rt as _;` and puts a `memory.x` on the
 //! linker search path for the script to INCLUDE. The image defines its entry with [`entry`], and

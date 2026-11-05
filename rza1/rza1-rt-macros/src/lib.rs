@@ -1,6 +1,6 @@
 //! Attribute macros for `rza1-rt`. Use them through `rza1_rt::{entry, irq, fault}`.
 //!
-//! Builds on stable Rust 1.92 or later.
+//! Builds on stable Rust 1.97 or later.
 #![deny(missing_docs)]
 
 use proc_macro::TokenStream;
@@ -112,8 +112,31 @@ fn expand_irq(attr: TokenStream2, item: TokenStream2) -> TokenStream2 {
     }
 }
 
+/// The path `#[fault]`'s expansion names `rza1_rt` by: `::rza1_rt`, or the `crate = <path>`
+/// argument for a crate that depends on it under another name.
+fn rt_path(attr: TokenStream2) -> Result<syn::Path, TokenStream2> {
+    if attr.is_empty() {
+        return Ok(syn::parse_quote!(::rza1_rt));
+    }
+    let arg: syn::MetaNameValue = syn::parse2(attr).map_err(|e| e.to_compile_error())?;
+    if !arg.path.is_ident("crate") {
+        return Err(error(
+            Span::call_site(),
+            "`#[fault]` takes only `crate = <path to rza1_rt>`",
+        ));
+    }
+    match arg.value {
+        syn::Expr::Path(p) => Ok(p.path),
+        other => Err(syn::Error::new_spanned(other, "expected a path").to_compile_error()),
+    }
+}
+
 fn expand_fault(attr: TokenStream2, item: TokenStream2) -> TokenStream2 {
-    let f = match parse(attr, item, "fault") {
+    let rt = match rt_path(attr) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    let f = match parse(TokenStream2::new(), item, "fault") {
         Ok(f) => f,
         Err(e) => return e,
     };
@@ -140,8 +163,8 @@ fn expand_fault(attr: TokenStream2, item: TokenStream2) -> TokenStream2 {
             __rza1_rt_lr: u32,
             __rza1_rt_sp: u32,
         ) -> ! {
-            let f: fn(&::rza1_rt::FaultInfo) -> ! = #name;
-            f(&::rza1_rt::FaultInfo::__from_raw(__rza1_rt_pc, __rza1_rt_kind, __rza1_rt_lr, __rza1_rt_sp))
+            let f: fn(&#rt::FaultInfo) -> ! = #name;
+            f(&#rt::FaultInfo::__from_raw(__rza1_rt_pc, __rza1_rt_kind, __rza1_rt_lr, __rza1_rt_sp))
         }
     }
 }
@@ -163,8 +186,9 @@ pub fn irq(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 /// The fault handler, on `fn(&rza1_rt::FaultInfo) -> !`: exports it as
-/// `rza1_cpu_fault_report`, which every fault vector calls on the abort stack. The crate using it
-/// depends on `rza1-rt`. Any other signature is a compile error.
+/// `rza1_cpu_fault_report`, which every fault vector calls on the abort stack. The expansion names
+/// `::rza1_rt`; a crate that depends on `rza1-rt` under another name passes the path,
+/// `#[fault(crate = my_rt)]`. Any other signature or argument is a compile error.
 #[proc_macro_attribute]
 pub fn fault(attr: TokenStream, item: TokenStream) -> TokenStream {
     expand_fault(attr.into(), item.into()).into()
@@ -403,5 +427,47 @@ mod tests {
             out.contains("compile_error") && out.contains("fn(&FaultInfo) -> !"),
             "{out}"
         );
+    }
+    #[test]
+    fn fault_defaults_to_the_rza1_rt_path() {
+        let out = squash(expand_fault(
+            quote!(),
+            quote!(
+                fn on_fault(_f: &FaultInfo) -> ! {
+                    loop {}
+                }
+            ),
+        ));
+        assert!(out.contains("::rza1_rt::FaultInfo"), "{out}");
+        assert!(!out.contains("compile_error"), "{out}");
+    }
+
+    #[test]
+    fn fault_accepts_a_crate_path() {
+        let out = squash(expand_fault(
+            quote!(crate = my_rt),
+            quote!(
+                fn on_fault(_f: &FaultInfo) -> ! {
+                    loop {}
+                }
+            ),
+        ));
+        assert!(out.contains("my_rt::FaultInfo::__from_raw"), "{out}");
+        assert!(!out.contains("::rza1_rt::"), "{out}");
+        assert!(!out.contains("compile_error"), "{out}");
+    }
+
+    #[test]
+    fn fault_rejects_an_unknown_argument() {
+        let out = expand_fault(
+            quote!(krate = my_rt),
+            quote!(
+                fn on_fault(_f: &FaultInfo) -> ! {
+                    loop {}
+                }
+            ),
+        )
+        .to_string();
+        assert!(out.contains("compile_error"), "{out}");
     }
 }

@@ -34,6 +34,12 @@ if bad or named:
     sys.exit("error: the rza1 workspace reaches outside rza1/: " + ", ".join(bad + named))
 '
 
+echo "==> rza1: rza1-rt builds on the plain target, with no CPU flags"
+# A dependent's build has none of this workspace's rustflags (target-cpu=cortex-a9 and the rest),
+# so the runtime's assembly must declare the FPU it needs itself.
+(cd rza1-rt && RUSTFLAGS="" CARGO_ENCODED_RUSTFLAGS="" cargo build -q -Zbuild-std=core \
+  --target armv7a-none-eabihf --target-dir "$PWD/../target/plain-target")
+
 echo "==> rza1: chip features (exactly one of rza1l / rza1h)"
 BUILD_STD=(-Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem)
 for bad in "" "rza1l,rza1h"; do

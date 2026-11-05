@@ -1,4 +1,4 @@
-//! Reset vector, exception handlers and the GIC IRQ entry stub for the RZ/A1L, in ARM-mode
+//! Reset vector, exception handlers and the GIC IRQ entry stub for the RZ/A1, in ARM-mode
 //! assembly.
 //!
 //! The reset handler invalidates caches/TLBs, installs the vector table via
@@ -119,8 +119,7 @@ _reset_handler:
     /*
      * Invalidate all D-cache levels by iterating every Set and Way.
      *
-     * Faithfully ported from reset_handler.S (both Deluge and Azure RTOS
-     * BSPs are identical here — Renesas reference implementation).
+     * Ported from the Renesas reference reset_handler.S.
      *
      * Register usage (mirrors original):
      *   r0  = CLIDR
@@ -183,9 +182,9 @@ _reset_handler:
 
     /* 1e. Now safe to clear HIVEC — exceptions will use VBAR = _start.
      *     Also clear TE (bit 30, Thumb Exceptions) so exception vectors
-     *     execute in ARM state.  Old firmware (e.g. Deluge) runs in Thumb
-     *     mode and sets TE=1; our vector table uses ARM `ldr pc, [pc, #n]`
-     *     entries which decode as undefined Thumb-2 when TE=1. */
+     *     execute in ARM state.  A previous image built for Thumb may have
+     *     left TE=1; our vector table holds ARM `b` branches, which decode
+     *     as undefined Thumb-2 when TE=1. */
     mrc p15, 0, r0, c1, c0, 0
     bic r0, r0, #(1 << 13)       /* Clear HIVEC (use low vectors) */
     bic r0, r0, #(1 << 30)       /* Clear TE (ARM exception entry) */
@@ -278,8 +277,8 @@ _reset_handler:
     mov lr, r1
     msr spsr_fsxc, r0
 
-    /* Note: UNDEF mode is intentionally NOT entered here.
-     * Our UNDEF handler is a bare infinite loop with no stack.
+    /* Note: UNDEF mode is intentionally NOT entered here, so it has no stack of its own:
+     * the UNDEF handler only reads LR/SPSR and then reports the fault on the abort stack.
      * probe-rs resets SPSR_und and LR_und to safe values before restart.
      * Entering UNDEF mode briefly to init it would create a window where
      * a nested FIQ could return to UNDEF mode unexpectedly. */
@@ -674,8 +673,7 @@ _undef_rtt:
 // and r5/r6 set up as described at the vectors.
 //
 // It calls `rza1_cpu_fault_report(fault_pc, fault_type, sys_lr, sys_sp)`: the image's
-// `#[rza1_rt::fault]` handler, or a C function of that name (the Deluge firmware's pad-grid
-// crash reporter is one). In an image that defines neither, link.x PROVIDEs the default below,
+// `#[rza1_rt::fault]` handler, or a C function of that name. In an image that defines neither, link.x PROVIDEs the default below,
 // which parks the core. `sys_lr`/`sys_sp` are the interrupted code's LR and SP, read by briefly
 // switching to System mode, which shares them with User mode: LR is the return address of the
 // call that went wrong, and SP is where the reporter walks for the rest of the call chain. The
@@ -805,6 +803,10 @@ _pabt_rtt:
 
 global_asm!(
     r#"
+    /* The d16-d31 save below needs the 32-register FPU, which every RZ/A1 (Cortex-A9 with NEON)
+     * has but the plain armv7a-none-eabihf target does not assume: declare it here so the
+     * runtime builds without `-C target-cpu=cortex-a9`. */
+    .fpu    neon
     .equ GICC_IAR_ADDR,   0xE820200C
     .equ GICC_EOIR_ADDR,  0xE8202010
     .equ GICC_HPPIR_ADDR, 0xE8202018

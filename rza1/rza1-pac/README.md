@@ -31,4 +31,4 @@ sequences can be tested on a host or under QEMU.
 
 [chiptool]: https://github.com/embassy-rs/chiptool
 
-Builds on stable Rust 1.92 or later. (The workspace pins a nightly only for its own `-Zbuild-std` builds.)
+Builds on stable Rust 1.97 or later. (The workspace pins a nightly only for its own `-Zbuild-std` builds.)

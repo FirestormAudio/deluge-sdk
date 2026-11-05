@@ -3,7 +3,7 @@ OUTPUT_ARCH(arm)
 ENTRY(_start)
 
 /*
- * Linker script for RZ/A1L with SEGGER RTT enabled.
+ * Linker script for the RZ/A1 with SEGGER RTT enabled.
  *
  * The binary crate (or BSP) must provide memory.x on the linker search path.
  * It must define (at minimum):
@@ -64,35 +64,12 @@ SECTIONS {
         __rtt_buffer_end = .;
     } > NCACHE_RTT_RAM
 
-    /* Match the vendor Deluge layout more closely: reserve low SRAM for the
-       MMU translation table and BSS, and place the first loadable code above
-       that reserved region. */
-    .ttb_mmu1 ORIGIN(RAM) (NOLOAD) : ALIGN(0x4000) {
-        ttb_mmu1_base = .;
-        /* rza1_hal::mmu::TTB itself (16 KB, 16 KB-aligned), here rather than in
-         * .bss. KEEP, because nothing references the input section by name. The
-         * reservation stays TTB_SIZE whatever it holds; a table that outgrew it
-         * would move the location counter backwards, which is a link error. */
-        KEEP(*(.ttb_mmu1 .ttb_mmu1.*))
-        . = ttb_mmu1_base + TTB_SIZE;
-        . = ALIGN(4);
-        ttb_mmu1_end = .;
-    } > RAM
-
-    .bss (NOLOAD) : ALIGN(4) {
-        __bss_start__ = .;
-        *(.bss .bss.*)
-        *(COMMON)
-        . = ALIGN(4);
-        __bss_end__ = .;
-    } > RAM
-
     /*
      * The vector table, the first loadable bytes of the image, then the board's boot header, if
      * it has one: a board crate emits the words and signature its first-stage loader checks into
      * `.boot_header`, which therefore lands at `_start + 0x20`. Optional; nothing requires it.
      */
-    .vector_table : ALIGN(0x20) {
+    .vector_table ORIGIN(RAM) : ALIGN(0x20) {
         KEEP(*(.vector_table))
         KEEP(*(.boot_header))
     } > RAM
@@ -118,10 +95,9 @@ SECTIONS {
     } > RAM
     __data_load__ = LOADADDR(.data);
 
-    /* ARM EH unwind tables — kept (not discarded) so C++ exception unwinding
-     * works for consumers built with exceptions (the Deluge app throws/catches
-     * deluge::exception). In the image (before `end`). Rust firmwares emit
-     * little/none here — harmless. */
+    /* ARM EH unwind tables, kept rather than discarded so C++ exception unwinding works for
+     * code built with exceptions. In the image, so a loader copies them. Rust firmwares
+     * (panic=abort) emit little or nothing here. */
     .ARM.extab : ALIGN(4) {
         *(.ARM.extab* .gnu.linkonce.armextab.*)
     } > RAM
@@ -131,30 +107,38 @@ SECTIONS {
         __exidx_end = .;
     } > RAM
 
-    /* The end of the image: everything the bootloader must copy. */
+    /* The end of the image: every byte a loader must copy. A board that needs a rounded copy length
+     * (a first-stage loader's code_end, say) computes it from __image_end in its memory.x. */
     __image_end = .;
 
-    /*
-     * Round up to next 64 KB boundary so the bootloader knows how much to
-     * copy from SPI flash into SRAM (matches original linker script).
-     */
-    . = ALIGN(0x10000);
+    .bss (NOLOAD) : ALIGN(4) {
+        __bss_start__ = .;
+        *(.bss .bss.*)
+        *(COMMON)
+        . = ALIGN(4);
+        __bss_end__ = .;
+    } > RAM
+
+    /* The MMU translation table (rza1_hal::mmu::TTB, 16 KB, 16 KB-aligned), here rather than in
+     * .bss. KEEP, because nothing references the input section by name. The reservation stays
+     * TTB_SIZE whatever it holds; a table that outgrew it would move the location counter
+     * backwards, which is a link error. */
+    .ttb_mmu1 (NOLOAD) : ALIGN(0x4000) {
+        ttb_mmu1_base = .;
+        KEEP(*(.ttb_mmu1 .ttb_mmu1.*))
+        . = ttb_mmu1_base + TTB_SIZE;
+        . = ALIGN(4);
+        ttb_mmu1_end = .;
+    } > RAM
+
     end = .;
     _end = .;
 
-    /* FSB metadata code_end: the FSB copies _start..code_end to SRAM. */
-    __metadata_code_end = end;
-
-    /* SRAM heap: free space between the image and the RTT/stack reservation. The
-     * Deluge C++ app gets these bounds via libdeluge/memory.h
-     * (deluge_memory_region, FAST_INTERNAL → [__sram_heap_start, __sram_heap_end));
-     * see src/bsp/rust/src/services.rs.
-     *
-     * It starts at the image's end, not at `end`: the 64 KB rounding is only the bootloader's copy
-     * length, and the bytes it adds are free. A firmware whose image ends in data it no longer
-     * needs after boot (a load copy it has moved elsewhere, say) defines `__sram_heap_base` to
-     * hand that tail to the heap too. 16-byte aligned, as TLSF pools require. */
-    __sram_heap_start = DEFINED(__sram_heap_base) ? __sram_heap_base : ALIGN(__image_end, 16);
+    /* SRAM heap: the free space between the image's zero-init data and the RTT/stack
+     * reservation. A firmware with memory it no longer needs after boot (a load copy it has moved
+     * elsewhere, say) defines `__sram_heap_base` to start the heap lower. 16-byte aligned, as
+     * TLSF pools require. */
+    __sram_heap_start = DEFINED(__sram_heap_base) ? __sram_heap_base : ALIGN(end, 16);
     __sram_heap_end   = ORIGIN(RTT_RAM);
     /* The per-mode stacks sit above the RTT reserve. Without this check, stacks that grew into
      * it fail later as an unexplained section overlap. */
@@ -185,10 +169,8 @@ SECTIONS {
 
     /* Program (SYS mode) stack at the very top of SRAM */
     .program_stack (INTERNAL_RAM_END - PROGRAM_STACK_SIZE) (NOLOAD) : {
-        /* program_stack_start is the stack base; the C++ app's checkStack() guard
-         * measures stack headroom against it. (Startup uses program_stack_end as
-         * the initial SP.) The app's internal *heap* bounds now come from
-         * libdeluge/memory.h, so this symbol means the program stack, as named. */
+        /* program_stack_start is the stack base, for code that measures stack headroom;
+         * startup uses program_stack_end as the initial SP. */
         program_stack_start = .;
         . += PROGRAM_STACK_SIZE;
         program_stack_end = .;

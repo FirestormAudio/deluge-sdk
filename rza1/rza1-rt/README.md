@@ -1,6 +1,6 @@
 # rza1-rt
 
-Runtime for the Renesas RZ/A1L (ARM Cortex-A9, R7S721020): the vector table, the reset handler
+Runtime for the Renesas RZ/A1L and RZ/A1H (ARM Cortex-A9 with NEON): the vector table, the reset handler
 (cache/TLB invalidate, VFP/NEON enable, per-mode stacks, BSS zero, then `main`), the fault
 handlers and the GIC IRQ entry stub, plus the linker script.
 
@@ -9,7 +9,14 @@ linker search path defining the `RAM` (and optionally `SDRAM`) regions, the per-
 and `INTERNAL_RAM_END`; see the script's header for the full list. The application's `build.rs`
 passes `-Tlink.x` (`cargo:rustc-link-arg-bins=-Tlink.x`).
 
-Builds on stable Rust 1.92 or later. (The workspace pins a nightly only for its own `-Zbuild-std` builds.)
+`link.x` lays the image out from the start of `RAM`: the vector table (with a board's boot
+header after it), code, read-only data, `.data` and the unwind tables, then `__image_end`, then
+the zero-init `.bss` and the 16 KB MMU translation table, then the SRAM heap
+(`__sram_heap_start..__sram_heap_end`) up to the per-mode stacks at the top. `__image_end` is the
+last byte a loader has to copy; a board whose first-stage loader wants a rounded copy length
+derives it from that symbol in its `memory.x`.
+
+Builds on stable Rust 1.97 or later. (The workspace pins a nightly only for its own `-Zbuild-std` builds.)
 
 ## Attributes
 
@@ -20,7 +27,8 @@ Builds on stable Rust 1.92 or later. (The workspace pins a nightly only for its 
   faulting instruction's address, the fault's kind and the interrupted code's LR and SP. It
   exports `rza1_cpu_fault_report(fault_pc, fault_type, sys_lr, sys_sp)`, which a C function of
   that name can define instead. With neither, the core parks (`wfi`). The expansion names
-  `rza1_rt::FaultInfo`, so the crate using it depends on `rza1-rt`.
+  `::rza1_rt::FaultInfo`; a crate that depends on `rza1-rt` under another name passes the path,
+  `#[fault(crate = my_rt)]`.
 - `#[irq]` on `unsafe fn(u32)`: the IRQ dispatcher, called with each interrupt's ICCIAR value. It
   exports `gic_dispatch`, which `rza1-hal`'s `rt` feature otherwise provides; it is for an image
   that turns that off and dispatches interrupts itself.
@@ -34,7 +42,8 @@ and puts a `memory_xip.x` on the search path defining `FLASH` (where it executes
 `0x1800_0000`) and `RAM` regions, the per-mode stack sizes and `INTERNAL_RAM_END`. Code and
 read-only data stay in flash; the reset handler copies `.data` from flash (`__data_load__`) to
 RAM before zeroing BSS. In a RAM-linked image the two addresses are equal and the copy is
-skipped. The XIP script has no MMU table, SRAM heap or RTT variant.
+skipped. The XIP script reserves the MMU table in RAM as `link.x` does, but has no SRAM heap or
+RTT variant.
 
 ## Boot header
 
