@@ -78,6 +78,10 @@ cargo test --target "$HOST" -p deluge-sdk-macros
 # Host-only: `--features sim` pulls deluge-simulator -> cpal -> alsa-sys, which
 # does not cross-compile to the QEMU ARM bucket's target.
 cargo test --target "$HOST" -p deluge-sdk --features sim
+# An app that turns on `deluge-sdk/sim` but declares no `sim` feature of its own still gets a
+# host `main` from `#[deluge::app]`.
+cargo build --target "$HOST" --manifest-path crates/deluge-sdk/tests/host-app/Cargo.toml \
+  --target-dir target/host-app
 cargo test --target "$HOST" --manifest-path tools/cargo-deluge/Cargo.toml
 
 echo "==> All tests passed."

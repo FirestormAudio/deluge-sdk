@@ -25,7 +25,7 @@
 //! ```ignore
 //! sd::init().await.expect("SD init failed");
 //! let mut buf = [0u8; 512];
-//! sd::read_sector(0, &mut buf).await.expect("read failed");
+//! sd::read_sectors(0, 1, &mut buf).await.expect("read failed");
 //! ```
 
 // ---------------------------------------------------------------------------
@@ -371,34 +371,6 @@ mod device {
         controller().take_card_detect_events()
     }
 
-    /// Read a single 512-byte sector at logical block address `lba`.
-    ///
-    /// # Arguments
-    /// * `lba`  — sector number (0-based).
-    /// * `buf`  — destination buffer; must be exactly 512 bytes.
-    pub async fn read_sector(lba: u32, buf: &mut [u8; 512]) -> Result<(), SdError> {
-        let _card = CARD.lock().await;
-        read_sector_unlocked(lba, buf).await
-    }
-
-    async fn read_sector_unlocked(lba: u32, buf: &mut [u8; 512]) -> Result<(), SdError> {
-        read_sectors_unlocked(lba, 1, buf).await
-    }
-
-    /// Write a single 512-byte sector at logical block address `lba`.
-    ///
-    /// # Arguments
-    /// * `lba`  — sector number (0-based).
-    /// * `buf`  — source data; must be exactly 512 bytes.
-    pub async fn write_sector(lba: u32, buf: &[u8; 512]) -> Result<(), SdError> {
-        let _card = CARD.lock().await;
-        write_sector_unlocked(lba, buf).await
-    }
-
-    async fn write_sector_unlocked(lba: u32, buf: &[u8; 512]) -> Result<(), SdError> {
-        write_sectors_unlocked(lba, 1, buf).await
-    }
-
     /// Read `count` consecutive sectors starting at `lba`.
     ///
     /// Uses CMD18 (READ_MULTIPLE_BLOCK) when `count > 1`, CMD17 otherwise.
@@ -612,8 +584,8 @@ mod device {
 
     #[cfg(feature = "fat")]
     impl PartitionShim {
-        /// Probe LBA 0 and pick a [`ShimMode`]. Any read error or ambiguous layout
-        /// falls back to [`ShimMode::Passthrough`].
+        /// Probe LBA 0 and pick a `ShimMode`. Any read error or ambiguous layout
+        /// falls back to `ShimMode::Passthrough`.
         pub fn new() -> Self {
             let inner = DelugeBlockDevice;
             let mode = Self::detect(&inner);
@@ -684,6 +656,7 @@ mod device {
 
     /// Fill `buf` with a minimal MBR describing one FAT32 (LBA) partition that
     /// starts at LBA 1 and spans `total` blocks.
+    #[cfg(feature = "fat")]
     fn synthesize_mbr(buf: &mut [u8; 512], total: u32) {
         buf.fill(0);
         // Partition entry 0 lives at offset 446 and is 16 bytes long.

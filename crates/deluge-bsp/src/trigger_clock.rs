@@ -22,10 +22,6 @@ use embassy_sync::waitqueue::AtomicWaker;
 use embassy_time::Instant;
 use log::info;
 
-/// Port and pin for the trigger-clock input.
-const TRIG_PORT: u8 = 1;
-const TRIG_PIN: u8 = 14;
-
 /// External interrupt number used by `P1_14`'s PFC alt-2 routing.
 const TRIG_IRQ: u8 = 6;
 

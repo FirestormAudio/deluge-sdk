@@ -15,13 +15,17 @@ keywords = ["deluge", "synthstrom", "embassy", "rza1", "embedded"]
 # The SDK's docs build only for the device target.
 [package.metadata.docs.rs]
 default-target = "armv7a-none-eabihf"
+# Not all-features: usb-log and usb-serial are mutually exclusive, and so are sim and linux.
+features = ["rtt", "alloc", "audio-irq", "usb-serial", "unstable-parts"]
 
 [lib]
 name = "deluge"
 path = "src/lib.rs"
 
 [dependencies]
-deluge-macros = { path = "../deluge-sdk-macros", version = "0.1.0", package = "deluge-sdk-macros" }
+# Pinned exactly: the macro expands to this crate's hidden `__rt` items, which only the matching
+# release of each provides.
+deluge-macros = { path = "../deluge-sdk-macros", version = "=0.1.0", package = "deluge-sdk-macros" }
 # Default features off so `fault-blink` follows this crate's own feature of that name: an app
 # with its own fault handler turns `deluge`'s defaults off.
 deluge-bsp = { path = "../deluge-bsp", version = "0.1.0", default-features = false, features = ["memory-x"] }
@@ -101,9 +105,12 @@ alloc = []
 usb-log = ["dep:embassy-usb"]
 ## Let the app own USB0 as a CDC-ACM serial device via `Deluge::usb_serial`
 ## (e.g. a REPL). Device only. Conflicts with `usb-log`, which also owns USB0:
-## `Deluge::usb_serial` panics if both are enabled, so build firmware with `-p`
-## to keep another crate's `usb-log` from unifying in.
+## enabling both is a compile error, so build firmware with `-p` to keep another
+## crate's `usb-log` from unifying in.
 usb-serial = ["dep:embassy-usb"]
+## `deluge::parts`: the board peripherals no capability has claimed, for an app that drives one
+## through `deluge-bsp` directly. Not covered by semver (its fields are BSP and HAL types).
+unstable-parts = []
 ## Use the per-block RX DMA interrupt clock for `dlg.audio()` (drift-free, lower
 ## latency) instead of the default poll loop. Same `process()` API.
 audio-irq = ["deluge-bsp/audio-irq"]

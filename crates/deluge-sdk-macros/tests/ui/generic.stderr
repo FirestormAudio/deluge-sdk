@@ -1,0 +1,5 @@
+error: #[deluge::app] entry point cannot be generic
+ --> tests/ui/generic.rs:5:13
+  |
+5 | async fn app<T>() {}
+  |             ^^^

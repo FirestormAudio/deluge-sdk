@@ -12,7 +12,7 @@ test = false
 [dependencies]
 usb-classes = { workspace = true, features = ["device-audio"] }
 rza1-hal = { path = "../../rza1/rza1-hal", features = ["rza1l"] }
-deluge-bsp = { path = "../../crates/deluge-bsp", features = ["usb-host"] }
+deluge-bsp = { path = "../../crates/deluge-bsp", features = ["usb-host-uac"] }
 cortex-ar = { workspace = true }
 embassy-executor = { workspace = true, features = ["nightly", "platform-cortex-ar", "executor-thread"] }
 embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }

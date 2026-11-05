@@ -13,6 +13,8 @@ keywords = ["deluge", "synthstrom", "bsp", "rza1", "embedded"]
 # The peripheral code builds only for the device target.
 [package.metadata.docs.rs]
 default-target = "armv7a-none-eabihf"
+# Every feature, so the reference covers flash, fat, block-device and the USB host stack too.
+all-features = true
 
 [lib]
 # Unit tests run on the host; the test harness needs std.
@@ -36,7 +38,7 @@ rtt = ["rza1-rt/rtt"]
 ## The fault handler: a CPU fault blinks the SYNC LED (P6_7), one to five pulses by the fault's
 ## kind (`fault_blink`). An image defining its own `rza1_cpu_fault_report` turns this off.
 fault-blink = []
-## Drive `audio::init_direct` from a per-block RX DMA interrupt instead of the
+## Clock the block audio tap (`audio_block`) from a per-block RX DMA interrupt instead of the
 ## default poll loop. Selected by `deluge/audio-irq`.
 audio-irq = []
 ## The [`flash`] module: SPI-NOR chip profile and board memory map over
@@ -59,9 +61,6 @@ usb-host-uac = ["usb-host-core", "usb-classes/host-uac"]
 ## The Elektron Overbridge 2 host class on top of `usb-host-core` (`usb::host::overbridge()`):
 ## a Digitakt or another Overbridge device streams its stems to the Deluge.
 usb-host-overbridge = ["usb-host-core", "usb-classes/host-overbridge"]
-## The host stack with UAC, as before `usb-host-core` existed. Kept for one release; it will
-## become `usb-host-core`'s meaning, so name `usb-host-uac` if you want UAC.
-usb-host = ["usb-host-uac"]
 ## `usb::sd_block`: the SD card as a USB Mass Storage medium for
 ## `usb_classes::bot`. Opt-in; only firmware that exposes the card over USB
 ## needs it.

@@ -1,0 +1,12 @@
+# A minimal host app built by tools/test.sh: it turns on `deluge-sdk`'s `sim` feature and
+# declares no features of its own, which must be enough for `#[deluge::app]` to give it a `main`.
+[package]
+name = "deluge-host-app-check"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+deluge = { package = "deluge-sdk", path = "../..", features = ["sim"] }
+
+[workspace]

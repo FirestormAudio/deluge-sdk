@@ -23,7 +23,7 @@ use syn::{parse_macro_input, FnArg, ItemFn};
 /// ```
 ///
 /// The annotated function must be `async`. It may take a single argument of
-/// type [`Deluge`](../deluge/struct.Deluge.html); if omitted, the handle is
+/// type [`Deluge`](https://docs.rs/deluge-sdk/latest/deluge/struct.Deluge.html); if omitted, the handle is
 /// simply not bound.
 ///
 /// ## Optional `setup`
@@ -69,6 +69,22 @@ pub fn app(args: TokenStream, item: TokenStream) -> TokenStream {
         return syn::Error::new_spanned(
             &func.sig,
             "#[deluge::app] must be applied to an `async fn`",
+        )
+        .to_compile_error()
+        .into();
+    }
+    if !func.sig.generics.params.is_empty() || func.sig.generics.where_clause.is_some() {
+        return syn::Error::new_spanned(
+            &func.sig.generics,
+            "#[deluge::app] entry point cannot be generic",
+        )
+        .to_compile_error()
+        .into();
+    }
+    if !matches!(func.sig.output, syn::ReturnType::Default) {
+        return syn::Error::new_spanned(
+            &func.sig.output,
+            "#[deluge::app] entry point returns nothing: `async fn main(dlg: Deluge)`",
         )
         .to_compile_error()
         .into();
@@ -137,29 +153,16 @@ pub fn app(args: TokenStream, item: TokenStream) -> TokenStream {
             ::deluge::__rt::panic(info)
         }
 
-        // Host entry point (the desktop simulator, via `cargo deluge sim`): a normal
-        // `fn main` that hands off to the host runtime (which owns the GUI).
-        #[cfg(all(not(target_os = "none"), feature = "sim"))]
-        fn main() {
-            ::deluge::__rt::host::run(
-                || { #setup_call; },
-                |spawner: ::deluge::__rt::Spawner| {
-                    spawner.spawn(__deluge_app_main(spawner).unwrap());
-                },
-            )
-        }
-
-        // Native Linux entry point (`cargo deluge linux`): a normal `fn main`
-        // that hands off to the linux runtime (which owns libdeluge).
-        #[cfg(all(not(target_os = "none"), feature = "linux"))]
-        fn main() {
-            ::deluge::__rt::linux::run(
-                || { #setup_call; },
-                |spawner: ::deluge::__rt::Spawner| {
-                    spawner.spawn(__deluge_app_main(spawner).unwrap());
-                },
-            )
-        }
+        // Host entry point: the simulator's (`sim`) or the Linux userland's (`linux`), whichever
+        // of `deluge`'s own features is on, or none. `deluge` picks it, not a `cfg` here: a
+        // `cfg(feature = …)` in this expansion would test the app's features, not the SDK's.
+        #[cfg(not(target_os = "none"))]
+        ::deluge::__host_main!(
+            || { #setup_call; },
+            |spawner: ::deluge::__rt::Spawner| {
+                spawner.spawn(__deluge_app_main(spawner).unwrap());
+            }
+        );
     }
     .into()
 }

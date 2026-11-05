@@ -46,10 +46,12 @@ async fn main(_dlg: Deluge) {
 | `rtt` | Enable RTT (SEGGER Real-Time Transfer) debug logging in the `#[deluge::app]` runtime. |
 | `sim` | Host backend: run the app against the desktop simulator panel (`cargo deluge sim`). Host builds only. |
 | `linux` | Linux backend: run the app on the Deluge's Linux userland through `libdeluge` (`cargo deluge linux --features linux`). |
+| `unstable-parts` | `deluge::parts`, the board peripherals no capability has claimed, for an app that drives one through `deluge-bsp` itself. Not covered by semver. |
 
-Apps usually forward the backend features as their own, e.g.
-`sim = ["deluge/sim"]` and `linux = ["deluge/linux"]` (see
-`examples/baremetal/oled_hello`).
+Turning a backend on in `deluge` is all `#[deluge::app]` needs to give the app a host `main`.
+Apps usually forward the backend features as their own, `sim = ["deluge/sim"]` and
+`linux = ["deluge/linux"]`, so `cargo deluge sim` and `cargo deluge linux --features linux` can
+select them (see `examples/baremetal/oled_hello`).
 
 `usb-log` takes precedence over `rtt` when both are enabled — only one global
 logger may be registered.

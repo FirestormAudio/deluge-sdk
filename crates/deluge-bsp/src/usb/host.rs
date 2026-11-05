@@ -19,7 +19,7 @@ use embassy_sync::channel::Channel;
 ///
 /// The C firmware reaches 6 by also servicing MIDI devices that use
 /// *interrupt* endpoints on RX pipes 7-8 (`USB_CFG_HMIDI_INT_RECV_MIN/MAX`).
-/// [`midi::find_midi_interface`] only claims bulk endpoints, so those two are
+/// `midi::find_midi_interface` only claims bulk endpoints, so those two are
 /// not available here. TODO: support interrupt-endpoint MIDI.
 pub const MAX_MIDI_DEVICES: usize = 4;
 

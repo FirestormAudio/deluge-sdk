@@ -43,7 +43,9 @@
 // DelugeFirmware's toolchain still needs it, so the lint is allowed rather than the gate dropped.
 #![cfg_attr(any(target_os = "none", test), feature(allocator_api))]
 #![cfg_attr(any(target_os = "none", test), allow(stable_features))]
-#![allow(dead_code)]
+// Host builds (the simulator, the tests) compile the device modules' shared logic without the
+// device code that calls it; the device build is held to no dead code.
+#![cfg_attr(not(target_os = "none"), allow(dead_code))]
 
 // The runtime (reset vector, exception entry, linker script). Nothing calls into it by name,
 // so this is what links it into every image built on the BSP.

@@ -409,7 +409,8 @@ is the consumer; reuse that rather than re-driving the UART.
 
 ### Taking a peripheral from the SDK
 
-The runtime keeps the board's unclaimed peripherals in `deluge::parts` (device-only). An app that
+The runtime keeps the board's unclaimed peripherals in `deluge::parts` (device-only, behind the
+`unstable-parts` feature: its fields are BSP and HAL types, outside the SDK's semver). An app that
 drives one through the BSP itself takes it in `setup`:
 
 ```rust

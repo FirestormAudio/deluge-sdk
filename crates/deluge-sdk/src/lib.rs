@@ -42,6 +42,8 @@
 // The optional global allocator (device only) delegates to the HAL's
 // allocator-api heap; on the host the system allocator is used.
 #![cfg_attr(all(feature = "alloc", target_os = "none"), feature(allocator_api))]
+// Partly stabilised on newer nightlies, which flag the gate; DelugeFirmware's toolchain needs it.
+#![cfg_attr(all(feature = "alloc", target_os = "none"), allow(stable_features))]
 
 pub use deluge_macros::app;
 
@@ -94,9 +96,13 @@ mod leds;
 mod midi;
 pub mod oled;
 mod pads;
-/// The board's peripherals no capability has claimed yet (device-only).
-#[cfg(target_os = "none")]
+/// The board's peripherals no capability has claimed yet (device-only), for an app that drives
+/// one through `deluge-bsp` itself. Behind `unstable-parts`: its fields are `deluge-bsp` and
+/// `rza1-hal` types, so it is not covered by this crate's semver.
+#[cfg(all(target_os = "none", feature = "unstable-parts"))]
 pub mod parts;
+#[cfg(all(target_os = "none", not(feature = "unstable-parts")))]
+pub(crate) mod parts;
 mod pic_service;
 mod plat;
 #[cfg(any(feature = "rtt", test))]
@@ -192,6 +198,10 @@ mod not_send_assertions {
 /// depends on `deluge-bsp` or `rza1-hal` directly.)
 #[cfg(target_os = "none")]
 pub use deluge_bsp::heap;
+
+/// The `embassy-time` this SDK is built against (`Timer`, `Duration`, `Instant`, `Ticker`), so an
+/// app can use the same copy instead of depending on its own.
+pub use embassy_time as time;
 
 /// The app capability handle, passed to `#[deluge::app] async fn main`.
 ///
@@ -507,6 +517,38 @@ pub mod prelude {
         Pads, Sd, StereoFrame, SyncLed,
     };
     pub use log::{debug, error, info, warn};
+}
+
+// The host entry point `#[deluge::app]` emits, chosen by *this* crate's features. A `cfg` in the
+// macro's own expansion would be evaluated against the app's features instead, so an app that
+// turned on `deluge-sdk/sim` without declaring a `sim` feature of its own would get no `main`.
+#[doc(hidden)]
+#[cfg(feature = "sim")]
+#[macro_export]
+macro_rules! __host_main {
+    ($setup:expr, $spawn:expr) => {
+        fn main() {
+            $crate::__rt::host::run($setup, $spawn)
+        }
+    };
+}
+
+#[doc(hidden)]
+#[cfg(all(feature = "linux", not(feature = "sim")))]
+#[macro_export]
+macro_rules! __host_main {
+    ($setup:expr, $spawn:expr) => {
+        fn main() {
+            $crate::__rt::linux::run($setup, $spawn)
+        }
+    };
+}
+
+#[doc(hidden)]
+#[cfg(not(any(feature = "sim", feature = "linux")))]
+#[macro_export]
+macro_rules! __host_main {
+    ($setup:expr, $spawn:expr) => {};
 }
 
 /// Runtime support invoked by the [`#[deluge::app]`](macro@app) expansion.
