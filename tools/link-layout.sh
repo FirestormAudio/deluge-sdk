@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
-# The memory layout every firmware links with, as linker-defined symbols: stack sizes and
-# bounds, the SRAM heap's end, the MMU table, BSS start and the RTT control block. Symbols that
-# move with code size (`_start`, `end`, `__sram_heap_start`) are left out, so a code change
-# doesn't touch the baseline; a layout change does, and has to be committed deliberately. Every
+# The memory layout every firmware links with, as linker-defined symbols: where the image
+# starts, stack sizes and bounds, the SRAM heap's end and the RTT control block. Symbols that
+# move with code size (`__bss_start__` and the MMU table after the image, `end`,
+# `__sram_heap_start`) are left out, so a code change doesn't touch the baseline; a layout change
+# does, and has to be committed deliberately. Every
 # ELF built here also goes through tools/check-boot-header.py (the vector table and the boot
 # header the first-stage bootloader reads), with its --rtt checks for the RTT builds.
 #
@@ -15,7 +16,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 BASELINE=tools/link-layout.baseline
-SYMS='(ABT|FIQ|IRQ|SVC|PROGRAM)_STACK_SIZE|(abt|fiq|irq|svc|program)_stack_(start|end)|__sram_heap_end|ttb_mmu1_base|__bss_start__|_SEGGER_RTT|INTERNAL_RAM_END'
+SYMS='(ABT|FIQ|IRQ|SVC|PROGRAM)_STACK_SIZE|(abt|fiq|irq|svc|program)_stack_(start|end)|__sram_heap_end|_start|_SEGGER_RTT|INTERNAL_RAM_END'
 PLAIN=(blinky oled_hello oled_menu oled_hmenu input_demo pad_paint midi_cv clock_jacks sd_demo
        audio_passthru audio_passthru_irq test_osc additive_osc button_leds usb_log
        demo-firmware deluge-controller msc-firmware app-loader
