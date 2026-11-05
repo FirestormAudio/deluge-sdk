@@ -139,6 +139,12 @@ runs in two buckets (see `tools/test.sh` at the workspace root): on the host
 e.g. `from_float` is the genuine `VCVT` instruction — so the hardware path is
 cross-checked against the portable one, not assumed equivalent.
 
+One difference is expected and kept: a Q31 multiply (`*`) on the ARM path is `SMMUL`, which keeps
+the 64-bit product's high word and doubles it, dropping the product's bit 31, while the portable
+path shifts the product right by 31. The two can differ by one least-significant bit: raw `3`
+times raw `1 << 30` is 0 on ARM and 1 on the host. Compare results across the device and the
+simulator within one LSB.
+
 Run the tests from the workspace root:
 
 ```bash

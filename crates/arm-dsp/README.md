@@ -27,7 +27,7 @@ feature uses the unstable `core::arch::arm` intrinsics instead of inline assembl
 | Target | Native instructions |
 |---|---|
 | ARMv7-A/R, e.g. Cortex-A9 (`armv7a-none-eabihf`, `armv7-unknown-linux-gnueabihf`) | all, including VCVT |
-| Cortex-M4/M7 (`thumbv7em-none-eabi[hf]`) | all except VCVT |
+| Cortex-M4/M7 (`thumbv7em-none-eabi[hf]`) | all except VCVT (the M4F's FPU has it, but Rust reports no VFP feature there, so the conversion uses the fallback) |
 | ARMv8-M Mainline, e.g. Cortex-M33 (`thumbv8m.main-none-eabi[hf]`) | with `-C target-cpu=cortex-m33` or `+dsp` |
 | ARMv6, Cortex-M0/M3, AArch64, x86 and the rest | none: portable fallback |
 

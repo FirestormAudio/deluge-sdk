@@ -452,3 +452,22 @@ fn test_near_one_values() {
     assert!(almost_one < one);
     assert!((one.to_float() - 1.0).abs() < 0.001);
 }
+
+// ── Saturation at i32::MIN (every operation saturates, on every target) ─────────────────────────
+
+#[test]
+fn div_int_min_by_minus_one_saturates() {
+    assert_eq!(Q16::from_raw(i32::MIN).div_int(-1).raw(), i32::MAX);
+}
+
+#[test]
+fn abs_min_saturates() {
+    assert_eq!(Q31::from_raw(i32::MIN).abs().raw(), i32::MAX);
+}
+
+#[test]
+fn mul_add_min_min_saturates_on_every_target() {
+    // (-1.0) × (-1.0) = +1.0, which Q31 can't hold: the sum saturates to MAX on the ARM DSP path
+    // and the portable one alike.
+    assert_eq!(Q31::ZERO.mul_add(Q31::MIN, Q31::MIN).raw(), i32::MAX);
+}

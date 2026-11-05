@@ -192,7 +192,7 @@ impl<const FRAC_BITS: u32, const ROUNDED: bool> FixedPoint<FRAC_BITS, ROUNDED> {
     ///
     /// The input is clamped to the representable range and converted.
     ///
-    /// On ARM with VFP this is the single fused `VCVT.S32.F32` instruction
+    /// On ARMv7 with VFP this is the single fused `VCVT.S32.F32` instruction
     /// (scale + saturate in one op), which is why it is **not** a `const fn`.
     /// Note the hardware instruction rounds toward zero regardless of the
     /// `ROUNDED` parameter; for a `const` constructor that honours `ROUNDED`,
@@ -211,10 +211,10 @@ impl<const FRAC_BITS: u32, const ROUNDED: bool> FixedPoint<FRAC_BITS, ROUNDED> {
         #[allow(clippy::let_unit_value)]
         let _ = Self::_ASSERT_VALID_FRAC_BITS;
 
-        // Fused fixed-point VCVT.S32.F32 on ARM with VFP: one instruction does
+        // Fused fixed-point VCVT.S32.F32 on ARMv7 with VFP: one instruction does
         // the scale, round-toward-zero, and saturation. This is the hot path
         // for DSP, so we keep it on the single-instruction form.
-        #[cfg(all(target_arch = "arm", target_feature = "vfp2"))]
+        #[cfg(all(target_arch = "arm", target_feature = "vfp2", target_feature = "v7"))]
         {
             Self {
                 value: dsp::vcvt_f32_to_fixed::<FRAC_BITS>(value),
@@ -222,7 +222,7 @@ impl<const FRAC_BITS: u32, const ROUNDED: bool> FixedPoint<FRAC_BITS, ROUNDED> {
         }
 
         // Off ARM (host/tests) fall back to the portable const path.
-        #[cfg(not(all(target_arch = "arm", target_feature = "vfp2")))]
+        #[cfg(not(all(target_arch = "arm", target_feature = "vfp2", target_feature = "v7")))]
         {
             Self::from_float_const(value)
         }
@@ -306,14 +306,14 @@ impl<const FRAC_BITS: u32, const ROUNDED: bool> FixedPoint<FRAC_BITS, ROUNDED> {
     /// ```
     #[inline]
     pub fn to_float(self) -> f32 {
-        // Use VCVT instruction on ARM with VFP
-        #[cfg(all(target_arch = "arm", target_feature = "vfp2"))]
+        // Use the VCVT instruction on ARMv7 with VFP (the fixed-point form is VFPv3 and later)
+        #[cfg(all(target_arch = "arm", target_feature = "vfp2", target_feature = "v7"))]
         {
             dsp::vcvt_fixed_to_f32::<FRAC_BITS>(self.value)
         }
 
         // Portable fallback
-        #[cfg(not(all(target_arch = "arm", target_feature = "vfp2")))]
+        #[cfg(not(all(target_arch = "arm", target_feature = "vfp2", target_feature = "v7")))]
         {
             self.value as f32 / Self::ONE as f32
         }
@@ -410,8 +410,9 @@ impl<const FRAC_BITS: u32, const ROUNDED: bool> FixedPoint<FRAC_BITS, ROUNDED> {
     /// ```
     #[inline]
     pub fn abs(self) -> Self {
+        // |MIN| = MAX + 1 doesn't fit: it saturates to MAX.
         Self {
-            value: self.value.abs(),
+            value: self.value.saturating_abs(),
         }
     }
 
@@ -548,8 +549,9 @@ impl<const FRAC_BITS: u32, const ROUNDED: bool> FixedPoint<FRAC_BITS, ROUNDED> {
                 Self::MIN
             };
         }
+        // MIN / -1 is the one quotient i32 can't hold: it saturates to MAX.
         Self {
-            value: self.value / rhs,
+            value: self.value.saturating_div(rhs),
         }
     }
 
@@ -579,8 +581,9 @@ impl<const FRAC_BITS: u32, const ROUNDED: bool> FixedPoint<FRAC_BITS, ROUNDED> {
             } else {
                 dsp::mul_high(a.value, b.value)
             };
-            // Shift left by 1 for Q31 format, then saturating add
-            let shifted = product_high << 1;
+            // Double for Q31 (the high word is the product >> 32), saturating: MIN × MIN has a
+            // high word of 2^30, and a plain `<< 1` would wrap it to MIN.
+            let shifted = dsp::saturating_add(product_high, product_high);
             return Self {
                 value: dsp::saturating_add(self.value, shifted),
             };

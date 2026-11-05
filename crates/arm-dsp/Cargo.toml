@@ -8,7 +8,7 @@ repository.workspace = true
 readme = "README.md"
 description = "Safe wrappers for the 32-bit Arm DSP instructions (SMMUL, QADD, SSAT, VCVT) for fixed-point arithmetic on Cortex-A, -R and -M, with portable fallbacks."
 categories = ["embedded", "no-std", "hardware-support"]
-keywords = ["arm", "dsp", "simd", "fixed-point", "intrinsics"]
+keywords = ["arm", "dsp", "fixed-point", "saturating", "cortex-m"]
 
 [dependencies]
 

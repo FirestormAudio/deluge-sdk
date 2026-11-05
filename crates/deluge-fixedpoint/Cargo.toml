@@ -9,9 +9,9 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
-description = "Type-safe const-generic fixed-point arithmetic with an optional ARMv7 DSP fast path."
+description = "Type-safe const-generic fixed-point arithmetic (Q31, Q16, …) that saturates, using the Arm DSP instructions where the target has them."
 categories = ["embedded", "no-std", "mathematics"]
-keywords = ["fixed-point", "q31", "dsp", "no-std", "armv7"]
+keywords = ["fixed-point", "q31", "dsp", "no-std", "arm"]
 
 [dependencies]
 arm-dsp.workspace = true

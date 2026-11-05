@@ -341,7 +341,8 @@ pub fn mul_subtract_high_round(acc: i32, a: i32, b: i32) -> i32 {
 /// Signed saturate to bit position (SSAT instruction)
 ///
 /// Saturates a signed 32-bit value to a signed N-bit value.
-/// `BITS` must be in `1..32`.
+/// `BITS` must be in `1..=32`, as for the instruction, on every target: anything else is a compile
+/// error.
 ///
 /// # Examples
 /// ```
@@ -351,9 +352,17 @@ pub fn mul_subtract_high_round(acc: i32, a: i32, b: i32) -> i32 {
 /// assert_eq!(ssat::<16>(100000), 32767);
 /// assert_eq!(ssat::<16>(-100000), -32768);
 /// ```
+///
+/// ```compile_fail
+/// let _ = arm_dsp::ssat::<0>(1);
+/// ```
+///
+/// ```compile_fail
+/// let _ = arm_dsp::ssat::<33>(1);
+/// ```
 #[inline]
 pub fn ssat<const BITS: u32>(val: i32) -> i32 {
-    debug_assert!(BITS > 0 && BITS < 32, "BITS must be 1..31");
+    const { assert!(BITS >= 1 && BITS <= 32, "ssat: BITS must be 1..=32") };
 
     #[cfg(all(target_arch = "arm", target_feature = "dsp"))]
     {
@@ -371,6 +380,10 @@ pub fn ssat<const BITS: u32>(val: i32) -> i32 {
     }
     #[cfg(not(all(target_arch = "arm", target_feature = "dsp")))]
     {
+        // `ssat #32` passes every value through.
+        if BITS == 32 {
+            return val;
+        }
         let min = -(1i32 << (BITS - 1));
         let max = (1i32 << (BITS - 1)) - 1;
         val.clamp(min, max)
@@ -380,7 +393,7 @@ pub fn ssat<const BITS: u32>(val: i32) -> i32 {
 /// Unsigned saturate to bit position (USAT instruction)
 ///
 /// Saturates a signed 32-bit value to an unsigned N-bit value.
-/// `BITS` must be in `0..=32`.
+/// `BITS` must be in `0..=31`.
 ///
 /// # Examples
 /// ```
@@ -390,9 +403,15 @@ pub fn ssat<const BITS: u32>(val: i32) -> i32 {
 /// assert_eq!(usat::<8>(1000), 255);
 /// assert_eq!(usat::<8>(-10), 0);
 /// ```
+///
+/// `BITS` must be in `0..=31`, as for the instruction, on every target:
+///
+/// ```compile_fail
+/// let _ = arm_dsp::usat::<32>(1);
+/// ```
 #[inline]
 pub fn usat<const BITS: u32>(val: i32) -> u32 {
-    debug_assert!(BITS <= 32, "BITS must be 0..=32");
+    const { assert!(BITS <= 31, "usat: BITS must be 0..=31") };
 
     #[cfg(all(target_arch = "arm", target_feature = "dsp"))]
     {
@@ -410,12 +429,8 @@ pub fn usat<const BITS: u32>(val: i32) -> u32 {
     }
     #[cfg(not(all(target_arch = "arm", target_feature = "dsp")))]
     {
-        if BITS == 32 {
-            val.max(0) as u32
-        } else {
-            let max = (1u32 << BITS) - 1;
-            val.clamp(0, max as i32) as u32
-        }
+        let max = (1u32 << BITS) - 1;
+        val.clamp(0, max as i32) as u32
     }
 }
 
@@ -437,7 +452,12 @@ pub fn usat<const BITS: u32>(val: i32) -> u32 {
 /// ```
 #[inline]
 pub fn ssat_lsl<const SHIFT: u32, const BITS: u32>(val: i32) -> i32 {
-    debug_assert!(SHIFT < 32 && BITS > 0 && BITS < 32);
+    const {
+        assert!(
+            SHIFT <= 31 && BITS >= 1 && BITS <= 32,
+            "ssat_lsl: SHIFT must be 0..=31 and BITS 1..=32"
+        )
+    };
 
     #[cfg(all(target_arch = "arm", target_feature = "dsp"))]
     {
@@ -461,6 +481,9 @@ pub fn ssat_lsl<const SHIFT: u32, const BITS: u32>(val: i32) -> i32 {
         // with a 32-bit wrapping shift so the portable path matches the
         // instruction for every input, not just those that fit in 32 bits.
         let shifted = val.wrapping_shl(SHIFT);
+        if BITS == 32 {
+            return shifted;
+        }
         let min = -(1i32 << (BITS - 1));
         let max = (1i32 << (BITS - 1)) - 1;
         shifted.clamp(min, max)
@@ -476,7 +499,12 @@ pub fn ssat_lsl<const SHIFT: u32, const BITS: u32>(val: i32) -> i32 {
 /// 0, matching the ARM instruction.
 #[inline]
 pub fn usat_lsl<const SHIFT: u32, const BITS: u32>(val: u32) -> u32 {
-    debug_assert!(SHIFT < 32 && BITS <= 32);
+    const {
+        assert!(
+            SHIFT <= 31 && BITS <= 31,
+            "usat_lsl: SHIFT must be 0..=31 and BITS 0..=31"
+        )
+    };
 
     #[cfg(all(target_arch = "arm", target_feature = "dsp"))]
     {
@@ -502,8 +530,6 @@ pub fn usat_lsl<const SHIFT: u32, const BITS: u32>(val: u32) -> u32 {
         let shifted = val.wrapping_shl(SHIFT) as i32;
         if shifted < 0 {
             0
-        } else if BITS == 32 {
-            shifted as u32
         } else {
             (shifted as u32).min((1u32 << BITS) - 1)
         }
@@ -593,9 +619,20 @@ pub fn lshift_saturate<const SHIFT: u32>(val: i32) -> i32 {
 /// let q31 = vcvt_f32_to_fixed::<31>(0.5);
 /// // Result is approximately 0.5 * 2^31 = 1073741824
 /// ```
+///
+/// `FRAC_BITS` must be in `1..=32`, as for the instruction, on every target:
+///
+/// ```compile_fail
+/// let _ = arm_dsp::vcvt_f32_to_fixed::<0>(0.5);
+/// ```
 #[inline]
 pub fn vcvt_f32_to_fixed<const FRAC_BITS: u32>(value: f32) -> i32 {
-    debug_assert!(FRAC_BITS <= 32, "FRAC_BITS must be <= 32");
+    const {
+        assert!(
+            FRAC_BITS >= 1 && FRAC_BITS <= 32,
+            "FRAC_BITS must be 1..=32"
+        )
+    };
 
     #[cfg(all(target_arch = "arm", target_feature = "vfp2", target_feature = "v7"))]
     {
@@ -622,7 +659,7 @@ pub fn vcvt_f32_to_fixed<const FRAC_BITS: u32>(value: f32) -> i32 {
             // Special case for Q31 to avoid overflow
             i32::MAX as f32
         } else {
-            (1u32 << FRAC_BITS) as f32
+            (1u64 << FRAC_BITS) as f32
         };
 
         let scaled = value * scale;
@@ -652,9 +689,20 @@ pub fn vcvt_f32_to_fixed<const FRAC_BITS: u32>(value: f32) -> i32 {
 /// let f = vcvt_fixed_to_f32::<31>(q31);
 /// // f is approximately 0.5
 /// ```
+///
+/// `FRAC_BITS` must be in `1..=32`, as for the instruction, on every target:
+///
+/// ```compile_fail
+/// let _ = arm_dsp::vcvt_fixed_to_f32::<0>(1);
+/// ```
 #[inline]
 pub fn vcvt_fixed_to_f32<const FRAC_BITS: u32>(value: i32) -> f32 {
-    debug_assert!(FRAC_BITS <= 32, "FRAC_BITS must be <= 32");
+    const {
+        assert!(
+            FRAC_BITS >= 1 && FRAC_BITS <= 32,
+            "FRAC_BITS must be 1..=32"
+        )
+    };
 
     #[cfg(all(target_arch = "arm", target_feature = "vfp2", target_feature = "v7"))]
     {
@@ -680,7 +728,7 @@ pub fn vcvt_fixed_to_f32<const FRAC_BITS: u32>(value: i32) -> f32 {
         let scale = if FRAC_BITS == 31 {
             i32::MAX as f32
         } else {
-            (1u32 << FRAC_BITS) as f32
+            (1u64 << FRAC_BITS) as f32
         };
 
         value as f32 / scale
@@ -751,6 +799,13 @@ mod proptests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ssat_to_32_bits_passes_every_value_through() {
+        for v in [i32::MIN, -1, 0, 1, i32::MAX] {
+            assert_eq!(ssat::<32>(v), v);
+        }
+    }
 
     #[test]
     fn test_qadd() {
