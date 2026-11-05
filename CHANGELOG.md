@@ -7,7 +7,10 @@ breaking changes.
 
 ## [Unreleased]
 
-The first developer preview of the Deluge SDK.
+## [0.1.0] - 2026-11-05
+
+The first developer preview of the Deluge SDK. The API is not stable yet: until 1.0, a minor
+release may contain breaking changes.
 
 ### Added
 
@@ -45,4 +48,5 @@ The first developer preview of the Deluge SDK.
 - **Examples** under `examples/` covering every capability, and hardware validation firmwares
   under `hw-tests/`.
 
-[Unreleased]: https://github.com/FirestormAudio/deluge-sdk
+[Unreleased]: https://github.com/FirestormAudio/deluge-sdk/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/FirestormAudio/deluge-sdk/releases/tag/v0.1.0
