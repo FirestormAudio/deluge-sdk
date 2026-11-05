@@ -8,9 +8,8 @@ loader and the SDK have not been tested on one.
 ## What does "developer preview" mean?
 
 The SDK works, and the examples run on hardware, but the API is not stable yet: until 1.0,
-a new release may change it in ways that need your app's code to change. The crates are not on
-crates.io yet, so an app depends on this repository by path or over git (`cargo deluge new`
-sets that up). Breaking changes are listed in the [changelog](../CHANGELOG.md).
+a new release may change it in ways that need your app's code to change. Breaking changes are
+listed in the [changelog](../CHANGELOG.md).
 
 ## Can an app damage my Deluge?
 

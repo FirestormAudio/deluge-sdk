@@ -8,12 +8,12 @@ only dependency is `serialport`, for the USB upload path. It has no Cargo featur
 
 ## Install
 
-From a clone of the repository:
-
 ```sh
-rustup show                              # installs the pinned nightly toolchain and target
-cargo install --path tools/cargo-deluge
+cargo install cargo-deluge
 ```
+
+Or, from a clone of the repository, `cargo install --path tools/cargo-deluge`. A new app pins
+its nightly toolchain in `rust-toolchain.toml`, which `rustup` installs on first use.
 
 Cargo then runs the installed `cargo-deluge` binary for `cargo deluge <command>`.
 `cargo deluge help` prints every command with its options.

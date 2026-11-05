@@ -36,14 +36,14 @@ pub(crate) fn cmd_new(args: &[String]) -> Result<(), String> {
     }
 
     // Point the new app at the SDK checkout it was created in, if any;
-    // otherwise at the SDK's git repository.
+    // otherwise at the published crate.
     let sdk = env::current_dir()
         .ok()
         .and_then(|d| find_sdk_deluge_from(&d));
     if sdk.is_none() {
         eprintln!(
-            "note: not inside an SDK checkout; depending on `deluge-sdk` from \
-             {SDK_GIT}. Edit Cargo.toml to point at a local checkout if needed."
+            "note: not inside an SDK checkout; depending on the published \
+             `deluge-sdk`. Edit Cargo.toml to point at a local checkout if needed."
         );
     }
     let deluge_dep = deluge_dep(sdk.as_deref());
@@ -99,10 +99,6 @@ fn scaffold(dir: &Path, name: &str, deluge_dep: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Where an app created outside an SDK checkout gets the SDK from. The crates are
-/// not on crates.io yet.
-const SDK_GIT: &str = "https://github.com/FirestormAudio/deluge-sdk";
-
 /// Walk up from the current directory looking for the SDK's `deluge` crate.
 fn find_sdk_deluge_from(start: &Path) -> Option<PathBuf> {
     let mut dir = start.to_path_buf();
@@ -118,7 +114,7 @@ fn find_sdk_deluge_from(start: &Path) -> Option<PathBuf> {
 }
 
 /// The app's `deluge` dependency: the SDK crate at `sdk` if given, else the one
-/// in [`SDK_GIT`]. Either way it is the `deluge-sdk` package, imported as
+/// published one. Either way it is the `deluge-sdk` package, imported as
 /// `deluge`.
 fn deluge_dep(sdk: Option<&Path>) -> String {
     match sdk {
@@ -126,7 +122,7 @@ fn deluge_dep(sdk: Option<&Path>) -> String {
             "deluge = {{ package = \"deluge-sdk\", path = {:?} }}",
             p.display().to_string()
         ),
-        None => format!("deluge = {{ package = \"deluge-sdk\", git = \"{SDK_GIT}\" }}"),
+        None => "deluge = { package = \"deluge-sdk\", version = \"0.1\" }".to_string(),
     }
 }
 
@@ -341,7 +337,7 @@ mod tests {
         );
         let remote = deluge_dep(None);
         assert!(remote.contains("package = \"deluge-sdk\""), "{remote}");
-        assert!(remote.contains(&format!("git = \"{SDK_GIT}\"")), "{remote}");
+        assert!(remote.contains("version = \"0.1\""), "{remote}");
     }
 
     #[test]

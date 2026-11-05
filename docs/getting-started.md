@@ -37,11 +37,9 @@ here:
 - **Rust toolchain** — pinned in [`rust-toolchain.toml`](../rust-toolchain.toml);
   `rustup show` installs it on first run (nightly + the `armv7a-none-eabihf`
   target + `rust-src`).
-- **A clone of this repository** — `git clone https://github.com/FirestormAudio/deluge-sdk`.
-  The SDK crates are not on crates.io yet.
 - **`cargo deluge`** — the host tool that scaffolds, builds, and deploys apps so
   you never touch `-Zbuild-std`, linker flags, or the target triple by hand:
-  `cargo install --path tools/cargo-deluge`, from the clone.
+  `cargo install cargo-deluge`.
 - **A Deluge running the app-loader** — the on-device menu that launches your
   app ELFs. Flashing it is a one-time step
   ([Installing the loader](app-loader.md#installing-the-loader); see
@@ -71,15 +69,15 @@ the wrong port.
 > Prefer the SD card? `cargo deluge deploy --dest /run/media/you/DELUGE` copies
 > the ELF to `<dest>/APPS/`; then power-cycle and pick `myapp` from the menu.
 
-`cargo deluge new` works anywhere. Inside the SDK checkout, the new app depends on the
-SDK by path, so your local changes to the SDK apply to it; anywhere else it depends on the
-SDK's git repository (`cargo update` picks up new commits).
+`cargo deluge new` works anywhere. The new app depends on `deluge-sdk` from crates.io;
+created inside a clone of this repository, it depends on the SDK by path instead, so your
+local changes to the SDK apply to it.
 
 It generates a **fully self-contained app crate**:
 
 ```
 myapp/
-├── Cargo.toml            # depends on `deluge` (by path or git) + embassy-executor/-time
+├── Cargo.toml            # depends on `deluge` + embassy-time
 ├── rust-toolchain.toml   # pinned nightly + armv7a-none-eabihf
 ├── .cargo/config.toml    # target triple, Cortex-A9/NEON flags
 ├── build.rs              # selects the linker script (the memory layout comes from deluge-bsp)
@@ -500,8 +498,7 @@ missing from the menu) see the [App Loader Manual](app-loader.md#recovery).
 - **Lower layers** — the board support package
   ([`crates/deluge-bsp`](../crates/deluge-bsp/README.md)) and HAL
   ([`rza1/rza1-hal`](../rza1/rza1-hal/README.md)), for advanced use: add
-  them as dependencies alongside `deluge`, from the same path or git source (it
-  doesn't re-export them).
+  them as dependencies alongside `deluge` (it doesn't re-export them).
 - **API reference** — [rustdoc for every public crate](https://firestormaudio.github.io/deluge-sdk/).
 - **Questions** — the [FAQ](faq.md).
 - **Repository overview** — the [root README](../README.md).

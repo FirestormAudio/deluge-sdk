@@ -58,18 +58,16 @@ That means:
 ## Quick start
 
 ```sh
-git clone https://github.com/FirestormAudio/deluge-sdk
-cd deluge-sdk
-rustup show                          # installs the pinned nightly + target
-cargo install --path tools/cargo-deluge
+cargo install cargo-deluge
 
-cargo deluge new myapp               # anywhere; see below
+cargo deluge new myapp
 cd myapp
 cargo deluge run                     # build + upload over USB, launch from RAM
 ```
 
-The SDK crates are not on crates.io yet. An app created inside the checkout depends on it
-by path; one created anywhere else depends on this repository over git.
+The new app depends on [`deluge-sdk`](https://crates.io/crates/deluge-sdk) from crates.io and
+pins its nightly toolchain, which `rustup` installs on first build. To work on the SDK itself,
+clone this repository: an app created inside the checkout depends on it by path.
 
 `cargo deluge run` needs a Deluge running the **app-loader** with **dev mode**
 on. Flashing the app-loader is a one-time step — see

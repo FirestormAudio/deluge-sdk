@@ -58,17 +58,17 @@ that uses it directly won't build for the desktop simulator.
 
 Neither the board crate nor the chip HAL is re-exported. To use `deluge_bsp` or
 `rza1_hal` directly (the bus lock, the GIC, raw MMIO, …), add it as a dependency of
-your app alongside `deluge`, from the same source, so Cargo resolves one copy of each:
+your app alongside `deluge`:
 
 ```toml
 [dependencies]
-deluge = { package = "deluge-sdk", git = "https://github.com/FirestormAudio/deluge-sdk" }
-deluge-bsp = { git = "https://github.com/FirestormAudio/deluge-sdk" }
-rza1-hal = { git = "https://github.com/FirestormAudio/deluge-sdk" }
+deluge = { package = "deluge-sdk", version = "0.1" }
+deluge-bsp = "0.1"
+rza1-hal = { version = "0.1", features = ["rza1l"] }
 ```
 
 Inside the SDK checkout, use `path =` dependencies instead
-(`crates/deluge-bsp`, `rza1/rza1-hal`).
+(`crates/deluge-bsp`, `rza1/rza1-hal`), so Cargo resolves one copy of each.
 
 Like `deluge_alloc`, it only builds for the device.
 
