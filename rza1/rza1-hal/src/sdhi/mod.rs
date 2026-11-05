@@ -39,6 +39,8 @@
 //! let resp = sdhi.read_r1();
 //! ```
 
+pub mod card;
+
 use crate::dma_buf::{Uncached, UncachedMut};
 use core::future::poll_fn;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, Ordering};

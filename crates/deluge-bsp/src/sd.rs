@@ -11,25 +11,14 @@
 //! (`host`), so callers (e.g. a FatFS diskio shim) need no `#[cfg]` of their
 //! own.
 //!
-//! ## SD protocol overview (device)
+//! ## The card protocol (device)
 //!
-//! [`init`] runs the full SD v2 initialization sequence:
-//!   CMD0  → reset card to idle
-//!   CMD8  → check host voltage (determines SDHC/SDXC support)
-//!   ACMD41 (loop) → wait for card ready, learn high-capacity flag
-//!   CMD2  → get CID (ignored here)
-//!   CMD3  → get RCA
-//!   CMD9  → get CSD (card capacity — requires RCA, card in Stand-by state)
-//!   CMD7  → select card
-//!   ACMD6 → switch to 4-bit bus
-//!   CMD16 → set block length to 512 (needed for SDSC cards)
-//!   CMD6  → query + switch to High-Speed mode (skipped on old cards)
-//!   Switch clock from ~130 kHz (P1/512) to 33.3 MHz (P1/2, High-Speed) or
-//!   16.7 MHz (P1/4) if the CMD6 switch is unsupported/refused
-//!
-//! Sector addressing:
-//!   - SDHC/SDXC cards: block address (LBA directly)
-//!   - SDSC cards: byte address (LBA × 512)
+//! `rza1_hal::sdhi::card` runs the SD v2 bring-up (CMD0 … CMD6 High-Speed) and the block
+//! transfers. This module adds the Deluge's policy around it: SDHI1 and its pins, DMA channels
+//! and interrupts; the socket's inverted write-protect polarity; one lock around each card
+//! operation; a statically allocated DMA bounce buffer of `SD_DMA_MAX_SECTORS` blocks behind the
+//! uncached mirror; and the wake-up retries a cold card needs ([`init`] tries the protocol 16 times
+//! over about 1.3 s and returns as soon as it succeeds).
 //!
 //! ## Usage
 //!
@@ -69,30 +58,15 @@ impl From<rza1_hal::sdhi::SdhiError> for SdError {
     }
 }
 
-// ---------------------------------------------------------------------------
-// CMD6 (SWITCH_FUNC) status block (shared: parsed on device, tested on host)
-// ---------------------------------------------------------------------------
-
-/// Decoded fields of the CMD6 (SWITCH_FUNC) 512-bit status block.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SwitchStatus {
-    /// Function group 1 (access mode) supports function 1 (High-Speed).
-    pub hs_supported: bool,
-    /// Function group 1 selected-function nibble
-    /// (0x1 = High-Speed selected, 0xF = switch refused / function error).
-    pub group1_selected: u8,
-}
-
-/// Parse the CMD6 switch-function status block.
-///
-/// The block arrives MSB-first: `buf[0]` holds status bits 511:504.
-///   - Group-1 support mask = status bits 415:400 → bytes 12–13;
-///     function 1 (High-Speed) = bit 401 = byte 13, bit 1.
-///   - Group-1 selected function = status bits 379:376 → byte 16 low nibble.
-pub(crate) fn parse_switch_status(buf: &[u8; 64]) -> SwitchStatus {
-    SwitchStatus {
-        hs_supported: buf[13] & 0x02 != 0,
-        group1_selected: buf[16] & 0x0F,
+#[cfg(target_os = "none")]
+impl From<rza1_hal::sdhi::card::CardError> for SdError {
+    fn from(e: rza1_hal::sdhi::card::CardError) -> Self {
+        use rza1_hal::sdhi::card::CardError;
+        match e {
+            CardError::Sdhi(e) => SdError::Hardware(e),
+            CardError::Unsupported => SdError::UnsupportedCard,
+            _ => SdError::Protocol,
+        }
     }
 }
 
@@ -132,8 +106,10 @@ fn card_usable(aborted: bool, ready: &core::sync::atomic::AtomicBool) -> Result<
 
 #[cfg(target_os = "none")]
 mod device {
-    use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+    use core::cell::Cell;
+    use core::sync::atomic::{AtomicBool, Ordering};
 
+    use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
     use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
     use embassy_sync::mutex::Mutex;
     use embassy_sync::once_lock::OnceLock;
@@ -142,6 +118,7 @@ mod device {
     use rza1_hal::cache;
     use rza1_hal::dma_buf::UncachedMut;
     use rza1_hal::dmac::{self, Dma};
+    use rza1_hal::sdhi::card::{self, Card};
     use rza1_hal::sdhi::{self, Sdhi, WpPolarity};
 
     use super::SdError;
@@ -213,90 +190,22 @@ mod device {
     }
 
     // ---------------------------------------------------------------------------
-    // Well-known SD command register values (written to SD_CMD register).
-    //
-    // Most commands: lower 6 bits = command index.  The SDHI hardware infers the
-    // response type from the command index internally.
-    // CMD8 has bits [10:8] set (= 0x0408) to select the R7 response path.
-    // ---------------------------------------------------------------------------
-
-    const CMD0: u16 = 0; // GO_IDLE_STATE — no response
-    const CMD2: u16 = 2; // ALL_SEND_CID — R2
-    const CMD3: u16 = 3; // SEND_RELATIVE_ADDR — R6
-    const CMD7: u16 = 7; // SELECT_CARD — R1b
-    const CMD8: u16 = 0x0408; // SEND_IF_COND — R7 (special encoding)
-    const CMD12: u16 = 12; // STOP_TRANSMISSION — R1b
-    const CMD16: u16 = 16; // SET_BLOCKLEN — R1
-    const CMD17: u16 = 17; // READ_SINGLE_BLOCK — R1 + data
-    const CMD18: u16 = 18; // READ_MULTIPLE_BLOCK — R1 + data
-    const CMD24: u16 = 24; // WRITE_BLOCK — R1 + data
-    const CMD25: u16 = 25; // WRITE_MULTIPLE_BLOCK — R1 + data
-    const CMD55: u16 = 55; // APP_CMD (prefix for ACMD) — R1
-
-    /// CMD6 (SWITCH_FUNC) — extended mode, single-block read, R1 + 64-byte data.
-    /// SD_CMD encoding 0x1C06 per TRM table 38.7 (MD[2:0]=100 extended/R1,
-    /// MD3 = with-data, MD4 = read, MD5 = 0 single-block).  Normal mode cannot
-    /// be used: the SDHI does not auto-decode CMD6 as a data command.
-    const CMD6_DATA: u16 = 0x1C06;
-
-    /// CMD6 mode-0 (query) argument: group 1 → function 1, groups 2–6 = 0xF
-    /// (no change).  Answers "is High-Speed switchable?" without switching.
-    const CMD6_ARG_QUERY_HS: u32 = 0x00FF_FF01;
-    /// CMD6 mode-1 (switch) argument: switch group 1 to function 1 (High-Speed).
-    const CMD6_ARG_SWITCH_HS: u32 = 0x80FF_FF01;
-
-    /// ACMD6 (0x40 | 6): SET_BUS_WIDTH — R1
-    const ACMD6: u16 = 0x40 | 6;
-    /// ACMD41 (0x40 | 41): SD_SEND_OP_COND — R3
-    const ACMD41: u16 = 0x40 | 41;
-
-    // Multiple-block READ uses the SDHI's *extended* transfer mode (SD_CMD[15:8]):
-    // bit 13 = multiple block, bit 12 = read, bit 11 = with-data, [10:8]=100 = R1,
-    // [15:14]=01 = CMD12 not auto-issued. This is the Renesas driver's
-    // `CMD18 | 0x7c00`.
-    //
-    // Single-block reads and *all* writes use *normal* mode — the plain command
-    // index — exactly as the vendor HAL does (`_sd_send_mcmd(hndl, CMD17/24/25)`):
-    // the SDHI derives the response and transfer type from the command index.
-    //
-    // IMPORTANT: high-capacity vs standard cards differ only in the command
-    // *argument* (block- vs byte-address, handled by `lba_to_addr`), NOT in the
-    // command encoding. Never OR 0x7C00 into the other commands: it forces
-    // *multiple-block read* mode, so a single-block CMD17 makes the controller
-    // wait for a second block until the data timeout (~1 s), and write commands
-    // get the read-direction bit set.
-    const CMD18_MULTI: u16 = CMD18 | 0x7C00;
-
-    // ---------------------------------------------------------------------------
-    // Voltage / capacity constants
-    // ---------------------------------------------------------------------------
-
-    /// OCR voltage window: 3.2–3.4 V (matches Deluge hardware, SD_VOLT_3_3).
-    const OCR_VDD_32_33: u32 = 0x0010_0000;
-    /// OCR host capacity support: HCS bit (high-capacity) for SDHC/SDXC.
-    const OCR_HCS: u32 = 0x4000_0000;
-    /// OCR power-up status bit: set when card is ready.
-    const OCR_BUSY: u32 = 0x8000_0000;
-
-    /// CMD8 argument: VHS=1 (2.7–3.6 V) | check pattern 0xAA.
-    const CMD8_ARG: u32 = 0x0000_01AA;
-
-    /// ACMD41 argument: HCS + voltage window.
-    const ACMD41_ARG: u32 = OCR_HCS | OCR_VDD_32_33;
-
-    // ---------------------------------------------------------------------------
     // Global card state
     // ---------------------------------------------------------------------------
 
-    /// RCA (Relative Card Address) — set during CMD3, used for CMD7 etc.
-    static CARD_RCA: AtomicU16 = AtomicU16::new(0);
-    /// `true` if the card is SDHC/SDXC (uses block addressing).
-    static CARD_HC: AtomicBool = AtomicBool::new(false);
-    /// `true` if the card accepted the CMD6 switch to High-Speed mode
-    /// (SD_CLK = 33.3 MHz).  `false` = default speed (16.7 MHz).
-    static CARD_HS: AtomicBool = AtomicBool::new(false);
+    /// The card [`init`] identified (its RCA, capacity class and speed), until [`invalidate`].
+    static CARD_INFO: BlockingMutex<CriticalSectionRawMutex, Cell<Option<Card>>> =
+        BlockingMutex::new(Cell::new(None));
     /// `true` once `init()` has completed successfully.
     static CARD_READY: AtomicBool = AtomicBool::new(false);
+
+    fn card_info() -> Option<Card> {
+        CARD_INFO.lock(|c| c.get())
+    }
+
+    fn set_card_info(card: Option<Card>) {
+        CARD_INFO.lock(|c| c.set(card));
+    }
 
     // ---------------------------------------------------------------------------
     // DMA bounce buffer
@@ -333,50 +242,6 @@ mod device {
     }
 
     // ---------------------------------------------------------------------------
-    // Internal helpers
-    // ---------------------------------------------------------------------------
-
-    /// Issue CMD55 (APP_CMD prefix) with the current RCA, then issue `acmd`.
-    async unsafe fn send_acmd(acmd: u16, arg: u32) -> Result<(), SdError> {
-        let rca = CARD_RCA.load(Ordering::Relaxed);
-        controller().set_arg((rca as u32) << 16);
-        controller().send_cmd(CMD55).await?;
-        controller().set_arg(arg);
-        controller().send_cmd(acmd).await?;
-        Ok(())
-    }
-
-    /// Attempt the CMD6 switch to High-Speed mode (SD spec ≥ 1.10 cards).
-    ///
-    /// Runs after the card is in Transfer state (post CMD7/ACMD6).  On success
-    /// the *card* is in High-Speed mode and the caller may raise SD_CLK to
-    /// P1/2 (33.3 MHz).  Every error is non-fatal to init: the caller falls
-    /// back to the default-speed clock.  Pre-1.10 cards reject CMD6 as an
-    /// illegal command → surfaces here as a response error → fallback.
-    async unsafe fn try_high_speed() -> Result<(), SdError> {
-        let mut status = [0u8; 64];
-
-        // Mode 0 (query): does the card support group-1 function 1?
-        controller()
-            .read_status_block_sw(CMD6_DATA, CMD6_ARG_QUERY_HS, &mut status)
-            .await?;
-        let st = super::parse_switch_status(&status);
-        if !st.hs_supported {
-            return Err(SdError::UnsupportedCard);
-        }
-
-        // Mode 1 (switch): actually switch to High-Speed.
-        controller()
-            .read_status_block_sw(CMD6_DATA, CMD6_ARG_SWITCH_HS, &mut status)
-            .await?;
-        let st = super::parse_switch_status(&status);
-        if st.group1_selected != 0x1 {
-            return Err(SdError::Protocol);
-        }
-        Ok(())
-    }
-
-    // ---------------------------------------------------------------------------
     // Public API
     // ---------------------------------------------------------------------------
 
@@ -394,18 +259,10 @@ mod device {
     async fn init_unlocked() -> Result<(), SdError> {
         log::debug!("sd: init");
         CARD_READY.store(false, Ordering::Release);
-        // Reset the cached RCA to 0 *before* re-identifying.  During identification
-        // the card sits in idle/ready state with RCA = 0, so the CMD55 that prefixes
-        // ACMD41 must be addressed to RCA 0 (see `send_acmd`).  On a cold boot the
-        // static is already 0, but on a re-init (e.g. returning from USB mass-storage
-        // mode) it still holds the *previous* session's RCA from CMD3 — CMD55 would
-        // then address a card that no longer answers to it, so every attempt returns
-        // ResponseTimeout and the card looks dead.  Clearing it here makes re-init
-        // behave exactly like the first boot.
-        CARD_RCA.store(0, Ordering::Release);
-        // Reset the High-Speed flag too: if this (re-)init fails, is_hs() must not
-        // report a stale `true` from the previous session.
-        CARD_HS.store(false, Ordering::Release);
+        // Forget the previous card before re-identifying: if this (re-)init fails, is_hc() and
+        // is_hs() must not report the last session's card. (Identification itself always
+        // addresses RCA 0, whatever card was here before.)
+        set_card_info(None);
 
         // The pins and interrupts came up once, in `init_hw`. The controller goes back to its
         // identification state each time: the previous card may have left SD_CLK at 16.7 or
@@ -444,8 +301,9 @@ mod device {
 
         let mut last_err = SdError::NotInitialized;
         for attempt in 1..=INIT_ATTEMPTS {
-            match run_protocol().await {
-                Ok(()) => {
+            match card::identify(controller()).await {
+                Ok(card) => {
+                    set_card_info(Some(card));
                     CARD_READY.store(true, Ordering::Release);
                     // Forget the insertion edges recorded up to here: they announced
                     // the card just identified, so reporting them onward would ask a
@@ -458,11 +316,12 @@ mod device {
                         "sd: card ready on attempt {}/{} (HC={})",
                         attempt,
                         INIT_ATTEMPTS,
-                        CARD_HC.load(Ordering::Relaxed)
+                        card.is_high_capacity()
                     );
                     return Ok(());
                 }
                 Err(e) => {
+                    let e = SdError::from(e);
                     last_err = e;
                     log::debug!("sd: init attempt {}/{}: {:?}", attempt, INIT_ATTEMPTS, e);
                     if attempt < INIT_ATTEMPTS {
@@ -496,9 +355,7 @@ mod device {
     /// polling for the card to come back that it has not come back *yet*.
     pub fn invalidate() {
         CARD_READY.store(false, Ordering::Release);
-        CARD_RCA.store(0, Ordering::Release);
-        CARD_HC.store(false, Ordering::Release);
-        CARD_HS.store(false, Ordering::Release);
+        set_card_info(None);
         // total_sectors() must not answer with the old card's capacity either.
         controller().set_card_blocks(0);
     }
@@ -514,140 +371,6 @@ mod device {
         controller().take_card_detect_events()
     }
 
-    /// Run the SD v2 card bring-up protocol (CMD0 … high-speed clock) once against
-    /// an already-initialised controller.  [`init`] retries this until the card —
-    /// which may still be waking up after a cold power-on — responds.
-    async fn run_protocol() -> Result<(), SdError> {
-        unsafe {
-            // ---- CMD0: reset to IDLE ----
-            // No response expected; ignore timeout.
-            controller().set_arg(0);
-            let _ = controller().send_cmd(CMD0).await;
-
-            embassy_time::Timer::after_millis(1).await;
-
-            // ---- CMD8: check voltage — determines SD v2 / SDHC capability ----
-            controller().set_arg(CMD8_ARG);
-            let cmd8_ok = controller().send_cmd(CMD8).await.is_ok();
-
-            // ---- ACMD41: initialize card ----
-            // Loop until the card clears the busy bit in OCR (card-power-up done).
-            let hcs_arg = if cmd8_ok { ACMD41_ARG } else { OCR_VDD_32_33 };
-            let mut retries = 0u32;
-            let ocr = loop {
-                send_acmd(ACMD41, hcs_arg).await?;
-                let ocr = controller().read_r1(); // R3 OCR comes via same regs
-
-                // Bit 31 set → card no longer busy (initialization complete)
-                if ocr & OCR_BUSY != 0 {
-                    break ocr;
-                }
-                retries += 1;
-                if retries > 1000 {
-                    return Err(SdError::UnsupportedCard);
-                }
-                embassy_time::Timer::after_millis(1).await;
-            };
-
-            // Determine high-capacity flag
-            let hc = cmd8_ok && (ocr & OCR_HCS != 0);
-            CARD_HC.store(hc, Ordering::Release);
-            log::debug!(
-                "sd: cmd8_ok={} ocr={:#010x} hcs={} -> hc={}",
-                cmd8_ok,
-                ocr,
-                ocr & OCR_HCS != 0,
-                hc
-            );
-
-            // ---- CMD2: get CID (ignore content, just consume response) ----
-            controller().set_arg(0);
-            controller().send_cmd(CMD2).await?;
-            let _ = controller().read_r2(); // CID — discard
-
-            // ---- CMD3: get RCA ----
-            controller().set_arg(0);
-            controller().send_cmd(CMD3).await?;
-            let r6 = controller().read_r1();
-            // R6 = [31:16] new RCA, [15:0] card status
-            let rca = (r6 >> 16) as u16;
-            CARD_RCA.store(rca, Ordering::Release);
-
-            // ---- CMD9: get CSD (decode capacity for BlockDevice) ----
-            // CMD9 requires the card to be in Stand-by state (post CMD3) with its RCA.
-            // Per TRM/SD spec: argument = RCA in bits [31:16], lower 16 bits = 0.
-            controller().set_arg((rca as u32) << 16);
-            if controller().send_cmd(9u16).await.is_ok() {
-                // The RZ/A1 SDHI returns R2 (CID/CSD) as the 120-bit content
-                // CSD[127:8] right-justified — i.e. the array holds (full_CSD >> 8)
-                // with the trailing CRC byte stripped.  Shift the four words left by
-                // 8 bits to restore the canonical 128-bit CSD layout that
-                // `decode_csd_capacity` (which uses spec bit positions) expects.
-                let raw = controller().read_r2();
-                let csd = [
-                    (raw[0] << 8) | (raw[1] >> 24),
-                    (raw[1] << 8) | (raw[2] >> 24),
-                    (raw[2] << 8) | (raw[3] >> 24),
-                    raw[3] << 8,
-                ];
-                let total = decode_csd_capacity(csd, hc);
-                log::debug!(
-                    "sd: CSD={:08x} {:08x} {:08x} {:08x} struct={} -> {} sectors",
-                    csd[0],
-                    csd[1],
-                    csd[2],
-                    csd[3],
-                    csd[0] >> 30,
-                    total
-                );
-                controller().set_card_blocks(total);
-            }
-
-            // ---- CMD7: select card (transition to Transfer state) ----
-            controller().set_arg((rca as u32) << 16);
-            controller().send_cmd(CMD7).await?;
-
-            // ---- ACMD6: set 4-bit bus ----
-            // Argument 0x2 = 4-bit, 0x0 = 1-bit.
-            send_acmd(ACMD6, 0x2).await?;
-
-            // ---- CMD16: set block length to 512 bytes (SDSC cards) ----
-            if !hc {
-                controller().set_arg(512);
-                controller().send_cmd(CMD16).await?;
-            }
-
-            // ---- Clock: default-speed data clock BEFORE CMD6 ----
-            // CMD6 is a *transfer-mode* command: it must not run at the 130 kHz
-            // identification clock.  Some cards never deliver its 64-byte data
-            // block there (observed on hardware: the controller then sits in
-            // the data-phase wait until the SD_OPTION timeout — 2^24 SD_CLK
-            // cycles ≈ 2 minutes at 130 kHz).  16.7 MHz is legal for every
-            // card in Transfer state, and puts that timeout at ~1 s.
-            controller().set_clock_fast();
-
-            // ---- Try CMD6 High-Speed (33.3 MHz), else stay at 16.7 MHz ----
-            // The card is in Transfer state; CMD6 needs the data lines, so this
-            // must come after ACMD6 (4-bit bus).  The SD spec allows the new
-            // timing 8 clocks after the switch-status end bit — DATA_TRNS
-            // (awaited inside read_status_block_sw) is past that point.
-            match try_high_speed().await {
-                Ok(()) => {
-                    controller().set_clock_div(sdhi::CLK_DIV_2);
-                    CARD_HS.store(true, Ordering::Release);
-                    log::info!("sd: High-Speed mode, SD_CLK = 33.3 MHz (P1/2)");
-                }
-                Err(e) => {
-                    // Already at the default-speed clock; nothing to restore.
-                    CARD_HS.store(false, Ordering::Release);
-                    log::info!("sd: default speed, SD_CLK = 16.7 MHz (P1/4): {:?}", e);
-                }
-            }
-        }
-
-        Ok(())
-    }
-
     /// Read a single 512-byte sector at logical block address `lba`.
     ///
     /// # Arguments
@@ -659,18 +382,7 @@ mod device {
     }
 
     async fn read_sector_unlocked(lba: u32, buf: &mut [u8; 512]) -> Result<(), SdError> {
-        super::card_usable(aborted(), &CARD_READY)?;
-
-        let addr = lba_to_addr(lba);
-        let cmd = CMD17;
-
-        // SAFETY: the caller holds CARD.
-        let mut dma = unsafe { bounce() };
-        controller().set_block_count(1);
-        controller().set_arg(addr);
-        controller().read_blocks_dma(cmd, dma.prefix(512)).await?;
-        buf.copy_from_slice(&dma.as_slice()[..512]);
-        Ok(())
+        read_sectors_unlocked(lba, 1, buf).await
     }
 
     /// Write a single 512-byte sector at logical block address `lba`.
@@ -684,20 +396,7 @@ mod device {
     }
 
     async fn write_sector_unlocked(lba: u32, buf: &[u8; 512]) -> Result<(), SdError> {
-        super::card_usable(aborted(), &CARD_READY)?;
-
-        let addr = lba_to_addr(lba);
-        let cmd = CMD24;
-
-        // SAFETY: the caller holds CARD.
-        let mut dma = unsafe { bounce() };
-        dma.as_mut_slice()[..512].copy_from_slice(buf);
-        controller().set_block_count(1);
-        controller().set_arg(addr);
-        controller()
-            .write_blocks_dma(cmd, dma.prefix(512).as_source())
-            .await?;
-        Ok(())
+        write_sectors_unlocked(lba, 1, buf).await
     }
 
     /// Read `count` consecutive sectors starting at `lba`.
@@ -715,56 +414,13 @@ mod device {
 
     async fn read_sectors_unlocked(lba: u32, count: u32, buf: &mut [u8]) -> Result<(), SdError> {
         super::card_usable(aborted(), &CARD_READY)?;
-        if buf.len() < (count as usize) * 512 {
-            return Err(SdError::Protocol);
-        }
+        let card = card_info().ok_or(SdError::NotInitialized)?;
         if count == 0 {
             return Ok(());
         }
-        if count == 1 {
-            let arr = buf[..512].as_mut_ptr() as *mut [u8; 512];
-            return read_sector_unlocked(lba, unsafe { &mut *arr }).await;
-        }
-
-        {
-            // SAFETY: the caller holds CARD.
-            let mut dma = unsafe { bounce() };
-            let mut remaining = count;
-            let mut cur_lba = lba;
-            let mut buf_offset = 0usize;
-            while remaining > 0 {
-                let chunk = remaining.min(SD_DMA_MAX_SECTORS as u32);
-                let chunk_addr = lba_to_addr(cur_lba);
-                let cmd = if chunk > 1 { CMD18_MULTI } else { CMD17 };
-                controller().set_block_count(chunk);
-                controller().set_arg(chunk_addr);
-                let chunk_bytes = (chunk as usize) * 512;
-                let xfer = controller()
-                    .read_blocks_dma(cmd, dma.prefix(chunk_bytes))
-                    .await;
-                // CMD18 (READ_MULTIPLE_BLOCK) runs in extended mode with auto-CMD12
-                // disabled (CMD18 | 0x7C00, [15:14]=01), so the card keeps streaming
-                // data until it receives STOP_TRANSMISSION.  The SD_STOP SEC bit only
-                // bounds how many blocks the *controller* clocks in — it does not stop
-                // the *card*.  Issue CMD12 manually (matching the vendor driver) —
-                // and do it **even if the data phase failed**, or a bailed-out
-                // multi-block read leaves the card streaming and the next command (or
-                // the next sd::init) times out.  Propagate the transfer error first
-                // since it's the more relevant failure, then any stop error.
-                let stop = if chunk > 1 {
-                    controller().stop_transfer().await
-                } else {
-                    Ok(())
-                };
-                xfer?;
-                stop?;
-                buf[buf_offset..buf_offset + chunk_bytes]
-                    .copy_from_slice(&dma.as_slice()[..chunk_bytes]);
-                remaining -= chunk;
-                cur_lba += chunk;
-                buf_offset += chunk_bytes;
-            }
-        }
+        // SAFETY: the caller holds CARD.
+        let mut dma = unsafe { bounce() };
+        card::read_blocks(controller(), &card, lba, count, buf, &mut dma).await?;
         Ok(())
     }
 
@@ -778,40 +434,13 @@ mod device {
 
     async fn write_sectors_unlocked(lba: u32, count: u32, buf: &[u8]) -> Result<(), SdError> {
         super::card_usable(aborted(), &CARD_READY)?;
-        if buf.len() < (count as usize) * 512 {
-            return Err(SdError::Protocol);
-        }
+        let card = card_info().ok_or(SdError::NotInitialized)?;
         if count == 0 {
             return Ok(());
         }
-        if count == 1 {
-            let arr = buf[..512].as_ptr() as *const [u8; 512];
-            return write_sector_unlocked(lba, unsafe { &*arr }).await;
-        }
-
-        {
-            // SAFETY: the caller holds CARD.
-            let mut dma = unsafe { bounce() };
-            let mut remaining = count;
-            let mut cur_lba = lba;
-            let mut buf_offset = 0usize;
-            while remaining > 0 {
-                let chunk = remaining.min(SD_DMA_MAX_SECTORS as u32);
-                let chunk_addr = lba_to_addr(cur_lba);
-                let cmd = if chunk > 1 { CMD25 } else { CMD24 };
-                let chunk_bytes = (chunk as usize) * 512;
-                dma.as_mut_slice()[..chunk_bytes]
-                    .copy_from_slice(&buf[buf_offset..buf_offset + chunk_bytes]);
-                controller().set_block_count(chunk);
-                controller().set_arg(chunk_addr);
-                controller()
-                    .write_blocks_dma(cmd, dma.prefix(chunk_bytes).as_source())
-                    .await?;
-                remaining -= chunk;
-                cur_lba += chunk;
-                buf_offset += chunk_bytes;
-            }
-        }
+        // SAFETY: the caller holds CARD.
+        let mut dma = unsafe { bounce() };
+        card::write_blocks(controller(), &card, lba, count, buf, &mut dma).await?;
         Ok(())
     }
 
@@ -826,12 +455,12 @@ mod device {
     ///
     /// Only valid after [`init()`] has returned `Ok(())`.
     pub fn is_hc() -> bool {
-        CARD_HC.load(Ordering::Relaxed)
+        card_info().is_some_and(|c| c.is_high_capacity())
     }
 
     /// Return `true` if the card is running in High-Speed mode (33.3 MHz SD_CLK).
     pub fn is_hs() -> bool {
-        CARD_HS.load(Ordering::Acquire)
+        card_info().is_some_and(|c| c.is_high_speed())
     }
 
     /// Returns `true` if a card is physically present (CD pin).
@@ -862,63 +491,6 @@ mod device {
     }
 
     // ---------------------------------------------------------------------------
-    // Internal: convert LBA to card address
-    // ---------------------------------------------------------------------------
-
-    fn lba_to_addr(lba: u32) -> u32 {
-        if CARD_HC.load(Ordering::Relaxed) {
-            lba // SDHC/SDXC: block addressing
-        } else {
-            // SDSC: byte addressing.  Saturate rather than panic on overflow — a
-            // bogus high LBA (e.g. a host reading past a mis-decoded capacity)
-            // would otherwise multiply-overflow u32.  A saturated address is out of
-            // range for the card, which rejects it and surfaces a clean `SdError`
-            // instead of crashing the firmware.
-            lba.saturating_mul(512)
-        }
-    }
-
-    // ---------------------------------------------------------------------------
-    // CSD capacity decode
-    // ---------------------------------------------------------------------------
-    //
-    // CSD v1 (SDSC): C_SIZE[73:62], C_SIZE_MULT[49:47], READ_BL_LEN[83:80].
-    //   capacity = (C_SIZE + 1) × 2^(C_SIZE_MULT + 2) × 2^READ_BL_LEN  bytes.
-    //   blocks (512B) = capacity / 512.
-    //
-    // CSD v2 (SDHC/SDXC): C_SIZE[69:48].
-    //   capacity = (C_SIZE + 1) × 512 KiB  →  (C_SIZE + 1) × 1024  blocks.
-    //
-    // The SDHI R2 response is packed into [word0, word1, word2, word3] where
-    // word0 = bits [127:96] of the 128-bit register.
-    // CSD_STRUCTURE is bits [127:126] of CSD.
-
-    fn decode_csd_capacity(csd: [u32; 4], hc: bool) -> u32 {
-        if hc {
-            // CSD v2: C_SIZE at bits [69:48] within the 128-bit CSD.
-            // In our layout: word0=[127:96], word1=[95:64], word2=[63:32], word3=[31:0].
-            // Bit 69 → word1 bit (69-64) = 5; bit 48 → word2 bit (48-32) = 16.
-            // C_SIZE spans word1[5:0] and word2[31:16].
-            let c_size_hi = csd[1] & 0x3F; // bits [69:64]
-            let c_size_lo = (csd[2] >> 16) & 0xFFFF; // bits [63:48]
-            let c_size = (c_size_hi << 16) | c_size_lo;
-            (c_size + 1) * 1024 // blocks of 512 B
-        } else {
-            // CSD v1:
-            // READ_BL_LEN at bits [83:80] → word1[19:16]
-            // C_SIZE at bits [73:62] → word1[9:0] (bits 73:64) ++ word2[31:30] (bits 63:62)
-            // C_SIZE_MULT at bits [49:47] → word2[17:15]
-            let read_bl_len = (csd[1] >> 16) & 0xF;
-            let c_size = ((csd[1] & 0x3FF) << 2) | ((csd[2] >> 30) & 0x3);
-            let c_size_mult = (csd[2] >> 15) & 0x7;
-            let block_len = 1u32 << read_bl_len;
-            let mult = 1u32 << (c_size_mult + 2);
-            let capacity_bytes = (c_size as u64 + 1) * mult as u64 * block_len as u64;
-            (capacity_bytes / 512) as u32
-        }
-    }
-
-    // ---------------------------------------------------------------------------
     // embedded-sdmmc BlockDevice + TimeSource
     // ---------------------------------------------------------------------------
 
@@ -945,42 +517,23 @@ mod device {
             if count == 0 {
                 return Ok(());
             }
-            let lba = start_block_idx.0;
-            let addr = lba_to_addr(lba);
-            // Single-block read = plain CMD17 (normal mode); multi-block read adds
-            // the extended multiple-block bits. HC vs SC addressing is in `addr`.
-            let cmd = if count > 1 { CMD18_MULTI } else { CMD17 };
+            let card = card_info().ok_or(SdError::NotInitialized)?;
             // SAFETY: an embedded-sdmmc `Block` is its 512 content bytes, so the blocks are
             // `count * 512` contiguous bytes, borrowed for this call.
             let bytes = unsafe {
                 core::slice::from_raw_parts_mut(blocks.as_mut_ptr() as *mut u8, blocks.len() * 512)
             };
-            // Interrupt-driven PIO transfer, mirroring the vendor HAL's
-            // `_sd_software_trans`. embedded-sdmmc's `BlockDevice` is synchronous,
-            // so run the async transfer to completion with block_on (fine for the
-            // bootloader — nothing else runs). The real firmware uses the async DMA
-            // path, [`read_sectors`], directly so the executor keeps running during
-            // transfers.
-            embassy_futures::block_on(async {
-                {
-                    controller().set_block_count(count);
-                    controller().set_arg(addr);
-                    controller().send_cmd(cmd).await?;
-                    let xfer = controller().read_blocks_sw(bytes).await;
-                    // CMD18 multi-block read leaves auto-CMD12 disabled (see
-                    // `read_sectors`); stop the card explicitly — even if the data
-                    // phase failed — so a bailed-out read never leaves the card
-                    // streaming into the next command or the next sd::init.
-                    let stop = if count > 1 {
-                        controller().stop_transfer().await
-                    } else {
-                        Ok(())
-                    };
-                    xfer?;
-                    stop?;
-                    Ok::<(), sdhi::SdhiError>(())
-                }
-            })
+            // Interrupt-driven PIO. embedded-sdmmc's `BlockDevice` is synchronous, so run the
+            // async transfer to completion with block_on (fine for the bootloader: nothing else
+            // runs). The firmware uses the async DMA path, [`read_sectors`], so the executor keeps
+            // running during transfers.
+            embassy_futures::block_on(card::read_blocks_pio(
+                controller(),
+                &card,
+                start_block_idx.0,
+                count,
+                bytes,
+            ))
             .map_err(SdError::from)
         }
 
@@ -994,24 +547,19 @@ mod device {
             if count == 0 {
                 return Ok(());
             }
-            let lba = start_block_idx.0;
-            let addr = lba_to_addr(lba);
-            // Single/multi-block write both use normal mode (plain command index).
-            let cmd = if count > 1 { CMD25 } else { CMD24 };
-
+            let card = card_info().ok_or(SdError::NotInitialized)?;
             // SAFETY: as in `read`: the blocks are `count * 512` contiguous bytes.
             let bytes = unsafe {
                 core::slice::from_raw_parts(blocks.as_ptr() as *const u8, blocks.len() * 512)
             };
-            // Interrupt-driven PIO transfer (see `read` above).
-            embassy_futures::block_on(async {
-                {
-                    controller().set_block_count(count);
-                    controller().set_arg(addr);
-                    controller().send_cmd(cmd).await?;
-                    controller().write_blocks_sw(bytes).await
-                }
-            })
+            // Interrupt-driven PIO (see `read` above).
+            embassy_futures::block_on(card::write_blocks_pio(
+                controller(),
+                &card,
+                start_block_idx.0,
+                count,
+                bytes,
+            ))
             .map_err(SdError::from)
         }
 
@@ -1681,43 +1229,5 @@ mod tests {
         let err = embassy_futures::block_on(read_sectors(0, 1, &mut too_small))
             .expect_err("buffer is one byte short of a sector");
         assert_eq!(err, SdError::Protocol);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Unit tests (host-side)
-// ---------------------------------------------------------------------------
-
-#[cfg(all(test, not(target_os = "none")))]
-mod switch_status_tests {
-    use super::*;
-
-    #[test]
-    fn hs_supported_and_selected() {
-        let mut buf = [0u8; 64];
-        buf[13] = 0x03; // group 1 supports functions 0 and 1
-        buf[16] = 0x01; // group 1 switched to function 1 (High-Speed)
-        let st = parse_switch_status(&buf);
-        assert!(st.hs_supported);
-        assert_eq!(st.group1_selected, 0x1);
-    }
-
-    #[test]
-    fn hs_unsupported() {
-        let mut buf = [0u8; 64];
-        buf[13] = 0x01; // only function 0 (default speed)
-        let st = parse_switch_status(&buf);
-        assert!(!st.hs_supported);
-        assert_eq!(st.group1_selected, 0x0);
-    }
-
-    #[test]
-    fn switch_refused_is_0xf_and_nibbles_do_not_leak() {
-        let mut buf = [0u8; 64];
-        buf[13] = 0x03;
-        buf[16] = 0x0F; // 0xF = function error / switch refused
-        assert_eq!(parse_switch_status(&buf).group1_selected, 0xF);
-        buf[16] = 0xF1; // upper nibble belongs to group 2 — must not leak
-        assert_eq!(parse_switch_status(&buf).group1_selected, 0x1);
     }
 }
