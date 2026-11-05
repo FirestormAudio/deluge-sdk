@@ -142,7 +142,7 @@ mod device {
     use rza1_hal::cache;
     use rza1_hal::dma_buf::UncachedMut;
     use rza1_hal::dmac::{self, Dma};
-    use rza1_hal::sdhi::{self, Sdhi};
+    use rza1_hal::sdhi::{self, Sdhi, WpPolarity};
 
     use super::SdError;
     use crate::board::{SdCard, SdPins, SdRxDma, SdTxDma};
@@ -185,6 +185,9 @@ mod device {
             Irqs,
             crate::system::SD_OPTION,
         );
+        // The Deluge's socket leaves SD_WP high when the lock tab is engaged (INFO7 = 0), the
+        // opposite of the usual wiring; checked on hardware with locked and unlocked cards.
+        sdhi.set_write_protect_polarity(WpPolarity::ActiveHigh);
         if SDHI.init(sdhi).is_err() {
             unreachable!("SDHI1 is owned once");
         }

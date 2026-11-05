@@ -1,8 +1,8 @@
 //! Renesas RZ/A1L SD Host Interface (SDHI) register-level driver.
 //!
 //! Two SDHI controllers are present on RZ/A1L:
-//!   - SDHI0 at 0xE804_E000 (not used on Deluge)
-//!   - SDHI1 at 0xE804_E800 (Deluge SD card — port 1)
+//!   - SDHI0 at 0xE804_E000
+//!   - SDHI1 at 0xE804_E800
 //!
 //! All registers are 16-bit with byte-granular offsets per TRM table 38.2.
 //! The data FIFO (SD_BUF0) is at offset 0x30, accessed as 32-bit words.
@@ -77,10 +77,29 @@ pub const INFO1_DET_CD: u16 = 0x0018;
 /// Use this for steady-state presence queries; INFO1_INS_CD is only for edge events.
 pub const INFO1_CD_LEVEL: u16 = 0x0020;
 /// Write-protect — SD_WP level (INFO7).  Per the TRM the bit reflects the pin:
-/// 1 = SD_WP held low, 0 = SD_WP high.  The mapping from that level to "write
-/// protected" is board-specific — on the Deluge it is inverted (see
-/// [`Sdhi::card_write_protected`]).
+/// 1 = SD_WP held low, 0 = SD_WP high.  Which level means "write protected" depends on how the
+/// board wires the socket: see [`WpPolarity`].
 pub const INFO1_WP: u16 = 0x0080;
+
+/// Which `SD_WP` pin level means the card's write-protect tab is engaged.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum WpPolarity {
+    /// The usual socket: the engaged tab pulls `SD_WP` low (INFO7 = 1).
+    #[default]
+    ActiveLow,
+    /// A socket wired the other way: the engaged tab leaves `SD_WP` high (INFO7 = 0).
+    ActiveHigh,
+}
+
+/// Whether SD_INFO1 says the card is write-protected, for a socket of the given polarity.
+fn wp_from_info1(info1: u16, polarity: WpPolarity) -> bool {
+    let pin_low = info1 & INFO1_WP != 0;
+    match polarity {
+        WpPolarity::ActiveLow => pin_low,
+        WpPolarity::ActiveHigh => !pin_low,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // SD_INFO2 bit masks
@@ -1196,20 +1215,12 @@ unsafe fn card_inserted(port: u8) -> bool {
     info1 & INFO1_CD_LEVEL != 0
 }
 
-/// Return `true` if the card's write-protect (lock) tab is engaged (read-only).
-///
-/// Reads SD_INFO1 bit 7 (INFO7 = SD_WP level).  **The Deluge socket inverts the
-/// usual polarity**: per the RZ/A1 manual INFO7 = 1 means the `SD_WP` pin is low,
-/// which a standard pulled-up socket asserts when the lock tab is engaged — but
-/// on the Deluge board the engaged tab drives `SD_WP` *high* (INFO7 = 0), so here
-/// a **clear** INFO7 means write-protected (verified on hardware with known
-/// locked and unlocked cards).
+/// SD_INFO1, for the write-protect level (INFO7).
 ///
 /// # Safety
 /// Reads SDHI INFO1 register.
-unsafe fn card_write_protected(port: u8) -> bool {
-    let s = sdhi(port);
-    s.sd_info1().read() & INFO1_WP == 0
+unsafe fn read_info1(port: u8) -> u16 {
+    sdhi(port).sd_info1().read()
 }
 
 /// Consume the latched card-detect *edges* for `port`, as `(removed, inserted)`.
@@ -1386,6 +1397,8 @@ pub struct Sdhi<'d> {
     port: u8,
     /// Whether a command or transfer was dropped mid-flight ([`take_aborted`](Self::take_aborted)).
     aborted: AtomicBool,
+    /// Whether the socket's write-protect is [`WpPolarity::ActiveHigh`].
+    wp_active_high: AtomicBool,
     /// The board's SD_OPTION, which [`reset`](Self::reset) restores.
     sd_option: u16,
     /// The DMA channels, each held by one block transfer at a time across its awaits.
@@ -1453,6 +1466,7 @@ impl<'d> Sdhi<'d> {
         Self {
             port: T::PORT,
             aborted: AtomicBool::new(false),
+            wp_active_high: AtomicBool::new(false),
             sd_option,
             tx_dma: Mutex::new(tx_dma),
             rx_dma: Mutex::new(rx_dma),
@@ -1563,10 +1577,24 @@ impl<'d> Sdhi<'d> {
         unsafe { card_inserted(self.port) }
     }
 
-    /// Whether the card's write-protect switch is on.
+    /// Whether the card's write-protect switch is on, read through the socket's
+    /// [`WpPolarity`] (the usual `ActiveLow` unless [`set_write_protect_polarity`] said otherwise).
+    ///
+    /// [`set_write_protect_polarity`]: Self::set_write_protect_polarity
     pub fn card_write_protected(&self) -> bool {
+        let polarity = if self.wp_active_high.load(Ordering::Relaxed) {
+            WpPolarity::ActiveHigh
+        } else {
+            WpPolarity::ActiveLow
+        };
         // SAFETY: a read of the owned controller.
-        unsafe { card_write_protected(self.port) }
+        wp_from_info1(unsafe { read_info1(self.port) }, polarity)
+    }
+
+    /// Tell the driver which `SD_WP` level means write-protected on this board's socket.
+    pub fn set_write_protect_polarity(&self, polarity: WpPolarity) {
+        self.wp_active_high
+            .store(polarity == WpPolarity::ActiveHigh, Ordering::Relaxed);
     }
 
     /// Forget the insertion edges recorded so far, for an init that has just identified the card
@@ -1683,6 +1711,20 @@ impl<'d> Sdhi<'d> {
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn write_protect_follows_the_socket_polarity() {
+        // INFO7 = 1 means the SD_WP pin is low.
+        assert!(wp_from_info1(INFO1_WP, WpPolarity::ActiveLow));
+        assert!(!wp_from_info1(0, WpPolarity::ActiveLow));
+        assert!(!wp_from_info1(INFO1_WP, WpPolarity::ActiveHigh));
+        assert!(wp_from_info1(0, WpPolarity::ActiveHigh));
+    }
+
+    #[test]
+    fn the_default_polarity_is_the_standard_socket() {
+        assert_eq!(WpPolarity::default(), WpPolarity::ActiveLow);
+    }
 
     #[test]
     fn the_pac_names_the_same_sdhi_registers() {

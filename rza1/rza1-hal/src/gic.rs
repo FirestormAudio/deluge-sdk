@@ -117,9 +117,11 @@ pub fn set_sdram_code_window(window: core::ops::Range<usize>) {
 /// Could `addr` be the entry point of a function in this image?
 ///
 /// Deliberately coarse — the point is to reject a corrupted slot before branching to it, not to
-/// validate a symbol. Code on this part lives in on-chip SRAM (`0x2000_0000`, 3 MB) or in SDRAM on
-/// CS2/CS3 (all of `0x0800_0000`–`0x0FFF_FFFF` unless the board narrows it with
-/// [`set_sdram_code_window`]), and the range check is what actually catches corruption.
+/// validate a symbol. Code on this part lives in on-chip SRAM (`0x2000_0000`: 3 MB on the RZ/A1L,
+/// 10 MB on the RZ/A1H), in the memory-mapped SPI flash for an image that executes in place
+/// (`0x1800_0000`–`0x1FFF_FFFF`), or in SDRAM on CS2/CS3 (all of `0x0800_0000`–`0x0FFF_FFFF` unless
+/// the board narrows it with [`set_sdram_code_window`]), and the range check is what actually
+/// catches corruption.
 ///
 /// # Thumb pointers
 ///
@@ -133,12 +135,23 @@ fn is_plausible_code_address(addr: usize) -> bool {
     is_plausible_in(addr, sdram)
 }
 
+/// The chip's on-chip SRAM: 3 MB on the RZ/A1L, 10 MB on the RZ/A1H.
+#[cfg(all(any(target_os = "none", test), feature = "rza1l"))]
+const SRAM: core::ops::Range<usize> = 0x2000_0000..0x2030_0000;
+#[cfg(all(any(target_os = "none", test), feature = "rza1h"))]
+const SRAM: core::ops::Range<usize> = 0x2000_0000..0x20A0_0000;
+
+/// The memory-mapped SPI flash (areas 3, `0x1800_0000..0x2000_0000`), where an image that executes
+/// in place keeps its code.
+#[cfg(any(target_os = "none", test))]
+const SPI_FLASH: core::ops::Range<usize> = 0x1800_0000..0x2000_0000;
+
 /// [`is_plausible_code_address`] against an explicit SDRAM window.
 #[cfg(any(target_os = "none", test))]
 fn is_plausible_in(addr: usize, sdram: core::ops::Range<usize>) -> bool {
-    const SRAM: core::ops::Range<usize> = 0x2000_0000..0x2030_0000;
     let target = addr & !1; // drop the Thumb interworking bit
-    target % 2 == 0 && (SRAM.contains(&target) || sdram.contains(&target))
+    target % 2 == 0
+        && (SRAM.contains(&target) || SPI_FLASH.contains(&target) || sdram.contains(&target))
 }
 
 /// IRQ handler dispatch table — one slot per interrupt ID.
@@ -639,7 +652,7 @@ mod tests {
         // On-chip SRAM, ARM and Thumb entry points.
         assert!(is_plausible_code_address(0x2002_0000));
         assert!(is_plausible_code_address(0x2002_0001));
-        assert!(!is_plausible_code_address(0x2030_0000));
+        // (The end of SRAM depends on the chip: see the per-chip tests.)
         // CS2 and CS3 (SDRAM-capable areas), whatever size the board fits.
         assert!(is_plausible_code_address(0x0800_0000));
         assert!(is_plausible_code_address(0x0C00_0000));
@@ -648,6 +661,32 @@ mod tests {
         // Null and CS0/CS1.
         assert!(!is_plausible_code_address(0x0000_0000));
         assert!(!is_plausible_code_address(0x07FF_FFFC));
+    }
+
+    #[test]
+    fn handlers_in_the_xip_flash_window_are_plausible() {
+        // An image that executes in place from SPI flash links its handlers at 0x1800_0000+.
+        assert!(is_plausible_in(0x1800_1234, 0..0));
+        assert!(is_plausible_in(0x1800_1235, 0..0)); // Thumb bit stripped
+        assert!(is_plausible_in(0x1FFF_FFFE, 0..0));
+        // CS4/CS5 below it and nothing mapped above SRAM stay rejected.
+        assert!(!is_plausible_in(0x17FF_FFFC, 0..0));
+        assert!(!is_plausible_in(0x3000_0000, 0..0));
+    }
+
+    #[cfg(feature = "rza1h")]
+    #[test]
+    fn the_rza1h_has_10_mb_of_sram() {
+        assert!(is_plausible_in(0x2050_0000, 0..0));
+        assert!(is_plausible_in(0x209F_FFFE, 0..0));
+        assert!(!is_plausible_in(0x20A0_0000, 0..0));
+    }
+
+    #[cfg(feature = "rza1l")]
+    #[test]
+    fn the_rza1l_has_3_mb_of_sram() {
+        assert!(is_plausible_in(0x202F_FFFE, 0..0));
+        assert!(!is_plausible_in(0x2030_0000, 0..0));
     }
 
     #[test]
