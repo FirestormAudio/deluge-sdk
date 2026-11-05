@@ -79,7 +79,7 @@ step "Linux backend"
 
 step "SDK"
 cargo publish "${mode[@]}" "${config[@]}" -Zbuild-std=core,alloc \
-  -p armv7-dsp-intrinsics -p deluge-fixedpoint -p deluge-sdk-macros -p max5136 \
+  -p arm-dsp -p deluge-fixedpoint -p deluge-sdk-macros -p max5136 \
   -p deluge-usb-classes -p deluge-bsp -p deluge-sdk
 
 step "cargo deluge"

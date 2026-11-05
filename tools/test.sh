@@ -41,11 +41,15 @@ QEMU=armv7-unknown-linux-gnueabihf
 HOST=x86_64-unknown-linux-gnu
 
 echo "==> QEMU ARM bucket ($QEMU)"
-# armv7-dsp-intrinsics has three code paths; firmware ships the raw-`asm!` one
+# arm-dsp has three code paths; firmware ships the raw-`asm!` one
 # (no `nightly` feature), so test BOTH it and the `core::arch` intrinsic path
 # under QEMU. The portable fallback is covered in the host bucket below.
-cargo test --target "$QEMU" -p armv7-dsp-intrinsics --lib
-cargo test --target "$QEMU" -p armv7-dsp-intrinsics --features nightly --lib
+cargo test --target "$QEMU" -p arm-dsp --lib
+cargo test --target "$QEMU" -p arm-dsp --features nightly --lib
+# The inline asm must also assemble as Thumb-2 for Cortex-M: Cortex-M4/M7, and Cortex-M33
+# with its DSP extension.
+cargo build --target thumbv7em-none-eabihf -p arm-dsp
+RUSTFLAGS="-C target-cpu=cortex-m33" cargo build --target thumbv8m.main-none-eabihf -p arm-dsp
 # No --lib: also runs the cross-crate dsp_pipeline integration test.
 cargo test --target "$QEMU" -p deluge-fixedpoint
 # The chip crates are their own workspace; their suite (tests, PAC checks, register-table check)
@@ -63,7 +67,7 @@ cargo check --manifest-path crates/block-device-adapters/Cargo.toml --target arm
 echo "==> Host bucket ($HOST)"
 # Portable-fallback / non-NEON paths of the fixed-point crates (the QEMU bucket
 # above covers the ARM asm + intrinsic paths).
-cargo test --target "$HOST" -p armv7-dsp-intrinsics
+cargo test --target "$HOST" -p arm-dsp
 cargo test --target "$HOST" -p deluge-fixedpoint
 cargo test --target "$HOST" -p deluge-image
 cargo test --target "$HOST" -p deluge-ui-toolkit

@@ -1,8 +1,7 @@
-//! # ARMv7 DSP Intrinsics
+//! # arm-dsp
 //!
-//! This crate provides safe wrappers around ARMv7 DSP instructions for efficient
-//! fixed-point arithmetic. These instructions are available on ARMv7-A processors
-//! with the DSP extension (such as the Deluge's Cortex-A9).
+//! Safe wrappers around the 32-bit Arm DSP instructions for fixed-point arithmetic, with a
+//! portable fallback that gives identical results everywhere else.
 //!
 //! ## Available Instructions
 //!
@@ -27,8 +26,11 @@
 //!
 //! ## Platform Support
 //!
-//! These intrinsics are only available on ARMv7-A targets with DSP extensions.
-//! On other platforms, portable fallback implementations are used.
+//! The native instructions are used wherever Rust enables the `dsp` target feature:
+//! ARMv7-A/R (for example the Cortex-A9), Cortex-M4 and M7 (`thumbv7em`), and ARMv8-M
+//! Mainline cores built with the DSP extension (`-C target-cpu=cortex-m33`, or
+//! `-C target-feature=+dsp`). The VCVT conversions also need ARMv7 floating point. Every
+//! other target, including AArch64 and the host, gets the portable fallback.
 //!
 //! ## Naming Conventions
 //!
@@ -343,7 +345,7 @@ pub fn mul_subtract_high_round(acc: i32, a: i32, b: i32) -> i32 {
 ///
 /// # Examples
 /// ```
-/// use armv7_dsp_intrinsics::ssat;
+/// use arm_dsp::ssat;
 ///
 /// // Saturate to 16-bit range
 /// assert_eq!(ssat::<16>(100000), 32767);
@@ -382,7 +384,7 @@ pub fn ssat<const BITS: u32>(val: i32) -> i32 {
 ///
 /// # Examples
 /// ```
-/// use armv7_dsp_intrinsics::usat;
+/// use arm_dsp::usat;
 ///
 /// // Saturate to 8-bit range
 /// assert_eq!(usat::<8>(1000), 255);
@@ -427,7 +429,7 @@ pub fn usat<const BITS: u32>(val: i32) -> u32 {
 ///
 /// # Examples
 /// ```
-/// use armv7_dsp_intrinsics::ssat_lsl;
+/// use arm_dsp::ssat_lsl;
 ///
 /// // Shift left by 4, saturate to 16 bits
 /// assert_eq!(ssat_lsl::<4, 16>(1000), 16000);
@@ -585,7 +587,7 @@ pub fn lshift_saturate<const SHIFT: u32>(val: i32) -> i32 {
 ///
 /// # Examples
 /// ```
-/// use armv7_dsp_intrinsics::vcvt_f32_to_fixed;
+/// use arm_dsp::vcvt_f32_to_fixed;
 ///
 /// // Convert 0.5 to Q31 format
 /// let q31 = vcvt_f32_to_fixed::<31>(0.5);
@@ -595,7 +597,7 @@ pub fn lshift_saturate<const SHIFT: u32>(val: i32) -> i32 {
 pub fn vcvt_f32_to_fixed<const FRAC_BITS: u32>(value: f32) -> i32 {
     debug_assert!(FRAC_BITS <= 32, "FRAC_BITS must be <= 32");
 
-    #[cfg(all(target_arch = "arm", target_feature = "vfp2"))]
+    #[cfg(all(target_arch = "arm", target_feature = "vfp2", target_feature = "v7"))]
     {
         // The fixed-point form of VCVT operates in place: source and destination
         // must be the *same* S register (`vcvt.s32.f32 Sd, Sd, #n`). Inline-asm
@@ -613,7 +615,7 @@ pub fn vcvt_f32_to_fixed<const FRAC_BITS: u32>(value: f32) -> i32 {
         }
         bits.to_bits() as i32
     }
-    #[cfg(not(all(target_arch = "arm", target_feature = "vfp2")))]
+    #[cfg(not(all(target_arch = "arm", target_feature = "vfp2", target_feature = "v7")))]
     {
         // Portable fallback
         let scale = if FRAC_BITS == 31 {
@@ -643,7 +645,7 @@ pub fn vcvt_f32_to_fixed<const FRAC_BITS: u32>(value: f32) -> i32 {
 ///
 /// # Examples
 /// ```
-/// use armv7_dsp_intrinsics::vcvt_fixed_to_f32;
+/// use arm_dsp::vcvt_fixed_to_f32;
 ///
 /// // Convert Q31 value back to float
 /// let q31 = 1073741824; // Approximately 0.5 in Q31
@@ -654,7 +656,7 @@ pub fn vcvt_f32_to_fixed<const FRAC_BITS: u32>(value: f32) -> i32 {
 pub fn vcvt_fixed_to_f32<const FRAC_BITS: u32>(value: i32) -> f32 {
     debug_assert!(FRAC_BITS <= 32, "FRAC_BITS must be <= 32");
 
-    #[cfg(all(target_arch = "arm", target_feature = "vfp2"))]
+    #[cfg(all(target_arch = "arm", target_feature = "vfp2", target_feature = "v7"))]
     {
         // Use VCVT.F32.S32 instruction. Like the inverse conversion, the
         // fixed-point form is in place (`vcvt.f32.s32 Sd, Sd, #n`); share one
@@ -672,7 +674,7 @@ pub fn vcvt_fixed_to_f32<const FRAC_BITS: u32>(value: i32) -> f32 {
 
         f32::from_bits(bits as u32)
     }
-    #[cfg(not(all(target_arch = "arm", target_feature = "vfp2")))]
+    #[cfg(not(all(target_arch = "arm", target_feature = "vfp2", target_feature = "v7")))]
     {
         // Portable fallback
         let scale = if FRAC_BITS == 31 {

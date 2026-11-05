@@ -1,12 +1,12 @@
 //! Cross-crate DSP-pipeline integration test.
 //!
 //! Runs a representative audio-block transform through two DSP crates
-//! together — `fixedpoint` (quantise, gain) and `armv7-dsp-intrinsics` (the
+//! together — `fixedpoint` (quantise, gain) and `arm-dsp` (the
 //! fixed-point multiply backing the gain) — and checks the result against a
 //! scalar `f32` reference. Run it under the QEMU ARM runner to exercise the
 //! real DSP instructions (SMMUL etc.), not just the portable fallback.
 
-use armv7_dsp_intrinsics::smmul;
+use arm_dsp::smmul;
 use fixedpoint::Q31;
 
 const N: usize = 256;

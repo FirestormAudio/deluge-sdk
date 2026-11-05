@@ -14,14 +14,14 @@ categories = ["embedded", "no-std", "mathematics"]
 keywords = ["fixed-point", "q31", "dsp", "no-std", "armv7"]
 
 [dependencies]
-armv7-dsp-intrinsics.workspace = true
+arm-dsp.workspace = true
 
 [dev-dependencies]
 proptest = "1.5"
 # The test exercises the real DSP instructions (SMMUL etc.), which need
 # `nightly`; the normal dependency above is featureless so the firmware keeps
 # the raw-`asm!` path.
-armv7-dsp-intrinsics = { workspace = true, features = ["nightly"] }
+arm-dsp = { workspace = true, features = ["nightly"] }
 
 [lib]
 name = "fixedpoint"

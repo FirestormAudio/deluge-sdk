@@ -208,7 +208,7 @@ compile-proves all of them on the firmware target).
 | `usb/usb-classes` | `usb-classes` | board-agnostic Embassy USB classes: UAC2, USB-MIDI, MSC + Bulk-Only Transport, host MIDI/UAC |
 | `drivers/max5136` | `max5136` | board-agnostic embedded-hal driver for the MAX5136 CV DAC |
 | `crates/deluge-image` | `deluge-image` | firmware-image format logic shared by the app-loader and `cargo deluge` |
-| `crates/deluge-fixedpoint` (imported as `fixedpoint`), `crates/armv7-dsp-intrinsics` | | fixed-point DSP math + ARMv7 intrinsics |
+| `crates/deluge-fixedpoint` (imported as `fixedpoint`), `crates/arm-dsp` | | fixed-point DSP math + ARMv7 intrinsics |
 | `crates/deluge-simulator`, `crates/deluge-sim-link`, `crates/deluge-protocol` | | the desktop simulator and its link/wire protocol |
 | `crates/deluge-ui-toolkit`, `crates/deluge-grid-toolkit` | | OLED menu/text and pad-grid UI toolkits (GPL) |
 | `crates/deluge-fonts` | `deluge-fonts` | bitmap fonts for the toolkit (GPL) |

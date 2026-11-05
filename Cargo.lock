@@ -257,6 +257,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "arm-dsp"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "arm-targets"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -267,13 +274,6 @@ name = "arm-targets"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c0555f30eb9cd1a07d7677d01971da6c74cbbb0f73f0667cbee74e590a68a619"
-
-[[package]]
-name = "armv7-dsp-intrinsics"
-version = "0.1.0"
-dependencies = [
- "proptest",
-]
 
 [[package]]
 name = "arrayref"
@@ -1369,7 +1369,7 @@ dependencies = [
 name = "deluge-fixedpoint"
 version = "0.1.0"
 dependencies = [
- "armv7-dsp-intrinsics",
+ "arm-dsp",
  "proptest",
 ]
 

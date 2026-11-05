@@ -33,7 +33,7 @@ The first developer preview of the Deluge SDK.
   peripheral access crate generated from the vendor SVD for the RZ/A1L and RZ/A1H, a runtime with
   `#[entry]`, `#[irq]` and `#[fault]`, an Embassy HAL, and heap allocators. They form their own
   workspace under `rza1/` with no dependency on any `deluge-*` crate.
-- **DSP and UI libraries**: `deluge-fixedpoint` and `armv7-dsp-intrinsics` (`MIT OR Apache-2.0`);
+- **DSP and UI libraries**: `deluge-fixedpoint` and `arm-dsp` (`MIT OR Apache-2.0`);
   `deluge-ui-toolkit`, `deluge-grid-toolkit` and `deluge-fonts` (`GPL-3.0-or-later`).
 - **A desktop simulator** (`cargo deluge sim`) with an on-screen front panel, audio, MIDI and SD
   bridges, and headless golden-frame testing, plus a browser front panel

@@ -40,7 +40,7 @@ use core::cmp::Ordering;
 use core::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
 #[cfg(all(target_arch = "arm", target_feature = "dsp"))]
-use armv7_dsp_intrinsics as dsp;
+use arm_dsp as dsp;
 
 /// Simple rounding function for no_std
 #[inline]

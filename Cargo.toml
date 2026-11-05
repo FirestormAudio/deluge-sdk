@@ -20,7 +20,7 @@ members = [
   "crates/deluge-sdk",
   "crates/deluge-image",
   "crates/deluge-sdk-macros",
-  "crates/armv7-dsp-intrinsics",
+  "crates/arm-dsp",
   "crates/deluge-fixedpoint",
   "crates/deluge-fonts",
   "crates/deluge-ui-toolkit",
@@ -100,7 +100,7 @@ gdbstub = { version = "0.7" }
 
 # Fixed-point DSP math and ARMv7 DSP intrinsics, vendored from the `spark`
 # project (MIT/Apache).
-armv7-dsp-intrinsics = { path = "crates/armv7-dsp-intrinsics", version = "0.1.0" }
+arm-dsp = { path = "crates/arm-dsp", version = "0.1.0" }
 # Published as `deluge-fixedpoint`, imported as `fixedpoint`.
 fixedpoint = { package = "deluge-fixedpoint", path = "crates/deluge-fixedpoint", version = "0.1.0" }
 
