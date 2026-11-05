@@ -19,8 +19,8 @@ use core::panic::PanicInfo;
 use embassy_executor::{Executor, Spawner};
 use log::{error, info};
 
+use deluge_bsp::heap as allocator;
 use deluge_bsp::uart as bsp_uart;
-use rza1_alloc as allocator;
 use usb_classes::overbridge::proto::Format;
 use usb_classes::overbridge::stems::OverbridgeInfo;
 

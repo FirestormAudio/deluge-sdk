@@ -14,7 +14,6 @@ test = false
 # the whole point of this tool: it (re)writes the protected first-stage-bootloader
 # sector that the normal driver refuses to touch.
 rza1-hal = { path = "../../rza1/rza1-hal", features = ["rza1l", "unlock-bootloader"] }
-rza1-alloc = { path = "../../rza1/rza1-alloc" }
 deluge-bsp = { path = "../../crates/deluge-bsp", features = ["flash", "fat", "flash-protect"] }
 cortex-ar = { workspace = true }
 embassy-executor = { workspace = true, features = ["nightly", "platform-cortex-ar", "executor-thread"] }

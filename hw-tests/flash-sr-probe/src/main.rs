@@ -132,7 +132,7 @@ fn main() -> ! {
     unsafe {
         let start = core::ptr::addr_of!(__sram_heap_start) as *mut u8;
         let size = core::ptr::addr_of!(__sram_heap_end) as usize - start as usize;
-        rza1_alloc::SRAM.init(start, size);
+        deluge_bsp::heap::SRAM.init(start, size);
     }
     let _board = deluge_bsp::Board::new(rza1_hal::init(deluge_bsp::system::BOARD_CONFIG));
     flash::prime_capacity();

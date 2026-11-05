@@ -11,7 +11,6 @@ test = false
 
 [dependencies]
 rza1-hal = { path = "../../rza1/rza1-hal", features = ["rza1l"] }
-rza1-alloc = { path = "../../rza1/rza1-alloc" }
 # Always RTT: the probe has no other output.
 deluge-bsp = { path = "../../crates/deluge-bsp", features = ["flash", "rtt"] }
 cortex-ar = { workspace = true }

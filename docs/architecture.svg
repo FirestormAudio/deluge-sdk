@@ -49,7 +49,7 @@
   <!-- beneath the BSP -->
   <g text-anchor="middle">
     <rect x="40" y="264" width="250" height="38" rx="9" fill="#6366f1"/>
-    <text x="165" y="288" font-size="13" font-weight="600" fill="#ffffff">rza1-hal · rza1-rt · rza1-alloc</text>
+    <text x="165" y="288" font-size="13" font-weight="600" fill="#ffffff">rza1-hal · rza1-rt</text>
     <rect x="310" y="264" width="200" height="38" rx="9" fill="#a5b4fc"/>
     <text x="410" y="288" font-size="13" font-weight="600" fill="#1e1b4b">usb-classes · max5136</text>
     <rect x="40" y="340" width="250" height="38" rx="9" fill="#6366f1"/>

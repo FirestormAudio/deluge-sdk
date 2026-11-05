@@ -53,11 +53,11 @@ use embassy_executor::{Executor, Spawner};
 use log::{error, info, warn};
 
 use deluge_bsp::flash;
+use deluge_bsp::heap as allocator;
 use deluge_bsp::oled::text::draw_str;
 use deluge_bsp::oled::{self, FrameBuffer, WIDTH};
 #[cfg(flasher_mode = "fsb")]
 use deluge_bsp::{fat, sd};
-use rza1_alloc as allocator;
 use rza1_hal::spibsc;
 
 /// Fixed 8.3 filename the FSB image is read from (card root).

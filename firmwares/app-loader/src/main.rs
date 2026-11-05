@@ -57,9 +57,9 @@ pub(crate) static BACK_PRESSED: AtomicBool = AtomicBool::new(false);
 pub(crate) static LOAD_SEEN: AtomicBool = AtomicBool::new(false);
 use core::panic::PanicInfo;
 
+use deluge_bsp::heap as allocator;
 use embassy_executor::{Executor, Spawner};
 use log::{error, info, warn};
-use rza1_alloc as allocator;
 
 use deluge_bsp::{oled, sd};
 

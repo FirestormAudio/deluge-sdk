@@ -13,7 +13,6 @@ test = false
 usb-classes = { workspace = true, features = ["device-overbridge", "device-audio"] }
 rza1-hal = { path = "../../rza1/rza1-hal", features = ["rza1l"] }
 deluge-bsp = { path = "../../crates/deluge-bsp" }
-rza1-alloc = { path = "../../rza1/rza1-alloc" }
 cortex-ar = { workspace = true }
 embassy-executor = { workspace = true, features = ["nightly", "platform-cortex-ar", "executor-thread"] }
 embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }

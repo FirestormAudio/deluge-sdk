@@ -25,7 +25,6 @@ deluge-macros = { path = "../deluge-sdk-macros", version = "0.1.0", package = "d
 # Default features off so `fault-blink` follows this crate's own feature of that name: an app
 # with its own fault handler turns `deluge`'s defaults off.
 deluge-bsp = { path = "../deluge-bsp", version = "0.1.0", default-features = false, features = ["memory-x"] }
-rza1-alloc = { path = "../../rza1/rza1-alloc", version = "0.2.0" }
 rza1-hal = { path = "../../rza1/rza1-hal", version = "0.2.0", features = ["rza1l"] }
 fixedpoint = { workspace = true }
 cortex-ar = { workspace = true }
@@ -91,9 +90,9 @@ fault-blink = ["deluge-bsp/fault-blink"]
 sim = ["dep:deluge-sim-link", "dep:deluge-simulator", "deluge-bsp/host-panel"]
 ## Linux backend: drives the hardware through libdeluge (deluge-hal-linux).
 linux = ["dep:deluge-hal-linux", "dep:libc"]
-## Register the on-chip SRAM heap (`rza1-alloc`) as the global allocator, so
+## Register the on-chip SRAM heap (`deluge_bsp::heap`) as the global allocator, so
 ## `String`, `Vec` and `format!` work (the GPL `deluge-ui-toolkit` needs this).
-## SDRAM stays reserved for explicit bulk buffers via `rza1_alloc::SDRAM`.
+## SDRAM stays reserved for explicit bulk buffers via `deluge::heap::SDRAM`.
 ## Requires `-Zbuild-std=core,alloc`.
 alloc = []
 ## Route `log` output to a USB CDC-ACM serial port, so logs are readable over

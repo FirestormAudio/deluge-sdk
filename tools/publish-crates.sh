@@ -38,7 +38,7 @@ trap 'rm -f "$patch"; git checkout -q -- "*Cargo.lock"' EXIT
   echo '[patch.crates-io]'
   for entry in \
     rza1-pac:rza1/rza1-pac rza1-rt:rza1/rza1-rt rza1-rt-macros:rza1/rza1-rt-macros \
-    rza1-hal:rza1/rza1-hal rza1-alloc:rza1/rza1-alloc \
+    rza1-hal:rza1/rza1-hal \
     deluge-embedded-fatfs:crates/embedded-fatfs \
     deluge-block-device-adapters:crates/block-device-adapters \
     deluge-protocol:crates/deluge-protocol deluge-sim-link:crates/deluge-sim-link \
@@ -117,7 +117,6 @@ if [ ${#mode[@]} -eq 0 ]; then
   }
 
   sdk=(-Zbuild-std=core,alloc)
-  publish rza1-alloc rza1/rza1-alloc
   publish rza1-pac rza1/rza1-pac --features rza1l
   publish rza1-rt-macros rza1/rza1-rt-macros
   publish rza1-rt rza1/rza1-rt

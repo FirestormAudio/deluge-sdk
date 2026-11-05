@@ -2,7 +2,7 @@
 # deluge-sdk's, so they build and test with no `deluge-*` crate in reach.
 [workspace]
 resolver = "2"
-members = ["rza1-pac", "rza1-rt", "rza1-rt-macros", "rza1-hal", "rza1-alloc"]
+members = ["rza1-pac", "rza1-rt", "rza1-rt-macros", "rza1-hal"]
 
 [workspace.package]
 version = "0.2.0"

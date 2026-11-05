@@ -83,6 +83,8 @@ embedded-sdmmc = { version = "0.9", default-features = false, features = ["log"]
 block-device-driver = { version = "0.2", optional = true }
 aligned = { version = "0.4", optional = true }
 critical-section = { workspace = true }
+# The heaps (`heap`): TLSF, O(1) allocation and free with a bounded worst case.
+rlsf = { version = "0.2", default-features = false }
 log = { workspace = true }
 embedded-graphics-core = { version = "0.4", optional = true }
 heapless = "0.9"

@@ -16,8 +16,8 @@ use core::panic::PanicInfo;
 use embassy_executor::{Executor, Spawner};
 use log::{error, info};
 
+use deluge_bsp::heap as allocator;
 use deluge_bsp::uart as bsp_uart;
-use rza1_alloc as allocator;
 use rza1_hal::usb::init_host_mode;
 
 rza1_hal::bind_interrupts!(struct UsbIrqs {

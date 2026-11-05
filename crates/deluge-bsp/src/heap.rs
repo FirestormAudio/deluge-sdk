@@ -1,7 +1,6 @@
-//! Separate heap allocators for on-chip SRAM and external SDRAM.
+//! The Deluge's heaps: separate allocators for its 3 MB of on-chip SRAM and its 64 MB of SDRAM.
 //!
-//! Requires a nightly Rust toolchain (the workspace's `rust-toolchain.toml` pins one); the
-//! `Allocator` impls use `allocator_api`.
+//! The `Allocator` impls use the nightly `allocator_api`.
 //!
 //! Two [`CsHeap`] instances – [`SRAM`] and [`SDRAM`] – provide distinct
 //! allocation arenas, each protected by a critical-section lock (IRQ-safe).
@@ -26,7 +25,7 @@
 //!
 //! ```rust,ignore
 //! #![feature(allocator_api)]
-//! use rza1_alloc::{SRAM, SDRAM};
+//! use deluge_bsp::heap::{SRAM, SDRAM};
 //!
 //! let buf: Box<[u8; 4096], _> = Box::new_in([0u8; 4096], &SDRAM);
 //! let vec: Vec<u32, _>        = Vec::new_in(&SRAM);
@@ -37,18 +36,6 @@
 //! for the duration of each allocation or deallocation.  This prevents
 //! deadlocks caused by IRQ handlers that also allocate, at the cost of a
 //! brief IRQ-latency bump.
-
-#![no_std]
-#![deny(missing_docs)]
-// `Allocator` is behind `allocator_api` on the nightlies DelugeFirmware builds with (dbt's 1.99);
-// newer ones have stabilised part of it and flag the gate, so the lint is allowed rather than the
-// gate dropped.
-#![allow(stable_features)]
-#![feature(allocator_api)]
-
-#[cfg(test)]
-#[macro_use]
-extern crate std;
 
 use core::alloc::{AllocError, Allocator, Layout};
 use core::cell::UnsafeCell;
@@ -242,7 +229,7 @@ unsafe impl Allocator for CsHeap {
 /// free through this allocator) are correct, so they need no override.
 ///
 /// ```rust,ignore
-/// use rza1_alloc::{Spill, SRAM, SDRAM};
+/// use deluge_bsp::heap::{Spill, SRAM, SDRAM};
 /// static HEAP: Spill = Spill::new(&SRAM, &SDRAM);
 /// ```
 ///

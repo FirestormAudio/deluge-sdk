@@ -18,9 +18,9 @@ use core::mem::MaybeUninit;
 use core::panic::PanicInfo;
 use log::{error, info};
 
+use deluge_bsp::heap as allocator;
 use embassy_executor::{Executor, Spawner};
 use embassy_time::{Duration, with_timeout};
-use rza1_alloc as allocator;
 use rza1_hal::mode::Async;
 use rza1_hal::peripherals::{RSPI0, SCIF0};
 use rza1_hal::rspi::{self, Rspi};

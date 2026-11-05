@@ -41,8 +41,8 @@ use embassy_executor::{Executor, Spawner};
 
 use core::sync::atomic::{AtomicBool, Ordering};
 use deluge_bsp::cv_gate;
+use deluge_bsp::heap as allocator;
 use deluge_bsp::uart as bsp_uart;
-use rza1_alloc as allocator;
 use rza1_hal::usb::{Rusb1Driver, init_device_mode, init_host_mode};
 
 unsafe extern "C" {

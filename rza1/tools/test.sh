@@ -106,7 +106,7 @@ doc "${BUILD_STD[@]}" -p rza1-pac --features rza1h
 doc --target "$QEMU" -p rza1-pac --features rza1l,mock-mmio
 for f in rza1h rza1l,log rza1l,defmt; do doc "${BUILD_STD[@]}" -p rza1-hal --features "$f"; done
 doc "${BUILD_STD[@]}" -p rza1-hal --no-default-features --features rza1l,rt,critical-section-impl
-doc "${BUILD_STD[@]}" -p rza1-rt -p rza1-alloc
+doc "${BUILD_STD[@]}" -p rza1-rt
 doc --target "$HOST" -p rza1-rt-macros
 
 echo "==> rza1: every feature is in its crate's README"
@@ -129,8 +129,6 @@ tools/check-pac.sh
 
 echo "==> rza1: host tests (the runtime's macros and fault types)"
 cargo test --target "$HOST" -p rza1-rt-macros -p rza1-rt
-# `test = false` keeps plain `cargo test` off the allocator's lib; `--lib` runs its host tests.
-cargo test --target "$HOST" -p rza1-alloc --lib
 
 echo "==> rza1: QEMU ARM tests"
 cargo test --target "$QEMU" -p rza1-pac --features rza1l --lib
@@ -140,6 +138,6 @@ cargo test --target "$QEMU" -p rza1-hal --features rza1h --lib
 
 echo "==> rza1: device build"
 cargo build "${BUILD_STD[@]}" -p rza1-hal --features rza1l
-cargo build "${BUILD_STD[@]}" -p rza1-rt -p rza1-alloc
+cargo build "${BUILD_STD[@]}" -p rza1-rt
 
 echo "==> rza1: all checks passed."

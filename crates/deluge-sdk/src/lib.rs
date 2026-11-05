@@ -54,7 +54,7 @@ pub use deluge_macros::app;
 ///
 /// SRAM (not SDRAM) backs the global heap on purpose: the large external SDRAM
 /// is reserved for bulk audio buffers (samples, delay lines), which apps allocate
-/// explicitly via [`rza1_alloc::SDRAM`]. The default SDK stays
+/// explicitly via [`deluge_bsp::heap::SDRAM`]. The default SDK stays
 /// allocator-free and apps choose the arena per allocation.
 #[cfg(all(feature = "alloc", target_os = "none"))]
 mod global_alloc {
@@ -63,11 +63,11 @@ mod global_alloc {
 
     struct SramGlobal;
 
-    // SAFETY: delegates to `rza1_alloc::SRAM`, a critical-section
+    // SAFETY: delegates to `deluge_bsp::heap::SRAM`, a critical-section
     // guarded heap initialised once during platform bring-up.
     unsafe impl GlobalAlloc for SramGlobal {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            match rza1_alloc::SRAM.allocate(layout) {
+            match deluge_bsp::heap::SRAM.allocate(layout) {
                 Ok(p) => p.as_ptr().cast(),
                 Err(_) => ptr::null_mut(),
             }
@@ -76,7 +76,7 @@ mod global_alloc {
         unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
             if let Some(nn) = NonNull::new(ptr) {
                 // SAFETY: `ptr`/`layout` come from a prior `alloc` on this heap.
-                unsafe { rza1_alloc::SRAM.deallocate(nn, layout) };
+                unsafe { deluge_bsp::heap::SRAM.deallocate(nn, layout) };
             }
         }
     }
@@ -186,12 +186,12 @@ mod not_send_assertions {
     }
 }
 
-// The allocator is re-exported for apps that place data in SDRAM explicitly; it is a device-only
-// escape hatch (no host equivalent). The board and chip crates are not re-exported: an app that
-// needs them depends on `deluge-bsp` or `rza1-hal` directly. The allocator stays
-// `deluge::deluge_alloc` for apps; the crate is `rza1-alloc`.
+/// The SRAM and SDRAM heaps (`deluge_bsp::heap`), for apps that place data in SDRAM explicitly
+/// with `Box::new_in(…, &deluge::heap::SDRAM)` and friends. Device only: there is no host
+/// equivalent. (The rest of the board and chip crates is not re-exported; an app that needs them
+/// depends on `deluge-bsp` or `rza1-hal` directly.)
 #[cfg(target_os = "none")]
-pub use rza1_alloc as deluge_alloc;
+pub use deluge_bsp::heap;
 
 /// The app capability handle, passed to `#[deluge::app] async fn main`.
 ///
@@ -596,7 +596,7 @@ pub mod __rt {
                 // SRAM heap (internal RAM) — initialise before any allocation.
                 let start = core::ptr::addr_of!(__sram_heap_start) as *mut u8;
                 let size = core::ptr::addr_of!(__sram_heap_end) as usize - start as usize;
-                rza1_alloc::SRAM.init(start, size);
+                deluge_bsp::heap::SRAM.init(start, size);
 
                 // The chip (CPG, module clocks, GIC, OSTM time driver), then the board (MMU,
                 // caches, SDRAM, interrupt priorities).
@@ -604,7 +604,7 @@ pub mod __rt {
                     deluge_bsp::Board::new(rza1_hal::init(deluge_bsp::system::BOARD_CONFIG));
 
                 // SDRAM heap — now that the SDRAM window is accessible.
-                rza1_alloc::SDRAM.init(SDRAM_BASE as *mut u8, SDRAM_SIZE);
+                deluge_bsp::heap::SDRAM.init(SDRAM_BASE as *mut u8, SDRAM_SIZE);
                 board
             }
         }

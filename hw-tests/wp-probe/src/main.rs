@@ -22,8 +22,8 @@ use log::{error, info};
 use embassy_executor::{Executor, Spawner};
 
 use deluge_bsp::cv_gate;
+use deluge_bsp::heap as allocator;
 use deluge_bsp::uart as bsp_uart;
-use rza1_alloc as allocator;
 
 unsafe extern "C" {
     /// Start of the free SRAM heap region (set by the linker script).

@@ -26,8 +26,8 @@ use log::{error, info};
 use embassy_executor::{Executor, Spawner};
 
 use deluge_bsp::cv_gate;
+use deluge_bsp::heap as allocator;
 use deluge_bsp::uart as bsp_uart;
-use rza1_alloc as allocator;
 
 rza1_hal::bind_interrupts!(struct UsbIrqs {
     USB0 => rza1_hal::usb::HostInterruptHandler<rza1_hal::peripherals::USB0>;

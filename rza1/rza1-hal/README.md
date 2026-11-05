@@ -43,8 +43,8 @@ peripheral as `Peri<'d, T>`.
 
 ### Memory
 
-The SRAM and SDRAM heaps live in the separate
-[`rza1-alloc`](../rza1-alloc/README.md) crate.
+Heaps are the board crate's: where SRAM and SDRAM sit, and how much of each a program may
+allocate, are board facts.
 
 The RZ/A1L provides **uncached mirror aliases** of SRAM and SDRAM at
 `physical_address + 0x4000_0000` (see `UNCACHED_MIRROR_OFFSET`). DMA-shared

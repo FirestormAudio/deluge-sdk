@@ -4,7 +4,7 @@
 #   - The bare-metal examples consume the SDK only through the `deluge` facade, never
 #     the BSP or chip crates beneath it, so SDK-internal changes can't silently break
 #     them. (deluge-wren holds its own Wren code to the same rule.)
-#   - The chip crates (rza1-hal, rza1-rt, rza1-alloc) never name the Deluge, and the HAL has no
+#   - The chip crates (rza1-pac, rza1-hal, rza1-rt) never name the Deluge, and the HAL has no
 #     global_asm! (startup is rza1-rt's).
 #   - usb/ and drivers/ are board-agnostic: they never name the chip HAL or any deluge-* crate.
 #   - deluge-bsp never depends on the simulator; deluge-sdk's sim backend plugs into
@@ -20,8 +20,8 @@ FACADE_ONLY_DIRS=(examples/baremetal)
 
 # Code only: a `//` comment or a string literal naming a BSP item is fine, so each hit is
 # re-checked with its strings and comment stripped. The chip crates (`rza1_hal`,
-# `rza1_alloc`, `rza1_rt`, …) are all off limits; the facade re-exports what an app needs
-# (the allocator as `deluge::deluge_alloc`).
+# `rza1_rt`, …) are all off limits; the facade re-exports what an app needs
+# (the heaps as `deluge::heap`).
 code_hits="$(grep -rnE --include='*.rs' --exclude-dir=target --exclude-dir=node_modules \
   '\b(deluge_bsp|rza1_hal|rza1_[a-z_]+)\b' "${FACADE_ONLY_DIRS[@]}" \
   | awk '{
@@ -53,7 +53,7 @@ chip_code_hits="$(grep -rniE --include='*.rs' --include='*.x' 'deluge' "${CHIP_D
   | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)' || true)"
 if [ -n "$chip_code_hits" ]; then
   printf '%s\n' "$chip_code_hits"
-  echo "error: a chip crate (rza1-pac, rza1-hal, rza1-rt, rza1-alloc) names the Deluge; board facts belong in deluge-bsp" >&2
+  echo "error: a chip crate (rza1-pac, rza1-hal, rza1-rt) names the Deluge; board facts belong in deluge-bsp" >&2
   exit 1
 fi
 # The boot header and the status LED are the board's: rza1-rt only places a

@@ -39,6 +39,10 @@
 // tasks) expands to an associated type with `impl Trait`. Only needed on the
 // bare-metal target, where those tasks are compiled.
 #![cfg_attr(target_os = "none", feature(impl_trait_in_assoc_type))]
+// The heaps' `Allocator` impls. Stabilised in part on newer nightlies, which then flag the gate;
+// DelugeFirmware's toolchain still needs it, so the lint is allowed rather than the gate dropped.
+#![cfg_attr(any(target_os = "none", test), feature(allocator_api))]
+#![cfg_attr(any(target_os = "none", test), allow(stable_features))]
 #![allow(dead_code)]
 
 // The runtime (reset vector, exception entry, linker script). Nothing calls into it by name,
@@ -62,6 +66,9 @@ pub mod audio_block;
 pub mod battery;
 /// The Deluge's peripherals by role ([`Board`]).
 pub mod board;
+/// The SRAM and SDRAM heaps.
+#[cfg(any(target_os = "none", test))]
+pub mod heap;
 pub use board::Board;
 pub mod bus;
 pub mod controls;
