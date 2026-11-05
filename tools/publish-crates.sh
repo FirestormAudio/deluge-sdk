@@ -3,8 +3,9 @@
 # Publishes the SDK's crates to crates.io in dependency order. Without arguments it is a dry
 # run: every crate is packaged and, where it can be built here, verified from its tarball, with
 # the crates it depends on that aren't on crates.io yet patched in from this checkout. With
-# `--publish` it uploads for real, in the same order; cargo waits for each upload to reach the
-# index before the next crate that needs it.
+# `--publish` it uploads for real, one crate at a time in the same order. That mode can be rerun:
+# it skips every crate whose version is already on crates.io, and when crates.io's limit on new
+# crate names stops it, it waits until the time crates.io gives and carries on.
 #
 # deluge-sys and deluge-hal-linux link libdeluge, so they are packaged without the build check
 # unless DELUGE_SDK_ROOT points at a prefix that has it.
@@ -61,6 +62,85 @@ rm -rf "${CARGO_HOME:-$HOME/.cargo}"/registry/src/-*/
 linux_verify=(--no-verify)
 if [ -n "${DELUGE_SDK_ROOT:-}" ] && [ -f "$DELUGE_SDK_ROOT/lib/libdeluge.a" ]; then
   linux_verify=()
+fi
+
+step() { echo; echo "==> $*"; }
+
+if [ ${#mode[@]} -eq 0 ]; then
+  # Is version $2 of crate $1 on crates.io? Asks the sparse index, which isn't rate limited.
+  published() {
+    local n="$1" p
+    case ${#n} in
+      1) p="1/$n" ;; 2) p="2/$n" ;; 3) p="3/${n:0:1}/$n" ;; *) p="${n:0:2}/${n:2:2}/$n" ;;
+    esac
+    curl -sf "https://index.crates.io/$p" | grep -q "\"vers\":\"$2\""
+  }
+
+  # Publish crate $1 from directory $2 (relative to the root), with any further arguments
+  # passed to cargo publish. Skips it if its version is already up.
+  publish() {
+    local name="$1" dir="$2"; shift 2
+    local version log until wait
+    version="$(cargo metadata --no-deps --format-version 1 --manifest-path "$dir/Cargo.toml" |
+      python3 -c 'import json,sys; n=sys.argv[1]; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]==n))' "$name")"
+    if published "$name" "$version"; then
+      echo "==> $name $version is already on crates.io"
+      return
+    fi
+    while :; do
+      echo; echo "==> $name $version"
+      log="$(mktemp)"
+      if (cd "$dir" && cargo publish "$@") 2>&1 | tee "$log"; [ "${PIPESTATUS[0]}" -eq 0 ]; then
+        rm -f "$log"
+        return
+      fi
+      if grep -q "already exists" "$log"; then
+        rm -f "$log"
+        return
+      fi
+      if grep -q "too many new crates" "$log"; then
+        until="$(grep -o 'try again after [^.]*GMT' "$log" | head -1 | sed 's/^try again after //')"
+        wait=600
+        if [ -n "$until" ]; then
+          wait=$(( $(date -d "$until" +%s) - $(date +%s) + 15 ))
+          [ "$wait" -gt 0 ] || wait=15
+        fi
+        rm -f "$log"
+        echo "==> crates.io's new-crate limit: waiting $((wait / 60)) min $((wait % 60)) s"
+        sleep "$wait"
+        continue
+      fi
+      rm -f "$log"
+      echo "error: publishing $name failed" >&2
+      exit 1
+    done
+  }
+
+  sdk=(-Zbuild-std=core,alloc)
+  publish rza1-alloc rza1/rza1-alloc
+  publish rza1-pac rza1/rza1-pac --features rza1l
+  publish rza1-rt-macros rza1/rza1-rt-macros
+  publish rza1-rt rza1/rza1-rt
+  publish rza1-hal rza1/rza1-hal --features rza1l
+  publish deluge-embedded-fatfs crates/embedded-fatfs --target "$host"
+  publish deluge-block-device-adapters crates/block-device-adapters --target "$host"
+  publish deluge-sim-link crates/deluge-sim-link --target "$host"
+  publish deluge-protocol crates/deluge-protocol --target "$host"
+  publish deluge-simulator crates/deluge-simulator --target "$host"
+  publish deluge-sys linux/deluge-sys "${linux_verify[@]}"
+  publish deluge-hal-linux linux/deluge-hal-linux "${linux_verify[@]}"
+  publish arm-dsp crates/arm-dsp "${sdk[@]}"
+  publish deluge-fixedpoint crates/deluge-fixedpoint "${sdk[@]}"
+  publish deluge-sdk-macros crates/deluge-sdk-macros "${sdk[@]}"
+  publish max5136 drivers/max5136 "${sdk[@]}"
+  publish deluge-usb-classes usb/usb-classes "${sdk[@]}"
+  publish deluge-bsp crates/deluge-bsp "${sdk[@]}"
+  publish deluge-sdk crates/deluge-sdk "${sdk[@]}"
+  publish cargo-deluge tools/cargo-deluge --target "$host"
+
+  echo
+  echo "==> done"
+  exit 0
 fi
 
 step() { echo; echo "==> $*"; }
