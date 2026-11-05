@@ -6,14 +6,19 @@
 //!
 //! Throughput counters for the OLED display are re-exported from the BOT module.
 
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex::Mutex;
 use log::{info, warn};
 
 use deluge_bsp::sd;
 use deluge_bsp::usb::sd_block::SdBlock;
 use rza1_hal::usb::{Rusb1EndpointIn, Rusb1EndpointOut};
-use usb_classes::bot;
+use usb_classes::bot::{self, BotBuffer};
 
 pub use usb_classes::bot::{RX_BYTES, TX_BYTES};
+
+/// The SCSI data phase's double buffer.
+static BOT_BUFFER: Mutex<CriticalSectionRawMutex, BotBuffer> = Mutex::new(BotBuffer::new());
 
 /// Bulk-Only Transport / SCSI command loop bridged to the SD card.
 #[embassy_executor::task]
@@ -24,5 +29,6 @@ pub(crate) async fn msc_task(ep_in: Rusb1EndpointIn, ep_out: Rusb1EndpointOut) {
         Err(e) => warn!("MSC: SD init failed ({:?}) — will retry on demand", e),
     }
 
-    bot::run(SdBlock, ep_in, ep_out).await
+    let mut buffer = BOT_BUFFER.lock().await;
+    bot::run(SdBlock, ep_in, ep_out, &mut buffer).await
 }

@@ -3,7 +3,7 @@
 //! Records multichannel audio from a class-compliant USB audio interface, and
 //! plays back to it too when the device is full-duplex (iso OUT, built on the
 //! primitives in [`out`]). Mirrors [`super::midi`]: generic over the allocator
-//! so it unit-tests against [`super::mock`].
+//! so it unit-tests against `super::mock`.
 
 pub mod desc;
 pub mod out;
@@ -161,7 +161,7 @@ const DEVICE_RATES: core::ops::RangeInclusive<u32> = 8_000..=192_000;
 /// A hosted UAC2 capture device.
 ///
 /// Owns the control pipe and the isochronous IN data pipe. Generic over the
-/// allocator so it unit-tests against [`super::mock`].
+/// allocator so it unit-tests against `super::mock`.
 /// Playback (host->device) state, present only for a full-duplex device.
 struct PlaybackState<'d, A: UsbHostAllocator<'d>> {
     iso_out: A::Pipe<pipe::Isochronous, pipe::Out>,

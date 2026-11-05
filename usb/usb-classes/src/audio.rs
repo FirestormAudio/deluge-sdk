@@ -1,4 +1,4 @@
-//! USB Audio Class 2.0 (UAC2) device-side driver for the Deluge.
+//! USB Audio Class 2.0 (UAC2) device-side driver.
 //!
 //! ## Quick start
 //!
@@ -93,8 +93,8 @@ impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
     /// 49 frames × `CAPTURE_CH` × 3 bytes while that fits in 1024 bytes, which covers a 1 ms
     /// packet with a stuffing frame at full speed and over-provisions at high speed. Above that
     /// the endpoint is sized per high-speed microframe: (ceil(48000 / 8000) + 1) = 7 frames,
-    /// which also covers 44.1 kHz (6 frames plus 1). The RUSB1 device always runs at high speed
-    /// (SYSCFG.HSE), so an 8-channel build depends on it.
+    /// which also covers 44.1 kHz (6 frames plus 1), so a build with more channels than fit in a
+    /// full-speed packet needs a device controller that runs at high speed.
     ///
     /// Writers must cap each packet at this size (or at the endpoint's
     /// `info().max_packet_size`): a writer that sends the whole SSI backlog would overrun it.

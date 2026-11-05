@@ -67,7 +67,7 @@ pub enum OverbridgeError {
     SetupFailed(PipeError),
     /// A transfer failed (including a detach).
     Transport(PipeError),
-    /// [`FRAMING_LIMIT`] bad blocks in a row.
+    /// `FRAMING_LIMIT` bad blocks in a row.
     Framing,
 }
 

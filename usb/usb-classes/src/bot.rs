@@ -51,10 +51,24 @@ pub const BLOCK_SIZE: u32 = 512;
 const CHUNK_SECTORS: u32 = 64;
 const BUF_BYTES: usize = CHUNK_SECTORS as usize * BLOCK_SIZE as usize;
 
-/// Double bounce buffer for the data phase.  Only the single BOT task touches it
-/// and the executor is single-threaded, so the `static mut` access is sound.
-/// One instance is shared by all firmwares (only one BOT loop runs at a time).
-static mut MSC_BUF: [[u8; BUF_BYTES]; 2] = [[0; BUF_BYTES]; 2];
+/// The data phase's double buffer (two 32 KiB banks, one filling while the other drains), which
+/// the caller owns and lends to [`run`] or [`run_until`] for the session: put it in a `static`
+/// (behind an async `Mutex`, say), not on a task's stack.
+#[repr(C, align(4))]
+pub struct BotBuffer([[u8; BUF_BYTES]; 2]);
+
+impl BotBuffer {
+    /// A zeroed buffer.
+    pub const fn new() -> Self {
+        Self([[0; BUF_BYTES]; 2])
+    }
+}
+
+impl Default for BotBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 // ── SCSI sense ──────────────────────────────────────────────────────────────
 
@@ -143,8 +157,9 @@ pub async fn run<B: BlockDevice, EI: EndpointIn, EO: EndpointOut>(
     dev: B,
     ep_in: EI,
     ep_out: EO,
+    buf: &mut BotBuffer,
 ) -> ! {
-    run_until(dev, ep_in, ep_out, &NEVER_EXIT).await;
+    run_until(dev, ep_in, ep_out, buf, &NEVER_EXIT).await;
     // `NEVER_EXIT` is never set, so `run_until` never returns.
     unreachable!()
 }
@@ -171,6 +186,7 @@ pub async fn run_until<B: BlockDevice, EI: EndpointIn, EO: EndpointOut>(
     mut dev: B,
     mut ep_in: EI,
     mut ep_out: EO,
+    buf: &mut BotBuffer,
     exit: &AtomicBool,
 ) {
     // Clear any stale request so a press during the menu doesn't bail out before
@@ -223,6 +239,7 @@ pub async fn run_until<B: BlockDevice, EI: EndpointIn, EO: EndpointOut>(
             &mut ep_out,
             &mut sense,
             &mut ejected,
+            &mut buf.0,
         )
         .await;
 
@@ -247,6 +264,7 @@ async fn handle_command<B: BlockDevice, EI: EndpointIn, EO: EndpointOut>(
     ep_out: &mut EO,
     sense: &mut Sense,
     ejected: &mut bool,
+    banks: &mut [[u8; BUF_BYTES]; 2],
 ) -> (u8, u32) {
     if cdb.is_empty() {
         *sense = Sense::INVALID_COMMAND;
@@ -371,7 +389,7 @@ async fn handle_command<B: BlockDevice, EI: EndpointIn, EO: EndpointOut>(
             }
             let lba = u32::from_be_bytes([cdb[2], cdb[3], cdb[4], cdb[5]]);
             let blocks = u16::from_be_bytes([cdb[7], cdb[8]]) as u32;
-            read_blocks(dev, ep_in, lba, blocks, data_len, sense).await
+            read_blocks(dev, ep_in, lba, blocks, data_len, sense, banks).await
         }
 
         // WRITE(10) — stream blocks host→device.
@@ -385,20 +403,20 @@ async fn handle_command<B: BlockDevice, EI: EndpointIn, EO: EndpointOut>(
             // command with WRITE PROTECTED sense instead of touching the card.
             if dev.is_write_protected() {
                 warn!("BOT: WRITE rejected — medium is write-protected (lock tab)");
-                drain_data_out(ep_out, data_len).await;
+                drain_data_out(ep_out, data_len, &mut banks[0]).await;
                 *sense = Sense::DATA_PROTECT;
                 return (CSW_STATUS_FAILED, data_len);
             }
             let lba = u32::from_be_bytes([cdb[2], cdb[3], cdb[4], cdb[5]]);
             let blocks = u16::from_be_bytes([cdb[7], cdb[8]]) as u32;
-            write_blocks(dev, ep_out, lba, blocks, data_len, sense).await
+            write_blocks(dev, ep_out, lba, blocks, data_len, sense, banks).await
         }
 
         other => {
             warn!("BOT: unsupported SCSI opcode {:#04x}", other);
             // Drain an unexpected host data-out phase so the pipe stays in sync.
             if !dir_in && data_len > 0 {
-                drain_data_out(ep_out, data_len).await;
+                drain_data_out(ep_out, data_len, &mut banks[0]).await;
             }
             *sense = Sense::INVALID_COMMAND;
             (CSW_STATUS_FAILED, data_len)
@@ -409,11 +427,14 @@ async fn handle_command<B: BlockDevice, EI: EndpointIn, EO: EndpointOut>(
 /// Read and discard a host data-out phase of `data_len` bytes, keeping the bulk
 /// pipe in sync when a command is rejected without committing the data (e.g. an
 /// unsupported opcode, or a WRITE to a write-protected medium).
-async fn drain_data_out<EO: EndpointOut>(ep_out: &mut EO, data_len: u32) {
+async fn drain_data_out<EO: EndpointOut>(
+    ep_out: &mut EO,
+    data_len: u32,
+    buf: &mut [u8; BUF_BYTES],
+) {
     if data_len == 0 {
         return;
     }
-    let buf = unsafe { &mut (*core::ptr::addr_of_mut!(MSC_BUF))[0] };
     let mut remaining = data_len as usize;
     while remaining > 0 {
         let want = remaining.min(BUF_BYTES);
@@ -445,8 +466,9 @@ async fn read_blocks<B: BlockDevice, EI: EndpointIn>(
     blocks: u32,
     data_len: u32,
     sense: &mut Sense,
+    banks: &mut [[u8; BUF_BYTES]; 2],
 ) -> (u8, u32) {
-    let [b0, b1] = unsafe { &mut *core::ptr::addr_of_mut!(MSC_BUF) };
+    let [b0, b1] = banks;
     let mut status = CSW_STATUS_GOOD;
     let mut sent: u32 = 0;
     let t_all = Instant::now();
@@ -529,8 +551,9 @@ async fn write_blocks<B: BlockDevice, EO: EndpointOut>(
     blocks: u32,
     data_len: u32,
     sense: &mut Sense,
+    banks: &mut [[u8; BUF_BYTES]; 2],
 ) -> (u8, u32) {
-    let [b0, b1] = unsafe { &mut *core::ptr::addr_of_mut!(MSC_BUF) };
+    let [b0, b1] = banks;
     let mut status = CSW_STATUS_GOOD;
     let mut recvd: u32 = 0;
     let t_all = Instant::now();

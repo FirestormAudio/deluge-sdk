@@ -1,5 +1,5 @@
 //! Host-side class drivers, generic over [`UsbHostAllocator`], so they are unit-tested
-//! against [`mock::MockAlloc`] under QEMU.
+//! against `mock::MockAlloc` under QEMU.
 //!
 //! [`UsbHostAllocator`]: embassy_usb_driver::host::UsbHostAllocator
 

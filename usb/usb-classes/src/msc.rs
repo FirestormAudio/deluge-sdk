@@ -67,10 +67,8 @@ pub struct MscClass {
 impl MscClass {
     /// Allocate the MSC interface plus its bulk IN/OUT endpoint pair.
     ///
-    /// `max_packet_size` should be `512` on this board: the RUSB1 PHY always
-    /// negotiates high speed, and USB 2.0 requires high-speed bulk endpoints to
-    /// use a 512-byte max packet size (the same constraint the MIDI/CDC classes
-    /// document in the firmware).
+    /// `max_packet_size` follows the bus speed: USB 2.0 fixes high-speed bulk
+    /// endpoints at 512 bytes and caps full-speed ones at 64.
     ///
     /// Returns `(handler, ep_out, ep_in)`.
     pub fn new<'d, D: Driver<'d>>(

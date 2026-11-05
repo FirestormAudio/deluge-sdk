@@ -1,11 +1,11 @@
-//! USB MIDI class for the Deluge — MIDI 1.0 (alt 0) + MIDI 2.0 (alt 1).
+//! USB MIDI device class: MIDI 1.0 (alt 0) and MIDI 2.0 (alt 1).
 //!
 //! Exposes a MIDI Streaming interface with two alternate settings:
 //!
 //! | Alt | `bcdMSC` | Endpoint MPS | Wire format |
 //! |---|---|---|---|
 //! | 0 | `0x0100` | 64 bytes | USB MIDI 1.0 — 4-byte event packets (CIN + 3 bytes) |
-//! | 1 | `0x0200` | 512 bytes | USB MIDI 2.0 — raw UMP 32-bit words |
+//! | 1 | `0x0200` | 512 bytes at high speed, 64 at full speed ([`BusSpeed`]) | USB MIDI 2.0 — raw UMP 32-bit words |
 //!
 //! The host selects an alt setting via `SET_INTERFACE`.  A [`MidiClassHandler`]
 //! implements [`embassy_usb::Handler`] to track the active mode (queried with
@@ -17,7 +17,7 @@
 //!
 //! ```rust,no_run
 //! // USB setup:
-//! let (mut midi_handler, midi_eps) = midi::build(&mut builder);
+//! let (mut midi_handler, midi_eps) = midi::build(&mut builder, midi::BusSpeed::High);
 //! builder.handler(&mut midi_handler);
 //!
 //! // Spawn four background tasks:
@@ -98,7 +98,26 @@ const GTB_MIDI2_PROTOCOL: u8 = 0x02; // bMIDIProtocol: MIDI 2.0 UMP
 
 // Bulk endpoint max packet sizes
 const BULK_MPS_MIDI1: u16 = 64; // USB FS-compatible, used for alt 0
-const BULK_MPS_MIDI2: u16 = 512; // USB HS, used for alt 1
+
+/// The speed the device controller runs the bus at, which sets the MIDI 2.0 alternate's bulk
+/// packet size: USB 2.0 fixes bulk endpoints at 512 bytes at high speed and caps them at 64 at full
+/// speed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BusSpeed {
+    /// Full speed (12 Mbit/s): 64-byte bulk packets.
+    Full,
+    /// High speed (480 Mbit/s): 512-byte bulk packets.
+    High,
+}
+
+impl BusSpeed {
+    const fn bulk_max_packet(self) -> u16 {
+        match self {
+            BusSpeed::Full => 64,
+            BusSpeed::High => 512,
+        }
+    }
+}
 
 // bcdMSC values (little-endian bytes)
 const BCD_MSC_1_0: [u8; 2] = [0x00, 0x01]; // 0x0100
@@ -288,9 +307,9 @@ pub struct MidiEndpoints<'d, D: Driver<'d>> {
     pub ep_out_midi1: D::EndpointOut,
     /// Alt 0 bulk IN  — 64-byte MIDI 1.0 event packets (device → host).
     pub ep_in_midi1: D::EndpointIn,
-    /// Alt 1 bulk OUT — 512-byte UMP words (host → device).
+    /// Alt 1 bulk OUT — UMP words (host → device).
     pub ep_out_midi2: D::EndpointOut,
-    /// Alt 1 bulk IN  — 512-byte UMP words (device → host).
+    /// Alt 1 bulk IN  — UMP words (device → host).
     pub ep_in_midi2: D::EndpointIn,
 }
 
@@ -300,6 +319,7 @@ pub struct MidiEndpoints<'d, D: Driver<'d>> {
 /// `builder.handler(&mut handler)` before calling `builder.build()`.
 pub fn build<'d, D: Driver<'d>>(
     builder: &mut Builder<'d, D>,
+    speed: BusSpeed,
 ) -> (MidiClassHandler, MidiEndpoints<'d, D>) {
     let mut func = builder.function(USB_CLASS_AUDIO, 0x00, 0x00);
 
@@ -374,7 +394,7 @@ pub fn build<'d, D: Driver<'d>>(
     let ep_in_midi1 = alt0.endpoint_bulk_in(None, BULK_MPS_MIDI1);
     alt0.descriptor(CS_ENDPOINT, &[MS_GENERAL, 1, JACK_EMB_IN_ID]);
 
-    // Alt 1: MIDI 2.0 — 512-byte bulk, GTBs via class GET_DESCRIPTOR ─────────
+    // Alt 1: MIDI 2.0 — bulk sized for the bus speed, GTBs via class GET_DESCRIPTOR ─
     let mut alt1 = ms_ib.alt_setting(USB_CLASS_AUDIO, USB_SUBCLASS_MIDI_STREAMING, 0x00, None);
 
     // CS MS Interface Header: bcdMSC=2.00, wTotalLength=7 (no jack descriptors)
@@ -389,10 +409,10 @@ pub fn build<'d, D: Driver<'d>>(
         ],
     );
     // Bulk OUT (host → device)
-    let ep_out_midi2 = alt1.endpoint_bulk_out(None, BULK_MPS_MIDI2);
+    let ep_out_midi2 = alt1.endpoint_bulk_out(None, speed.bulk_max_packet());
     alt1.descriptor(CS_ENDPOINT, &[MS_GENERAL_2_0, 1, GTB_ID]);
     // Bulk IN (device → host)
-    let ep_in_midi2 = alt1.endpoint_bulk_in(None, BULK_MPS_MIDI2);
+    let ep_in_midi2 = alt1.endpoint_bulk_in(None, speed.bulk_max_packet());
     alt1.descriptor(CS_ENDPOINT, &[MS_GENERAL_2_0, 1, GTB_ID]);
 
     (

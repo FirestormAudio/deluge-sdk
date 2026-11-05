@@ -111,7 +111,7 @@ impl From<PipeError> for MidiError {
 /// A hosted USB MIDI 1.0 device.
 ///
 /// Generic over the allocator so it can be unit-tested against a mock — see
-/// [`super::mock`].
+/// `super::mock`.
 pub struct MidiHost<'d, A: UsbHostAllocator<'d>> {
     ep_in: Option<A::Pipe<pipe::Bulk, pipe::In>>,
     ep_out: Option<A::Pipe<pipe::Bulk, pipe::Out>>,

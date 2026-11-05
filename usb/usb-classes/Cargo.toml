@@ -12,6 +12,8 @@ keywords = ["usb", "embassy", "uac2", "midi", "msc"]
 
 [package.metadata.docs.rs]
 default-target = "armv7a-none-eabihf"
+# Every class, so the reference covers the whole crate (the default builds none).
+all-features = true
 
 [lib]
 name = "usb_classes"
@@ -47,7 +49,8 @@ log = { workspace = true }
 
 [target.'cfg(target_os = "none")'.dependencies]
 embassy-futures = { workspace = true }
-embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
+# The tick rate is the board's choice (its time driver): this crate only waits on `Timer`.
+embassy-time = { workspace = true }
 embassy-usb = { workspace = true }
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]

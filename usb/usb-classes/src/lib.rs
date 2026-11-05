@@ -11,10 +11,16 @@
 //! | `device-msc`   | `msc` (Mass Storage), `bot` (Bulk-Only Transport / SCSI) |
 //! | `host-midi`    | `host::midi` |
 //! | `host-uac`     | `host::uac` |
+//! | `host-overbridge` | `host::overbridge`, `overbridge::{proto, stems}` (Elektron Overbridge 2) |
+//! | `device-overbridge` | `overbridge::device`, `overbridge::{proto, stems}` |
 //!
 //! Device classes build only for the bare-metal target (`target_os = "none"`), where
 //! `embassy-usb` is a dependency. The packet queues and the host drivers also build, and are
 //! tested, under QEMU.
+//!
+//! The device classes keep their state in statics, so each is a singleton: one instance of a
+//! class per firmware. The board crate picks the embassy-time tick rate; this crate only waits
+//! on `Timer`.
 
 #![cfg_attr(target_os = "none", no_std)]
 
