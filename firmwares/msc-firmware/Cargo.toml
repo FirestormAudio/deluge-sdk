@@ -21,7 +21,7 @@ embassy-futures = { workspace = true }
 embassy-usb = { workspace = true }
 embassy-usb-driver = { workspace = true }
 rtt-target = { workspace = true, optional = true }
-log = { workspace = true }
+log = { workspace = true, features = ["release_max_level_info"] }
 
 [features]
 ## Enable RTT (SEGGER Real-Time Transfer) debug logging.

@@ -10,6 +10,8 @@ name = "fault-probe"
 test = false
 
 [dependencies]
+# Caps release logging at info, as every firmware here does.
+log = { workspace = true, features = ["release_max_level_info"] }
 deluge-bsp = { path = "../../crates/deluge-bsp" }
 rza1-hal = { path = "../../rza1/rza1-hal", features = ["rza1l"] }
 rtt-target = { workspace = true, optional = true }

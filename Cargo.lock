@@ -2033,6 +2033,7 @@ name = "fault-probe"
 version = "0.1.0"
 dependencies = [
  "deluge-bsp",
+ "log",
  "rtt-target",
  "rza1-hal",
 ]
@@ -5408,6 +5409,7 @@ name = "stage0"
 version = "0.1.0"
 dependencies = [
  "deluge-image",
+ "log",
  "rza1-rt",
 ]
 
@@ -6974,6 +6976,7 @@ name = "xip-slot-blinky"
 version = "0.1.0"
 dependencies = [
  "deluge-image",
+ "log",
  "rza1-rt",
 ]
 

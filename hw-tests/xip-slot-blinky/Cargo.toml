@@ -10,6 +10,8 @@ name = "xip-slot-blinky"
 test = false
 
 [dependencies]
+# Caps release logging at info, as every firmware here does.
+log = { workspace = true, features = ["release_max_level_info"] }
 # The same shape as stage-0: the runtime and the slot format, nothing else.
 rza1-rt = { path = "../../rza1/rza1-rt" }
 deluge-image = { path = "../../crates/deluge-image" }

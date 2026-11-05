@@ -18,7 +18,7 @@ embassy-executor = { workspace = true, features = ["nightly", "platform-cortex-a
 embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
 embassy-usb = { workspace = true }
 embassy-futures = { workspace = true }
-log = { workspace = true }
+log = { workspace = true, features = ["release_max_level_info"] }
 rtt-target = { workspace = true, optional = true }
 
 [features]

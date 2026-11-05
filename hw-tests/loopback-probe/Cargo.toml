@@ -19,7 +19,7 @@ embassy-sync = { workspace = true }
 embassy-futures = { workspace = true }
 embedded-hal-async = "1"
 rtt-target = { workspace = true, optional = true }
-log = { workspace = true }
+log = { workspace = true, features = ["release_max_level_info"] }
 
 [features]
 ## Enable RTT (SEGGER Real-Time Transfer) debug logging.

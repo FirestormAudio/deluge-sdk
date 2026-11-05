@@ -22,7 +22,7 @@ embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
 embassy-sync = { workspace = true }
 embassy-futures = { workspace = true }
 embassy-usb = { workspace = true }
-log = { workspace = true }
+log = { workspace = true, features = ["release_max_level_info"] }
 rtt-target = { workspace = true, optional = true }
 
 [features]

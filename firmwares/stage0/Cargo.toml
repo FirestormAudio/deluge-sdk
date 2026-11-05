@@ -10,6 +10,8 @@ name = "stage0"
 test = false
 
 [dependencies]
+# Caps release logging at info, as every firmware here does.
+log = { workspace = true, features = ["release_max_level_info"] }
 # Only the runtime and the slot format: stage-0 must boot on every unit from the ROM's slow reads
 # alone, so it brings up no clocks, SDRAM, MMU or peripherals and pulls in no HAL.
 rza1-rt = { path = "../../rza1/rza1-rt" }

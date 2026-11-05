@@ -16,7 +16,7 @@ deluge-bsp = { path = "../../crates/deluge-bsp", features = ["usb-host-overbridg
 cortex-ar = { workspace = true }
 embassy-executor = { workspace = true, features = ["nightly", "platform-cortex-ar", "executor-thread"] }
 embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
-log = { workspace = true }
+log = { workspace = true, features = ["release_max_level_info"] }
 rtt-target = { workspace = true, optional = true }
 
 [features]

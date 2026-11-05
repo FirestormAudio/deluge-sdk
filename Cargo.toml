@@ -93,7 +93,9 @@ critical-section = "1"
 # `info`, not `off`: features unify across the whole graph, and release is the
 # only profile that fits in SRAM, so `off` would silence all logging on the
 # device. `info` still drops the bulky `debug!`/`trace!` call sites.
-log = { version = "0.4", features = ["release_max_level_info"] }
+# No max-level feature here: a library that sets one caps every app above it. Binaries choose
+# (the firmwares below set release_max_level_info).
+log = "0.4"
 rtt-target = { version = "0.6", features = ["log"] }
 
 gdbstub = { version = "0.7" }

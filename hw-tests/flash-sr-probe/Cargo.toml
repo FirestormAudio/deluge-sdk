@@ -15,4 +15,4 @@ rza1-hal = { path = "../../rza1/rza1-hal", features = ["rza1l"] }
 deluge-bsp = { path = "../../crates/deluge-bsp", features = ["flash", "rtt"] }
 cortex-ar = { workspace = true }
 rtt-target = { workspace = true }
-log = { workspace = true }
+log = { workspace = true, features = ["release_max_level_info"] }
