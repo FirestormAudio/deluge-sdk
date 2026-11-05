@@ -1,3 +1,11 @@
+//! A safe interface to the Deluge's hardware from its Linux userland, over
+//! [`deluge_sys`] (`libdeluge`).
+//!
+//! [`Deluge`] owns the connection: a real-time audio callback, MIDI, front-panel input
+//! events, LEDs and pads, the OLED, CV and gate outputs, and USB hotplug. Callbacks run on
+//! `libdeluge`'s own threads, so they must be `Send`. Most apps use this through
+//! `deluge-sdk`'s `linux` feature rather than directly.
+
 use std::os::raw::c_void;
 use std::ptr::NonNull;
 

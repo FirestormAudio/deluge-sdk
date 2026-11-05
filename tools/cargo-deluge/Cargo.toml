@@ -4,7 +4,11 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
-publish = false
+authors = ["Katherine Whitlock <kate@skylinesynths.nyc>"]
+repository = "https://github.com/FirestormAudio/deluge-sdk"
+description = "Cargo subcommand for Deluge SDK apps: scaffold, build, upload over USB, deploy to the SD card, run in the simulator, and debug."
+categories = ["development-tools::cargo-plugins", "embedded"]
+keywords = ["deluge", "cargo", "embedded", "synthesizer"]
 
 [[bin]]
 name = "cargo-deluge"

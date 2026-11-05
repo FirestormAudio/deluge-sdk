@@ -5,12 +5,12 @@ use std::path::{Path, PathBuf};
 
 use crate::util::write;
 
-// Canonical project files, baked in from the repo so generated apps can't drift
-// from the SDK's own build setup.
-const TPL_BUILD_RS: &str = include_str!("../../../examples/baremetal/blinky/build.rs");
-const TPL_TOOLCHAIN: &str = include_str!("../../../rust-toolchain.toml");
-// J-Link bring-up script reused from the SDK root (referenced by launch.json).
-const TPL_JLINK: &str = include_str!("../../../rza1_debug.JLinkScript");
+// Copies of the SDK's own build setup, kept inside the crate so it packages on its own.
+// `templates_match_the_sdk_sources` fails if one drifts from the file it copies.
+const TPL_BUILD_RS: &str = include_str!("../templates/build.rs");
+const TPL_TOOLCHAIN: &str = include_str!("../templates/rust-toolchain.toml");
+// The J-Link bring-up script (referenced by launch.json).
+const TPL_JLINK: &str = include_str!("../templates/rza1_debug.JLinkScript");
 
 // Static project + editor templates, kept as real files under `templates/` so
 // they are edited as files rather than as Rust string literals.
@@ -349,6 +349,25 @@ mod tests {
         // `cargo deluge sim` enables it; without it the SDK has no host runtime.
         let t = cargo_toml("app", "deluge = \"0.1\"");
         assert!(t.contains("sim = [\"deluge/sim\"]"), "{t}");
+    }
+
+    #[test]
+    fn templates_match_the_sdk_sources() {
+        // In an SDK checkout, each copied template must equal the file it copies. A
+        // packaged crate has no checkout around it, so there is nothing to compare.
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for (copy, source) in [
+            (TPL_BUILD_RS, "examples/baremetal/blinky/build.rs"),
+            (TPL_TOOLCHAIN, "rust-toolchain.toml"),
+            (TPL_JLINK, "rza1_debug.JLinkScript"),
+        ] {
+            if let Ok(canonical) = fs::read_to_string(root.join(source)) {
+                assert_eq!(
+                    copy, canonical,
+                    "templates/ copy of {source} is out of date"
+                );
+            }
+        }
     }
 
     #[test]

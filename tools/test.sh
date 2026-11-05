@@ -52,7 +52,7 @@ cargo test --target "$QEMU" -p deluge-fixedpoint
 # runs from rza1/tools/test.sh, which CI also runs on its own.
 rza1/tools/test.sh
 cargo test --target "$QEMU" -p deluge-bsp --features usb-host-uac,usb-host-overbridge,flash --lib
-cargo test --target "$QEMU" -p usb-classes --features device-audio,device-midi,host-midi,host-uac,host-overbridge,device-overbridge --lib
+cargo test --target "$QEMU" -p deluge-usb-classes --features device-audio,device-midi,host-midi,host-uac,host-overbridge,device-overbridge --lib
 cargo test --target "$QEMU" -p deluge-fonts --lib
 
 echo "==> the vendored async FAT stack builds for the device, LFN on, no alloc"

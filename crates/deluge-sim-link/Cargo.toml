@@ -4,7 +4,6 @@
 # std-only contract both sides write against when running `cargo deluge sim`.
 # Excluded from the workspace (see root Cargo.toml), so its metadata is explicit
 # rather than inherited.
-publish = false
 name = "deluge-sim-link"
 version = "0.1.0"
 edition = "2024"
@@ -12,6 +11,9 @@ license = "MIT OR Apache-2.0"
 authors = ["Katherine Whitlock <kate@skylinesynths.nyc>"]
 repository = "https://github.com/FirestormAudio/deluge-sdk"
 description = "In-process panel/brain link for the Deluge desktop simulator."
+readme = "README.md"
+categories = ["simulation"]
+keywords = ["deluge", "simulator"]
 
 [dependencies]
 # Lock-free SPSC rings for the audio bridge (cpal callback ⇄ DSP block loop).

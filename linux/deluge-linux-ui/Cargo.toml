@@ -2,6 +2,8 @@
 name = "deluge-linux-ui"
 version = "0.1.0"
 edition = "2021"
+# Depends on the GPL UI toolkits, which aren't published yet.
+publish = false
 description = "Bridge from deluge-linux's OLED framebuffer to the deluge-ui-toolkit (embedded-graphics)."
 
 [dependencies]

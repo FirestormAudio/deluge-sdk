@@ -2,6 +2,13 @@
 name = "deluge-hal-linux"
 version = "0.1.0"
 edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["Katherine Whitlock <kate@skylinesynths.nyc>"]
+repository = "https://github.com/FirestormAudio/deluge-sdk"
+readme = "README.md"
+description = "Safe Rust interface to the Deluge's Linux userland hardware through libdeluge."
+categories = ["hardware-support"]
+keywords = ["deluge", "linux", "audio", "midi"]
 
 [dependencies]
-deluge-sys = { path = "../deluge-sys" }
+deluge-sys = { path = "../deluge-sys", version = "0.1.0" }

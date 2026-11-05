@@ -51,7 +51,6 @@ exclude = [
   # Vendored from DelugeFirmware (see each VENDOR.md): their own workspaces, path dependencies
   # of deluge-sdk.
   "crates/embedded-fatfs",
-  "crates/block-device-driver",
   "crates/block-device-adapters",
   # The chip crates are their own workspace (rza1/Cargo.toml); path dependencies below reach them.
   "rza1",
@@ -112,10 +111,10 @@ deluge-ui-toolkit = { path = "crates/deluge-ui-toolkit", version = "0.1.0" }
 deluge-grid-toolkit = { path = "crates/deluge-grid-toolkit", version = "0.1.0" }
 
 # Off-chip part drivers, board-agnostic (embedded-hal 1.0).
-max5136 = { path = "drivers/max5136" }
+max5136 = { path = "drivers/max5136", version = "0.1.0" }
 
-# Board-agnostic USB classes (publish = false until the API settles).
-usb-classes = { path = "usb/usb-classes" }
+# Board-agnostic USB classes. Published as `deluge-usb-classes`, imported as `usb_classes`.
+usb-classes = { package = "deluge-usb-classes", path = "usb/usb-classes", version = "0.1.0" }
 
 [profile.release]
 opt-level = "s"

@@ -39,7 +39,7 @@ jobs:
           RUSTDOCFLAGS: --cfg docsrs -D warnings
         run: >-
           cargo doc -Zbuild-std=core,alloc --no-deps
-          -p deluge-sdk -p deluge-bsp -p usb-classes -p max5136
+          -p deluge-sdk -p deluge-bsp -p deluge-usb-classes -p max5136
           -p deluge-fixedpoint -p armv7-dsp-intrinsics
           -p deluge-ui-toolkit -p deluge-grid-toolkit -p deluge-fonts -p deluge-protocol
           -p rza1-hal -p rza1-rt -p rza1-alloc -p rza1-pac

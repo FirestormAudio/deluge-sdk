@@ -1,12 +1,12 @@
-# Vendored: embedded-fatfs
+# Fork: deluge-embedded-fatfs
 
 An async, `no_std` FAT12/16/32 filesystem, vendored from
 [MabezDev/embedded-fatfs](https://github.com/MabezDev/embedded-fatfs) at
 `518528cc111fcf65c48abbdeb80735a38eada112` (core crate only: `Cargo.toml`, `src/`, `LICENSE`,
 `README.md`). It is MIT-licensed; `LICENSE` is upstream's, unchanged.
 
-The crate has no usable crates.io release, so it is carried here as a path dependency of `deluge-sdk`.
-Its empty `[workspace]` table keeps it out of this repository's workspace, and its `rustfmt.toml`
+Upstream has no usable crates.io release, so this fork is published as `deluge-embedded-fatfs`
+(the library is still `embedded_fatfs`). Its empty `[workspace]` table keeps it out of this repository's workspace, and its `rustfmt.toml`
 keeps `cargo fmt --all` from reformatting it.
 
 ## Upstream pull requests applied

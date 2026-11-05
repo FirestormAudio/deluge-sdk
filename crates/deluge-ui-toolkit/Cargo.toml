@@ -5,6 +5,8 @@ edition.workspace = true
 authors = ["Firestorm Community"]
 description = "Graphics toolkit for Deluge 128×48 horizontal monochrome OLED display"
 license = "GPL-3.0-or-later"
+# Not published until deluge-fonts is.
+publish = false
 repository.workspace = true
 readme = "README.md"
 categories = ["embedded", "no-std", "graphics"]

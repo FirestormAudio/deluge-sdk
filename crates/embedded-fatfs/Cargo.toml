@@ -1,24 +1,29 @@
 [workspace]
-# Empty table: detaches this vendored crate from any parent Cargo workspace
-# (in particular `crates/Cargo.toml`, whose lockfile feeds the firmware build).
-# This directory is its own workspace root.
+# Empty table: keeps this fork out of deluge-sdk's workspace. This directory is
+# its own workspace root.
 
 [package]
-name = "embedded-fatfs"
+name = "deluge-embedded-fatfs"
 version = "0.1.0"
 edition = "2021"
-repository = "https://github.com/mabezdev/embedded-fatfs"
+authors = ["Rafał Harabień", "Scott Mabin", "Katherine Whitlock <kate@skylinesynths.nyc>"]
+repository = "https://github.com/FirestormAudio/deluge-sdk"
 readme = "README.md"
 rust-version = "1.75"
 keywords = ["fat", "filesystem", "no_std"]
 categories = ["filesystem"]
 license = "MIT"
 description = """
-FAT filesystem library.
+Async no_std FAT filesystem library: a fork of MabezDev's embedded-fatfs with \
+upstream fixes applied, maintained for the Deluge SDK.
 """
 exclude = [
     "resources/*",
 ]
+
+# Same crate name as upstream, so it is a drop-in replacement.
+[lib]
+name = "embedded_fatfs"
 
 [features]
 # Use Rust std library
@@ -54,6 +59,6 @@ defmt = { version = "0.3", optional = true }
 
 [dev-dependencies]
 env_logger = "0.9"
-embedded-fatfs = { path = ".", features = [ "std", "alloc" ] }
+embedded-fatfs = { package = "deluge-embedded-fatfs", path = ".", features = [ "std", "alloc" ] }
 tokio = { version = "1", default-features = false, features = ["fs", "rt-multi-thread", "macros", "io-util"] }
 anyhow = "1"

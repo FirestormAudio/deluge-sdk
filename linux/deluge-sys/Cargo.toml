@@ -2,6 +2,13 @@
 name = "deluge-sys"
 version = "0.1.0"
 edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["Katherine Whitlock <kate@skylinesynths.nyc>"]
+repository = "https://github.com/FirestormAudio/deluge-sdk"
+readme = "README.md"
+description = "Raw FFI bindings to libdeluge, the Deluge Linux userland's hardware library. Needs libdeluge and its headers under DELUGE_SDK_ROOT (default /usr/local)."
+categories = ["external-ffi-bindings"]
+keywords = ["deluge", "ffi"]
 links = "deluge"
 
 [build-dependencies]

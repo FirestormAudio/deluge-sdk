@@ -3,8 +3,12 @@ name = "deluge-simulator"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-publish = false
-description = "Desktop front-panel simulator for the Deluge. Renders OLED/pads/LEDs and forwards input over the deluge-protocol wire, driving a real firmware 'brain' (DelugeFirmware's deluge_host) — a true native emulator."
+authors = ["Katherine Whitlock <kate@skylinesynths.nyc>"]
+repository = "https://github.com/FirestormAudio/deluge-sdk"
+readme = "README.md"
+description = "Desktop front-panel simulator for the Synthstrom Deluge: renders the OLED, pads and LEDs, plays audio and bridges MIDI, for Deluge SDK apps (cargo deluge sim) or a firmware core over the deluge-protocol wire."
+categories = ["simulation", "gui"]
+keywords = ["deluge", "simulator", "synthesizer"]
 
 [lib]
 name = "deluge_simulator"
@@ -23,9 +27,9 @@ rack = []
 
 [dependencies]
 # The shared host↔device wire contract (panel role).
-deluge-protocol = { path = "../deluge-protocol", features = ["std"] }
+deluge-protocol = { path = "../deluge-protocol", version = "0.1.0", features = ["std"] }
 # The in-process panel/brain link (for `cargo deluge sim`).
-deluge-sim-link = { path = "../deluge-sim-link" }
+deluge-sim-link = { path = "../deluge-sim-link", version = "0.1.0" }
 # Host audio I/O for the in-process link.
 cpal = "0.18"
 # Host MIDI I/O bridge (virtual ports to/from the in-process panel).

@@ -5,6 +5,8 @@ edition.workspace = true
 authors = ["Firestorm Community"]
 description = "Reusable, resizable UI components for the Deluge 18×8 RGB pad grid"
 license = "GPL-3.0-or-later"
+# Not published until the OLED toolkit is; the two ship together.
+publish = false
 repository.workspace = true
 readme = "README.md"
 categories = ["embedded", "no-std", "graphics"]

@@ -1,11 +1,12 @@
-# Vendored: block-device-adapters
+# Fork: deluge-block-device-adapters
 
 `BufStream` (byte-level `embedded-io-async` read/write/seek over a block device) and `StreamSlice`
 (a window into a stream), from
 [MabezDev/embedded-fatfs](https://github.com/MabezDev/embedded-fatfs) at
-`518528cc111fcf65c48abbdeb80735a38eada112`. It is MIT/Apache-2.0; both license files are upstream's.
-Its `block-device-driver` dependency points at the vendored [sibling](../block-device-driver/).
-Its empty `[workspace]` table keeps it out of this repository's workspace, and its `rustfmt.toml`
+`518528cc111fcf65c48abbdeb80735a38eada112`, published as `deluge-block-device-adapters` (the
+library is still `block_device_adapters`). It is MIT-licensed like upstream; the license files
+are upstream's. It depends on `block-device-driver` 0.2 from crates.io, which is upstream's
+unchanged. Its empty `[workspace]` table keeps it out of this repository's workspace, and its `rustfmt.toml`
 keeps `cargo fmt --all` from reformatting it.
 
 ## Upstream pull requests applied

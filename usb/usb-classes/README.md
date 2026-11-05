@@ -1,4 +1,4 @@
-# usb-classes
+# deluge-usb-classes
 
 Board-agnostic USB classes on [Embassy](https://embassy.dev). Device classes are generic over
 any `embassy_usb::driver::Driver` and host class drivers over any
@@ -6,6 +6,13 @@ any `embassy_usb::driver::Driver` and host class drivers over any
 on. On the Deluge the chip-level RUSB1 drivers come from
 [`rza1-hal`](../../rza1/rza1-hal), and [`deluge-bsp`](../../crates/deluge-bsp) adds the board's
 USB identities, the SD card as a Mass Storage medium and the host-role supervisor.
+
+The package is `deluge-usb-classes`; the library is `usb_classes`:
+
+```toml
+[dependencies]
+usb-classes = { package = "deluge-usb-classes", version = "0.1", features = ["device-midi"] }
+```
 
 Device classes build only for the bare-metal target (`target_os = "none"`), where `embassy-usb`
 is a dependency. The MIDI packet queues, the Overbridge wire format and the host class drivers

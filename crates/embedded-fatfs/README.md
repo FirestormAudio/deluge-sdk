@@ -1,11 +1,17 @@
-embedded-fatfs
-===========
+# deluge-embedded-fatfs
 
-[![CI Status](https://github.com/mabezdev/embedded-fatfs/actions/workflows/ci.yml/badge.svg)](https://github.com/mabezdev/embedded-fatfs/actions/workflows/ci.yml)
-[![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-[![crates.io](https://img.shields.io/crates/v/embedded-fatfs)](https://crates.io/crates/embedded-fatfs)
-[![Documentation](https://docs.rs/embedded-fatfs/badge.svg)](https://docs.rs/embedded-fatfs)
-![Minimum rustc version](https://img.shields.io/badge/rustc-1.75+-green.svg)
+A fork of [MabezDev's `embedded-fatfs`](https://github.com/MabezDev/embedded-fatfs) with upstream
+fixes and a few additions applied, maintained for the
+[Deluge SDK](https://github.com/FirestormAudio/deluge-sdk). The library keeps upstream's name,
+`embedded_fatfs`, so it is a drop-in replacement:
+
+```toml
+[dependencies]
+embedded-fatfs = { package = "deluge-embedded-fatfs", version = "0.1" }
+```
+
+See [VENDOR.md](VENDOR.md) for exactly what differs from upstream. The rest of this README is
+upstream's.
 
 A FAT filesystem library implemented in Rust. Built on the shoulders of the amazing [rust-fatfs](https://github.com/rafalh/rust-fatfs) crate by [@rafalh](https://github.com/rafalh).
 

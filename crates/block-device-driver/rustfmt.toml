@@ -1,2 +1,0 @@
-# Vendored code is kept as copied (VENDOR.md): this repository's rustfmt leaves it alone.
-disable_all_formatting = true

@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 authors = ["Firestorm Community"]
 license = "GPL-3.0-or-later"
+# Not published: it carries the licensed Metric font, which isn't free to redistribute.
+publish = false
 repository.workspace = true
 readme = "README.md"
 description = "Bitmap fonts for the Deluge 128x48 OLED UI toolkit (embedded-graphics)."
