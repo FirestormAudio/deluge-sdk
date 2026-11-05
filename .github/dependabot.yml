@@ -1,0 +1,23 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    labels:
+      - "pr-dependencies"
+      - "github workflow"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "friday"
+      time: "00:30"
+    groups:
+      all-actions:
+        patterns: [ "*" ]
+
+  - package-ecosystem: "cargo"
+    directory: "/"
+    labels:
+      - "pr-dependencies"
+    schedule:
+      interval: "weekly"
+      day: "friday"
+      time: "01:30"

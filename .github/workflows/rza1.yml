@@ -1,0 +1,47 @@
+name: rza1
+
+# The RZ/A1 chip crates on their own: no deluge-* crate and no vendor manual in reach.
+on:
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Chip crates (standalone)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rza1
+    steps:
+      # Only rza1/ (plus root-level files): what the split repository will hold, so nothing from
+      # the rest of deluge-sdk (crates/, usb/, its .cargo/config.toml) can be reached.
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: rza1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          targets: armv7a-none-eabihf, armv7-unknown-linux-gnueabihf
+          components: rust-src,llvm-tools-preview,clippy,rustfmt
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rza1
+
+      - name: Install QEMU + ARM cross toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user gcc-arm-linux-gnueabihf python3-yaml
+
+      # rza1/tools/gen-pac.sh's pinned chiptool (check-pac.sh installs it when missing).
+      - name: Cache chiptool
+        uses: actions/cache@v6
+        with:
+          path: rza1/target/chiptool-bcf538a2e7b8584ae874ee9ab72efb1576fc6152
+          key: chiptool-bcf538a2e7b8584ae874ee9ab72efb1576fc6152
+
+      - name: Run the chip crates' suite
+        run: ./tools/test.sh

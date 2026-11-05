@@ -1,0 +1,36 @@
+[package]
+publish = false  # binary crate — not for crates.io
+name = "app-loader"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[[bin]]
+name = "app-loader"
+test = false
+
+[dependencies]
+usb-classes = { workspace = true, features = ["device-msc"] }
+rza1-hal = { path = "../../rza1/rza1-hal", features = ["rza1l"] }
+rza1-alloc = { path = "../../rza1/rza1-alloc" }
+# `fat`: the app-loader's ELF loader and file browser read apps off the card
+# through `deluge_bsp::fat`, so the sync embedded-sdmmc stack is not optional here.
+deluge-bsp = { path = "../../crates/deluge-bsp", features = ["flash", "fat", "usb-msc"] }
+deluge-image = { path = "../../crates/deluge-image" }
+cortex-ar = { workspace = true }
+embassy-executor = { workspace = true, features = ["nightly", "platform-cortex-ar", "executor-thread"] }
+embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
+embassy-sync = { workspace = true }
+embassy-futures = { workspace = true }
+embassy-usb = { workspace = true }
+log = { workspace = true }
+rtt-target = { workspace = true, optional = true }
+
+[features]
+default = []
+rtt = ["dep:rtt-target", "deluge-bsp/rtt"]
+## Arm the bottom-1 MB bootloader write-protection at boot (provision + per-boot
+## lock-down + the SSB-update maintenance path). Off by default until the per-part
+## recipe is validated on a sacrificial unit; a default build only reads the flash
+## ID and primes the write-bounds guard, never writing the status register.
+flash-protect = ["deluge-bsp/flash-protect"]

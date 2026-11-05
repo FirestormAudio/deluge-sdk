@@ -1,0 +1,53 @@
+[package]
+name = "deluge-simulator"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Desktop front-panel simulator for the Deluge. Renders OLED/pads/LEDs and forwards input over the deluge-protocol wire, driving a real firmware 'brain' (DelugeFirmware's deluge_host) — a true native emulator."
+
+[lib]
+name = "deluge_simulator"
+path = "src/lib.rs"
+
+[[bin]]
+name = "deluge-simulator"
+path = "src/main.rs"
+
+[features]
+default = ["rack"]
+# The strip above the faceplate: CV/gate meters and L/R output scopes. Build
+# without it when the simulator is linked to a remote brain over the protocol,
+# which carries no audio.
+rack = []
+
+[dependencies]
+# The shared host↔device wire contract (panel role).
+deluge-protocol = { path = "../deluge-protocol", features = ["std"] }
+# The in-process panel/brain link (for `cargo deluge sim`).
+deluge-sim-link = { path = "../deluge-sim-link" }
+# Host audio I/O for the in-process link.
+cpal = "0.18"
+# Host MIDI I/O bridge (virtual ports to/from the in-process panel).
+midir = "0.11"
+# Serial (USB-CDC) transport to a physical Deluge running controller-firmware,
+# used as an additional control surface for the in-process brain (`--hardware`).
+serialport = "4"
+# WAV read/write for the --audio-in / --audio-out file bridges.
+hound = "3.5"
+# PNG output for headless OLED golden-frame snapshots.
+png = "0.17"
+
+# GUI and faceplate rendering.
+iced = { version = "0.14", features = ["tokio", "canvas", "advanced", "image"] }
+resvg = "0.47"
+usvg = "0.47"
+tiny-skia = "0.12"
+embedded-graphics = "0.8"
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Logging
+log = "0.4"
+env_logger = "0.11"

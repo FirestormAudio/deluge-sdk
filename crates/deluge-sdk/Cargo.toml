@@ -1,0 +1,117 @@
+[package]
+# Published as `deluge-sdk` (`deluge` is taken on crates.io); imported as
+# `deluge` via [lib] below.
+name = "deluge-sdk"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "User-friendly SDK for building apps on the Synthstrom Deluge."
+categories = ["embedded", "no-std", "hardware-support"]
+keywords = ["deluge", "synthstrom", "embassy", "rza1", "embedded"]
+
+# The SDK's docs build only for the device target.
+[package.metadata.docs.rs]
+default-target = "armv7a-none-eabihf"
+
+[lib]
+name = "deluge"
+path = "src/lib.rs"
+
+[dependencies]
+deluge-macros = { path = "../deluge-sdk-macros", version = "0.1.0", package = "deluge-sdk-macros" }
+# Default features off so `fault-blink` follows this crate's own feature of that name: an app
+# with its own fault handler turns `deluge`'s defaults off.
+deluge-bsp = { path = "../deluge-bsp", version = "0.1.0", default-features = false, features = ["memory-x"] }
+rza1-alloc = { path = "../../rza1/rza1-alloc", version = "0.1.0" }
+rza1-hal = { path = "../../rza1/rza1-hal", version = "0.1.0", features = ["rza1l"] }
+fixedpoint = { workspace = true }
+cortex-ar = { workspace = true }
+log = { workspace = true }
+embedded-hal = "1"
+embedded-graphics-core = "0.4"
+# `Sd`'s FAT volume on the device: async embedded-fatfs, vendored from DelugeFirmware (each
+# crate's VENDOR.md), over the board's 512-byte block device. Long names on, no `alloc`.
+embedded-fatfs = { path = "../embedded-fatfs", default-features = false, features = ["lfn"] }
+block-device-driver = { path = "../block-device-driver" }
+block-device-adapters = { path = "../block-device-adapters" }
+embedded-io-async = "0.7"
+aligned = "0.4"
+rtt-target = { workspace = true, optional = true }
+embassy-sync = { workspace = true }
+# No default features: the unused `usbd-hid` default pulls in `ssmarshal`,
+# which fails to build against current serde on the host (the `sim` build).
+# Device builds get the defaults back through deluge-bsp.
+embassy-usb = { workspace = true, optional = true, default-features = false }
+# The time driver is per target (below); the tick rate is the same on both.
+embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
+
+# ── Device (the Deluge, armv7a-none-eabihf) ──────────────────────────────────
+# The SDK owns the executor so apps depend only on `deluge`; on the device that
+# is the Cortex-A bare-metal thread executor + integrated 1 MHz time driver.
+[target.'cfg(target_os = "none")'.dependencies]
+embassy-executor = { workspace = true, features = [
+    "nightly",
+    "platform-cortex-ar",
+    "executor-thread",
+] }
+# `Sd` is built on the BSP's async block device on the device; the simulator backs
+# it with host files instead.
+deluge-bsp = { path = "../deluge-bsp", version = "0.1.0", default-features = false, features = ["memory-x", "block-device"] }
+
+# ── Host (the desktop simulator, `cargo deluge sim`) ─────────────────────────
+# A std executor, with the capability modules driving the simulator panel.
+# `platform-std` has no time driver, so embassy-time's `std` provides one.
+[target.'cfg(not(target_os = "none"))'.dependencies]
+embassy-executor = { workspace = true, features = [
+    "nightly",
+    "platform-std",
+    "executor-thread",
+] }
+embassy-time = { workspace = true, features = ["std"] }
+critical-section = { version = "1", features = ["std"] }
+env_logger = "0.11"
+deluge-sim-link = { path = "../deluge-sim-link", optional = true }
+deluge-simulator = { path = "../deluge-simulator", optional = true }
+deluge-hal-linux = { path = "../../linux/deluge-hal-linux", optional = true }
+# Linux backend: `sched_getscheduler`, to check the audio thread got SCHED_FIFO.
+libc = { version = "0.2", optional = true }
+
+[features]
+# No default backend: `sim` depends on host-only crates, so enabling it by
+# default would break device builds. `cargo deluge sim` passes it explicitly.
+default = ["fault-blink"]
+## The fault handler: a CPU fault blinks the SYNC LED (deluge-bsp's `fault-blink`). An app with
+## its own `#[rza1_rt::fault]` handler turns `deluge`'s default features off.
+fault-blink = ["deluge-bsp/fault-blink"]
+## Desktop simulator backend (`cargo deluge sim`): drives the in-process
+## simulator panel (deluge-sim-link) instead of real peripherals.
+sim = ["dep:deluge-sim-link", "dep:deluge-simulator", "deluge-bsp/host-panel"]
+## Linux backend: drives the hardware through libdeluge (deluge-hal-linux).
+linux = ["dep:deluge-hal-linux", "dep:libc"]
+## Register the on-chip SRAM heap (`rza1-alloc`) as the global allocator, so
+## `String`, `Vec` and `format!` work (the GPL `deluge-ui-toolkit` needs this).
+## SDRAM stays reserved for explicit bulk buffers via `rza1_alloc::SDRAM`.
+## Requires `-Zbuild-std=core,alloc`.
+alloc = []
+## Route `log` output to a USB CDC-ACM serial port, so logs are readable over
+## the USB cable without a debug probe. Takes precedence over `rtt`, since only
+## one logger can be registered.
+usb-log = ["dep:embassy-usb"]
+## Let the app own USB0 as a CDC-ACM serial device via `Deluge::usb_serial`
+## (e.g. a REPL). Device only. Conflicts with `usb-log`, which also owns USB0:
+## `Deluge::usb_serial` panics if both are enabled, so build firmware with `-p`
+## to keep another crate's `usb-log` from unifying in.
+usb-serial = ["dep:embassy-usb"]
+## Use the per-block RX DMA interrupt clock for `dlg.audio()` (drift-free, lower
+## latency) instead of the default poll loop. Same `process()` API.
+audio-irq = ["deluge-bsp/audio-irq"]
+## RTT (SEGGER Real-Time Transfer) debug logging, in the app runtime and the
+## HAL/BSP. Needs the matching RTT linker script, which the example template's
+## `rtt` feature also wires up.
+rtt = ["dep:rtt-target", "deluge-bsp/rtt"]
+
+[dev-dependencies]
+embassy-futures = { workspace = true }

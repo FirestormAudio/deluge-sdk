@@ -1,0 +1,8 @@
+transforms:
+  # ADDRA..ADDRH are one register per channel: index them by channel.
+  - !DeleteFieldsets
+    from: '^ADC::regs::DR[A-H]$'
+  - !MakeRegisterArray
+    blocks: '^ADC::ADC$'
+    from: '^DR[A-H]$'
+    to: DR

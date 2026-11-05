@@ -1,0 +1,355 @@
+//! Headless run mode: drive an app from a script and dump golden-frame
+//! snapshots, with no GUI — for CI / `#[test]`-style integration testing.
+//!
+//! Selected by the `DELUGE_HEADLESS` env var (set by `cargo deluge sim
+//! --headless`). [`run_brain`](crate::run_brain) hands us the same
+//! `SharedPanel` + audio bridge it would give the GUI; we run a tiny driver
+//! instead of `iced`:
+//!   - an **audio clock** stands in for the audio device: it drains the app's
+//!     output at the codec rate in wall time, and feeds `DELUGE_SIM_AUDIO_IN`
+//!     (a WAV, looped) as input, or silence, so the app renders in real time.
+//!     `DELUGE_SIM_AUDIO_OUT` records what it drains to a WAV, and the frames
+//!     the app did not deliver in time are reported at exit;
+//!   - a **script** (`DELUGE_SIM_SCRIPT`) of timed input events + snapshots is
+//!     replayed against the panel;
+//!   - **snapshots** write the OLED to a PNG and the pad/LED/CV/gate state to a
+//!     diffable `.state` text file under `DELUGE_SIM_OUT` (default `.`).
+//!
+//! Script format — one step per line, `#` starts a comment:
+//! ```text
+//! # <at_ms> <command> <args…>
+//! 0    button 25 down
+//! 120  encoder 4 +1
+//! 150  pad 3 5 down
+//! 200  midi 90 3c 64
+//! 300  snapshot after-edit
+//! 600  quit
+//! ```
+//!
+//! `midi` takes hex bytes and hands them to the app as if they arrived on its
+//! MIDI input. A snapshot's `.state` lists the MIDI the app sent since the
+//! previous snapshot, as `midi out` lines of hex bytes.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+use deluge_sim_link::audio::{Consumer, GuiEnds, Producer, SAMPLE_RATE_HZ};
+use deluge_sim_link::{DISPLAY_BYTES, InputEvent, LED_COUNT, PAD_COLS, PAD_ROWS, SharedPanel};
+
+/// Run the app headlessly: replay the script, dump snapshots, then return (the
+/// caller of [`run_brain`](crate::run_brain) exits the process afterwards). The app is already running on
+/// the brain thread by the time this is called.
+pub fn run_headless(panel: SharedPanel, gui_audio: GuiEnds) {
+    // Dropped on return, which stops the clock and finishes the recording.
+    let input = match std::env::var_os("DELUGE_SIM_AUDIO_IN").map(PathBuf::from) {
+        Some(path) => match crate::audio::load_wav(&path) {
+            Ok(frames) if !frames.is_empty() => frames,
+            Ok(_) => {
+                eprintln!("deluge-sim headless: {path:?} holds no audio");
+                return;
+            }
+            Err(e) => {
+                eprintln!("deluge-sim headless: {e}");
+                return;
+            }
+        },
+        None => vec![[0.0, 0.0]],
+    };
+    let _audio = AudioClock::start(
+        gui_audio,
+        std::env::var_os("DELUGE_SIM_AUDIO_OUT").map(PathBuf::from),
+        input,
+    );
+
+    let out_dir = std::env::var_os("DELUGE_SIM_OUT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    if let Err(e) = std::fs::create_dir_all(&out_dir) {
+        eprintln!("deluge-sim headless: cannot create {out_dir:?}: {e}");
+        return;
+    }
+
+    let steps = match std::env::var_os("DELUGE_SIM_SCRIPT") {
+        Some(path) => match parse_script(Path::new(&path)) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("deluge-sim headless: {e}");
+                return;
+            }
+        },
+        // No script: let the app render, snapshot once, quit.
+        None => vec![
+            Step {
+                at_ms: 500,
+                action: Action::Snapshot("frame".into()),
+            },
+            Step {
+                at_ms: 500,
+                action: Action::Quit,
+            },
+        ],
+    };
+
+    let start = Instant::now();
+    for step in steps {
+        let target = Duration::from_millis(step.at_ms);
+        if let Some(wait) = target.checked_sub(start.elapsed()) {
+            std::thread::sleep(wait);
+        }
+        match step.action {
+            Action::Input(ev) => panel.push_event(ev),
+            Action::Midi(bytes) => panel.push_midi_in(&bytes),
+            Action::Snapshot(name) => dump_snapshot(&panel, &out_dir, &name),
+            Action::Quit => break,
+        }
+    }
+}
+
+/// The audio device's stand-in: drains the app's output at the codec rate in
+/// wall time, so the app renders in real time as it does against a real device,
+/// and feeds it `input`, looped, at the same rate.
+struct AudioClock {
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+/// How often the clock drains what has come due.
+const CLOCK_TICK: Duration = Duration::from_millis(2);
+
+impl AudioClock {
+    fn start(gui_audio: GuiEnds, record: Option<PathBuf>, input: Vec<[f32; 2]>) -> Self {
+        let GuiEnds { mut out, mut in_ } = gui_audio;
+        let mut writer = record.and_then(|path| {
+            let spec = hound::WavSpec {
+                channels: 2,
+                sample_rate: SAMPLE_RATE_HZ,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            };
+            hound::WavWriter::create(&path, spec)
+                .map_err(|e| eprintln!("deluge-sim headless: recording to {path:?}: {e}"))
+                .ok()
+                .map(|w| (w, path))
+        });
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopping = stop.clone();
+        let handle = std::thread::Builder::new()
+            .name("deluge-audio-clock".into())
+            .spawn(move || {
+                let start = Instant::now();
+                let mut drained: u64 = 0;
+                // Frames that came due with nothing in the output, counted from
+                // the app's first frame (before it, the app is still booting).
+                let mut late: u64 = 0;
+                let mut started = false;
+                while !stopping.load(Ordering::Acquire) {
+                    let due = (start.elapsed().as_micros() as u64 * SAMPLE_RATE_HZ as u64 / 1_000_000)
+                        .saturating_sub(drained);
+                    for n in 0..due {
+                        let frame = out.try_pop();
+                        started |= frame.is_some();
+                        if frame.is_none() && started {
+                            late += 1;
+                        }
+                        if let (Some(frame), Some((w, _))) = (frame, writer.as_mut()) {
+                            let _ = w.write_sample(frame[0]);
+                            let _ = w.write_sample(frame[1]);
+                        }
+                        let _ = in_.try_push(input[(drained + n) as usize % input.len()]);
+                    }
+                    drained += due;
+                    std::thread::sleep(CLOCK_TICK);
+                }
+                if late > 0 {
+                    eprintln!(
+                        "deluge-sim headless: the app delivered {late} frames late ({:.1} ms of silence)",
+                        late as f64 * 1000.0 / SAMPLE_RATE_HZ as f64
+                    );
+                }
+                if let Some((w, path)) = writer {
+                    match w.finalize() {
+                        Ok(()) => eprintln!("deluge-sim headless: recorded the output to {path:?}"),
+                        Err(e) => eprintln!("deluge-sim headless: finishing {path:?}: {e}"),
+                    }
+                }
+            })
+            .ok();
+        Self { stop, handle }
+    }
+}
+
+impl Drop for AudioClock {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+struct Step {
+    at_ms: u64,
+    action: Action,
+}
+
+enum Action {
+    Input(InputEvent),
+    Midi(Vec<u8>),
+    Snapshot(String),
+    Quit,
+}
+
+fn parse_script(path: &Path) -> Result<Vec<Step>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("read {path:?}: {e}"))?;
+    let mut steps = Vec::new();
+    for (i, raw) in text.lines().enumerate() {
+        let line = raw.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        let n = i + 1;
+        let mut t = line.split_whitespace();
+        let at_ms: u64 = t
+            .next()
+            .unwrap()
+            .parse()
+            .map_err(|_| format!("line {n}: expected a millisecond timestamp"))?;
+        let cmd = t
+            .next()
+            .ok_or_else(|| format!("line {n}: missing command"))?;
+        let action = match cmd {
+            "button" => Action::Input(InputEvent::Button {
+                id: int(&mut t, n, "button id")? as u8,
+                pressed: press(&mut t, n)?,
+            }),
+            "pad" => Action::Input(InputEvent::Pad {
+                x: int(&mut t, n, "pad x")? as u8,
+                y: int(&mut t, n, "pad y")? as u8,
+                pressed: press(&mut t, n)?,
+            }),
+            "encoder" => Action::Input(InputEvent::Encoder {
+                index: int(&mut t, n, "encoder index")? as u8,
+                delta: int(&mut t, n, "encoder delta")? as i8,
+            }),
+            "midi" => {
+                let bytes = t
+                    .map(|b| {
+                        u8::from_str_radix(b, 16)
+                            .map_err(|_| format!("line {n}: {b:?} is not a hex byte"))
+                    })
+                    .collect::<Result<Vec<u8>, String>>()?;
+                if bytes.is_empty() {
+                    return Err(format!("line {n}: midi needs at least one byte"));
+                }
+                Action::Midi(bytes)
+            }
+            "snapshot" => Action::Snapshot(t.next().unwrap_or("frame").to_string()),
+            "quit" => Action::Quit,
+            other => return Err(format!("line {n}: unknown command {other:?}")),
+        };
+        steps.push(Step { at_ms, action });
+    }
+    Ok(steps)
+}
+
+fn int<'a>(t: &mut impl Iterator<Item = &'a str>, n: usize, what: &str) -> Result<i64, String> {
+    let s = t
+        .next()
+        .ok_or_else(|| format!("line {n}: missing {what}"))?;
+    s.trim_start_matches('+')
+        .parse()
+        .map_err(|_| format!("line {n}: bad {what} {s:?}"))
+}
+
+fn press<'a>(t: &mut impl Iterator<Item = &'a str>, n: usize) -> Result<bool, String> {
+    match t.next() {
+        Some("down" | "press" | "1" | "true") => Ok(true),
+        Some("up" | "release" | "0" | "false") => Ok(false),
+        Some(other) => Err(format!("line {n}: expected down/up, got {other:?}")),
+        None => Err(format!("line {n}: missing down/up")),
+    }
+}
+
+/// Dump the OLED (PNG) and the pad/LED/CV/gate state (text) under `dir`.
+fn dump_snapshot(panel: &SharedPanel, dir: &Path, name: &str) {
+    let png = dir.join(format!("{name}.png"));
+    if let Err(e) = write_oled_png(&png, &panel.display_snapshot()) {
+        eprintln!("deluge-sim headless: writing {png:?}: {e}");
+    }
+    let state = dir.join(format!("{name}.state"));
+    if let Err(e) = std::fs::write(&state, state_text(panel)) {
+        eprintln!("deluge-sim headless: writing {state:?}: {e}");
+    }
+    eprintln!("deluge-sim headless: snapshot {name:?} → {png:?}, {state:?}");
+}
+
+/// OLED frame dimensions (the panel framebuffer is page-major: 6 pages × 8 rows).
+const OLED_W: usize = 128;
+const OLED_H: usize = (DISPLAY_BYTES / OLED_W) * 8; // 6 pages × 8 = 48 rows
+const PNG_SCALE: usize = 4;
+
+/// Render the 1-bpp OLED framebuffer to a scaled grayscale PNG (lit = white).
+fn write_oled_png(path: &Path, fb: &[u8; DISPLAY_BYTES]) -> std::io::Result<()> {
+    let (w, h) = (OLED_W * PNG_SCALE, OLED_H * PNG_SCALE);
+    let mut img = vec![0u8; w * h];
+    for page in 0..(DISPLAY_BYTES / OLED_W) {
+        for col in 0..OLED_W {
+            let byte = fb[page * OLED_W + col];
+            for bit in 0..8 {
+                if byte & (1 << bit) != 0 {
+                    let (x0, y0) = (col * PNG_SCALE, (page * 8 + bit) * PNG_SCALE);
+                    for dy in 0..PNG_SCALE {
+                        for dx in 0..PNG_SCALE {
+                            img[(y0 + dy) * w + (x0 + dx)] = 0xFF;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let file = std::fs::File::create(path)?;
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w as u32, h as u32);
+    enc.set_color(png::ColorType::Grayscale);
+    enc.set_depth(png::BitDepth::Eight);
+    let mut writer = enc.write_header().map_err(std::io::Error::other)?;
+    writer.write_image_data(&img).map_err(std::io::Error::other)
+}
+
+/// A diffable text dump of the non-default panel state for golden comparison.
+fn state_text(panel: &SharedPanel) -> String {
+    use std::fmt::Write;
+    let mut s = String::new();
+    let cv = panel.cv_snapshot();
+    let _ = writeln!(s, "cv {} {} {} {}", cv[0], cv[1], cv[2], cv[3]);
+    let g = panel.gate_snapshot();
+    let _ = writeln!(
+        s,
+        "gate {} {} {} {}",
+        g[0] as u8, g[1] as u8, g[2] as u8, g[3] as u8
+    );
+    let _ = writeln!(s, "synced {}", panel.synced_led() as u8);
+    let leds = panel.leds_snapshot();
+    for (i, on) in leds.iter().enumerate().take(LED_COUNT) {
+        if *on {
+            let _ = writeln!(s, "led {i}");
+        }
+    }
+    let pads = panel.pads_snapshot();
+    for col in 0..PAD_COLS {
+        for row in 0..PAD_ROWS {
+            let [r, gr, b] = pads[col][row];
+            if r | gr | b != 0 {
+                let _ = writeln!(s, "pad {col} {row} {r} {gr} {b}");
+            }
+        }
+    }
+    let midi_out = panel.drain_midi_out();
+    if !midi_out.is_empty() {
+        let hex: Vec<String> = midi_out.iter().map(|b| format!("{b:02x}")).collect();
+        let _ = writeln!(s, "midi out {}", hex.join(" "));
+    }
+    s
+}

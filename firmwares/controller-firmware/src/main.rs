@@ -1,0 +1,339 @@
+//! Deluge controller firmware image.
+//!
+//! This crate assembles the board support package into a runnable Embassy-based
+//! firmware for the Deluge. The BSP owns board-level hardware concerns such as
+//! clocking, PIC transport, shared pad state, encoder IRQ capture/decoding, and
+//! long-running board tasks like jack detection. This crate turns the Deluge
+//! into a USB control surface driven by a host over CDC-ACM.
+//!
+//! ## Runtime role
+//! - Initialises the platform, heaps, USB, audio, and task executor.
+//! - Runs the Deluge USB device or host stack depending on `USB0_HOST_MODE`.
+//! - Forwards BSP input streams (pads, buttons, encoders) to the CDC host.
+//! - Renders host-supplied frames to the OLED and host-supplied colours to the
+//!   RGB pad matrix; applies MOD-knob master-volume control over USB audio.
+//!
+//! ## Task split
+//! - **BSP services** — reusable hardware capture and shared state, such as
+//!   PIC transport, shared pad state, and encoder IRQ capture/decoding.
+//! - **Firmware tasks** — input forwarding and host-driven rendering, including
+//!   PIC/encoder event forwarding, CDC protocol handling, USB audio tasks, and
+//!   host-supplied OLED rendering.
+//!
+//! ## UI model
+//! - The host owns all illumination (pad LEDs, button LEDs, knob indicators,
+//!   OLED).  Pad/button/encoder input is forwarded to the host over CDC.
+//! - The PIC task forwards raw PIC events; the CDC task pushes host RGB frames
+//!   straight to the PIC and host framebuffers to the OLED task.
+
+#![no_std]
+#![no_main]
+#![feature(impl_trait_in_assoc_type)]
+
+mod events;
+mod tasks;
+
+use core::mem::MaybeUninit;
+use core::panic::PanicInfo;
+use log::{debug, error, info};
+
+use embassy_executor::{Executor, Spawner};
+
+use core::sync::atomic::{AtomicBool, Ordering};
+use deluge_bsp::cv_gate;
+use deluge_bsp::uart as bsp_uart;
+use rza1_alloc as allocator;
+use rza1_hal::usb::{Rusb1Driver, init_device_mode, init_host_mode};
+
+unsafe extern "C" {
+    /// Start of the free SRAM heap region (set by the linker script).
+    static __sram_heap_start: u8;
+    /// End of the free SRAM heap region (start of RTT/stack reservation).
+    static __sram_heap_end: u8;
+}
+
+#[panic_handler]
+fn panic(info: &PanicInfo) -> ! {
+    error!("PANIC: {}", info);
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// USB mode selection
+// ---------------------------------------------------------------------------
+
+/// When `true` at boot, USB0 starts in host mode instead of device mode.
+static USB0_HOST_MODE: AtomicBool = AtomicBool::new(false);
+
+// USB0's interrupt goes to the host or device handler, whichever mode the port was brought up in.
+rza1_hal::bind_interrupts!(struct UsbIrqs {
+    USB0 => rza1_hal::usb::DualRoleInterruptHandler<rza1_hal::peripherals::USB0>;
+});
+
+// ---------------------------------------------------------------------------
+// USB descriptor static buffers
+// ---------------------------------------------------------------------------
+//
+// Must live here (in the root crate) so the `'static` lifetimes required by
+// `embassy_usb::Builder` and `builder.handler()` are satisfied.
+
+static mut USB_CONFIG_DESC: [u8; 768] = [0; 768];
+static mut USB_BOS_DESC: [u8; 64] = [0; 64];
+static mut USB_MSOS_DESC: [u8; 0] = [];
+static mut USB_CONTROL_BUF: [u8; 64] = [0; 64];
+/// Backing storage for the UAC2 `AudioClass` handler (must be `'static`).
+static mut AUDIO_CLASS_BUF: core::mem::MaybeUninit<usb_classes::audio::AudioClass<2>> =
+    core::mem::MaybeUninit::uninit();
+/// Backing storage for the CDC-ACM class state (line-coding, control signals).
+static mut CDC_ACM_STATE: embassy_usb::class::cdc_acm::State<'static> =
+    embassy_usb::class::cdc_acm::State::new();
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+static mut EXECUTOR: MaybeUninit<Executor> = MaybeUninit::uninit();
+
+#[deluge_bsp::entry]
+fn main() -> ! {
+    // With the `rtt` feature, log over a 16 KB RTT up-channel whose ring buffer
+    // and control block live in `.rtt_buffer` (uncached RAM).  Without it no
+    // logger is registered and `log!` calls are no-ops.
+    #[cfg(feature = "rtt")]
+    {
+        let channels = rtt_target::rtt_init! {
+            up: {
+                0: {
+                    size: 16384,
+                    name: "Terminal",
+                    section: ".rtt_buffer"   // ring buffer bytes in uncached RAM
+                }
+            }
+            section_cb: ".rtt_buffer"        // _SEGGER_RTT control block in uncached RAM
+        };
+        rtt_target::set_print_channel(channels.up.0);
+        rtt_target::init_logger_with_level(log::LevelFilter::Debug);
+    }
+    info!("Deluge controller firmware starting");
+    info!("Awaiting USB CDC host — the host drives the pads, LEDs, and OLED");
+
+    // Initialise the SRAM heap before any allocation from internal RAM.
+    unsafe {
+        let start = core::ptr::addr_of!(__sram_heap_start) as *mut u8;
+        let size = core::ptr::addr_of!(__sram_heap_end) as usize - start as usize;
+        allocator::SRAM.init(start, size);
+    }
+    info!("SRAM heap: initialised ({} KB)", {
+        let s = core::ptr::addr_of!(__sram_heap_end) as usize
+            - core::ptr::addr_of!(__sram_heap_start) as usize;
+        s / 1024
+    });
+
+    let board = deluge_bsp::Board::new(rza1_hal::init(deluge_bsp::system::BOARD_CONFIG));
+    info!("system: module clocks, MMU, cache, SDRAM, GIC, OSTM, time driver ready");
+
+    // Initialise the SDRAM heap now that the SDRAM window is accessible.
+    unsafe { allocator::SDRAM.init(0x0C00_0000 as *mut u8, 64 * 1024 * 1024) };
+    info!("SDRAM heap: initialised (64 MB)");
+
+    info!("GPIO: configuring heartbeat LED...");
+    // The SYNC LED as an output at the level its latch already holds; the host drives it over CDC.
+    let mut sync_led = rza1_hal::gpio::Flex::new(board.pins.sync_led);
+    sync_led.set_as_output(sync_led.is_set_high().into());
+    tasks::cdc::set_sync_led(sync_led);
+    let jack_pins = board.pins.jacks;
+    info!("GPIO: heartbeat LED P6_7 configured");
+
+    info!("UART: initialising MIDI...");
+    bsp_uart::init_midi(board.midi_uart, board.pins.midi, board.dma.midi_rx, 31_250);
+    info!("UART: MIDI ready");
+
+    info!("UART: initialising PIC...");
+    bsp_uart::init_pic(
+        board.pic_uart,
+        board.pins.pic,
+        board.dma.pic_rx,
+        board.dma.pic_tx,
+        31_250,
+    );
+    // The SD slot's controller, once; `sd::init` identifies the card when it is needed.
+    deluge_bsp::sd::init_hw(
+        board.sd_card,
+        board.pins.sd,
+        board.dma.sd_tx,
+        board.dma.sd_rx,
+    );
+    info!("UART: SCIF0/1 @ 31 250 baud");
+
+    info!("audio: initialising SSI0...");
+    let scux = rza1_hal::scux::Scux::new(board.scux);
+    deluge_bsp::audio::init_with_scux(
+        board.audio_ssi,
+        board.pins.audio,
+        board.dma.ssi_rx,
+        board.dma.scux_ffd0,
+        scux.ch0,
+    );
+    info!("audio: SSI0 + DMA + codec running");
+
+    // Pre-fill SSI TX buffer with dither so the codec does not auto-mute before
+    // the first USB stream arrives.
+    tasks::audio::fill_tx_with_dither();
+    info!("audio: TX buffer pre-filled with dither");
+
+    // RSPI0 is shared between OLED (8-bit) and CV DAC (32-bit). The bus brings it up in 32-bit
+    // mode; cv_gate::init() runs the DAC's linearity sequence; oled::init() switches to 8-bit.
+    deluge_bsp::bus::init(board.shared_spi, board.pins.spi, board.dma.oled);
+    cv_gate::init(board.pins.cv_gate);
+    info!("RSPI0: initialised via cv_gate::init");
+
+    // ── USB0 mode selection (host vs device) ──────────────────────────────
+    info!(
+        "USB: initialising USB0 (host_mode={})...",
+        USB0_HOST_MODE.load(Ordering::Relaxed)
+    );
+
+    // ── Host mode: just allocate the host driver.  ──────────────────────────
+    // ── Device mode: build the full UsbDevice stack.  ───────────────────────
+    //
+    // `init_device_mode` / `init_host_mode` both call `module_clock_enable`.
+    // UsbDevice buffers must be `'static`; they live in the statics above.
+    let mut usb_host_driver: Option<rza1_hal::usb::Rusb1HostDriver<'static>> = None;
+    let mut usb_device_opt: Option<embassy_usb::UsbDevice<'static, Rusb1Driver<'static>>> = None;
+    let mut ep_out_opt: Option<rza1_hal::usb::Rusb1EndpointOut> = None;
+    let mut ep_in_opt: Option<rza1_hal::usb::Rusb1EndpointIn> = None;
+    let mut cdc_opt: Option<
+        embassy_usb::class::cdc_acm::CdcAcmClass<'static, Rusb1Driver<'static>>,
+    > = None;
+    let mut midi_sender_opt: Option<
+        embassy_usb::class::midi::Sender<'static, Rusb1Driver<'static>>,
+    > = None;
+    let mut midi_receiver_opt: Option<
+        embassy_usb::class::midi::Receiver<'static, Rusb1Driver<'static>>,
+    > = None;
+
+    if USB0_HOST_MODE.load(Ordering::Relaxed) {
+        let (_port, hd) = init_host_mode(board.usb0, UsbIrqs);
+        usb_host_driver = Some(hd);
+        info!("USB: host driver ready");
+    } else {
+        let (usb_device, ep_out, ep_in, cdc, midi_sender, midi_receiver) = unsafe {
+            let (_port, driver) = init_device_mode(board.usb0, UsbIrqs);
+            // Example/development USB identity — self-contained, NOT a product
+            // ID. See `deluge_bsp::usb::ids` for the product-identity rules and
+            // why distinct PIDs matter on macOS. TODO: use IDs you own (e.g. a
+            // pid.codes prototype ID) before distributing this firmware.
+            const USB_VID: u16 = 0x16D0;
+            const USB_PID: u16 = 0x0EDA;
+            let mut config = embassy_usb::Config::new(USB_VID, USB_PID);
+            config.manufacturer = Some("Synthstrom Audible");
+            config.product = Some("Deluge");
+            config.self_powered = false;
+            config.max_power = 250; // 500 mA
+
+            let mut builder = embassy_usb::Builder::new(
+                driver,
+                config,
+                &mut *core::ptr::addr_of_mut!(USB_CONFIG_DESC),
+                &mut *core::ptr::addr_of_mut!(USB_BOS_DESC),
+                &mut *core::ptr::addr_of_mut!(USB_MSOS_DESC),
+                &mut *core::ptr::addr_of_mut!(USB_CONTROL_BUF),
+            );
+
+            // Allocate the UAC2 speaker + mic interfaces.
+            // Stereo capture: uac2_mic_task sends the codec's stereo input.
+            // ISO OUT is always stereo.
+            let (audio_instance, ep_out, ep_in) =
+                usb_classes::audio::AudioClass::<2>::new(&mut builder, 288);
+            // Store in a `'static` slot so the `&'static mut` reference satisfies
+            // `builder.handler`'s `'d` lifetime (= `'static` here).
+            let audio_ref = (&mut *core::ptr::addr_of_mut!(AUDIO_CLASS_BUF)).write(audio_instance);
+            builder.handler(audio_ref);
+
+            // CDC-ACM serial class (Deluge host protocol).
+            // 512-byte bulk endpoints: the RUSB1 PHY always negotiates high
+            // speed (SYSCFG.HSE=1), and USB 2.0 requires HS bulk endpoints to use
+            // wMaxPacketSize 512.  Advertising 64 (the FS value) makes the host
+            // reject the endpoints ("invalid maxpacket 64") and silently breaks
+            // the bulk OUT direction.
+            let cdc = embassy_usb::class::cdc_acm::CdcAcmClass::new(
+                &mut builder,
+                &mut *core::ptr::addr_of_mut!(CDC_ACM_STATE),
+                512,
+            );
+
+            // USB MIDI 1.0 class — 1 in-jack (DIN→USB), 1 out-jack (USB→DIN).
+            // 512-byte bulk endpoints for high speed (see CDC comment above).
+            let midi = embassy_usb::class::midi::MidiClass::new(&mut builder, 1, 1, 512);
+            let (midi_sender, midi_receiver) = midi.split();
+
+            (
+                builder.build(),
+                ep_out,
+                ep_in,
+                cdc,
+                midi_sender,
+                midi_receiver,
+            )
+        };
+        usb_device_opt = Some(usb_device);
+        ep_out_opt = Some(ep_out);
+        ep_in_opt = Some(ep_in);
+        cdc_opt = Some(cdc);
+        midi_sender_opt = Some(midi_sender);
+        midi_receiver_opt = Some(midi_receiver);
+        info!("USB: UsbDevice built");
+    }
+
+    info!("encoder: configuring interrupt-driven inputs...");
+    unsafe { deluge_bsp::encoder::irq_init(board.encoder_poll_timer, board.pins.encoders) };
+
+    debug!("enabling IRQ...");
+    unsafe { cortex_ar::interrupt::enable() };
+    debug!("IRQ enabled OK");
+    info!("IRQ: enabled — starting Embassy tasks");
+
+    debug!("Executor::new()...");
+    #[allow(static_mut_refs)]
+    let executor = unsafe {
+        EXECUTOR.write(Executor::new());
+        EXECUTOR.assume_init_mut()
+    };
+    debug!("executor.run()...");
+    executor.run(|spawner: Spawner| {
+        // USB-mode-specific tasks ─────────────────────────────────────────
+        if let Some(hd) = usb_host_driver {
+            spawner.spawn(tasks::usb_host::usb_host_task(hd).unwrap());
+        } else if let (
+            Some(usb_device),
+            Some(ep_out),
+            Some(ep_in),
+            Some(cdc),
+            Some(midi_sender),
+            Some(midi_receiver),
+        ) = (
+            usb_device_opt,
+            ep_out_opt,
+            ep_in_opt,
+            cdc_opt,
+            midi_sender_opt,
+            midi_receiver_opt,
+        ) {
+            spawner.spawn(tasks::usb::usb_task(usb_device).unwrap());
+            spawner.spawn(tasks::audio::uac2_task(ep_out).unwrap());
+            spawner.spawn(tasks::audio::uac2_mic_task(ep_in).unwrap());
+            spawner.spawn(tasks::cdc::cdc_task(cdc).unwrap());
+            spawner.spawn(tasks::midi::midi_usb_rx_task(midi_receiver).unwrap());
+            spawner.spawn(tasks::midi::midi_din_tx_task(midi_sender).unwrap());
+        }
+
+        // Hardware service + host-driven rendering tasks ───────────────────
+        spawner.spawn(tasks::pic::pic_task().unwrap());
+        spawner.spawn(tasks::encoder::encoder_task().unwrap());
+        spawner.spawn(tasks::jack_detect::jack_detect_task(jack_pins, 200).unwrap());
+        spawner.spawn(tasks::oled::oled_task().unwrap());
+        spawner.spawn(tasks::sd::sd_task().unwrap());
+    });
+}

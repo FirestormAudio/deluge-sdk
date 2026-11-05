@@ -1,0 +1,70 @@
+transforms:
+  # SCUX's sub-units are named by unit (`IPCIR_IPC0_2` is IPC unit 2's IPCIR): gather each unit's
+  # registers into a block and index the blocks by unit, one array per sub-unit type.
+  - !MakeBlock
+    blocks: '^SCUX::SCUX$'
+    from: '^(IPCIR|IPSLR)_IPC0_(\d)$'
+    to_outer: 'IPC$2'
+    to_block: 'SCUX::IPC'
+    to_inner: '$1'
+  - !MakeBlock
+    blocks: '^SCUX::SCUX$'
+    from: '^(OPCIR|OPSLR)_OPC0_(\d)$'
+    to_outer: 'OPC$2'
+    to_block: 'SCUX::OPC'
+    to_inner: '$1'
+  - !MakeBlock
+    blocks: '^SCUX::SCUX$'
+    from: '^(FFDIR|FDAIR|DRQSR|FFDPR|FFDBR|DEVMR|DEVCR)_FFD0_(\d)$'
+    to_outer: 'FFD$2'
+    to_block: 'SCUX::FFD'
+    to_inner: '$1'
+  - !MakeBlock
+    blocks: '^SCUX::SCUX$'
+    from: '^(FFUIR|FUAIR|URQSR|FFUPR|UEVMR|UEVCR)_FFU0_(\d)$'
+    to_outer: 'FFU$2'
+    to_block: 'SCUX::FFU'
+    to_inner: '$1'
+  # 2SRC: two units (m) of two converters each (p): `SRCIRp_2SRC0_m`. One block per converter,
+  # indexed 2*m + p (unit stride 0x100, converter stride 0x34, so the array is cursed).
+  - !MakeBlock
+    blocks: '^SCUX::SCUX$'
+    from: '^(SRCIR|SADIR|SRCBR|IFSCR|IFSVR|SRCCR|MNFSR|BFSSR|SC2SR|WATSR|SEVMR|SEVCR)([01])_2SRC0_([01])$'
+    to_outer: 'SRC$3$2'
+    to_block: 'SCUX::SRC'
+    to_inner: '$1'
+  - !MakeBlock
+    blocks: '^SCUX::SCUX$'
+    from: '^(DVUIR|VADIR|DVUBR|DVUCR|ZCMCR|VRCTR|VRPDR|VRDBR|VRWTR|VOL\dR|DVUER|DVUSR|VEVMR|VEVCR)_DVU0_(\d)$'
+    to_outer: 'DVU$2'
+    to_block: 'SCUX::DVU'
+    to_inner: '$1'
+  - !MakeRegisterArray
+    blocks: '^SCUX::DVU$'
+    from: '^VOL\dR$'
+    to: VOLR
+  - !MakeRegisterArray
+    blocks: '^SCUX::SCUX$'
+    from: '^(IPC|OPC|FFD|FFU|DVU)\d$'
+    to: '$1'
+  - !MakeRegisterArray
+    blocks: '^SCUX::SCUX$'
+    from: '^SRC\d\d$'
+    to: SRC
+    mode: Cursed
+  - !MakeRegisterArray
+    blocks: '^SCUX::SCUX$'
+    from: '^SRCIRR_2SRC0_\d$'
+    to: SRCIRR
+  # The CIM's per-FIFO and per-converter selectors.
+  - !MakeRegisterArray
+    blocks: '^SCUX::SCUX$'
+    from: '^(DMATD|DMATU|FDTSEL|FUTSEL|SRCRSEL)\d_CIM$'
+    to: '$1'
+  # MIX is one unit: its registers in a block of their own.
+  - !MakeBlock
+    blocks: '^SCUX::SCUX$'
+    from: '^(MIXIR|MADIR|MIXBR|MIXMR|MVPDR|MDBAR|MDBBR|MDBCR|MDBDR|MDBER|MIXSR)_MIX0_0$'
+    to_outer: 'MIX'
+    to_block: 'SCUX::MIX'
+    to_inner: '$1'

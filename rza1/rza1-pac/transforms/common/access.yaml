@@ -1,0 +1,39 @@
+# The SVD declares every register read-write (one device-level <access>). Give the registers whose
+# access has a side effect, or no meaning in one direction, their real access, so a write to a
+# read-only register, or a read or `modify` of a write-only one, doesn't compile. chiptool has no
+# transform that sets access, so each register is deleted and added back, keeping its offset, width
+# and fieldset. Runs after Sanitize, on the final names.
+#
+# A read that has a side effect (ICCIAR acknowledges the interrupt; FRDR pops the FIFO) stays
+# readable: chiptool's access model can't say "read with care".
+transforms:
+  - !DeleteRegisters
+    block: '^intc::Intc$'
+    from: '^(icdictr|icdiidr|icciar|icceoir|iccrpr|icchpir)$'
+  - !AddRegisters
+    block: '^intc::Intc$'
+    registers:
+      - {name: icdictr, description: "Interrupt Controller Type (read-only).", byte_offset: 0x0004, access: Read, fieldset: "intc::regs::Icdictr"}
+      - {name: icdiidr, description: "Distributor Implementer Identification (read-only).", byte_offset: 0x0008, access: Read, fieldset: "intc::regs::Icdiidr"}
+      - {name: icciar, description: "Interrupt Acknowledge (read-only; reading acknowledges the highest-priority pending interrupt).", byte_offset: 0x100C, access: Read, fieldset: "intc::regs::Icciar"}
+      - {name: icceoir, description: "End of Interrupt (write-only).", byte_offset: 0x1010, access: Write, fieldset: "intc::regs::Icceoir"}
+      - {name: iccrpr, description: "Running Priority (read-only).", byte_offset: 0x1014, access: Read, fieldset: "intc::regs::Iccrpr"}
+      - {name: icchpir, description: "Highest Pending Interrupt (read-only).", byte_offset: 0x1018, access: Read, fieldset: "intc::regs::Icchpir"}
+  - !DeleteRegisters
+    block: '^scif::Scif$'
+    from: '^(ftdr|frdr)$'
+  - !AddRegisters
+    block: '^scif::Scif$'
+    registers:
+      - {name: ftdr, description: "Transmit FIFO Data (write-only).", byte_offset: 0x0C, bit_size: 8, access: Write, fieldset: "scif::regs::Ftdr"}
+      - {name: frdr, description: "Receive FIFO Data (read-only; reading pops the FIFO).", byte_offset: 0x14, bit_size: 8, access: Read, fieldset: "scif::regs::Frdr"}
+  - !DeleteRegisters
+    block: '^ostm::Ostm$'
+    from: '^(cnt|te|ts|tt)$'
+  - !AddRegisters
+    block: '^ostm::Ostm$'
+    registers:
+      - {name: cnt, description: "Counter (read-only).", byte_offset: 0x04, access: Read, fieldset: "ostm::regs::Cnt"}
+      - {name: te, description: "Count Enable Status (read-only).", byte_offset: 0x10, bit_size: 8, access: Read, fieldset: "ostm::regs::Te"}
+      - {name: ts, description: "Count Start Trigger (write-only).", byte_offset: 0x14, bit_size: 8, access: Write, fieldset: "ostm::regs::Ts"}
+      - {name: tt, description: "Count Stop Trigger (write-only).", byte_offset: 0x18, bit_size: 8, access: Write, fieldset: "ostm::regs::Tt"}

@@ -1,0 +1,84 @@
+{
+  // Debug the app over a J-Link probe (advanced — needs a probe and a J-Link
+  // install). The normal iterate loop is the "deluge: run" task, which uploads
+  // over USB and needs no probe.
+  //
+  // RTT logging is off here: the default build does not include the RTT control
+  // block. Build with the `rtt` feature and add an `"rttConfig"` block if you
+  // want SEGGER RTT console output.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      // Debug your app in the desktop simulator — no hardware, no probe. This
+      // is the debuggable equivalent of `cargo deluge sim`: it builds the app
+      // for the HOST triple (overriding the bare-metal target forced by
+      // .cargo/config.toml), where the SDK swaps the real peripherals for the
+      // in-process simulator panel (OLED/pads/LEDs/audio). The app opens the
+      // simulator window itself.
+      //
+      // Needs the CodeLLDB extension ("vadimcn.vscode-lldb"), which drives the
+      // `cargo build` below and resolves the host binary automatically. The
+      // host triple here is x86_64 Linux; on macOS/Windows change it to your
+      // `rustc -vV` host (e.g. "aarch64-apple-darwin", "x86_64-pc-windows-msvc").
+      "name": "Simulator (CodeLLDB)",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": ["build", "--target=x86_64-unknown-linux-gnu"],
+        "filter": { "name": "__APP_NAME__", "kind": "bin" }
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      // Same as "Simulator (CodeLLDB)", but also drives the in-process app from a
+      // physical Deluge running controller-firmware, attached over USB-CDC: real
+      // pads/buttons/encoders control the app and the app's illumination
+      // (OLED/pads/LEDs/CV-gate) is mirrored back onto the hardware. The on-screen
+      // simulator window still runs as a peer panel.
+      //
+      // DELUGE_SIM_HARDWARE selects the serial port (read by the SDK's host
+      // runtime); "auto" auto-detects the Deluge by its USB VID/PID. Replace it
+      // with an explicit port (e.g. "/dev/ttyACM0", "COM3") to pin one device. A
+      // missing/unopenable device is non-fatal — the sim runs GUI-only and warns.
+      "name": "Simulator + Hardware (CodeLLDB)",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": ["build", "--target=x86_64-unknown-linux-gnu"],
+        "filter": { "name": "__APP_NAME__", "kind": "bin" }
+      },
+      "args": [],
+      "env": { "DELUGE_SIM_HARDWARE": "auto" },
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Debug (J-Link)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/target/armv7a-none-eabihf/debug/__APP_NAME__",
+      "servertype": "jlink",
+      "device": "R7S721020",
+      "interface": "swd",
+      "serverArgs": ["-jlinkscriptfile", "${workspaceFolder}/rza1_debug.JLinkScript"],
+      "preLaunchTask": "deluge: build",
+      "runToEntryPoint": "main",
+      // Bring the Cortex-A9 up the way the loader does before loading the ELF.
+      "overrideLaunchCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ],
+      "overrideResetCommands": [
+        "monitor reset",
+        "monitor cp15 1, 0, 0, 0 = 0x00C50078",
+        "monitor cp15 12, 0, 0, 0 = 0x20000000",
+        "load",
+        "set $cpsr = 0x1DF"
+      ]
+    }
+  ]
+}

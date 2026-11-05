@@ -1,0 +1,28 @@
+[package]
+publish = false  # binary crate — not for crates.io
+name = "loopback-probe"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[[bin]]
+name = "loopback-probe"
+test = false
+
+[dependencies]
+rza1-hal = { path = "../../rza1/rza1-hal", features = ["rza1l", "unstable-pac"] }
+rza1-alloc = { path = "../../rza1/rza1-alloc" }
+deluge-bsp = { path = "../../crates/deluge-bsp" }
+cortex-ar = { workspace = true }
+embassy-executor = { workspace = true, features = ["nightly", "platform-cortex-ar", "executor-thread"] }
+embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
+embassy-sync = { workspace = true }
+embassy-futures = { workspace = true }
+embedded-hal-async = "1"
+rtt-target = { workspace = true, optional = true }
+log = { workspace = true }
+
+[features]
+## Enable RTT (SEGGER Real-Time Transfer) debug logging.
+default = []
+rtt = ["dep:rtt-target", "deluge-bsp/rtt"]

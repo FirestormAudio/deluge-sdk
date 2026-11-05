@@ -1,0 +1,3 @@
+transforms:
+  # Rust casing for every name (`scif::Scif`, `CPG.stbcr12()`, `cpg::regs::Stbcr12`).
+  - !Sanitize {}

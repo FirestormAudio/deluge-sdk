@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="730" viewBox="0 0 1040 730" font-family="'DejaVu Sans Mono', 'Menlo', monospace" role="img" aria-label="Deluge SPI-NOR flash layout: first-stage bootloader, a reserved region, and the second-stage bootloader in the bottom 1 MB; the writable app slot at 0x100000, the app-loader settings at 0x3C0000, the Deluge device settings at 0x3D0000, and 128 KB free at the top.">
+  <defs>
+    <style>
+      .title  { font-family: 'DejaVu Sans', sans-serif; font-size: 22px; font-weight: 700; fill: #1b1b25; }
+      .sub    { font-family: 'DejaVu Sans', sans-serif; font-size: 13px; fill: #5b5b6b; }
+      .addr   { font-size: 13px; fill: #2a2a38; }
+      .region { font-family: 'DejaVu Sans', sans-serif; font-size: 16px; font-weight: 700; }
+      .size   { font-family: 'DejaVu Sans', sans-serif; font-size: 13px; }
+      .use    { font-family: 'DejaVu Sans', sans-serif; font-size: 12px; }
+      .note   { font-family: 'DejaVu Sans', sans-serif; font-size: 11px; fill: #5b5b6b; }
+    </style>
+  </defs>
+  <rect width="1040" height="730" fill="#f7f7fb"/>
+  <text class="title" x="40" y="46">Deluge SPI-NOR Flash Layout</text>
+  <text class="sub" x="40" y="68">AT25SF321B / W25Q32JV / S25FL132K · 4 MB · 64 KB erase blocks · 256-byte program pages</text>
+  <text class="sub" x="100" y="96" font-weight="700">offset</text>
+  <text class="sub" x="656" y="96" font-weight="700" text-anchor="middle">memory-mapped read addr</text>
+
+  <!-- bottom 1 MB: reserved, and hardware-protectable -->
+  <g>
+    <rect x="160" y="112" width="440" height="70" fill="#d7def0" stroke="#5566aa" stroke-width="1.5"/>
+    <text class="addr" x="150" y="118" text-anchor="end">0x000000</text>
+    <text class="region" x="180" y="142" fill="#27324f">First-Stage Bootloader (FSB)</text>
+    <text class="use" x="180" y="162">reserved · never written by the SDK</text>
+    <text class="size" x="580" y="152" text-anchor="end" fill="#27324f">256 KB</text>
+    <text class="addr" x="656" y="117" text-anchor="middle">0x1800_0000</text>
+  </g>
+  <g>
+    <rect x="160" y="182" width="440" height="70" fill="#e6e0f2" stroke="#7a5fb0" stroke-width="1.5"/>
+    <text class="addr" x="150" y="188" text-anchor="end">0x040000</text>
+    <text class="region" x="180" y="212" fill="#3d2a5c">Reserved</text>
+    <text class="use" x="180" y="232">former device settings (record @ 0x07F000), read only</text>
+    <text class="size" x="580" y="212" text-anchor="end" fill="#3d2a5c">256 KB</text>
+    <text class="addr" x="656" y="187" text-anchor="middle">0x1804_0000</text>
+  </g>
+  <g>
+    <rect x="160" y="252" width="440" height="92" fill="#c9dcef" stroke="#4477aa" stroke-width="1.5"/>
+    <text class="addr" x="150" y="258" text-anchor="end">0x080000</text>
+    <text class="region" x="180" y="282" fill="#1f3f5c">Second-Stage Bootloader (SSB)</text>
+    <text class="use" x="180" y="302">the app-loader · updated only by the FSB</text>
+    <text class="size" x="580" y="292" text-anchor="end" fill="#1f3f5c">512 KB</text>
+    <text class="addr" x="656" y="257" text-anchor="middle">0x1808_0000</text>
+  </g>
+  <rect x="156" y="108" width="448" height="240" fill="none" stroke="#b03a2e" stroke-width="2.5" stroke-dasharray="8 5"/>
+
+  <!-- writable zone -->
+  <g>
+    <rect x="160" y="352" width="440" height="200" fill="#d7efdb" stroke="#3a8a4f" stroke-width="2"/>
+    <text class="addr" x="150" y="358" text-anchor="end">0x100000</text>
+    <text class="region" x="180" y="392" fill="#1f5c32">App slot — flashed app</text>
+    <text class="use" x="180" y="414">writable · SLOT_OFFSET</text>
+    <text class="use" x="180" y="432">44 × 64 KB erase blocks</text>
+    <text class="size" x="580" y="402" text-anchor="end" fill="#1f5c32" font-weight="700">2.75 MB</text>
+    <text class="addr" x="656" y="357" text-anchor="middle">0x1810_0000</text>
+    <text class="note" x="380" y="500" text-anchor="middle">above both bootloaders, so storing an</text>
+    <text class="note" x="380" y="516" text-anchor="middle">app can never overwrite one</text>
+  </g>
+  <g>
+    <rect x="160" y="552" width="440" height="40" fill="#fff4cf" stroke="#c79a18" stroke-width="1.5"/>
+    <text class="addr" x="150" y="558" text-anchor="end">0x3C0000</text>
+    <text class="region" x="180" y="571" font-size="14" fill="#7a5f0a">App-loader settings</text>
+    <text class="use" x="180" y="586">writable · SETTINGS_OFFSET</text>
+    <text class="size" x="580" y="578" text-anchor="end" fill="#7a5f0a">64 KB</text>
+    <text class="addr" x="656" y="557" text-anchor="middle">0x183C_0000</text>
+  </g>
+  <g>
+    <rect x="160" y="592" width="440" height="40" fill="#fff4cf" stroke="#c79a18" stroke-width="1.5"/>
+    <text class="addr" x="150" y="598" text-anchor="end">0x3D0000</text>
+    <text class="region" x="180" y="611" font-size="14" fill="#7a5f0a">Deluge device settings</text>
+    <text class="use" x="180" y="626">writable · DELUGE_SETTINGS_OFFSET</text>
+    <text class="size" x="580" y="618" text-anchor="end" fill="#7a5f0a">64 KB</text>
+    <text class="addr" x="656" y="597" text-anchor="middle">0x183D_0000</text>
+  </g>
+  <g>
+    <rect x="160" y="632" width="440" height="40" fill="#eeeeee" stroke="#999999" stroke-width="1.2" stroke-dasharray="5 4"/>
+    <text class="addr" x="150" y="638" text-anchor="end">0x3E0000</text>
+    <text class="region" x="180" y="657" font-size="14" fill="#555">Free</text>
+    <text class="size" x="580" y="657" text-anchor="end" fill="#555">128 KB</text>
+    <text class="addr" x="150" y="684" text-anchor="end">0x400000</text>
+  </g>
+  <line x1="160" y1="672" x2="600" y2="672" stroke="#444" stroke-width="2"/>
+  <text class="note" x="180" y="694" fill="#444">end of chip — an offset at or above 0x400000 wraps onto a low sector</text>
+
+  <!-- legend -->
+  <g transform="translate(760 400)">
+    <text class="sub" x="0" y="0" font-weight="700">Legend</text>
+    <rect x="0" y="12" width="18" height="14" fill="#d7efdb" stroke="#3a8a4f"/>
+    <text class="note" x="26" y="24">app slot (writable)</text>
+    <rect x="0" y="34" width="18" height="14" fill="#fff4cf" stroke="#c79a18"/>
+    <text class="note" x="26" y="46">settings (writable)</text>
+    <rect x="0" y="56" width="18" height="14" fill="#d7def0" stroke="#5566aa"/>
+    <text class="note" x="26" y="68">bootloaders (reserved)</text>
+    <rect x="0" y="78" width="18" height="14" fill="#e6e0f2" stroke="#7a5fb0"/>
+    <text class="note" x="26" y="90">reserved</text>
+    <rect x="0" y="100" width="18" height="14" fill="#eeeeee" stroke="#999" stroke-dasharray="3 2"/>
+    <text class="note" x="26" y="112">free</text>
+    <rect x="0" y="122" width="18" height="14" fill="none" stroke="#b03a2e" stroke-width="2" stroke-dasharray="4 3"/>
+    <text class="note" x="26" y="134">hardware write-protected</text>
+    <text class="note" x="26" y="149">with the flash-protect build</text>
+  </g>
+</svg>

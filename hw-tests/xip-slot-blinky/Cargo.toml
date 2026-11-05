@@ -1,0 +1,15 @@
+[package]
+publish = false  # binary crate — not for crates.io
+name = "xip-slot-blinky"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[[bin]]
+name = "xip-slot-blinky"
+test = false
+
+[dependencies]
+# The same shape as stage-0: the runtime and the slot format, nothing else.
+rza1-rt = { path = "../../rza1/rza1-rt" }
+deluge-image = { path = "../../crates/deluge-image" }

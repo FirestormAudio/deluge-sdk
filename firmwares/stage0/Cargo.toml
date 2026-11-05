@@ -1,0 +1,17 @@
+[package]
+publish = false  # binary crate — not for crates.io
+name = "stage0"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[[bin]]
+name = "stage0"
+test = false
+
+[dependencies]
+# Only the runtime and the slot format: stage-0 must boot on every unit from the ROM's slow reads
+# alone, so it brings up no clocks, SDRAM, MMU or peripherals and pulls in no HAL.
+rza1-rt = { path = "../../rza1/rza1-rt" }
+# The slot format stage-0 is frozen with: pure, no_std, no hardware dependencies.
+deluge-image = { path = "../../crates/deluge-image" }

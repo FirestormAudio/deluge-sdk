@@ -1,0 +1,45 @@
+name: Examples
+
+# Compile-proves every SDK example on the firmware target (armv7a-none-eabihf).
+# This is the coverage the `deluge` facade and the `#[deluge::app]` macro get —
+# they can't be unit-tested on a host target, so building every example
+# exercises the whole capability surface end to end. Reusable (called from
+# ci.yml) and runnable on demand.
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Compile-prove examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+
+      - name: Checkout Argon
+        uses: actions/checkout@v7
+        with:
+          repository: stellar-aria/argon
+          path: argon
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          targets: armv7a-none-eabihf
+          components: rust-src,llvm-tools-preview
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install bare-metal ARM toolchain (arm-none-eabi-g++ for additive_osc's C++/Argon core)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi
+
+      - name: Compile-prove examples
+        env:
+          ARGON_SRC: ${{ github.workspace }}/argon
+        run: ./tools/build-examples.sh

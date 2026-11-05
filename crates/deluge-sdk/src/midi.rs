@@ -1,0 +1,49 @@
+//! DIN MIDI input/output.
+
+use core::sync::atomic::{AtomicBool, Ordering};
+
+fn ensure_init() {
+    static DONE: AtomicBool = AtomicBool::new(false);
+    if DONE.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    crate::plat::midi_init();
+}
+
+/// The DIN MIDI port (SCIF0), taken once from [`Deluge::midi`](crate::Deluge::midi).
+///
+/// A raw byte stream in both directions — bring your own parser. RX is
+/// DMA-backed, so bytes are captured even while the app is busy.
+pub struct Midi {
+    _not_send: crate::NotSend,
+}
+
+impl Midi {
+    pub(crate) fn new() -> Self {
+        ensure_init();
+        Self {
+            _not_send: crate::NOT_SEND,
+        }
+    }
+
+    /// Send raw MIDI bytes. No-op on the host simulator (no DIN MIDI).
+    #[inline]
+    pub async fn send(&self, data: &[u8]) {
+        crate::plat::midi_send(data).await;
+    }
+
+    /// Await the next received MIDI byte.
+    #[inline]
+    pub async fn recv(&self) -> u8 {
+        crate::plat::midi_recv().await
+    }
+
+    /// Take the next received byte if one is buffered, without awaiting.
+    ///
+    /// Returns `None` while a [`recv`](Self::recv) is waiting, since that call is draining the
+    /// same buffer: read with one or the other, not both at once.
+    #[inline]
+    pub fn try_recv(&self) -> Option<u8> {
+        crate::plat::midi_try_recv()
+    }
+}

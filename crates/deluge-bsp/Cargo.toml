@@ -1,0 +1,115 @@
+[package]
+name = "deluge-bsp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "Board support package for the Synthstrom Deluge (peripherals, PIC, OLED, SD)."
+categories = ["embedded", "no-std", "hardware-support"]
+keywords = ["deluge", "synthstrom", "bsp", "rza1", "embedded"]
+
+# The peripheral code builds only for the device target.
+[package.metadata.docs.rs]
+default-target = "armv7a-none-eabihf"
+
+[lib]
+# Unit tests run on the host; the test harness needs std.
+test = false
+
+[features]
+## The synchronous embedded-sdmmc FAT stack (the `fat` module and the
+## BlockDevice/TimeSource adapters in `sd`). Opt-in, so firmware that mounts
+## the card another way doesn't carry a second filesystem.
+fat = ["dep:embedded-sdmmc"]
+## The card as an async 512-byte block device (`sd_block::SdBlockDevice`), for an async
+## filesystem (`deluge-sdk`'s `Sd` runs embedded-fatfs over it).
+block-device = ["dep:block-device-driver", "dep:aligned"]
+default = ["memory-x", "fault-blink"]
+## Put the Deluge's memory layout (`memory.x`, or `memory_rtt.x` with `rtt`) on the linker
+## search path for rza1-rt's `link.x`. Turn default features off to supply your own `memory.x`;
+## it must define what `link.x`'s header lists.
+memory-x = []
+## SEGGER RTT: fault dumps to RTT channel 0 and the RTT memory layout.
+rtt = ["rza1-rt/rtt"]
+## The fault handler: a CPU fault blinks the SYNC LED (P6_7), one to five pulses by the fault's
+## kind (`fault_blink`). An image defining its own `rza1_cpu_fault_report` turns this off.
+fault-blink = []
+## Drive `audio::init_direct` from a per-block RX DMA interrupt instead of the
+## default poll loop. Selected by `deluge/audio-irq`.
+audio-irq = []
+## The [`flash`] module: SPI-NOR chip profile and board memory map over
+## `rza1_hal::spibsc`. Opt-in; only the app-loader writes flash.
+flash = []
+## Enable the bottom-1 MB bootloader write-protection *arming* ops
+## ([`flash::protect`] `provision`/`lockdown`/`unprotect`). Off by default so a
+## build never writes the status register until the recipe is hardware-validated
+## on a sacrificial unit; identify/decode/`protection()` read paths stay on.
+flash-protect = ["flash"]
+## `embedded-graphics` `DrawTarget` for `oled::FrameBuffer`, so a caller can draw
+## into it directly (host or device) without the async `deluge::Oled` wrapper,
+## then read it back with `FrameBuffer::as_bytes`.
+embedded-graphics = ["dep:embedded-graphics-core"]
+## The USB host stack's core (`usb::host`): the supervisor, hubs and the USB-MIDI class.
+usb-host-core = ["dep:embassy-usb-host", "usb-classes/host-midi"]
+## The UAC host class on top of `usb-host-core`: a class-compliant audio interface streams to
+## and from the Deluge.
+usb-host-uac = ["usb-host-core", "usb-classes/host-uac"]
+## The Elektron Overbridge 2 host class on top of `usb-host-core` (`usb::host::overbridge()`):
+## a Digitakt or another Overbridge device streams its stems to the Deluge.
+usb-host-overbridge = ["usb-host-core", "usb-classes/host-overbridge"]
+## The host stack with UAC, as before `usb-host-core` existed. Kept for one release; it will
+## become `usb-host-core`'s meaning, so name `usb-host-uac` if you want UAC.
+usb-host = ["usb-host-uac"]
+## `usb::sd_block`: the SD card as a USB Mass Storage medium for
+## `usb_classes::bot`. Opt-in; only firmware that exposes the card over USB
+## needs it.
+usb-msc = ["usb-classes/device-msc"]
+## `host_panel::install`: let a host simulator stand in for the front panel
+## (pads, LEDs, OLED). Host builds only; `deluge-sdk`'s `sim` feature turns it on.
+host-panel = ["dep:embassy-time"]
+
+[dependencies]
+max5136 = { workspace = true }
+usb-classes = { workspace = true, features = ["device-midi"] }
+# `time-driver-ostm`: the board relies on `rza1_hal::init` starting the OSTM time driver, so it
+# needs the feature even if a dependent turns rza1-hal's default features off.
+# `unstable-driver-steal`: the OLED and PIC panic/fault paths (`bus::steal_rspi0`,
+# `uart::steal_pic_rx`).
+rza1-hal = { path = "../../rza1/rza1-hal", version = "0.1.0", features = ["rza1l", "time-driver-ostm", "log", "unstable-driver-steal"] }
+rza1-rt = { path = "../../rza1/rza1-rt", version = "0.1.0" }
+embedded-sdmmc = { version = "0.9", default-features = false, features = ["log"], optional = true }
+block-device-driver = { path = "../block-device-driver", optional = true }
+aligned = { version = "0.4", optional = true }
+critical-section = { workspace = true }
+log = { workspace = true }
+embedded-graphics-core = { version = "0.4", optional = true }
+heapless = "0.9"
+# Not device-only: the host class drivers are also unit-tested under QEMU on
+# ARM Linux (see tools/test.sh).
+embassy-sync = { workspace = true }
+embassy-usb-driver = { workspace = true }
+embassy-usb-host = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "none")'.dependencies]
+cortex-ar = { workspace = true }
+embassy-futures = { workspace = true }
+embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
+embassy-usb = { workspace = true }
+# Task macros for `usb::host`; the firmware chooses the executor backend.
+embassy-executor = { workspace = true }
+
+[target.'cfg(not(target_os = "none"))'.dependencies]
+# Polls the host panel's input for `pic::read_byte` (the `host-panel` feature).
+embassy-time = { workspace = true, optional = true }
+
+[target.'cfg(not(target_os = "none"))'.dev-dependencies]
+critical-section = { workspace = true, features = ["std"] }
+# Tests have no executor: `mock-driver` supplies a time driver to link against,
+# and `generic-queue-8` a timer queue for the host-panel input poll.
+embassy-time = { workspace = true, features = ["mock-driver", "generic-queue-8"] }
+embassy-futures = { workspace = true }
+proptest = "1.5"
+
+

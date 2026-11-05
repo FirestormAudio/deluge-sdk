@@ -1,0 +1,36 @@
+transforms:
+  # The SVD bases GPIO at port 1 (0xFCFE_3004) with one register per port. Replace it with a block
+  # at 0xFCFE_3000 whose arrays are indexed by port number: the RZ/A1L has ports 0 to 9.
+  - !DeletePeripherals
+    devices: .*
+    from: '^GPIO$'
+  - !Delete
+    from: '^GPIO::'
+  - !Add
+    ir:
+      "block/GPIO::GPIO":
+        description: "General I/O ports, indexed by port number: register n is port n's (RZ/A1L: ports 0 to 9). Port 0 is input-only, so index 0 of P, PSR, PM, PNOT, PMSR, PBDC and PIPC is not a register."
+        items:
+          - {name: P, byte_offset: 0x0000, bit_size: 16, array: {len: 10, stride: 4}}
+          - {name: PSR, byte_offset: 0x0100, bit_size: 32, access: Write, array: {len: 10, stride: 4}}
+          - {name: PPR, byte_offset: 0x0200, bit_size: 16, access: Read, array: {len: 10, stride: 4}}
+          - {name: PM, byte_offset: 0x0300, bit_size: 16, array: {len: 10, stride: 4}}
+          - {name: PMC, byte_offset: 0x0400, bit_size: 16, array: {len: 10, stride: 4}}
+          - {name: PFC, byte_offset: 0x0500, bit_size: 16, array: {len: 10, stride: 4}}
+          - {name: PFCE, byte_offset: 0x0600, bit_size: 16, array: {len: 10, stride: 4}}
+          - {name: PNOT, byte_offset: 0x0700, bit_size: 16, access: Write, array: {len: 10, stride: 4}}
+          - {name: PMSR, byte_offset: 0x0800, bit_size: 32, access: Write, array: {len: 10, stride: 4}}
+          - {name: PMCSR, byte_offset: 0x0900, bit_size: 32, access: Write, array: {len: 10, stride: 4}}
+          - {name: PFCAE, byte_offset: 0x0A00, bit_size: 16, array: {len: 10, stride: 4}}
+          - {name: SNCR, byte_offset: 0x0C00, bit_size: 32}
+          - {name: PIBC, byte_offset: 0x4000, bit_size: 16, array: {len: 10, stride: 4}}
+          - {name: PBDC, byte_offset: 0x4100, bit_size: 16, array: {len: 10, stride: 4}}
+          - {name: PIPC, byte_offset: 0x4200, bit_size: 16, array: {len: 10, stride: 4}}
+          - {name: JPPR0, byte_offset: 0x4B20, bit_size: 16, access: Read}
+          - {name: JPMC0, byte_offset: 0x4B40, bit_size: 16}
+          - {name: JPMCSR0, byte_offset: 0x4B90, bit_size: 32, access: Write}
+          - {name: JPIBC0, byte_offset: 0x4F00, bit_size: 16}
+  - !AddPeripherals
+    devices: .*
+    peripherals:
+      - {name: GPIO, base_address: 0xFCFE3000, block: "GPIO::GPIO"}

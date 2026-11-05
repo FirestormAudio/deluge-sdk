@@ -1,0 +1,40 @@
+name: Tests
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Unit tests (host + QEMU ARM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          # QEMU ARM bucket + host bucket (see tools/test.sh).
+          # + wasm32-wasip1 for the web sim's build guard (see tools/test.sh).
+          targets: armv7-unknown-linux-gnueabihf, x86_64-unknown-linux-gnu, wasm32-wasip1
+          components: rust-src,llvm-tools-preview,clippy,rustfmt
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install QEMU + ARM cross toolchain + libudev (for serialport)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user gcc-arm-linux-gnueabihf libudev-dev pkg-config libasound2-dev python3-yaml
+
+      # tools/gen-pac.sh's pinned chiptool (tools/check-pac.sh installs it when missing).
+      - name: Cache chiptool
+        uses: actions/cache@v6
+        with:
+          path: rza1/target/chiptool-bcf538a2e7b8584ae874ee9ab72efb1576fc6152
+          key: chiptool-bcf538a2e7b8584ae874ee9ab72efb1576fc6152
+
+      - name: Run test suite
+        run: ./tools/test.sh

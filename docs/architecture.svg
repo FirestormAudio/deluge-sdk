@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 410" width="680" height="410" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" role="img" aria-label="Crate stack: your app depends on the deluge facade, which runs on one backend: deluge-bsp on the device, the desktop simulator, or the Linux userland. deluge-bsp builds on the RZ/A1 chip crates and on board-agnostic crates. The GPL UI toolkits are opt-in.">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#9aa0a6"/>
+    </marker>
+  </defs>
+
+  <!-- dependency arrows -->
+  <g fill="none" stroke="#9aa0a6" stroke-width="2.2" marker-end="url(#arrow)">
+    <line x1="340" y1="58"  x2="340" y2="92"/>
+    <line x1="250" y1="142" x2="170" y2="176"/>
+    <line x1="390" y1="142" x2="390" y2="176"/>
+    <line x1="480" y1="142" x2="560" y2="176"/>
+    <line x1="165" y1="226" x2="165" y2="260"/>
+    <line x1="270" y1="226" x2="330" y2="260"/>
+    <line x1="165" y1="302" x2="165" y2="336"/>
+    <line x1="432" y1="38"  x2="464" y2="38" stroke-dasharray="5 4"/>
+  </g>
+
+  <!-- the app and the opt-in toolkits -->
+  <g text-anchor="middle">
+    <rect x="250" y="20" width="180" height="36" rx="9" fill="#6366f1"/>
+    <text x="340" y="43" font-size="14" font-weight="600" fill="#ffffff">your app</text>
+    <rect x="470" y="20" width="190" height="36" rx="9" fill="none" stroke="#6366f1" stroke-width="2" stroke-dasharray="6 4"/>
+    <text x="565" y="35" font-size="12" font-weight="600" fill="#6366f1">UI + grid toolkits</text>
+    <text x="565" y="50" font-size="11" fill="#9aa0a6">GPL, opt-in</text>
+  </g>
+
+  <!-- the facade -->
+  <g text-anchor="middle">
+    <rect x="160" y="96" width="360" height="44" rx="9" fill="#6366f1"/>
+    <text x="340" y="115" font-size="14" font-weight="600" fill="#ffffff">deluge  (deluge-sdk)</text>
+    <text x="340" y="132" font-size="11" fill="#e0e7ff">#[deluge::app] · Deluge handle · prelude</text>
+  </g>
+
+  <!-- backends -->
+  <g text-anchor="middle">
+    <rect x="40" y="180" width="250" height="44" rx="9" fill="#6366f1"/>
+    <text x="165" y="199" font-size="14" font-weight="600" fill="#ffffff">deluge-bsp</text>
+    <text x="165" y="216" font-size="11" fill="#e0e7ff">board drivers: PIC, OLED, audio, SD, USB</text>
+    <rect x="310" y="180" width="160" height="44" rx="9" fill="#a5b4fc"/>
+    <text x="390" y="199" font-size="14" font-weight="600" fill="#1e1b4b">simulator</text>
+    <text x="390" y="216" font-size="11" fill="#312e81">feature sim</text>
+    <rect x="490" y="180" width="160" height="44" rx="9" fill="#a5b4fc"/>
+    <text x="570" y="199" font-size="14" font-weight="600" fill="#1e1b4b">Linux userland</text>
+    <text x="570" y="216" font-size="11" fill="#312e81">feature linux</text>
+  </g>
+
+  <!-- beneath the BSP -->
+  <g text-anchor="middle">
+    <rect x="40" y="264" width="250" height="38" rx="9" fill="#6366f1"/>
+    <text x="165" y="288" font-size="13" font-weight="600" fill="#ffffff">rza1-hal · rza1-rt · rza1-alloc</text>
+    <rect x="310" y="264" width="200" height="38" rx="9" fill="#a5b4fc"/>
+    <text x="410" y="288" font-size="13" font-weight="600" fill="#1e1b4b">usb-classes · max5136</text>
+    <rect x="40" y="340" width="250" height="38" rx="9" fill="#6366f1"/>
+    <text x="165" y="364" font-size="13" font-weight="600" fill="#ffffff">rza1-pac  →  RZ/A1L registers</text>
+  </g>
+
+  <!-- captions -->
+  <g font-size="12" fill="#9aa0a6">
+    <text x="310" y="324">board-agnostic: no chip or board types</text>
+    <text x="310" y="356">rza1/ is its own workspace:</text>
+    <text x="310" y="372">the chip crates never depend on a deluge-* crate</text>
+  </g>
+</svg>

@@ -1,0 +1,43 @@
+# Cargo build outputs
+/target/
+
+# Debug / flash artifacts
+*.nmdump
+*.jdebug.user
+/JLinkLog.log
+
+# IDE configs — track the shared debug launch config, ignore everything else
+.vscode/*
+!.vscode/launch.json
+.idea/
+*.srctrl*
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+
+# Vendored build inputs (large SVD + rbsp tree) — fetched, not committed
+/vendor/
+**target/
+# RTT logs from the cortex-debug launch configs and the flasher
+/rtt*.log
+**/node_modules/*
+.playwright-mcp/
+
+# Vite dependency cache (regeneratable)
+.vite/
+
+# The excluded libdeluge crates + linux examples are built ad-hoc against a
+# bundle (not workspace members); their Cargo.lock files are build artifacts.
+/linux/deluge-sys/Cargo.lock
+/linux/deluge-hal-linux/Cargo.lock
+/linux/deluge-linux-ui/Cargo.lock
+examples/linux/*/Cargo.lock
+
+# Python bytecode from tools/ helpers (tools/gen-pac.sh imports tools/pac_manual.py)
+__pycache__/
+
+# QEMU core dumps from a crashed host test run (qemu-arm writes them to the cwd).
+*.core

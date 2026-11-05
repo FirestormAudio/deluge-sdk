@@ -1,0 +1,310 @@
+//! Deluge demo firmware image — built on the `deluge` SDK.
+//!
+//! This crate assembles the board support package into a runnable Embassy-based
+//! firmware for the Deluge. Platform bring-up (RTT logging, heaps, clocks, the
+//! executor, the panic handler) is provided by [`#[deluge::app]`](deluge::app);
+//! this crate owns product-level behavior layered on top.
+//!
+//! ## Initialisation split
+//! - [`setup`] runs first, with interrupts masked: peripheral and GIC bring-up
+//!   that must happen before IRQs are enabled (UART, audio, CV/RSPI0, the USB
+//!   ISR handler, encoder/trigger GPIO interrupts).
+//! - `main` then runs on the executor with interrupts enabled: it builds the USB
+//!   stack and spawns the product tasks.
+//!
+//! ## UI model
+//! - Shared pad state lives in [`deluge_bsp::pads`].
+//! - The PIC task consumes raw PIC events and updates that shared state.
+//! - The encoder task consumes decoded detents from [`deluge_bsp::encoder`].
+//! - Rendering tasks read shared state and stream the resulting frames to the
+//!   OLED and RGB surfaces.
+
+#![no_std]
+#![no_main]
+#![feature(impl_trait_in_assoc_type)]
+#![feature(stdarch_arm_neon_intrinsics)]
+#![feature(arm_target_feature)]
+#![allow(incomplete_features)]
+#![feature(generic_const_exprs)]
+
+mod tasks;
+
+use core::sync::atomic::{AtomicBool, Ordering};
+
+use deluge::prelude::*;
+use deluge_bsp::cv_gate;
+use deluge_bsp::uart as bsp_uart;
+use rza1_hal::usb::{Rusb1Driver, init_device_mode, init_host_mode};
+
+// ---------------------------------------------------------------------------
+// USB mode selection
+// ---------------------------------------------------------------------------
+
+/// When `true` at boot, USB0 starts in host mode instead of device mode.
+static USB0_HOST_MODE: AtomicBool = AtomicBool::new(false);
+
+// USB0's interrupt goes to the host or device handler, whichever mode the port was brought up in.
+rza1_hal::bind_interrupts!(struct UsbIrqs {
+    USB0 => rza1_hal::usb::DualRoleInterruptHandler<rza1_hal::peripherals::USB0>;
+});
+
+// ---------------------------------------------------------------------------
+// USB descriptor static buffers
+// ---------------------------------------------------------------------------
+//
+// `'static` lifetimes required by `embassy_usb::Builder` and `builder.handler()`.
+
+static mut USB_CONFIG_DESC: [u8; 768] = [0; 768];
+static mut USB_BOS_DESC: [u8; 64] = [0; 64];
+static mut USB_MSOS_DESC: [u8; 0] = [];
+static mut USB_CONTROL_BUF: [u8; 64] = [0; 64];
+/// Backing storage for the UAC2 `AudioClass` handler (must be `'static`).
+static mut AUDIO_CLASS_BUF: core::mem::MaybeUninit<usb_classes::audio::AudioClass<2>> =
+    core::mem::MaybeUninit::uninit();
+
+// ---------------------------------------------------------------------------
+// Pre-interrupt setup (runs with IRQs masked)
+// ---------------------------------------------------------------------------
+
+/// Synchronous board bring-up that must complete before interrupts are enabled.
+///
+/// Runs after the SDK has initialised heaps and clocks (see
+/// [`#[deluge::app]`](deluge::app)), but before `cortex_ar::interrupt::enable()`.
+/// It configures peripherals and registers GIC interrupt handlers; each driver
+/// registers its handler before enabling its interrupt source, so the USB build
+/// in `main` (after IRQs are on) is safe.
+fn setup() {
+    info!("Deluge demo firmware starting");
+    info!("Pad paint demo: press pads to toggle, buttons 0/1/2 to clear/fill/invert");
+
+    info!("UART: initialising MIDI...");
+    let (midi, midi_pins, midi_rx) =
+        deluge::parts::with(|p| (p.midi_uart.take(), p.midi_pins.take(), p.midi_rx_dma.take()));
+    bsp_uart::init_midi(
+        midi.expect("SCIF0 is free"),
+        midi_pins.expect("SCIF0's pins are free"),
+        midi_rx.expect("the MIDI RX DMA channel is free"),
+        31_250,
+    );
+    info!("UART: initialising PIC...");
+    let (pic, pic_pins, pic_rx, pic_tx) = deluge::parts::with(|p| {
+        (
+            p.pic_uart.take(),
+            p.pic_pins.take(),
+            p.pic_rx_dma.take(),
+            p.pic_tx_dma.take(),
+        )
+    });
+    bsp_uart::init_pic(
+        pic.expect("SCIF1 is free"),
+        pic_pins.expect("SCIF1's pins are free"),
+        pic_rx.expect("the PIC RX DMA channel is free"),
+        pic_tx.expect("the PIC TX DMA channel is free"),
+        31_250,
+    );
+    info!("UART: SCIF0/1 @ 31 250 baud");
+
+    // The SD slot's controller, once; `sd::init` identifies the card when the SD task needs it.
+    let (card, sd_pins, sd_tx, sd_rx) = deluge::parts::with(|p| {
+        (
+            p.sd_card.take(),
+            p.sd_pins.take(),
+            p.sd_tx_dma.take(),
+            p.sd_rx_dma.take(),
+        )
+    });
+    deluge_bsp::sd::init_hw(
+        card.expect("SDHI1 is free"),
+        sd_pins.expect("the SD slot's pins are free"),
+        sd_tx.expect("the SD TX DMA channel is free"),
+        sd_rx.expect("the SD RX DMA channel is free"),
+    );
+
+    info!("audio: initialising SSI0...");
+    let (ssi, audio_pins, ssi_rx, ffd0, scux) = deluge::parts::with(|p| {
+        (
+            p.audio_ssi.take(),
+            p.audio_pins.take(),
+            p.ssi_rx_dma.take(),
+            p.scux_ffd0_dma.take(),
+            p.scux.take(),
+        )
+    });
+    let scux = rza1_hal::scux::Scux::new(scux.expect("the SCUX is free"));
+    deluge_bsp::audio::init_with_scux(
+        ssi.expect("SSIF0 is free"),
+        audio_pins.expect("the codec's pins are free"),
+        ssi_rx.expect("the SSI RX DMA channel is free"),
+        ffd0.expect("SCUX FFD0's DMA channel is free"),
+        scux.ch0,
+    );
+    info!("audio: SSI0 + DMA + codec running");
+    // Pre-fill SSI TX buffer with dither so the codec does not auto-mute before
+    // the first USB stream arrives.
+    tasks::audio::fill_tx_with_dither();
+    info!("audio: TX buffer pre-filled with dither");
+
+    // RSPI0 is shared by the OLED (8-bit) and the CV DAC (32-bit), arbitrated by
+    // deluge_bsp::bus. This firmware drives both itself, so it takes them from the SDK.
+    let (spi, spi_pins, oled_dma) =
+        deluge::parts::with(|p| (p.shared_spi.take(), p.spi_pins.take(), p.oled_dma.take()));
+    deluge_bsp::bus::init(
+        spi.expect("RSPI0 is free"),
+        spi_pins.expect("RSPI0's pins are free"),
+        oled_dma.expect("the OLED DMA channel is free"),
+    );
+    cv_gate::init(
+        deluge::parts::with(|p| p.cv_gate_pins.take()).expect("the CV/gate pins are free"),
+    );
+    info!("RSPI0: initialised via cv_gate::init");
+
+    info!("encoder: configuring interrupt-driven inputs...");
+    let (poll_timer, encoder_pins, trigger_pin) = deluge::parts::with(|p| {
+        (
+            p.encoder_poll_timer.take(),
+            p.encoder_pins.take(),
+            p.trigger_pin.take(),
+        )
+    });
+    unsafe {
+        deluge_bsp::encoder::irq_init(
+            poll_timer.expect("MTU2 channel 3 is free"),
+            encoder_pins.expect("the encoders' pins are free"),
+        )
+    };
+    info!("trigger_clock: configuring interrupt-driven input...");
+    unsafe { deluge_bsp::trigger_clock::irq_init(trigger_pin.expect("P1_14 is free")) };
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+#[deluge::app(setup = setup)]
+async fn main(dlg: Deluge) {
+    let spawner = dlg.spawner();
+
+    // ── Build the USB stack ──────────────────────────────────────────────────
+    // `init_device_mode` / `init_host_mode` bind the USB0 handler and enable the module clock;
+    // the USB interrupt source is only raised once the device/host task starts running.
+    // Building the descriptors here (with interrupts enabled) therefore does not race the ISR.
+    info!(
+        "USB: initialising USB0 (host_mode={})...",
+        USB0_HOST_MODE.load(Ordering::Relaxed)
+    );
+
+    let mut usb_host_driver: Option<rza1_hal::usb::Rusb1HostDriver<'static>> = None;
+    let mut usb_device_opt: Option<embassy_usb::UsbDevice<'static, Rusb1Driver<'static>>> = None;
+    let mut ep_out_opt: Option<rza1_hal::usb::Rusb1EndpointOut> = None;
+    let mut ep_in_opt: Option<rza1_hal::usb::Rusb1EndpointIn> = None;
+    let mut midi_sender_opt: Option<
+        embassy_usb::class::midi::Sender<'static, Rusb1Driver<'static>>,
+    > = None;
+    let mut midi_receiver_opt: Option<
+        embassy_usb::class::midi::Receiver<'static, Rusb1Driver<'static>>,
+    > = None;
+
+    let usb0 = deluge::parts::with(|p| p.usb0.take()).expect("USB0 is free");
+    if USB0_HOST_MODE.load(Ordering::Relaxed) {
+        let (_port, hd) = init_host_mode(usb0, UsbIrqs);
+        usb_host_driver = Some(hd);
+        info!("USB: host driver ready");
+    } else {
+        let (usb_device, ep_out, ep_in, midi_sender, midi_receiver) = unsafe {
+            let (_port, driver) = init_device_mode(usb0, UsbIrqs);
+            // Example/development USB identity — self-contained, NOT a product
+            // ID. See `deluge_bsp::usb::ids` for the product-identity rules and
+            // why distinct PIDs matter on macOS. TODO: use IDs you own (e.g. a
+            // pid.codes prototype ID) before distributing this firmware.
+            const USB_VID: u16 = 0x16D0;
+            const USB_PID: u16 = 0x0EDA;
+            let mut config = embassy_usb::Config::new(USB_VID, USB_PID);
+            config.manufacturer = Some("Synthstrom Audible");
+            config.product = Some("Deluge");
+            config.self_powered = false;
+            config.max_power = 250; // 500 mA
+
+            let mut builder = embassy_usb::Builder::new(
+                driver,
+                config,
+                &mut *core::ptr::addr_of_mut!(USB_CONFIG_DESC),
+                &mut *core::ptr::addr_of_mut!(USB_BOS_DESC),
+                &mut *core::ptr::addr_of_mut!(USB_MSOS_DESC),
+                &mut *core::ptr::addr_of_mut!(USB_CONTROL_BUF),
+            );
+
+            // Allocate the UAC2 speaker + mic interfaces.
+            // CAPTURE_CH=2: stereo ISO IN, matching the stereo SSI codec and the
+            // stereo packing in uac2_mic_task.  (Stereo 24-bit needs a 294 B ISO
+            // IN maxpacket; eight channels would need 1176 B, over the 1024 B
+            // high-speed ISO limit.)  ISO OUT is always stereo.
+            let (audio_instance, ep_out, ep_in) =
+                usb_classes::audio::AudioClass::<2>::new(&mut builder, 288);
+            // Store in a `'static` slot so the `&'static mut` reference satisfies
+            // `builder.handler`'s `'d` lifetime (= `'static` here).
+            let audio_ref = (&mut *core::ptr::addr_of_mut!(AUDIO_CLASS_BUF)).write(audio_instance);
+            builder.handler(audio_ref);
+
+            // USB MIDI 1.0 class — 1 in-jack (DIN→USB), 1 out-jack (USB→DIN).
+            // 512-byte bulk endpoints: the RUSB1 PHY always negotiates high
+            // speed (SYSCFG.HSE=1), and USB 2.0 requires HS bulk endpoints to use
+            // wMaxPacketSize 512. Advertising 64 (the FS value) makes the host
+            // reject the endpoints ("invalid maxpacket 64") and silently breaks
+            // the bulk OUT direction.
+            let midi = embassy_usb::class::midi::MidiClass::new(&mut builder, 1, 1, 512);
+            let (midi_sender, midi_receiver) = midi.split();
+
+            (builder.build(), ep_out, ep_in, midi_sender, midi_receiver)
+        };
+        usb_device_opt = Some(usb_device);
+        ep_out_opt = Some(ep_out);
+        ep_in_opt = Some(ep_in);
+        midi_sender_opt = Some(midi_sender);
+        midi_receiver_opt = Some(midi_receiver);
+        info!("USB: UsbDevice built");
+    }
+
+    // ── Spawn tasks ──────────────────────────────────────────────────────────
+    info!("starting Embassy tasks");
+    let sync_led = deluge::parts::with(|p| p.sync_led.take()).expect("the SYNC LED is free");
+    spawner.spawn(
+        tasks::blink::blink_task(rza1_hal::gpio::Output::new(
+            sync_led,
+            rza1_hal::gpio::Level::Low,
+        ))
+        .unwrap(),
+    );
+
+    // USB-mode-specific tasks ─────────────────────────────────────────────────
+    if let Some(hd) = usb_host_driver {
+        spawner.spawn(tasks::usb_host::usb_host_task(hd).unwrap());
+    } else if let (
+        Some(usb_device),
+        Some(ep_out),
+        Some(ep_in),
+        Some(midi_sender),
+        Some(midi_receiver),
+    ) = (
+        usb_device_opt,
+        ep_out_opt,
+        ep_in_opt,
+        midi_sender_opt,
+        midi_receiver_opt,
+    ) {
+        spawner.spawn(tasks::usb::usb_task(usb_device).unwrap());
+        spawner.spawn(tasks::audio::uac2_task(ep_out).unwrap());
+        spawner.spawn(tasks::audio::uac2_mic_task(ep_in).unwrap());
+        spawner.spawn(tasks::midi::midi_usb_rx_task(midi_receiver).unwrap());
+        spawner.spawn(tasks::midi::midi_din_tx_task(midi_sender).unwrap());
+    }
+
+    // Tasks common to both modes ───────────────────────────────────────────────
+    spawner.spawn(tasks::pic::pic_task().unwrap());
+    spawner.spawn(tasks::encoder::encoder_task().unwrap());
+    let jack_pins = deluge::parts::with(|p| p.jack_pins.take()).expect("the jack pins are free");
+    spawner.spawn(tasks::jack_detect::jack_detect_task(jack_pins, 200).unwrap());
+    spawner.spawn(tasks::analysis::analysis_task().unwrap());
+    spawner.spawn(tasks::rgb::rgb_task().unwrap());
+    spawner.spawn(tasks::oled::oled_task().unwrap());
+    spawner.spawn(tasks::sd::sd_task().unwrap());
+}

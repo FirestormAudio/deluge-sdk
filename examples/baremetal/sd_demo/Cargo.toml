@@ -1,0 +1,23 @@
+[package]
+publish = false  # binary crate — not for crates.io
+name = "sd_demo"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Deluge SDK example: SD-card files: a round trip, a checked 8 MiB stream, a seek."
+
+[[bin]]
+name = "sd_demo"
+test = false
+
+[dependencies]
+deluge = { path = "../../../crates/deluge-sdk", package = "deluge-sdk" }
+embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
+log = { workspace = true }
+
+[features]
+default = []
+## Desktop simulator backend (`cargo deluge sim`); the card is `DELUGE_SIM_SD`.
+sim = ["deluge/sim"]
+## Opt-in RTT (SEGGER) logging over a debug probe.
+rtt = ["deluge/rtt"]

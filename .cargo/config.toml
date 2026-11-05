@@ -1,0 +1,65 @@
+[build]
+target = "armv7a-none-eabihf"
+
+# ARM Linux under QEMU (Cortex-A9 with NEON), for tests and benchmarks of the
+# crates that need ARM. Flags match the device target so codegen is the same.
+[target.armv7-unknown-linux-gnueabihf]
+linker = "arm-linux-gnueabihf-gcc"
+runner = ["qemu-arm", "-cpu", "cortex-a9", "-L", "/usr/arm-linux-gnueabihf"]
+rustflags = [
+  "-C", "target-cpu=cortex-a9",
+  "-C", "target-feature=+neon",
+]
+
+[target.armv7a-none-eabihf]
+rustflags = [
+  "-C", "target-cpu=cortex-a9",
+  "-C", "target-feature=+neon",
+  "-C", "link-arg=--gc-sections",
+  "-C", "force-frame-pointers=yes",
+]
+
+[alias]
+# Firmware builds. build-std is set per alias rather than under [unstable],
+# which would apply it to host builds too and break `cargo test`. It builds
+# `core,alloc`, as `cargo deluge build` does: with `core` alone, crates that
+# use `alloc` get it from the prebuilt sysroot and the two `core`s collide
+# (E0152). The `*-bin` aliases need cargo-binutils.
+build-fw      = "build -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem"
+build-fw-rel  = "build -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem --release --no-default-features"
+# Same as `build-fw`.
+build-fw-alloc = "build -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem"
+build-fw-bin  = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p demo-firmware -- -O binary target/armv7a-none-eabihf/release/demo-firmware.bin"
+build-controller-bin = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p deluge-controller -- -O binary target/armv7a-none-eabihf/release/deluge-controller.bin"
+build-msc            = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem -p msc-firmware"
+build-msc-bin        = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p msc-firmware -- -O binary target/armv7a-none-eabihf/release/msc-firmware.bin"
+# `rtt` is enabled here rather than by default: a default-on feature would
+# unify into the shared rza1-hal build and break every other firmware's link.
+build-uac            = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem -p uac-host-firmware --features rtt"
+build-uac-bin        = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p uac-host-firmware -- -O binary target/armv7a-none-eabihf/release/uac-host-firmware.bin"
+build-overbridge      = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem -p overbridge-host-firmware --features rtt"
+build-overbridge-bin  = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p overbridge-host-firmware -- -O binary target/armv7a-none-eabihf/release/overbridge-host-firmware.bin"
+build-overbridge-device     = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem -p overbridge-device-firmware --features rtt"
+build-overbridge-device-bin = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p overbridge-device-firmware -- -O binary target/armv7a-none-eabihf/release/overbridge-device-firmware.bin"
+build-app-loader     = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem -p app-loader"
+build-app-loader-bin = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release --no-default-features -p app-loader -- -O binary target/armv7a-none-eabihf/release/app-loader.bin"
+# Stage-0 of the from-scratch boot chain: executes in place from flash offset 0.
+build-stage0         = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release -p stage0"
+build-stage0-bin     = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release -p stage0 -- -O binary target/armv7a-none-eabihf/release/stage0.bin"
+# A trivial boot-slot image for stage-0 to enter; wrap it with `mkslot` (deluge-image example).
+build-slot-blinky    = "build -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release -p xip-slot-blinky"
+build-slot-blinky-bin = "objcopy -Zbuild-std=core -Zbuild-std-features=compiler-builtins-mem --release -p xip-slot-blinky -- -O binary target/armv7a-none-eabihf/release/xip-slot-blinky.bin"
+
+# The Deluge's Linux userland, selected by `cargo deluge linux` (which puts the
+# bundle toolchain's `arm-linux-gcc` on PATH). Apps are statically linked
+# because they run from the SD card, independent of any image's rootfs.
+[target.armv7-unknown-linux-musleabihf]
+linker = "arm-linux-gcc"
+rustflags = [
+  "-C", "target-cpu=cortex-a9",
+  "-C", "target-feature=+neon,+crt-static",
+]
+
+[env]
+# UAC2 (3 ifaces) + CDC-ACM (2 ifaces) + USB-MIDI (2 ifaces) = 7 total.
+EMBASSY_USB_MAX_INTERFACE_COUNT = "8"

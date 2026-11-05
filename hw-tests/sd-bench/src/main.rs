@@ -1,0 +1,112 @@
+//! SD High-Speed bench firmware.
+//!
+//! A diagnostic image: brings up the platform and SD card, logs the
+//! CMD6 High-Speed query/switch outcome, measures sequential read throughput
+//! at 16.7 MHz (P1/4) vs 33.3 MHz (P1/2), then runs a CRC soak.  Optional
+//! write soak via [`tasks::bench::WRITE_SOAK`] (dev cards only).
+//!
+//! Build: `cargo build-fw -p sd-bench --features rtt` — output over RTT.
+
+#![no_std]
+#![no_main]
+#![feature(impl_trait_in_assoc_type)]
+
+mod tasks;
+
+use core::mem::MaybeUninit;
+use core::panic::PanicInfo;
+use log::{error, info};
+
+use embassy_executor::{Executor, Spawner};
+
+use deluge_bsp::uart as bsp_uart;
+use rza1_alloc as allocator;
+
+unsafe extern "C" {
+    /// Start of the free SRAM heap region (set by the linker script).
+    static __sram_heap_start: u8;
+    /// End of the free SRAM heap region (start of RTT/stack reservation).
+    static __sram_heap_end: u8;
+}
+
+#[panic_handler]
+fn panic(info: &PanicInfo) -> ! {
+    error!("PANIC: {}", info);
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+static mut EXECUTOR: MaybeUninit<Executor> = MaybeUninit::uninit();
+
+#[deluge_bsp::entry]
+fn main() -> ! {
+    // With the `rtt` feature, log over a 16 KB RTT up-channel in `.rtt_buffer`
+    // (uncached RAM).
+    #[cfg(feature = "rtt")]
+    {
+        let channels = rtt_target::rtt_init! {
+            up: {
+                0: {
+                    size: 16384,
+                    name: "Terminal",
+                    section: ".rtt_buffer"
+                }
+            }
+            section_cb: ".rtt_buffer"
+        };
+        rtt_target::set_print_channel(channels.up.0);
+        // Info, not Debug: the HAL logs one DEBUG line per DMA chunk, which
+        // overflows the 16 KiB RTT ring and, with no host draining it, blocks
+        // the firmware mid-bench.
+        rtt_target::init_logger_with_level(log::LevelFilter::Info);
+    }
+    info!("Deluge sd-bench firmware starting");
+
+    // Initialise the SRAM heap before any allocation from internal RAM.
+    unsafe {
+        let start = core::ptr::addr_of!(__sram_heap_start) as *mut u8;
+        let size = core::ptr::addr_of!(__sram_heap_end) as usize - start as usize;
+        allocator::SRAM.init(start, size);
+    }
+
+    let board = deluge_bsp::Board::new(rza1_hal::init(deluge_bsp::system::BOARD_CONFIG));
+    info!("system: clocks, MMU, cache, SDRAM, GIC, OSTM, time driver ready");
+
+    // SDRAM heap (some BSP paths allocate from it; bring it up to be safe).
+    unsafe { allocator::SDRAM.init(0x0C00_0000 as *mut u8, 64 * 1024 * 1024) };
+
+    // Heartbeat LED pin (unused beyond init; keeps parity with other firmwares).
+    // The SYNC LED as an output at the level its latch already holds.
+    let mut sync_led = rza1_hal::gpio::Flex::new(board.pins.sync_led);
+    sync_led.set_as_output(sync_led.is_set_high().into());
+
+    info!("UART: initialising PIC...");
+    bsp_uart::init_pic(
+        board.pic_uart,
+        board.pins.pic,
+        board.dma.pic_rx,
+        board.dma.pic_tx,
+        31_250,
+    );
+    // The SD slot's controller, once; `sd::init` identifies the card when it is needed.
+    deluge_bsp::sd::init_hw(
+        board.sd_card,
+        board.pins.sd,
+        board.dma.sd_tx,
+        board.dma.sd_rx,
+    );
+
+    unsafe { cortex_ar::interrupt::enable() };
+    info!("IRQ: enabled — starting Embassy tasks");
+
+    #[allow(static_mut_refs)]
+    let executor = unsafe {
+        EXECUTOR.write(Executor::new());
+        EXECUTOR.assume_init_mut()
+    };
+    executor.run(|spawner: Spawner| {
+        spawner.spawn(tasks::pic::pic_task().unwrap());
+        spawner.spawn(tasks::bench::bench_task().unwrap());
+    });
+}

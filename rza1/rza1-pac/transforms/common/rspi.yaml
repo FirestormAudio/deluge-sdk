@@ -1,0 +1,8 @@
+transforms:
+  # SPDR is accessed at the width of the frame (TRM §16.3.4): add the byte and halfword views the
+  # SVD leaves out, overlapping the 32-bit register.
+  - !AddRegisters
+    block: '^RSPI::RSPI$'
+    registers:
+      - {name: SPDR_BYTE, description: "SPDR, byte access (8-bit frames).", byte_offset: 0x04, bit_size: 8}
+      - {name: SPDR_HALF, description: "SPDR, halfword access (16-bit frames).", byte_offset: 0x04, bit_size: 16}

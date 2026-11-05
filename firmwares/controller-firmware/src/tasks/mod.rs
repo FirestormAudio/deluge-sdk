@@ -1,0 +1,10 @@
+pub(crate) mod audio;
+pub(crate) mod cdc;
+pub(crate) mod encoder;
+pub(crate) mod jack_detect;
+pub(crate) mod midi;
+pub(crate) mod oled;
+pub(crate) mod pic;
+pub(crate) mod sd;
+pub(crate) mod usb;
+pub(crate) mod usb_host;

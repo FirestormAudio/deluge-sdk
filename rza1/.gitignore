@@ -1,0 +1,6 @@
+# Build output.
+/target/
+# Vendor material stays local, apart from the SVD the PAC is generated from.
+/vendor/*
+!/vendor/rza1.svd
+__pycache__/

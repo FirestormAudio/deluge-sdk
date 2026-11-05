@@ -1,0 +1,34 @@
+[package]
+publish = false  # binary crate — not for crates.io
+name = "demo-firmware"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[[bin]]
+name = "demo-firmware"
+test = false
+
+[dependencies]
+usb-classes = { workspace = true, features = ["device-audio"] }
+deluge = { path = "../../crates/deluge-sdk", package = "deluge-sdk" }
+rza1-hal = { path = "../../rza1/rza1-hal", features = ["rza1l"] }
+deluge-bsp = { path = "../../crates/deluge-bsp", features = ["usb-host"] }
+cortex-ar = { workspace = true }
+embassy-executor = { workspace = true, features = ["nightly", "platform-cortex-ar", "executor-thread"] }
+embassy-time = { workspace = true, features = ["tick-hz-1_000_000"] }
+embassy-sync = { workspace = true }
+embassy-usb = { workspace = true }
+embassy-usb-driver = { workspace = true }
+embassy-usb-host = { workspace = true }
+log = { workspace = true }
+embassy-futures = { workspace = true }
+rtt-target = { workspace = true, optional = true }
+
+[features]
+## Enable RTT (SEGGER Real-Time Transfer) debug logging. The SDK's
+## `#[deluge::app]` runtime registers the logger and defines _SEGGER_RTT; this
+## feature also selects the rtt linker script via build.rs (CARGO_FEATURE_RTT).
+## Disable for release builds: cargo build-fw --release --no-default-features
+default = []
+rtt = ["dep:rtt-target", "deluge-bsp/rtt", "deluge/rtt"]

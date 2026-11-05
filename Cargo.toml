@@ -1,0 +1,128 @@
+[workspace]
+members = [
+  "firmwares/demo-firmware",
+  "firmwares/controller-firmware",
+  "firmwares/msc-firmware",
+  "hw-tests/wp-probe",
+  "hw-tests/loopback-probe",
+  "hw-tests/fault-probe",
+  "hw-tests/sd-bench",
+  "hw-tests/flash-sr-probe",
+  "hw-tests/vbus-probe",
+  "hw-tests/uac-host-firmware",
+  "hw-tests/overbridge-host-firmware",
+  "hw-tests/overbridge-device-firmware",
+  "crates/deluge-bsp",
+  "firmwares/app-loader",
+  "firmwares/bootloader-flasher",
+  "firmwares/stage0",
+  "hw-tests/xip-slot-blinky",
+  "crates/deluge-sdk",
+  "crates/deluge-image",
+  "crates/deluge-sdk-macros",
+  "crates/armv7-dsp-intrinsics",
+  "crates/deluge-fixedpoint",
+  "crates/deluge-fonts",
+  "crates/deluge-ui-toolkit",
+  "crates/deluge-grid-toolkit",
+  "crates/deluge-protocol",
+  "drivers/max5136",
+  "usb/usb-classes",
+  "examples/baremetal/blinky",
+  "examples/baremetal/oled_hello",
+  "examples/baremetal/oled_menu",
+  "examples/baremetal/oled_hmenu",
+  "examples/baremetal/input_demo",
+  "examples/baremetal/pad_paint",
+  "examples/baremetal/midi_cv",
+  "examples/baremetal/clock_jacks",
+  "examples/baremetal/sd_demo",
+  "examples/baremetal/audio_passthru",
+  "examples/baremetal/audio_passthru_irq",
+  "examples/baremetal/test_osc",
+  "examples/baremetal/additive_osc",
+  "examples/baremetal/button_leds",
+  "examples/baremetal/usb_log",
+]
+# Crates that never build for the device: host tools and the simulator, and
+# the Linux backend and examples. Each builds for
+# its own target from its own directory.
+exclude = [
+  # Vendored from DelugeFirmware (see each VENDOR.md): their own workspaces, path dependencies
+  # of deluge-sdk.
+  "crates/embedded-fatfs",
+  "crates/block-device-driver",
+  "crates/block-device-adapters",
+  # The chip crates are their own workspace (rza1/Cargo.toml); path dependencies below reach them.
+  "rza1",
+  "tools/cargo-deluge",
+  "crates/deluge-simulator",
+  "crates/deluge-sim-link",
+  "linux/deluge-sys",
+  "linux/deluge-hal-linux",
+  "linux/deluge-linux-ui",
+  "examples/linux/rust-app",
+  "examples/linux/snake",
+  "examples/linux/launcher",
+  "examples/linux/terminal",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["Katherine Whitlock <kate@skylinesynths.nyc>"]
+repository = "https://github.com/FirestormAudio/deluge-sdk"
+
+[workspace.dependencies]
+# Embassy async runtime and USB stacks. Versions are set here only.
+embassy-executor = "0.10.0"
+embassy-futures = "0.1.2"
+embassy-hal-internal = "0.5.0"
+embassy-sync = "0.8.0"
+embassy-time = "0.5.1"
+embassy-time-driver = "0.2.2"
+embassy-time-queue-utils = "0.3.2"
+embassy-usb = "0.6.0"
+embassy-usb-driver = "0.2.2"
+embassy-usb-host = "0.1.0"
+
+# Shared platform / utility crates.
+cortex-ar = "0.3"
+critical-section = "1"
+# `info`, not `off`: features unify across the whole graph, and release is the
+# only profile that fits in SRAM, so `off` would silence all logging on the
+# device. `info` still drops the bulky `debug!`/`trace!` call sites.
+log = { version = "0.4", features = ["release_max_level_info"] }
+rtt-target = { version = "0.6", features = ["log"] }
+
+gdbstub = { version = "0.7" }
+
+# Fixed-point DSP math and ARMv7 DSP intrinsics, vendored from the `spark`
+# project (MIT/Apache).
+armv7-dsp-intrinsics = { path = "crates/armv7-dsp-intrinsics", version = "0.1.0" }
+# Published as `deluge-fixedpoint`, imported as `fixedpoint`.
+fixedpoint = { package = "deluge-fixedpoint", path = "crates/deluge-fixedpoint", version = "0.1.0" }
+
+# UI crates vendored from `spark`, GPL-3.0-or-later. Apps opt into them; the
+# permissively licensed `deluge` facade must not depend on them.
+deluge-fonts = { path = "crates/deluge-fonts", version = "0.1.0" }
+deluge-ui-toolkit = { path = "crates/deluge-ui-toolkit", version = "0.1.0" }
+deluge-grid-toolkit = { path = "crates/deluge-grid-toolkit", version = "0.1.0" }
+
+# Off-chip part drivers, board-agnostic (embedded-hal 1.0).
+max5136 = { path = "drivers/max5136" }
+
+# Board-agnostic USB classes (publish = false until the API settles).
+usb-classes = { path = "usb/usb-classes" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+debug = true
+
+[profile.dev]
+opt-level = 1
+debug = true

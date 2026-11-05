@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  examples:
+    name: Examples
+    uses: ./.github/workflows/examples.yml
+
+  images:
+    name: Images
+    uses: ./.github/workflows/images.yml
+    with:
+      retention-days: 7
+
+  tests:
+    name: Tests
+    uses: ./.github/workflows/test.yml
+
+  rza1:
+    name: rza1
+    uses: ./.github/workflows/rza1.yml

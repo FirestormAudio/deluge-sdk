@@ -1,0 +1,19 @@
+[package]
+publish = false  # binary crate — not for crates.io
+name = "flash-sr-probe"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[[bin]]
+name = "flash-sr-probe"
+test = false
+
+[dependencies]
+rza1-hal = { path = "../../rza1/rza1-hal", features = ["rza1l"] }
+rza1-alloc = { path = "../../rza1/rza1-alloc" }
+# Always RTT: the probe has no other output.
+deluge-bsp = { path = "../../crates/deluge-bsp", features = ["flash", "rtt"] }
+cortex-ar = { workspace = true }
+rtt-target = { workspace = true }
+log = { workspace = true }

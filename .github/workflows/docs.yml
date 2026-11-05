@@ -1,0 +1,72 @@
+name: API docs
+
+# Builds the rustdoc API reference for the public crates on the device target and,
+# on main, publishes it to GitHub Pages. Pull requests build it with rustdoc
+# warnings denied, so broken intra-doc links fail review.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          targets: armv7a-none-eabihf
+          components: rust-src
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build docs
+        env:
+          RUSTDOCFLAGS: --cfg docsrs -D warnings
+        run: >-
+          cargo doc -Zbuild-std=core,alloc --no-deps
+          -p deluge-sdk -p deluge-bsp -p usb-classes -p max5136
+          -p deluge-fixedpoint -p armv7-dsp-intrinsics
+          -p deluge-ui-toolkit -p deluge-grid-toolkit -p deluge-fonts -p deluge-protocol
+          -p rza1-hal -p rza1-rt -p rza1-alloc -p rza1-pac
+
+      - name: Add a landing page
+        run: |
+          echo '<meta http-equiv="refresh" content="0; url=deluge/index.html">' \
+            > target/armv7a-none-eabihf/doc/index.html
+
+      - name: Upload Pages artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: target/armv7a-none-eabihf/doc
+
+  deploy:
+    name: Deploy
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

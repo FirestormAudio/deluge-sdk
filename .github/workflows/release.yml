@@ -1,0 +1,70 @@
+name: Release
+
+# Pushing a `v*` tag builds the device images and publishes a GitHub Release with
+# the app-loader's flashable `.bin` and its checksum. The tag (minus the `v`) must
+# start with the workspace version and have its own CHANGELOG section, whose text
+# becomes the release notes. A tag with a pre-release suffix (`v0.1.0-preview.1`)
+# publishes a pre-release.
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  images:
+    name: Images
+    uses: ./.github/workflows/images.yml
+    with:
+      retention-days: 1
+
+  release:
+    name: Publish
+    needs: images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the tag against the workspace version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)"
+          case "$tag" in
+            "$version" | "$version"-*) ;;
+            *) echo "::error::tag $GITHUB_REF_NAME doesn't match the workspace version $version"; exit 1 ;;
+          esac
+
+      - name: Extract the release notes
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          awk -v v="$tag" '
+            index($0, "## [" v "]") == 1 { on = 1; next }
+            on && /^## / { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "::error::CHANGELOG.md has no '## [$tag]' section"
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: image-app-loader
+          path: dist
+
+      - name: Checksum
+        working-directory: dist
+        run: sha256sum app-loader.bin > SHA256SUMS
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=()
+          case "$GITHUB_REF_NAME" in *-*) prerelease=(--prerelease) ;; esac
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Deluge SDK $GITHUB_REF_NAME" \
+            --notes-file notes.md \
+            "${prerelease[@]}" \
+            dist/app-loader.bin dist/SHA256SUMS

@@ -1,0 +1,28 @@
+[package]
+name = "armv7-dsp-intrinsics"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "ARMv7 DSP intrinsics for efficient fixed-point arithmetic"
+categories = ["embedded", "no-std", "hardware-support"]
+keywords = ["arm", "dsp", "simd", "fixed-point", "intrinsics"]
+
+[dependencies]
+
+[dev-dependencies]
+# Property tests assert every op (asm / intrinsic / fallback path) matches an
+# independent wide-integer reference. Runs on host and under QEMU (see
+# tools/test.sh); proptest cross-compiles to armv7-unknown-linux-gnueabihf.
+proptest = "1"
+
+[features]
+default = []
+# Enable unstable ARM intrinsics (requires nightly)
+nightly = []
+
+[lib]
+name = "armv7_dsp_intrinsics"
+path = "src/lib.rs"

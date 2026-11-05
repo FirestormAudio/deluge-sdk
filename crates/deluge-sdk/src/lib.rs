@@ -1,0 +1,869 @@
+//! # Deluge SDK
+//!
+//! Build apps for the Synthstrom Deluge (Renesas RZ/A1L, Cortex-A9). This crate
+//! builds on the board support package (`deluge_bsp`) and exposes the Deluge's
+//! hardware as capability handles behind a single dependency (neither the BSP nor
+//! the chip HAL is re-exported), and provides the [`#[deluge::app]`](macro@app)
+//! attribute that absorbs the platform bring-up boilerplate.
+//!
+//! ```ignore
+//! #![no_std]
+//! #![no_main]
+//! #![feature(impl_trait_in_assoc_type)]
+//! use deluge::prelude::*;
+//! use embassy_time::Timer;
+//!
+//! #[deluge::app]
+//! async fn main(_dlg: Deluge) {
+//!     loop {
+//!         // the heaps, clocks, interrupts and executor are already up.
+//!         Timer::after_millis(200).await;
+//!     }
+//! }
+//! ```
+//!
+//! The app receives a [`Deluge`] handle; each peripheral (OLED, pads, input,
+//! LEDs, audio, CV/gate, clock, MIDI, SD, jacks, SYNC LED) is taken from it
+//! once, as an owned capability.
+//!
+//! The same app source builds for three backends: the device itself
+//! (`target_os = "none"`), the desktop simulator (host, `sim` feature, via
+//! `cargo deluge sim`) and native Linux on the Deluge (`linux` feature, over
+//! libdeluge).
+//!
+//! See the [Advanced developer guide](https://github.com/FirestormAudio/deluge-sdk/blob/main/docs/advanced-guide.md)
+//! for the architecture and internals.
+
+// `no_std` only on the device; the host build (the desktop simulator, via
+// `cargo deluge sim`) is a normal std binary.
+#![cfg_attr(target_os = "none", no_std)]
+// The internal PIC service uses `#[embassy_executor::task]`, which needs this.
+#![feature(impl_trait_in_assoc_type)]
+// The optional global allocator (device only) delegates to the HAL's
+// allocator-api heap; on the host the system allocator is used.
+#![cfg_attr(all(feature = "alloc", target_os = "none"), feature(allocator_api))]
+
+pub use deluge_macros::app;
+
+/// Optional global allocator, enabled by the `alloc` feature.
+///
+/// Registers the HAL's on-chip **SRAM** heap as `#[global_allocator]`, so `alloc`
+/// collections (`String`, `Vec`, `format!`, …) work. The heap is brought up by
+/// the `#[deluge::app]` runtime before any app code runs. Apps that draw with the
+/// (GPL) `deluge-ui-toolkit` need this.
+///
+/// SRAM (not SDRAM) backs the global heap on purpose: the large external SDRAM
+/// is reserved for bulk audio buffers (samples, delay lines), which apps allocate
+/// explicitly via [`rza1_alloc::SDRAM`]. The default SDK stays
+/// allocator-free and apps choose the arena per allocation.
+#[cfg(all(feature = "alloc", target_os = "none"))]
+mod global_alloc {
+    use core::alloc::{Allocator, GlobalAlloc, Layout};
+    use core::ptr::{self, NonNull};
+
+    struct SramGlobal;
+
+    // SAFETY: delegates to `rza1_alloc::SRAM`, a critical-section
+    // guarded heap initialised once during platform bring-up.
+    unsafe impl GlobalAlloc for SramGlobal {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            match rza1_alloc::SRAM.allocate(layout) {
+                Ok(p) => p.as_ptr().cast(),
+                Err(_) => ptr::null_mut(),
+            }
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            if let Some(nn) = NonNull::new(ptr) {
+                // SAFETY: `ptr`/`layout` come from a prior `alloc` on this heap.
+                unsafe { rza1_alloc::SRAM.deallocate(nn, layout) };
+            }
+        }
+    }
+
+    #[global_allocator]
+    static GLOBAL: SramGlobal = SramGlobal;
+}
+
+mod audio;
+mod clock;
+mod cv_gate;
+mod input;
+mod jacks;
+mod leds;
+mod midi;
+pub mod oled;
+mod pads;
+/// The board's peripherals no capability has claimed yet (device-only).
+#[cfg(target_os = "none")]
+pub mod parts;
+mod pic_service;
+mod plat;
+#[cfg(any(feature = "rtt", test))]
+mod rtt_log;
+pub mod sd;
+mod sync_led;
+#[cfg(any(feature = "usb-log", all(target_os = "none", feature = "usb-serial")))]
+mod usb0;
+#[cfg(feature = "usb-log")]
+mod usb_debug;
+/// USB CDC-ACM serial capability; see [`Deluge::usb_serial`].
+#[cfg(all(target_os = "none", feature = "usb-serial"))]
+pub mod usb_serial;
+
+/// Host (desktop-simulator) backend, active when built for the host triple.
+#[cfg(all(not(target_os = "none"), feature = "sim"))]
+mod host;
+/// Native Linux backend, active under `feature = "linux"`.
+#[cfg(all(not(target_os = "none"), feature = "linux"))]
+mod linux;
+pub use audio::{Audio, StereoFrame};
+pub use clock::{ClockIn, ClockOut};
+pub use cv_gate::{Cv, Gate};
+pub use input::{Event, Input};
+pub use jacks::Jacks;
+pub use leds::Leds;
+pub use midi::Midi;
+pub use oled::Oled;
+pub use pads::{Color, Pads};
+pub use sd::Sd;
+pub use sync_led::SyncLed;
+
+/// Named button / encoder / knob ids — match them against [`Event`], e.g.
+/// `Event::Button { id, .. } if id == controls::button::PLAY`.
+pub use deluge_bsp::controls;
+
+/// SD-card errors: bringing the card up ([`Deluge::sd`]) and file operations ([`Sd`]).
+pub use sd::{FatError, SdError};
+
+/// Type-safe fixed-point arithmetic (`Q31`, `Q16`, …), re-exported for DSP code
+/// in [`Audio::process`] callbacks. ARMv7 = the Deluge's Cortex-A9, so its
+/// conversions/multiplies map onto the hardware DSP instructions.
+pub use fixedpoint as fixed;
+
+/// Makes a capability handle `!Send`, so it cannot be captured by the
+/// `Send + 'static` DSP closure passed to [`Audio::process`].
+///
+/// On the Linux backend that closure runs on libdeluge's audio thread; every
+/// hardware op goes through `crate::linux::dev()`, a lock on the process-wide
+/// `Mutex<Deluge>` the UI half also holds. Taking it from the audio thread
+/// would stall the callback. Since every hardware op is a method on an owned
+/// handle (there are no free functions), making the handles `!Send` turns that
+/// stall into a compile error at the `.process()` call site.
+///
+/// Safe on all backends: Embassy's executor is single-threaded, so nothing in
+/// the SDK requires these handles to be `Send`.
+pub(crate) type NotSend = core::marker::PhantomData<*const ()>;
+pub(crate) const NOT_SEND: NotSend = core::marker::PhantomData;
+
+/// Compile-time proof that capability handles are `!Send` (see [`NotSend`]).
+///
+/// If any listed type becomes `Send`, both blanket impls below apply and the
+/// `AmbiguousIfSend<_>` inference in `assertions` fails with "type annotations
+/// needed" — turning an accidental `Send` into a build error.
+mod not_send_assertions {
+    trait AmbiguousIfSend<A> {
+        fn assert() {}
+    }
+    impl<T: ?Sized> AmbiguousIfSend<()> for T {}
+    impl<T: ?Sized + Send> AmbiguousIfSend<u8> for T {}
+
+    #[allow(dead_code)]
+    fn assertions() {
+        let _ = <crate::Deluge as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::Cv as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::Gate as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::Jacks as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::Midi as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::Sd as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::Leds as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::Input as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::Pads as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::Oled as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::ClockIn as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::ClockOut as AmbiguousIfSend<_>>::assert;
+        let _ = <crate::SyncLed as AmbiguousIfSend<_>>::assert;
+    }
+}
+
+// The allocator is re-exported for apps that place data in SDRAM explicitly; it is a device-only
+// escape hatch (no host equivalent). The board and chip crates are not re-exported: an app that
+// needs them depends on `deluge-bsp` or `rza1-hal` directly. The allocator stays
+// `deluge::deluge_alloc` for apps; the crate is `rza1-alloc`.
+#[cfg(target_os = "none")]
+pub use rza1_alloc as deluge_alloc;
+
+/// The app capability handle, passed to `#[deluge::app] async fn main`.
+///
+/// It carries the Embassy [`Spawner`](embassy_executor::Spawner) for spawning
+/// background tasks, and exposes the capability accessors ([`oled`](Self::oled),
+/// [`input`](Self::input), [`pads`](Self::pads), …) that hand out one peripheral
+/// at a time.
+pub struct Deluge {
+    spawner: embassy_executor::Spawner,
+    // Makes `Deluge` itself `!Send` (see [`NotSend`]), not just its capability
+    // handles: every accessor is `&self`, so a `Send + 'static` DSP closure that
+    // captured `dlg` could otherwise reach every peripheral from libdeluge's
+    // audio thread. `Spawner` is also `!Send`, but only as an Embassy
+    // implementation detail; this field does not rely on it.
+    _not_send: NotSend,
+}
+
+impl Deluge {
+    /// Construct the handle. Called by the `#[deluge::app]` expansion; not part
+    /// of the public API.
+    #[doc(hidden)]
+    #[inline]
+    pub fn __new(spawner: embassy_executor::Spawner) -> Self {
+        Self {
+            spawner,
+            _not_send: NOT_SEND,
+        }
+    }
+
+    /// The Embassy task spawner for the app's executor.
+    ///
+    /// Use it to launch your own background tasks:
+    /// ```ignore
+    /// dlg.spawner().spawn(my_task()).unwrap();
+    /// ```
+    #[inline]
+    pub fn spawner(&self) -> embassy_executor::Spawner {
+        self.spawner
+    }
+
+    /// Take ownership of the SYNC LED (P6_7).
+    ///
+    /// ```ignore
+    /// let mut led = dlg.sync_led();
+    /// led.toggle();
+    /// ```
+    ///
+    /// Takeable once: a second call panics. Owning the returned [`SyncLed`] is
+    /// what keeps two places from driving the same pin — no `unsafe`, no shared
+    /// globals.
+    #[inline]
+    pub fn sync_led(&self) -> SyncLed {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static TAKEN: AtomicBool = AtomicBool::new(false);
+        if TAKEN.swap(true, Ordering::Relaxed) {
+            panic!("Deluge::sync_led() called more than once");
+        }
+        SyncLed::new()
+    }
+
+    /// Take ownership of the OLED display, bringing up the PIC service and
+    /// initialising the panel.
+    ///
+    /// ```ignore
+    /// let mut oled = dlg.oled().await;
+    /// oled.clear();
+    /// oled.text(0, 0, "hello deluge");
+    /// oled.flush().await;
+    /// ```
+    ///
+    /// `async` because it waits for the PIC handshake and the panel's init
+    /// sequence. Takeable once: a second call panics. The returned [`Oled`] is an
+    /// `embedded-graphics` `DrawTarget`.
+    pub async fn oled(&self) -> Oled {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static TAKEN: AtomicBool = AtomicBool::new(false);
+        if TAKEN.swap(true, Ordering::Relaxed) {
+            panic!("Deluge::oled() called more than once");
+        }
+        // Bring up the PIC co-processor (UART + RX pump) — the OLED chip-select
+        // handshake rides on it — then wait for it to finish configuring.
+        pic_service::ensure_started(self.spawner);
+        pic_service::wait_ready().await;
+        // Run the panel init sequence (SSD1309 over RSPI0, via the bus guard).
+        oled::init_panel().await;
+        Oled::new()
+    }
+
+    /// Take the unified input event stream (pads, buttons, encoders).
+    ///
+    /// ```ignore
+    /// let input = dlg.input();
+    /// loop {
+    ///     match input.next().await {
+    ///         Event::Pad { x, y, pressed } => { /* … */ }
+    ///         Event::Encoder { index, delta } => { /* … */ }
+    ///         _ => {}
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// Brings up the PIC service (pads/buttons) and the encoder interrupts.
+    /// Takeable once: a second call panics.
+    pub fn input(&self) -> Input {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static TAKEN: AtomicBool = AtomicBool::new(false);
+        if TAKEN.swap(true, Ordering::Relaxed) {
+            panic!("Deluge::input() called more than once");
+        }
+        pic_service::ensure_started(self.spawner);
+        input::ensure_started(self.spawner);
+        Input::new()
+    }
+
+    /// Take the button/indicator LEDs and gold-knob columns. Takeable once.
+    ///
+    /// ```ignore
+    /// let mut leds = dlg.leds().await;
+    /// leds.on(controls::button::PLAY).await;
+    /// ```
+    ///
+    /// `async` (brings up + waits for the PIC the LEDs ride on). See [`Leds`].
+    pub async fn leds(&self) -> Leds {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static TAKEN: AtomicBool = AtomicBool::new(false);
+        if TAKEN.swap(true, Ordering::Relaxed) {
+            panic!("Deluge::leds() called more than once");
+        }
+        pic_service::ensure_started(self.spawner);
+        pic_service::wait_ready().await;
+        Leds::new()
+    }
+
+    /// Take ownership of the RGB pad grid (18 × 8).
+    ///
+    /// ```ignore
+    /// let mut pads = dlg.pads().await;
+    /// pads.set(3, 4, Color::hsv(120, 255, 200));
+    /// pads.flush().await;
+    /// ```
+    ///
+    /// `async` because it brings up and waits for the PIC service the pad LEDs
+    /// are driven over. Takeable once: a second call panics. Pad coordinates
+    /// match [`Event::Pad`].
+    pub async fn pads(&self) -> Pads {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static TAKEN: AtomicBool = AtomicBool::new(false);
+        if TAKEN.swap(true, Ordering::Relaxed) {
+            panic!("Deluge::pads() called more than once");
+        }
+        pic_service::ensure_started(self.spawner);
+        pic_service::wait_ready().await;
+        Pads::new()
+    }
+
+    /// Take the CV (control-voltage) outputs. Takeable once. See [`Cv`].
+    ///
+    /// Take it before anything draws to the [`Oled`]: its one-time DAC bring-up needs RSPI0,
+    /// which the display shares, and panics if an OLED frame holds the bus at that moment.
+    pub fn cv(&self) -> Cv {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static TAKEN: AtomicBool = AtomicBool::new(false);
+        if TAKEN.swap(true, Ordering::Relaxed) {
+            panic!("Deluge::cv() called more than once");
+        }
+        Cv::new()
+    }
+
+    /// Take the gate outputs. Takeable once. See [`Gate`].
+    ///
+    /// Take it before anything draws to the [`Oled`]: its one-time DAC bring-up needs RSPI0,
+    /// which the display shares, and panics if an OLED frame holds the bus at that moment.
+    pub fn gate(&self) -> Gate {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static TAKEN: AtomicBool = AtomicBool::new(false);
+        if TAKEN.swap(true, Ordering::Relaxed) {
+            panic!("Deluge::gate() called more than once");
+        }
+        Gate::new()
+    }
+
+    /// Take USB0 as a CDC-ACM (virtual serial) device identified as `id` — a
+    /// `/dev/ttyACM*` port on the host. Starts the USB device task; read and
+    /// write through the returned [`UsbSerial`](usb_serial::UsbSerial) halves.
+    ///
+    /// Device-only, behind the `usb-serial` feature (which can't be enabled together with
+    /// `usb-log`: both drive USB0). Takeable once: a second call panics.
+    #[cfg(all(target_os = "none", feature = "usb-serial"))]
+    pub fn usb_serial(&self, id: usb_serial::UsbIdentity) -> usb_serial::UsbSerial {
+        let usb0 = usb_serial::take_port()
+            .expect("Deluge::usb_serial() called twice: USB0 is already in use");
+        usb_serial::start(self.spawner, id, usb0)
+    }
+
+    /// Take the analog trigger-clock **input** jack. Takeable once.
+    ///
+    /// ```ignore
+    /// let mut clk = dlg.clock_in();
+    /// loop {
+    ///     if let Some(dt) = clk.tick().await {
+    ///         info!("clock interval: {} ms", dt.as_millis());
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// Registers the trigger-clock interrupt on first use. See [`ClockIn`].
+    pub fn clock_in(&self) -> ClockIn {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static TAKEN: AtomicBool = AtomicBool::new(false);
+        if TAKEN.swap(true, Ordering::Relaxed) {
+            panic!("Deluge::clock_in() called more than once");
+        }
+        ClockIn::new()
+    }
+
+    /// Take a software clock **output** on gate channel `gate_ch`. Takeable once.
+    ///
+    /// There is no dedicated clock-out jack: this pulses one of the V-trig gate
+    /// outputs, so don't also drive `gate_ch` through [`gate`](Deluge::gate).
+    ///
+    /// ```ignore
+    /// let mut clk = dlg.clock_out(0);
+    /// clk.run(ClockOut::period_from_bpm(120.0, 24)).await
+    /// ```
+    ///
+    /// See [`ClockOut`].
+    ///
+    /// Take it before anything draws to the [`Oled`]: its one-time DAC bring-up needs RSPI0,
+    /// which the display shares, and panics if an OLED frame holds the bus at that moment.
+    pub fn clock_out(&self, gate_ch: u8) -> ClockOut {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static TAKEN: AtomicBool = AtomicBool::new(false);
+        if TAKEN.swap(true, Ordering::Relaxed) {
+            panic!("Deluge::clock_out() called more than once");
+        }
+        ClockOut::new(gate_ch)
+    }
+
+    /// Take the audio jack-detect inputs + speaker-amplifier control. Takeable
+    /// once.
+    ///
+    /// ```ignore
+    /// let mut jacks = dlg.jacks();
+    /// if jacks.headphone() { /* … */ }
+    /// jacks.apply_speaker_mute(); // standard mute policy
+    /// ```
+    ///
+    /// See [`Jacks`].
+    pub fn jacks(&self) -> Jacks {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static TAKEN: AtomicBool = AtomicBool::new(false);
+        if TAKEN.swap(true, Ordering::Relaxed) {
+            panic!("Deluge::jacks() called more than once");
+        }
+        Jacks::new()
+    }
+
+    /// Take the DIN MIDI port. Takeable once. See [`Midi`].
+    pub fn midi(&self) -> Midi {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static TAKEN: AtomicBool = AtomicBool::new(false);
+        if TAKEN.swap(true, Ordering::Relaxed) {
+            panic!("Deluge::midi() called more than once");
+        }
+        Midi::new()
+    }
+
+    /// Bring the SD card up, mount its FAT volume and take the file handle.
+    ///
+    /// ```ignore
+    /// let mut sd = dlg.sd().await?;
+    /// let mut buf = [0u8; 64];
+    /// let n = sd.read("CONFIG.TXT", &mut buf).await?;
+    /// ```
+    ///
+    /// `async` (the card init does I/O); returns `Err` if no card is present, it
+    /// doesn't come up, or it holds no FAT volume. Takeable once: a second call panics.
+    pub async fn sd(&self) -> Result<Sd, SdError> {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static TAKEN: AtomicBool = AtomicBool::new(false);
+        if TAKEN.swap(true, Ordering::Relaxed) {
+            panic!("Deluge::sd() called more than once");
+        }
+        Sd::mount().await
+    }
+
+    /// Take the codec audio path for per-block DSP. Takeable once.
+    ///
+    /// ```ignore
+    /// dlg.audio().process(move |block| {
+    ///     for f in block { f.l *= 0.5; f.r *= 0.5; }
+    /// }).await
+    /// ```
+    ///
+    /// Owns the codec — don't also run a USB audio (UAC2) device stack. Acquire
+    /// before the main loop (its one-time bring-up blocks ~5 ms). See [`Audio`].
+    pub fn audio(&self) -> Audio {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static TAKEN: AtomicBool = AtomicBool::new(false);
+        if TAKEN.swap(true, Ordering::Relaxed) {
+            panic!("Deluge::audio() called more than once");
+        }
+        Audio::new()
+    }
+}
+
+/// Convenient glob import for app authors: `use deluge::prelude::*;`.
+pub mod prelude {
+    pub use crate::app;
+    pub use crate::controls;
+    pub use crate::{
+        Audio, ClockIn, ClockOut, Color, Cv, Deluge, Event, Gate, Input, Jacks, Leds, Midi, Oled,
+        Pads, Sd, StereoFrame, SyncLed,
+    };
+    pub use log::{debug, error, info, warn};
+}
+
+/// Runtime support invoked by the [`#[deluge::app]`](macro@app) expansion.
+///
+/// Not a stable API — these items exist so the generated entry point stays a
+/// handful of tokens. Apps should not call them directly.
+#[doc(hidden)]
+pub mod __rt {
+    pub use embassy_executor::Spawner;
+
+    // Re-export the task attribute *and* the embassy-executor crate so
+    // `#[deluge::app]` can wrap the app's `main` without the app depending on
+    // embassy-executor directly (the SDK owns the executor). The macro points the
+    // task expansion at this re-export via `embassy_executor = …`, so the
+    // generated code resolves against the SDK's (device or host) executor.
+    #[doc(hidden)]
+    pub use ::embassy_executor;
+    pub use embassy_executor::task;
+
+    /// The entry attribute the `#[deluge::app]` expansion puts on the device `main`.
+    #[cfg(target_os = "none")]
+    pub use deluge_bsp::entry;
+    /// Device entry points used by the `#[deluge::app]` expansion on the Deluge.
+    #[cfg(target_os = "none")]
+    pub use device::{panic, run};
+
+    /// The bare-metal platform runtime: heaps, clocks, interrupts, executor.
+    #[cfg(target_os = "none")]
+    mod device {
+        use super::Spawner;
+        use core::mem::MaybeUninit;
+        use embassy_executor::Executor;
+
+        unsafe extern "C" {
+            /// Start of the free SRAM heap region (set by the linker script).
+            static __sram_heap_start: u8;
+            /// End of the free SRAM heap region (start of RTT/stack reservation).
+            static __sram_heap_end: u8;
+        }
+
+        /// Base address of the 64 MB external SDRAM window.
+        const SDRAM_BASE: usize = 0x0C00_0000;
+        /// Size of the external SDRAM window in bytes.
+        const SDRAM_SIZE: usize = 64 * 1024 * 1024;
+
+        /// Set up RTT (only with the `rtt` feature).
+        ///
+        /// Always defines the `_SEGGER_RTT` control block (in the `.rtt_buffer`
+        /// section provided by the rtt linker script) — rza1-rt's fault handlers
+        /// reference this symbol whenever `deluge-bsp/rtt` (`rza1-rt/rtt`) is on, so it must
+        /// exist even when `usb-log` is the active logger (e.g. when both features
+        /// are unified on in a workspace build). The `log` backend is registered
+        /// only when `usb-log` is *not* enabled, since there can be just one global
+        /// logger and `usb-log` takes precedence.
+        #[cfg(feature = "rtt")]
+        fn init_logging() {
+            let channels = rtt_target::rtt_init! {
+                up: {
+                    0: { size: 16384, name: "Terminal", section: ".rtt_buffer" }
+                }
+                section_cb: ".rtt_buffer"
+            };
+            #[cfg(not(feature = "usb-log"))]
+            {
+                rtt_target::set_print_channel(channels.up.0);
+                crate::rtt_log::init(log::LevelFilter::Debug);
+            }
+            // With `usb-log` active the RTT block still exists (for the HAL fault
+            // handlers) but RTT is not the `log` backend.
+            #[cfg(feature = "usb-log")]
+            let _ = channels;
+        }
+
+        /// Bring up the platform short of enabling interrupts: SRAM/SDRAM heaps and
+        /// clocks/MMU/caches/SDRAM/GIC/OSTM time driver.
+        ///
+        /// Interrupts are enabled separately, *after* the app's `setup` phase, so
+        /// drivers whose init must run with IRQs masked (e.g. GIC source setup) keep
+        /// working — see [`run`].
+        ///
+        /// Returns the [`deluge_bsp::Board`].
+        ///
+        /// # Safety
+        /// Must run exactly once, at startup, before any allocation.
+        unsafe fn init_platform() -> deluge_bsp::Board {
+            unsafe {
+                // SRAM heap (internal RAM) — initialise before any allocation.
+                let start = core::ptr::addr_of!(__sram_heap_start) as *mut u8;
+                let size = core::ptr::addr_of!(__sram_heap_end) as usize - start as usize;
+                rza1_alloc::SRAM.init(start, size);
+
+                // The chip (CPG, module clocks, GIC, OSTM time driver), then the board (MMU,
+                // caches, SDRAM, interrupt priorities).
+                let board =
+                    deluge_bsp::Board::new(rza1_hal::init(deluge_bsp::system::BOARD_CONFIG));
+
+                // SDRAM heap — now that the SDRAM window is accessible.
+                rza1_alloc::SDRAM.init(SDRAM_BASE as *mut u8, SDRAM_SIZE);
+                board
+            }
+        }
+
+        static mut EXECUTOR: MaybeUninit<Executor> = MaybeUninit::uninit();
+
+        /// The `#[deluge::app]` entry point.
+        ///
+        /// Sequence: logging → heaps + clocks → `setup()` (app's synchronous,
+        /// interrupts-masked init) → enable interrupts → run the Embassy executor,
+        /// invoking `spawn` once with the [`Spawner`].
+        ///
+        /// `setup` runs with IRQs still masked so peripheral/GIC bring-up that
+        /// requires it (per some HAL drivers' contracts) is safe; it is empty for
+        /// apps that don't opt into `#[deluge::app(setup = …)]`.
+        pub fn run(setup: impl FnOnce(), spawn: impl FnOnce(Spawner)) -> ! {
+            // Pick the logger: `usb-log` takes precedence over `rtt` (one logger).
+            // `init_logging` still runs when `rtt` is on so the `_SEGGER_RTT` control
+            // block exists for the HAL fault handlers; it only registers the RTT log
+            // backend when `usb-log` is not also enabled.
+            #[cfg(feature = "usb-log")]
+            crate::usb_debug::init_logger();
+            #[cfg(feature = "rtt")]
+            init_logging();
+
+            let board = unsafe { init_platform() };
+
+            // USB0 has one owner: the `usb-log` device or the app's `usb-serial` port.
+            #[cfg(all(feature = "usb-log", feature = "usb-serial"))]
+            compile_error!(
+                "the `usb-log` and `usb-serial` features both drive USB0: enable one of them"
+            );
+            #[allow(unused_variables)]
+            let usb0 = board.usb0;
+            #[cfg(feature = "usb-serial")]
+            crate::usb_serial::stash(usb0);
+            #[cfg(not(any(feature = "usb-log", feature = "usb-serial")))]
+            let usb0_part = Some(usb0);
+            #[cfg(any(feature = "usb-log", feature = "usb-serial"))]
+            let usb0_part = None;
+
+            // The rest of the board waits for the capability that drives it, or for the app to
+            // take it through `deluge::parts`.
+            crate::parts::stash(crate::parts::Parts {
+                shared_spi: Some(board.shared_spi),
+                oled_dma: Some(board.dma.oled),
+                spi_pins: Some(board.pins.spi),
+                midi_uart: Some(board.midi_uart),
+                midi_rx_dma: Some(board.dma.midi_rx),
+                midi_pins: Some(board.pins.midi),
+                pic_uart: Some(board.pic_uart),
+                pic_rx_dma: Some(board.dma.pic_rx),
+                pic_tx_dma: Some(board.dma.pic_tx),
+                pic_pins: Some(board.pins.pic),
+                gate_timer: Some(board.gate_timer),
+                encoder_poll_timer: Some(board.encoder_poll_timer),
+                sd_card: Some(board.sd_card),
+                sd_tx_dma: Some(board.dma.sd_tx),
+                sd_rx_dma: Some(board.dma.sd_rx),
+                sd_pins: Some(board.pins.sd),
+                audio_ssi: Some(board.audio_ssi),
+                ssi_tx_dma: Some(board.dma.ssi_tx),
+                ssi_rx_dma: Some(board.dma.ssi_rx),
+                scux_ffd0_dma: Some(board.dma.scux_ffd0),
+                scux: Some(board.scux),
+                usb0: usb0_part,
+                audio_pins: Some(board.pins.audio),
+                jack_pins: Some(board.pins.jacks),
+                cv_gate_pins: Some(board.pins.cv_gate),
+                encoder_pins: Some(board.pins.encoders),
+                trigger_pin: Some(board.pins.trigger),
+                sync_led: Some(board.pins.sync_led),
+            });
+
+            // App's synchronous, interrupts-masked initialisation.
+            setup();
+
+            // Bring up the USB-debug device (registers the USB0 ISR and starts the
+            // controller) while interrupts are still masked, the same ordering the
+            // controller firmware uses. Spawned below once the executor runs.
+            #[cfg(feature = "usb-log")]
+            let usb = crate::usb_debug::build(usb0);
+
+            // Unmask IRQs so the Embassy time driver and peripheral ISRs fire.
+            unsafe { cortex_ar::interrupt::enable() };
+
+            #[allow(static_mut_refs)]
+            let executor: &'static mut Executor = unsafe {
+                EXECUTOR.write(Executor::new());
+                EXECUTOR.assume_init_mut()
+            };
+            executor.run(move |spawner| {
+                #[cfg(feature = "usb-log")]
+                crate::usb_debug::spawn(spawner, usb);
+                spawn(spawner);
+            })
+        }
+
+        /// Default panic behaviour: stop the world, show it, keep signalling.
+        ///
+        /// Masks interrupts, logs via RTT (if enabled), draws `APP PANIC` + the panic
+        /// location to the OLED (best-effort, via the blocking panic path — no-op if
+        /// the OLED was never brought up), then strobes the SYNC LED forever so a
+        /// probe-less user sees the crash.
+        pub fn panic(info: &core::panic::PanicInfo) -> ! {
+            // Stop the world: no more ISRs or task switches.
+            cortex_ar::interrupt::disable();
+
+            log::error!("PANIC: {}", info);
+
+            // Best-effort OLED message.
+            let mut fb = deluge_bsp::oled::FrameBuffer::new();
+            deluge_bsp::oled::text::draw_str(&mut fb, 0, 0, b"APP PANIC");
+            if let Some(loc) = info.location() {
+                use core::fmt::Write;
+                let mut line = LineBuf::new();
+                let _ = write!(line, "{}:{}", basename(loc.file()), loc.line());
+                deluge_bsp::oled::text::draw_str(&mut fb, 0, 10, line.as_bytes());
+            }
+            // SAFETY: interrupts are masked and we are single-threaded here.
+            unsafe { deluge_bsp::oled::draw_blocking(&fb) };
+
+            // Always-visible fallback: strobe the SYNC LED forever. A panic before the clock tree
+            // is registered can't time the strobe, and must not panic again here (that would
+            // recurse until the stack overflows), so it holds the LED on instead.
+            // SAFETY: interrupts are masked and this never returns, so whatever owned P6_7 never
+            // runs again.
+            let mut led = rza1_hal::gpio::Output::new(
+                unsafe { rza1_hal::peripherals::P6_7::steal() },
+                rza1_hal::gpio::Level::High,
+            );
+            loop {
+                led.set_high();
+                if !rza1_hal::ostm::try_delay_ms(100) {
+                    loop {
+                        core::hint::spin_loop();
+                    }
+                }
+                led.set_low();
+                rza1_hal::ostm::try_delay_ms(100);
+            }
+        }
+
+        /// Last path component of `path` (so the OLED shows `main.rs`, not the full
+        /// crate path).
+        fn basename(path: &str) -> &str {
+            match path.rsplit_once(['/', '\\']) {
+                Some((_, name)) => name,
+                None => path,
+            }
+        }
+
+        /// A tiny fixed-width `core::fmt::Write` sink for one OLED text line
+        /// (128 px / 6 px per glyph ≈ 21 chars). Excess is dropped.
+        struct LineBuf {
+            buf: [u8; 21],
+            len: usize,
+        }
+
+        impl LineBuf {
+            fn new() -> Self {
+                Self {
+                    buf: [0; 21],
+                    len: 0,
+                }
+            }
+            fn as_bytes(&self) -> &[u8] {
+                &self.buf[..self.len]
+            }
+        }
+
+        impl core::fmt::Write for LineBuf {
+            fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                for &b in s.as_bytes() {
+                    if self.len < self.buf.len() {
+                        self.buf[self.len] = b;
+                        self.len += 1;
+                    }
+                }
+                Ok(())
+            }
+        }
+    } // mod device
+
+    /// Host (desktop-simulator) runtime.
+    ///
+    /// The app and the simulator GUI share one process: the app's `async fn main`
+    /// runs on a std Embassy executor on a worker thread (the "brain"), while
+    /// `iced` owns the main thread (the "panel"). They communicate through the
+    /// in-memory [`deluge_sim_link::SharedPanel`] and audio bridge — no protocol,
+    /// no sockets.
+    #[cfg(all(not(target_os = "none"), feature = "sim"))]
+    pub mod host {
+        use super::Spawner;
+        use embassy_executor::Executor;
+
+        /// Entry point emitted by `#[deluge::app]` for host builds.
+        ///
+        /// Sets up the shared panel + audio bridge, runs `setup`, spawns the app
+        /// (and the input pump) on a std executor on a worker thread, then hands
+        /// the main thread to the simulator GUI. Returns when the window closes.
+        pub fn run(
+            setup: impl FnOnce() + Send + 'static,
+            spawn: impl FnOnce(Spawner) + Send + 'static,
+        ) -> ! {
+            // Logs to stderr (RUST_LOG controls level), mirroring the device's
+            // RTT/USB logger so `info!`/`warn!` from app code are visible.
+            let _ = env_logger::try_init();
+
+            // The simulator creates the shared panel and the audio bridge and owns
+            // the main thread (or its headless driver, `cargo deluge sim
+            // --headless`); the app is the brain it runs on a worker thread, on a
+            // std executor that lives for the process lifetime. The panel and
+            // audio ends go to deluge-bsp's simulator link, which the SDK's host
+            // backend reads them from.
+            deluge_simulator::run_brain(move |panel, brain_audio| {
+                crate::plat::sim_panel::install(panel, brain_audio);
+                setup();
+                let executor: &'static mut Executor = Box::leak(Box::new(Executor::new()));
+                executor.run(move |spawner| {
+                    // Bridge GUI input → the SDK event queue.
+                    crate::plat::input_start_pump(spawner);
+                    spawn(spawner);
+                });
+            });
+            // The window has closed; the app's executor is still running, so end the process here.
+            std::process::exit(0)
+        }
+    }
+
+    /// Native Linux runtime.
+    ///
+    /// Unlike the sim runtime, there is no GUI competing for the main thread and
+    /// no in-memory panel bridge: `libdeluge` (via `deluge-hal-linux`) owns its
+    /// own input/audio threads, so the app's `async fn main` runs directly on a
+    /// std Embassy executor on the main thread.
+    #[cfg(all(not(target_os = "none"), feature = "linux"))]
+    pub mod linux {
+        use super::Spawner;
+        use embassy_executor::Executor;
+
+        /// Open libdeluge, then run the app on a std executor on the MAIN thread
+        /// (no GUI competes for it; libdeluge owns its own input/audio threads).
+        pub fn run(setup: impl FnOnce(), spawn: impl FnOnce(Spawner) + Send + 'static) {
+            // Default to `info` so the backend's own diagnostics (libdeluge
+            // open, oled_write failures) reach stderr → the boot console even
+            // when the launcher doesn't set RUST_LOG.
+            let _ =
+                env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+                    .try_init();
+            let dev = deluge_hal_linux::Deluge::open().expect("deluge_open failed");
+            crate::linux::init(dev);
+            log::info!("libdeluge opened; linux backend running");
+            setup();
+            let executor: &'static mut Executor = Box::leak(Box::new(Executor::new()));
+            executor.run(move |spawner| {
+                crate::plat::input_start_pump(spawner);
+                spawn(spawner);
+            });
+        }
+    }
+}
