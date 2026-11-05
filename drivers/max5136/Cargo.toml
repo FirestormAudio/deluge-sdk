@@ -6,7 +6,7 @@ authors.workspace = true
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 repository.workspace = true
-description = "Platform-agnostic embedded-hal driver for the Maxim MAX5136 quad 16-bit SPI DAC."
+description = "Platform-agnostic embedded-hal driver for the Maxim MAX5136 dual 16-bit SPI DAC."
 categories = ["embedded", "no-std", "hardware-support"]
 keywords = ["max5136", "dac", "spi", "embedded-hal", "no-std"]
 

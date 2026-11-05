@@ -1,7 +1,7 @@
 //! Deluge CV/gate interface initialisation and control.
 //!
 //! ## Hardware
-//! CV outputs use a **MAX5136** quad 16-bit SPI DAC connected to RSPI0.
+//! CV outputs use a **MAX5136** dual 16-bit SPI DAC connected to RSPI0.
 //! Gate outputs use direct GPIO V-trig lines (high = gate OFF, low = gate ON).
 //!
 //! ## SPI wiring (RSPI0)

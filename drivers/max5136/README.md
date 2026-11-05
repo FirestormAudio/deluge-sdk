@@ -1,7 +1,7 @@
 # max5136
 
 A platform-agnostic [`embedded-hal`](https://crates.io/crates/embedded-hal) 1.0 driver for the
-Maxim MAX5136, a quad 16-bit SPI DAC. The Deluge uses one for its two CV outputs. The crate is
+Maxim MAX5136, a dual 16-bit SPI DAC (the quad parts are the MAX5134/MAX5135). The Deluge uses one for its two CV outputs. The crate is
 `no_std`, has no dependency other than `embedded-hal`, and has no Cargo features.
 
 Every command is a 24-bit frame sent MSB first: a command byte, then 16 data bits. The crate
@@ -38,7 +38,7 @@ bus.send32(max5136::LINEARITY_OFF_U32);
 bus.send32(max5136::write_through_u32(1, 0xFFFF)); // channel 1 to full scale
 ```
 
-`set` and `write_through` panic for a channel of `NUM_CHANNELS` (4) or more. The Deluge's CV
+`set` and `write_through` panic for a channel of `NUM_CHANNELS` (2) or more. The Deluge's CV
 driver, [`deluge_bsp::cv_gate`](../../crates/deluge-bsp/src/cv_gate.rs), takes the second form
 over its shared RSPI0 bus.
 

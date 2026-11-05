@@ -19,7 +19,7 @@ testing.
 | [`scux_dvu_path`] | Controls for the SCUX DVU path ([`audio::init_with_scux`]): volume, fades, the SRC's engine rate |
 | [`scux_src_path`] | SCUX channel 1: async SRC between two rings (FFD1 → SRC1 → FFU1) |
 | [`scux_usb_tx_path`] | SCUX channel 2: async SRC between two rings (FFD2 → SRC2 → FFU2), built here from the HAL's SCUX pieces |
-| [`cv_gate`] | MAX5136 quad 16-bit SPI CV DAC (2 channels, ~6552 counts/V; frames from the [`max5136`](../../drivers/max5136) crate) + 4 V-trig gate GPIOs |
+| [`cv_gate`] | MAX5136 dual 16-bit SPI CV DAC ( ~6552 counts/V; frames from the [`max5136`](../../drivers/max5136) crate) + 4 V-trig gate GPIOs |
 | [`midi_gate`] | MTU2 one-shot timer for sub-millisecond precise gate-off scheduling (~1.92 µs resolution); `setup(board.gate_timer)` |
 | [`oled`] | SSD1309 128×48 OLED — `FrameBuffer`, pixel API, DMA frame send via RSPI0; CS/RST handshaked through the PIC co-processor |
 | [`pic`] | PIC32 co-processor — 144-pad matrix, 36 buttons, 6 encoders, 36 LEDs, 7-segment display, gold knob indicators; dual-baud UART handshake (31 250 → 200 000 bps) |

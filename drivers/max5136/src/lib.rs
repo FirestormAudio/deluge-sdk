@@ -1,4 +1,4 @@
-//! Platform-agnostic driver for the Maxim **MAX5136** quad 16-bit SPI DAC.
+//! Platform-agnostic driver for the Maxim **MAX5136** dual 16-bit SPI DAC.
 //!
 //! Every command is a 24-bit frame, sent MSB first: a command byte, then 16 data bits. The
 //! frame helpers ([`write_through`], [`LINEARITY_ON`], …) are usable without the driver, for
@@ -14,8 +14,8 @@
 use embedded_hal::delay::DelayNs;
 use embedded_hal::spi::SpiDevice;
 
-/// DAC channels on the part.
-pub const NUM_CHANNELS: u8 = 4;
+/// DAC channels on the part: DAC0 and DAC1 (the quad parts are the MAX5134/MAX5135).
+pub const NUM_CHANNELS: u8 = 2;
 
 /// Linearity calibration on: `0x05` command, data `0x4200`.
 pub const LINEARITY_ON: [u8; 3] = [0x05, 0x42, 0x00];
@@ -34,7 +34,7 @@ pub const LINEARITY_SETTLE_MS: u32 = 10;
 /// # Panics
 /// If `ch >= NUM_CHANNELS` (at compile time, in a `const`).
 pub const fn write_through(ch: u8, value: u16) -> [u8; 3] {
-    assert!(ch < NUM_CHANNELS, "max5136: channel must be 0-3");
+    assert!(ch < NUM_CHANNELS, "max5136: channel must be 0-1");
     let [hi, lo] = value.to_be_bytes();
     [0x30 | (1 << ch), hi, lo]
 }
@@ -122,7 +122,6 @@ mod tests {
         assert_eq!(write_through(0, 0xABCD), [0x31, 0xAB, 0xCD]);
         assert_eq!(write_through_u32(0, 0xABCD), 0x31AB_CD00);
         assert_eq!(write_through_u32(1, 0x1234), 0x3212_3400);
-        assert_eq!(write_through_u32(3, 0), 0x3800_0000);
     }
 
     #[test]
@@ -133,9 +132,17 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "channel must be 0-3")]
-    fn channel_four_is_rejected() {
-        let _ = write_through(4, 0);
+    #[should_panic(expected = "channel must be 0-1")]
+    fn channel_two_is_rejected() {
+        // The MAX5136 is the dual part: DAC0 and DAC1 only.
+        let _ = write_through(2, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "channel must be 0-1")]
+    fn set_rejects_channel_2() {
+        let mut dac = Max5136::new(FakeSpi::default());
+        let _ = dac.set(2, 0x8000);
     }
 
     #[test]
@@ -151,7 +158,7 @@ mod tests {
     #[test]
     fn set_sends_one_write_through_frame() {
         let mut dac = Max5136::new(FakeSpi::default());
-        dac.set(2, 0x8000).unwrap();
-        assert_eq!(dac.release().frames, [std::vec![0x34, 0x80, 0x00]]);
+        dac.set(1, 0x8000).unwrap();
+        assert_eq!(dac.release().frames, [std::vec![0x32, 0x80, 0x00]]);
     }
 }
