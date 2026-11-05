@@ -836,7 +836,7 @@ pub mod __rt {
     /// The app and the simulator GUI share one process: the app's `async fn main`
     /// runs on a std Embassy executor on a worker thread (the "brain"), while
     /// `iced` owns the main thread (the "panel"). They communicate through the
-    /// in-memory [`deluge_sim_link::SharedPanel`] and audio bridge — no protocol,
+    /// in-memory [`deluge_simulator::link::SharedPanel`] and audio bridge — no protocol,
     /// no sockets.
     #[cfg(all(not(target_os = "none"), feature = "sim"))]
     pub mod host {

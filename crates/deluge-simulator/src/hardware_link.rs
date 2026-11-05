@@ -4,11 +4,11 @@
 //!
 //! The physical Deluge is hardwired as the [`deluge_panel_protocol`] **device**: it
 //! emits [`FromDeluge`] input and consumes [`ToDeluge`] illumination. So — unlike
-//! the simulator's [`crate::link::PanelLink`], which plays the *panel* role — this
+//! the simulator's [`crate::panel_link::PanelLink`], which plays the *panel* role — this
 //! endpoint plays the **brain** role toward the hardware: it consumes the device's
 //! input and emits illumination at it.
 //!
-//! It is orthogonal to [`crate::link::LinkKind`]: the on-screen GUI and the
+//! It is orthogonal to [`crate::panel_link::LinkKind`]: the on-screen GUI and the
 //! physical Deluge are *peers*, both mirroring the same [`SharedPanel`]. Input from
 //! the device is fed into the brain exactly like a GUI click (via `app::send`), and
 //! the brain's illumination is pushed back out so the real OLED/pads/LEDs/knob
@@ -26,8 +26,8 @@ use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread;
 use std::time::Duration;
 
+use crate::link::{ALL_PADS_BYTES, LED_COUNT, PAD_COLS, PAD_ROWS, SharedPanel};
 use deluge_panel_protocol::{FrameDecoder, FromDeluge, ToDeluge};
-use deluge_sim_link::{ALL_PADS_BYTES, LED_COUNT, PAD_COLS, PAD_ROWS, SharedPanel};
 use log::{debug, info, warn};
 
 /// USB identity of the controller-firmware (see

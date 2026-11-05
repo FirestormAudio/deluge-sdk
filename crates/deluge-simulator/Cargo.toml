@@ -17,9 +17,13 @@ path = "src/lib.rs"
 [[bin]]
 name = "deluge-simulator"
 path = "src/main.rs"
+required-features = ["cli"]
 
 [features]
-default = ["rack"]
+default = ["rack", "cli"]
+# The `deluge-simulator` binary (argument parsing and the logger). Libraries embedding the
+# simulator, such as deluge-sdk's `sim` backend, build without it.
+cli = ["dep:clap", "dep:env_logger"]
 # The strip above the faceplate: CV/gate meters and L/R output scopes. Build
 # without it when the simulator is linked to a remote brain over the protocol,
 # which carries no audio.
@@ -28,8 +32,8 @@ rack = []
 [dependencies]
 # The shared host↔device wire contract (panel role).
 deluge-panel-protocol = { path = "../deluge-panel-protocol", version = "0.1.0", features = ["alloc"] }
-# The in-process panel/brain link (for `cargo deluge sim`).
-deluge-sim-link = { path = "../deluge-sim-link", version = "0.1.0" }
+# Lock-free SPSC rings for the in-process audio bridge (cpal callback ⇄ DSP block loop).
+ringbuf = "0.5"
 # Host audio I/O for the in-process link.
 cpal = "0.18"
 # Host MIDI I/O bridge (virtual ports to/from the in-process panel).
@@ -50,8 +54,8 @@ tiny-skia = "0.12"
 embedded-graphics = "0.8"
 
 # CLI
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive"], optional = true }
 
 # Logging
 log = "0.4"
-env_logger = "0.11"
+env_logger = { version = "0.11", optional = true }

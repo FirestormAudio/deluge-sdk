@@ -6,7 +6,7 @@
 //! - [`run_connected`] — drive an external brain over the [`deluge_panel_protocol`]
 //!   wire (TCP / Unix socket), e.g. DelugeFirmware's native `deluge_host`.
 //! - [`run_brain`] / [`run_in_process`] — drive a program running in *this*
-//!   process, sharing state through [`deluge_sim_link`] with no serialization.
+//!   process, sharing state through [`link`] with no serialization.
 //!   This is what `cargo deluge sim` uses.
 //! - [`run_headless`] — the window-less, scripted driver for the in-process
 //!   case (CI, golden frames), selected by `DELUGE_HEADLESS`.
@@ -18,9 +18,10 @@ mod hardware;
 mod hardware_link;
 mod hardware_state;
 mod headless;
-mod link;
+pub mod link;
 mod midi;
 mod pad_grid;
+mod panel_link;
 #[cfg(feature = "rack")]
 mod rack;
 mod renderer;
@@ -30,11 +31,12 @@ mod scope;
 
 pub use headless::run_headless;
 
+use crate::link::SharedPanel;
+use crate::link::audio::GuiEnds;
 use app::DelugeSimulator;
-use deluge_sim_link::SharedPanel;
-use deluge_sim_link::audio::{GuiEnds, HeapCons};
 use hardware_link::HardwareMirror;
-use link::{InProcessLink, LinkKind, PanelLink};
+use panel_link::{InProcessLink, LinkKind, PanelLink};
+use ringbuf::HeapCons;
 
 /// The faceplate art, rasterised at launch.
 const DELUGE_SVG: &[u8] = include_bytes!("../assets/Deluge.svg");
@@ -165,11 +167,9 @@ pub fn run_in_process(panel: SharedPanel, gui_audio: GuiEnds) {
 /// backend keeps the panel and plugs it into `deluge_bsp::host_panel`. A program
 /// built on the BSP directly is another, and installs its own
 /// `deluge_bsp::host_panel::HostPanel`.
-pub fn run_brain(
-    brain: impl FnOnce(SharedPanel, deluge_sim_link::audio::BrainEnds) + Send + 'static,
-) {
+pub fn run_brain(brain: impl FnOnce(SharedPanel, crate::link::audio::BrainEnds) + Send + 'static) {
     let panel = SharedPanel::new();
-    let (brain_audio, gui_audio) = deluge_sim_link::audio::new_bridge();
+    let (brain_audio, gui_audio) = crate::link::audio::new_bridge();
     let brain_panel = panel.clone();
     std::thread::Builder::new()
         .name("deluge-brain".into())

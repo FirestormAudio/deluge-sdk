@@ -36,8 +36,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use deluge_sim_link::audio::{Consumer, GuiEnds, Producer, SAMPLE_RATE_HZ};
-use deluge_sim_link::{DISPLAY_BYTES, InputEvent, LED_COUNT, PAD_COLS, PAD_ROWS, SharedPanel};
+use crate::link::audio::{GuiEnds, SAMPLE_RATE_HZ};
+use crate::link::{DISPLAY_BYTES, InputEvent, LED_COUNT, PAD_COLS, PAD_ROWS, SharedPanel};
 
 /// Run the app headlessly: replay the script, dump snapshots, then return (the
 /// caller of [`run_brain`](crate::run_brain) exits the process afterwards). The app is already running on

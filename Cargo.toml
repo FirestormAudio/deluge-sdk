@@ -56,7 +56,6 @@ exclude = [
   "rza1",
   "tools/cargo-deluge",
   "crates/deluge-simulator",
-  "crates/deluge-sim-link",
   "linux/deluge-sys",
   "linux/deluge-hal-linux",
   "linux/deluge-linux-ui",

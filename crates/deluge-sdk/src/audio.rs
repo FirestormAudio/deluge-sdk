@@ -35,7 +35,7 @@ const _: () = {
 /// against, and what apps size fixed-length buffers by on the Linux backend.
 ///
 /// Must match `deluge_bsp::audio_block::BLOCK_FRAMES` (device) and
-/// `deluge_sim_link::audio::BLOCK_FRAMES` (simulator), neither of which is
+/// `deluge_simulator::link::audio::BLOCK_FRAMES` (simulator), neither of which is
 /// reachable from a `linux` build; keep all three in sync by hand.
 #[cfg(any(feature = "linux", test))]
 pub(crate) const EXPECTED_BLOCK_FRAMES: usize = 128;

@@ -11,12 +11,11 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use crate::link::audio::{BLOCK_FRAMES, GuiEnds, SAMPLE_RATE_HZ};
 use cpal::Sample;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use deluge_sim_link::audio::{
-    BLOCK_FRAMES, Consumer, GuiEnds, HeapCons, HeapProd, HeapRb, Observer, Producer,
-    SAMPLE_RATE_HZ, Split,
-};
+use ringbuf::traits::{Consumer, Observer, Producer, Split};
+use ringbuf::{HeapCons, HeapProd, HeapRb};
 
 /// Optional WAV file bridges, from `--audio-in` / `--audio-out` (via the
 /// `DELUGE_SIM_AUDIO_IN` / `DELUGE_SIM_AUDIO_OUT` env vars).
@@ -112,6 +111,7 @@ pub fn start(
     cfg: AudioConfig,
 ) -> (AudioStreams, HeapCons<[f32; 2]>) {
     let GuiEnds { out, in_ } = gui;
+    let (out, in_) = (out.0, in_.0);
     let host = cpal::default_host();
 
     let (mon_prod, mon_cons) = HeapRb::<[f32; 2]>::new(MONITOR_CAP).split();

@@ -1,4 +1,4 @@
-//! Host-simulator backend ops (the deluge-sim-link `SharedPanel`).
+//! Host-simulator backend ops (the `deluge_simulator::link::SharedPanel`).
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use deluge_bsp::oled::FrameBuffer;
@@ -45,7 +45,7 @@ pub(crate) async fn oled_flush(fb: &FrameBuffer) {
 
 pub(crate) async fn pads_flush(leds: &mut PadLeds) {
     let grid = leds.grid();
-    let mut buf = [0u8; deluge_sim_link::ALL_PADS_BYTES];
+    let mut buf = [0u8; deluge_simulator::link::ALL_PADS_BYTES];
     for col in 0..COLS {
         for row in 0..ROWS {
             let o = (col * ROWS + row) * 3;
@@ -274,7 +274,7 @@ pub(crate) fn input_start_pump(spawner: Spawner) {
 /// [`crate::input::Event`]s.
 #[embassy_executor::task]
 async fn host_input_pump() {
-    use deluge_sim_link::InputEvent;
+    use deluge_simulator::link::InputEvent;
     use embassy_time::{Duration, Timer};
     loop {
         while let Some(ev) = crate::host::panel().pop_event() {

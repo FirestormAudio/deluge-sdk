@@ -182,7 +182,7 @@ fn writer_loop<W: Write>(mut stream: W, rx: Receiver<FromDeluge>) {
 
 // ── In-process link (an SDK app running in the same process) ──────────────────
 
-use deluge_sim_link::{InputEvent, SharedPanel};
+use crate::link::{InputEvent, SharedPanel};
 
 /// How the panel is driven: a wire `PanelLink` to an external brain, a shared
 /// in-memory [`SharedPanel`] for an SDK app in the same process, or nothing.

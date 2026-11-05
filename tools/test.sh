@@ -31,7 +31,7 @@ tools/check-layering.sh
 
 echo "==> rustfmt-clean (the workspace and the crates it excludes; rza1/ checks its own)"
 cargo fmt --all -- --check
-for d in tools/cargo-deluge crates/deluge-simulator crates/deluge-sim-link linux/deluge-sys \
+for d in tools/cargo-deluge crates/deluge-simulator linux/deluge-sys \
   linux/deluge-hal-linux linux/deluge-linux-ui examples/linux/rust-app examples/linux/snake \
   examples/linux/launcher examples/linux/terminal; do
   (cd "$d" && cargo fmt -- --check)

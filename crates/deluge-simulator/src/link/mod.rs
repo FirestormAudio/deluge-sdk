@@ -4,7 +4,7 @@
 //! When an SDK app is built for the host triple, the app logic and the simulator
 //! window run in **one process**: the app's embassy executor runs on a worker
 //! thread (the brain), and `iced` owns the main thread (the panel). They share
-//! state through this crate instead of a wire protocol — no sockets, no
+//! state through this module instead of a wire protocol — no sockets, no
 //! serialization.
 //!
 //! - [`SharedPanel`] carries *illumination* (the app writes OLED / pad RGB / LED

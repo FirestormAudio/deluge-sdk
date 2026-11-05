@@ -10,7 +10,7 @@
 //! Virtual ports mean no device picking: the user wires their gear to the
 //! sim's ports. On platforms without virtual-port support the bridge is a no-op.
 
-use deluge_sim_link::SharedPanel;
+use crate::link::SharedPanel;
 
 /// Keeps the MIDI connections alive for the simulator's lifetime (dropping the
 /// input connection closes the virtual port; the output thread is detached).

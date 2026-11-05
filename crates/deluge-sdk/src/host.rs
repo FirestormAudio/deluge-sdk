@@ -8,7 +8,7 @@
 //! any app code runs; it also plugs the panel into `deluge_bsp::host_panel`, so the
 //! BSP calls an app makes reach the same panel.
 
-use deluge_sim_link::SharedPanel;
+use deluge_simulator::link::SharedPanel;
 
 /// The process-wide shared panel. Panics if called before the host runtime installs it.
 pub(crate) fn panel() -> &'static SharedPanel {

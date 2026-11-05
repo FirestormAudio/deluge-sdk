@@ -7,17 +7,17 @@ use crate::display::SimulatorDisplay;
 use crate::hardware::{HardwareButton, HardwareEncoder, HardwareLED};
 use crate::hardware_link::HardwareMirror;
 use crate::hardware_state::DelugeHardware;
-use crate::link::{self, LinkKind};
 use crate::pad_grid::PadGrid;
+use crate::panel_link::{self, LinkKind};
 #[cfg(feature = "rack")]
 use crate::rack::InstrumentRack;
 use crate::renderer::DynamicElementsRenderer;
 use crate::rgb::RGB;
 
 use deluge_panel_protocol::{FromDeluge, ToDeluge};
+use ringbuf::HeapCons;
 #[cfg(feature = "rack")]
-use deluge_sim_link::audio::Consumer;
-use deluge_sim_link::audio::HeapCons;
+use ringbuf::traits::Consumer;
 
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 #[cfg(feature = "rack")]
@@ -228,14 +228,14 @@ impl DelugeSimulator {
                 self.renderer.pressed_buttons.insert(b);
                 self.renderer.controls_cache.clear();
                 self.send(FromDeluge::ButtonPressed {
-                    id: link::button_to_id(b),
+                    id: panel_link::button_to_id(b),
                 });
             }
             SimulatorMessage::ButtonReleased(b) => {
                 self.renderer.pressed_buttons.remove(&b);
                 self.renderer.controls_cache.clear();
                 self.send(FromDeluge::ButtonReleased {
-                    id: link::button_to_id(b),
+                    id: panel_link::button_to_id(b),
                 });
             }
 
@@ -255,7 +255,7 @@ impl DelugeSimulator {
                 }
                 self.renderer.hardware.rotate_encoder(encoder, delta);
                 self.renderer.controls_cache.clear();
-                if let Some(id) = link::encoder_to_id(encoder) {
+                if let Some(id) = panel_link::encoder_to_id(encoder) {
                     self.send(FromDeluge::EncoderRotated {
                         id,
                         delta: delta.clamp(-128, 127) as i8,
@@ -263,12 +263,12 @@ impl DelugeSimulator {
                 }
             }
             SimulatorMessage::EncoderPressed(e) => {
-                if let Some(id) = link::encoder_push_id(e) {
+                if let Some(id) = panel_link::encoder_push_id(e) {
                     self.send(FromDeluge::ButtonPressed { id });
                 }
             }
             SimulatorMessage::EncoderReleased(e) => {
-                if let Some(id) = link::encoder_push_id(e) {
+                if let Some(id) = panel_link::encoder_push_id(e) {
                     self.send(FromDeluge::ButtonReleased { id });
                 }
             }
@@ -406,7 +406,7 @@ impl DelugeSimulator {
         }
         if let Some((leds, knobs, synced)) = controls {
             for (index, on) in leds.iter().enumerate() {
-                if let Some(led) = link::led_index_to_led(index as u8) {
+                if let Some(led) = panel_link::led_index_to_led(index as u8) {
                     self.renderer.hardware.set_led_state(led, *on);
                 }
             }
@@ -473,7 +473,7 @@ impl DelugeSimulator {
                 self.renderer.pad_cache.clear();
             }
             ToDeluge::SetLed { index, on } => {
-                if let Some(led) = link::led_index_to_led(index) {
+                if let Some(led) = panel_link::led_index_to_led(index) {
                     self.renderer.hardware.set_led_state(led, on);
                     self.renderer.controls_cache.clear();
                 }

@@ -176,7 +176,7 @@ RULES = [
      "usb/ depends on the chip or the board; it must stay board-agnostic"),
     ("drivers/", lambda n: n == "rza1-hal" or n.startswith("deluge-"),
      "drivers/ depends on the chip or the board; it must stay board-agnostic"),
-    ("crates/deluge-bsp/", lambda n: n in ("deluge-sim-link", "deluge-simulator"),
+    ("crates/deluge-bsp/", lambda n: n == "deluge-simulator",
      "deluge-bsp depends on the simulator; plug in through deluge_bsp::host_panel"),
 ]
 
