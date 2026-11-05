@@ -19,9 +19,16 @@ Do not edit `src/chips/*.rs` or `transforms/rza1l/absent.yaml`: change the other
 mismatch with the manual.
 
 The generated code uses this crate's own `common::Reg` (chiptool's `--common-module`), which sends
-every read and write through `mmio`: real volatile accesses on the device, a shadow memory with an
-access log under host tests, so drivers' register sequences can be tested.
+every read and write through `mmio`: real volatile accesses by default, on every target, or a
+shadow memory with an access log (`mmio::test`) with the `mock-mmio` feature, so drivers' register
+sequences can be tested on a host or under QEMU.
+
+| Feature | What it does |
+|---|---|
+| `rza1l` | The RZ/A1L register set. |
+| `rza1h` | The RZ/A1H register set (experimental). |
+| `mock-mmio` | Back `mmio` with the in-memory shadow and access log instead of real volatile access. Needs `std`; for tests only, never in a build that runs on hardware. |
 
 [chiptool]: https://github.com/embassy-rs/chiptool
 
-Requires a nightly Rust toolchain (the workspace's `rust-toolchain.toml` pins one).
+Builds on stable Rust 1.92 or later. (The workspace pins a nightly only for its own `-Zbuild-std` builds.)

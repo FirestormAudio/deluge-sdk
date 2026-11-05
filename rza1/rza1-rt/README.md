@@ -9,7 +9,7 @@ linker search path defining the `RAM` (and optionally `SDRAM`) regions, the per-
 and `INTERNAL_RAM_END`; see the script's header for the full list. The application's `build.rs`
 passes `-Tlink.x` (`cargo:rustc-link-arg-bins=-Tlink.x`).
 
-Requires a nightly Rust toolchain (the workspace's `rust-toolchain.toml` pins one).
+Builds on stable Rust 1.92 or later. (The workspace pins a nightly only for its own `-Zbuild-std` builds.)
 
 ## Attributes
 

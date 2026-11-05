@@ -9,7 +9,7 @@ at runtime rather than compiled in.
 
 ---
 
-Requires a nightly Rust toolchain (the workspace's `rust-toolchain.toml` pins one).
+Builds on stable Rust 1.92 or later. (The workspace pins a nightly only for its own `-Zbuild-std` builds.)
 
 ## Target
 
@@ -156,6 +156,7 @@ it, and `tools/check-register-tables.sh` checks the whole crate for hand-written
 | `defmt` | | Log through `defmt`, and derive `defmt::Format` on the public types. Not with `log`. |
 | `unstable-pac` | | Re-export the register-level PAC as `rza1_hal::pac`. Not covered by semver. |
 | `unlock-bootloader` | | `spibsc::force_erase_range` / `force_program`: flash writes that skip the writable-window guard and can rewrite the bootloaders. Only for a recovery tool loaded into SRAM over JTAG. |
+| `mock-mmio` | | Back the registers with `rza1-pac`'s in-memory shadow (`mmio::test`) instead of real volatile access, for host and QEMU tests of code built on the HAL. Never in a build that runs on hardware. |
 
 `unstable-driver-steal` (hidden, not covered by semver) adds `Dma::steal`, `Rspi::steal` and
 `UartRx::steal`, for panic and fault paths that must reach an initialised driver without its

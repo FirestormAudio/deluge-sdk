@@ -39,5 +39,5 @@ transforms:
   - !AddPeripherals
     devices: .*
     peripherals:
-      - {name: SDHI0, base_address: 0xE804E000, block: "SDHI::SDHI"}
-      - {name: SDHI1, base_address: 0xE804E800, block: "SDHI::SDHI"}
+      - {name: SDHI0, description: "SD host interface 0", base_address: 0xE804E000, block: "SDHI::SDHI"}
+      - {name: SDHI1, description: "SD host interface 1", base_address: 0xE804E800, block: "SDHI::SDHI"}

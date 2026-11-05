@@ -2,7 +2,7 @@
 //! and the transforms in `transforms/` (`tools/gen-pac.sh` regenerates `src/chips/`). Enable exactly
 //! one chip feature: `rza1l` or `rza1h`.
 //!
-//! Requires a nightly Rust toolchain (the workspace's `rust-toolchain.toml` pins one).
+//! Builds on stable Rust 1.92 or later.
 //!
 //! Every peripheral is a `Copy` handle (`CPG`, `SCIF0`, `INTC`, …); its methods return
 //! [`common::Reg`] handles whose reads and writes go through [`mmio`], so a host test can drive
@@ -12,9 +12,9 @@
 #![allow(non_camel_case_types, non_snake_case, non_upper_case_globals)]
 #![allow(clippy::all)]
 
-// Host builds (the QEMU and host tests, here and downstream) back `mmio` with a shadow memory
-// built on std; the device build has none.
-#[cfg(not(target_os = "none"))]
+// With `mock-mmio` (and in this crate's own tests) `mmio` is an in-memory register shadow built
+// on std, for host and QEMU tests. Every other build, on any target, gets real volatile access.
+#[cfg(any(test, feature = "mock-mmio"))]
 #[macro_use]
 extern crate std;
 
@@ -38,7 +38,7 @@ mod chip {
 }
 pub use chip::*;
 
-#[cfg(all(test, not(target_os = "none")))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::vec::Vec;

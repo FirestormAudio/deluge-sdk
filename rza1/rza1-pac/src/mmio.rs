@@ -64,7 +64,7 @@ reg_handle!(Reg32, u32, write32, read32);
 ///
 /// # Safety
 /// `addr` must be a valid, correctly-aligned MMIO register address.
-#[cfg(target_os = "none")]
+#[cfg(not(any(test, feature = "mock-mmio")))]
 #[inline(always)]
 pub unsafe fn write32(addr: usize, val: u32) {
     unsafe { core::ptr::write_volatile(addr as *mut u32, val) }
@@ -74,7 +74,7 @@ pub unsafe fn write32(addr: usize, val: u32) {
 ///
 /// # Safety
 /// `addr` must be a valid, correctly-aligned MMIO register address.
-#[cfg(target_os = "none")]
+#[cfg(not(any(test, feature = "mock-mmio")))]
 #[inline(always)]
 pub unsafe fn read32(addr: usize) -> u32 {
     unsafe { core::ptr::read_volatile(addr as *const u32) }
@@ -84,7 +84,7 @@ pub unsafe fn read32(addr: usize) -> u32 {
 ///
 /// # Safety
 /// See [`write32`].
-#[cfg(target_os = "none")]
+#[cfg(not(any(test, feature = "mock-mmio")))]
 #[inline(always)]
 pub unsafe fn write16(addr: usize, val: u16) {
     unsafe { core::ptr::write_volatile(addr as *mut u16, val) }
@@ -94,7 +94,7 @@ pub unsafe fn write16(addr: usize, val: u16) {
 ///
 /// # Safety
 /// See [`read32`].
-#[cfg(target_os = "none")]
+#[cfg(not(any(test, feature = "mock-mmio")))]
 #[inline(always)]
 pub unsafe fn read16(addr: usize) -> u16 {
     unsafe { core::ptr::read_volatile(addr as *const u16) }
@@ -104,7 +104,7 @@ pub unsafe fn read16(addr: usize) -> u16 {
 ///
 /// # Safety
 /// See [`write32`].
-#[cfg(target_os = "none")]
+#[cfg(not(any(test, feature = "mock-mmio")))]
 #[inline(always)]
 pub unsafe fn write8(addr: usize, val: u8) {
     unsafe { core::ptr::write_volatile(addr as *mut u8, val) }
@@ -114,7 +114,7 @@ pub unsafe fn write8(addr: usize, val: u8) {
 ///
 /// # Safety
 /// See [`read32`].
-#[cfg(target_os = "none")]
+#[cfg(not(any(test, feature = "mock-mmio")))]
 #[inline(always)]
 pub unsafe fn read8(addr: usize) -> u8 {
     unsafe { core::ptr::read_volatile(addr as *const u8) }
@@ -126,7 +126,7 @@ pub unsafe fn read8(addr: usize) -> u8 {
 ///
 /// # Safety
 /// See the firmware [`write32`] impl.
-#[cfg(not(target_os = "none"))]
+#[cfg(any(test, feature = "mock-mmio"))]
 #[inline]
 pub unsafe fn write32(addr: usize, val: u32) {
     shadow::store(addr, val, 4);
@@ -136,7 +136,7 @@ pub unsafe fn write32(addr: usize, val: u32) {
 ///
 /// # Safety
 /// See the firmware [`read32`] impl.
-#[cfg(not(target_os = "none"))]
+#[cfg(any(test, feature = "mock-mmio"))]
 #[inline]
 pub unsafe fn read32(addr: usize) -> u32 {
     shadow::load(addr, 4)
@@ -146,7 +146,7 @@ pub unsafe fn read32(addr: usize) -> u32 {
 ///
 /// # Safety
 /// See the firmware [`write32`] impl.
-#[cfg(not(target_os = "none"))]
+#[cfg(any(test, feature = "mock-mmio"))]
 #[inline]
 pub unsafe fn write16(addr: usize, val: u16) {
     shadow::store(addr, val as u32, 2);
@@ -156,7 +156,7 @@ pub unsafe fn write16(addr: usize, val: u16) {
 ///
 /// # Safety
 /// See the firmware [`read32`] impl.
-#[cfg(not(target_os = "none"))]
+#[cfg(any(test, feature = "mock-mmio"))]
 #[inline]
 pub unsafe fn read16(addr: usize) -> u16 {
     shadow::load(addr, 2) as u16
@@ -166,7 +166,7 @@ pub unsafe fn read16(addr: usize) -> u16 {
 ///
 /// # Safety
 /// See the firmware [`write32`] impl.
-#[cfg(not(target_os = "none"))]
+#[cfg(any(test, feature = "mock-mmio"))]
 #[inline]
 pub unsafe fn write8(addr: usize, val: u8) {
     shadow::store(addr, val as u32, 1);
@@ -176,13 +176,13 @@ pub unsafe fn write8(addr: usize, val: u8) {
 ///
 /// # Safety
 /// See the firmware [`read32`] impl.
-#[cfg(not(target_os = "none"))]
+#[cfg(any(test, feature = "mock-mmio"))]
 #[inline]
 pub unsafe fn read8(addr: usize) -> u8 {
     shadow::load(addr, 1) as u8
 }
 
-#[cfg(not(target_os = "none"))]
+#[cfg(any(test, feature = "mock-mmio"))]
 mod shadow {
     use std::cell::RefCell;
     use std::collections::BTreeMap;
@@ -294,7 +294,7 @@ mod shadow {
 }
 
 /// Test-only inspection API for the shadow MMIO (host/QEMU target).
-#[cfg(not(target_os = "none"))]
+#[cfg(any(test, feature = "mock-mmio"))]
 pub mod test {
     use super::shadow;
     pub use super::shadow::Access;
@@ -353,7 +353,7 @@ pub mod test {
     }
 }
 
-#[cfg(all(test, not(target_os = "none")))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

@@ -54,6 +54,29 @@ done
 # Without the OSTM time driver (an application bringing its own): OSTM0/OSTM1 are its to use.
 cargo build "${BUILD_STD[@]}" -p rza1-hal --no-default-features --features rza1l,rt,critical-section-impl
 
+echo "==> rza1: the register shadow exists only with mock-mmio"
+# A real OS-target build (a Linux userspace mapping /dev/mem, say) must get real volatile access,
+# so `mmio::test` and the shadow behind it appear only when a crate asks for `mock-mmio`.
+probe=$(mktemp -d)
+mkdir -p "$probe/src"
+cat >"$probe/Cargo.toml" <<EOF
+[package]
+name = "mmio-probe"
+version = "0.0.0"
+edition = "2021"
+[dependencies]
+rza1-pac = { path = "$PWD/rza1-pac", features = ["rza1l"] }
+[workspace]
+EOF
+echo 'pub fn f() { rza1_pac::mmio::test::reset() }' >"$probe/src/lib.rs"
+if cargo check -q --manifest-path "$probe/Cargo.toml" --target-dir "$probe/target" --target "$(rustc -vV | sed -n "s/^host: //p")" 2>/dev/null; then
+  echo "error: rza1-pac exposes its register shadow without the mock-mmio feature" >&2
+  exit 1
+fi
+sed -i 's/features = \["rza1l"\]/features = ["rza1l", "mock-mmio"]/' "$probe/Cargo.toml"
+cargo check -q --manifest-path "$probe/Cargo.toml" --target-dir "$probe/target" --target "$(rustc -vV | sed -n "s/^host: //p")"
+rm -rf "$probe"
+
 echo "==> rza1: logging builds (log, defmt, neither)"
 cargo build "${BUILD_STD[@]}" -p rza1-hal --features rza1l,log
 cargo build "${BUILD_STD[@]}" -p rza1-hal --features rza1l,defmt
@@ -71,8 +94,8 @@ HOST=$(rustc -vV | sed -n 's/^host: //p')
 doc() { RUSTDOCFLAGS="-D warnings" cargo doc --no-deps "$@"; }
 doc "${BUILD_STD[@]}" -p rza1-pac --features rza1l
 doc "${BUILD_STD[@]}" -p rza1-pac --features rza1h
-# The host build too: its register shadow (`mmio::test`) is host-only.
-doc --target "$QEMU" -p rza1-pac --features rza1l
+# The register shadow (`mmio::test`) too, which exists only with `mock-mmio`.
+doc --target "$QEMU" -p rza1-pac --features rza1l,mock-mmio
 for f in rza1h rza1l,log rza1l,defmt; do doc "${BUILD_STD[@]}" -p rza1-hal --features "$f"; done
 doc "${BUILD_STD[@]}" -p rza1-hal --no-default-features --features rza1l,rt,critical-section-impl
 doc "${BUILD_STD[@]}" -p rza1-rt -p rza1-alloc

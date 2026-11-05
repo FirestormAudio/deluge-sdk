@@ -1,6 +1,7 @@
 [package]
 name = "rza1-rt"
 version.workspace = true
+rust-version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -17,7 +18,7 @@ links = "rza1-rt"
 default-target = "armv7a-none-eabihf"
 
 [dependencies]
-rza1-rt-macros = { version = "0.1.0", path = "../rza1-rt-macros" }
+rza1-rt-macros = { version = "0.2.0", path = "../rza1-rt-macros" }
 
 [features]
 ## Each fault handler first dumps the fault registers to SEGGER RTT channel 0, and the linker

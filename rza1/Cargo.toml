@@ -5,7 +5,8 @@ resolver = "2"
 members = ["rza1-pac", "rza1-rt", "rza1-rt-macros", "rza1-hal", "rza1-alloc"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
+rust-version = "1.92"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["Katherine Whitlock <kate@skylinesynths.nyc>"]

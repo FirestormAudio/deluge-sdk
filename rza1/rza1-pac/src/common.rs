@@ -92,7 +92,7 @@ impl<T: Copy, A: Read> Reg<T, A> {
                 1 => core::mem::transmute_copy(&crate::mmio::read8(addr)),
                 2 => core::mem::transmute_copy(&crate::mmio::read16(addr)),
                 4 => core::mem::transmute_copy(&crate::mmio::read32(addr)),
-                _ => unreachable!("RZ/A1L registers are 8, 16 or 32 bits wide"),
+                _ => unreachable!("RZ/A1 registers are 8, 16 or 32 bits wide"),
             }
         }
     }
@@ -109,7 +109,7 @@ impl<T: Copy, A: Write> Reg<T, A> {
                 1 => crate::mmio::write8(addr, core::mem::transmute_copy(&val)),
                 2 => crate::mmio::write16(addr, core::mem::transmute_copy(&val)),
                 4 => crate::mmio::write32(addr, core::mem::transmute_copy(&val)),
-                _ => unreachable!("RZ/A1L registers are 8, 16 or 32 bits wide"),
+                _ => unreachable!("RZ/A1 registers are 8, 16 or 32 bits wide"),
             }
         }
     }
