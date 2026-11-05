@@ -1342,6 +1342,7 @@ version = "0.1.0"
 dependencies = [
  "cortex-ar",
  "deluge-bsp",
+ "deluge-panel-protocol",
  "deluge-usb-classes",
  "embassy-executor",
  "embassy-futures",
@@ -1400,7 +1401,7 @@ name = "deluge-image"
 version = "0.1.0"
 
 [[package]]
-name = "deluge-protocol"
+name = "deluge-panel-protocol"
 version = "0.1.0"
 dependencies = [
  "serde_json",
@@ -1460,7 +1461,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "cpal",
- "deluge-protocol",
+ "deluge-panel-protocol",
  "deluge-sim-link",
  "embedded-graphics",
  "env_logger",

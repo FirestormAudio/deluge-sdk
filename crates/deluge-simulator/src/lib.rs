@@ -3,7 +3,7 @@
 //! Renders the Deluge's OLED, RGB pad grid, buttons, encoders and LEDs and feeds
 //! input back to a "brain" that owns all UI logic. Entry points:
 //!
-//! - [`run_connected`] — drive an external brain over the [`deluge_protocol`]
+//! - [`run_connected`] — drive an external brain over the [`deluge_panel_protocol`]
 //!   wire (TCP / Unix socket), e.g. DelugeFirmware's native `deluge_host`.
 //! - [`run_brain`] / [`run_in_process`] — drive a program running in *this*
 //!   process, sharing state through [`deluge_sim_link`] with no serialization.
@@ -97,7 +97,7 @@ fn run_app(
     .run()
 }
 
-/// Run the panel against an external brain over `deluge-protocol`. `target` is a
+/// Run the panel against an external brain over `deluge-panel-protocol`. `target` is a
 /// connect string (`host:port`, `:port`, `tcp://…`, or a Unix socket path); pass
 /// `None` for a passive, blank panel.
 pub fn run_connected(target: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {

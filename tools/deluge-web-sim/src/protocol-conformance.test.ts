@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import golden from "./protocol-golden.json";
+import golden from "../../../crates/deluge-panel-protocol/tests/data/protocol-golden.json";
 import { decodeToDeluge, encodeFromDeluge, type FromDeluge, type ToDeluge } from "./protocol";
 
 // The structured value each named vector is expected to decode to / encode from.

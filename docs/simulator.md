@@ -14,7 +14,7 @@ It runs in two modes:
 | Mode | Launched by | What drives it |
 | --- | --- | --- |
 | **In-process** | `cargo deluge sim` | An SDK app built for the host, sharing state with the panel in one process (no sockets). |
-| **External** | `deluge-simulator --connect <target>` | A separate core process, communicating over the `deluge-protocol` wire (TCP / Unix socket), e.g. DelugeFirmware's native `deluge_host`. |
+| **External** | `deluge-simulator --connect <target>` | A separate core process, communicating over the `deluge-panel-protocol` wire (TCP / Unix socket), e.g. DelugeFirmware's native `deluge_host`. |
 
 Most app developers only need the first mode. The rest of this manual assumes
 in-process (`cargo deluge sim`) unless noted.

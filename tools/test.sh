@@ -72,6 +72,10 @@ cargo test --target "$HOST" -p deluge-fixedpoint
 cargo test --target "$HOST" -p deluge-image
 cargo test --target "$HOST" -p deluge-ui-toolkit
 cargo test --target "$HOST" -p deluge-sdk-macros
+# The panel wire protocol, against the golden vectors the web simulator is also pinned to.
+cargo test --target "$HOST" -p deluge-panel-protocol --features alloc
+cargo check --target armv7a-none-eabihf -p deluge-panel-protocol
+cargo test --target "$HOST" --manifest-path crates/deluge-simulator/Cargo.toml
 # The SDK facade: `adapt_block` (the linux backend's frame adaptation) is pure
 # logic and testable here. Needs an explicit backend feature — `sim` is the only
 # one that builds on the host (`linux` requires the musl libdeluge sysroot).

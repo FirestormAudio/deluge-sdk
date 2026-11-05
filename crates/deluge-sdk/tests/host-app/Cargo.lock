@@ -1244,7 +1244,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "deluge-protocol"
+name = "deluge-panel-protocol"
 version = "0.1.0"
 
 [[package]]
@@ -1295,7 +1295,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "cpal",
- "deluge-protocol",
+ "deluge-panel-protocol",
  "deluge-sim-link",
  "embedded-graphics",
  "env_logger",

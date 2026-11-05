@@ -25,7 +25,7 @@ members = [
   "crates/deluge-fonts",
   "crates/deluge-ui-toolkit",
   "crates/deluge-grid-toolkit",
-  "crates/deluge-protocol",
+  "crates/deluge-panel-protocol",
   "drivers/max5136",
   "usb/usb-classes",
   "examples/baremetal/blinky",

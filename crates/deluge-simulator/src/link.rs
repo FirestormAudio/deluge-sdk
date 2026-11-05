@@ -1,6 +1,6 @@
 //! Panel link: the simulator's connection to a Deluge "brain" over a byte stream.
 //!
-//! The simulator plays the **panel/device** role of the [`deluge_protocol`] contract: it
+//! The simulator plays the **panel/device** role of the [`deluge_panel_protocol`] contract: it
 //! receives [`ToDeluge`] illumination frames (OLED, pad LEDs, indicator LEDs) and emits
 //! [`FromDeluge`] input. The brain on the other end is typically the DelugeFirmware C
 //! build's `deluge_host` (its `host_link` bridge listens on the stream).
@@ -25,7 +25,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 
-use deluge_protocol::{FrameDecoder, FromDeluge};
+use deluge_panel_protocol::{FrameDecoder, FromDeluge};
 
 use crate::hardware::{HardwareButton, HardwareEncoder, HardwareLED};
 
@@ -151,9 +151,15 @@ fn reader_loop<R: Read>(mut stream: R, tx: Sender<(u8, Vec<u8>)>) {
             Ok(0) => break, // brain closed the socket
             Ok(n) => {
                 dec.push(&buf[..n]);
-                while let Some((type_byte, len)) = dec.pop_frame(&mut payload) {
-                    let len = len.min(payload.len());
-                    if tx.send((type_byte, payload[..len].to_vec())).is_err() {
+                while let Some(frame) = dec.pop_frame(&mut payload) {
+                    if frame.truncated {
+                        log::warn!("link: oversized frame type=0x{:02x} dropped", frame.kind);
+                        continue;
+                    }
+                    if tx
+                        .send((frame.kind, payload[..frame.len].to_vec()))
+                        .is_err()
+                    {
                         return; // GUI gone
                     }
                 }
@@ -183,7 +189,7 @@ use deluge_sim_link::{InputEvent, SharedPanel};
 pub enum LinkKind {
     /// No brain connected — a passive, blank panel.
     None,
-    /// An external brain over `deluge-protocol` (e.g. DelugeFirmware's `deluge_host`).
+    /// An external brain over `deluge-panel-protocol` (e.g. DelugeFirmware's `deluge_host`).
     Protocol(PanelLink),
     /// An SDK app in this process (`cargo deluge sim`).
     InProcess(InProcessLink),
@@ -219,7 +225,7 @@ impl InProcessLink {
     }
 
     /// Translate a panel input event into the SDK-native event and enqueue it.
-    /// Buttons carry the wire id (raw + [`deluge_protocol::BUTTON_ID_BASE`]); the
+    /// Buttons carry the wire id (raw + [`deluge_panel_protocol::BUTTON_ID_BASE`]); the
     /// SDK expects the raw id, so subtract the base here.
     pub fn send_input(&self, msg: FromDeluge) {
         let ev = match msg {
@@ -234,11 +240,11 @@ impl InProcessLink {
                 pressed: false,
             },
             FromDeluge::ButtonPressed { id } => InputEvent::Button {
-                id: id.wrapping_sub(deluge_protocol::BUTTON_ID_BASE),
+                id: id.wrapping_sub(deluge_panel_protocol::BUTTON_ID_BASE),
                 pressed: true,
             },
             FromDeluge::ButtonReleased { id } => InputEvent::Button {
-                id: id.wrapping_sub(deluge_protocol::BUTTON_ID_BASE),
+                id: id.wrapping_sub(deluge_panel_protocol::BUTTON_ID_BASE),
                 pressed: false,
             },
             FromDeluge::EncoderRotated { id, delta } => InputEvent::Encoder { index: id, delta },

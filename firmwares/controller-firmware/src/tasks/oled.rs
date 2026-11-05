@@ -8,9 +8,9 @@ use deluge_bsp::pic;
 // CDC-supplied framebuffer
 // ---------------------------------------------------------------------------
 //
-// When a CDC host sends MSG_TO_UPDATE_DISPLAY, `set_cdc_display` stores the
+// When a CDC host sends `to::UPDATE_DISPLAY`, `set_cdc_display` stores the
 // 768-byte frame here and sets CDC_FRAME_VALID.  The oled_task streams this
-// framebuffer to the panel.  On MSG_TO_CLEAR_DISPLAY or host disconnect,
+// framebuffer to the panel.  On `to::CLEAR_DISPLAY` or host disconnect,
 // `clear_cdc_display` clears the flag and oled_task blanks the panel.
 
 static mut CDC_FRAME: [u8; oled::FRAME_BYTES] = [0u8; oled::FRAME_BYTES];

@@ -9,7 +9,7 @@ It drives one of two kinds of "brain":
 - **An SDK app in the same process.** This is what `cargo deluge sim` builds: the app's
   executor runs on a worker thread and shares state with the panel through
   [`deluge-sim-link`](https://crates.io/crates/deluge-sim-link), with no serialization.
-- **An external process** over the [`deluge-protocol`](https://crates.io/crates/deluge-protocol)
+- **An external process** over the [`deluge-panel-protocol`](https://crates.io/crates/deluge-panel-protocol)
   wire (TCP or a Unix socket): `deluge-simulator --connect <target>`.
 
 A headless, scripted mode renders golden frames for CI.

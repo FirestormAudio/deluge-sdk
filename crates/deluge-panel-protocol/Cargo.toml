@@ -1,5 +1,5 @@
 [package]
-name = "deluge-protocol"
+name = "deluge-panel-protocol"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,8 +12,6 @@ description = "Deluge host↔device front-panel wire protocol: message types, le
 default = []
 ## Pull in `alloc` for the `Vec`-returning convenience encoders.
 alloc = []
-## Host-side conveniences (implies `alloc`). Enable in std tools like the simulator.
-std = ["alloc"]
 
 [dependencies]
 

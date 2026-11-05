@@ -2,7 +2,7 @@
 // encoders placed at their real positions, see deluge-layout.ts) plus a separate
 // large OLED. Input widgets call the PanelClient; output widgets read it each
 // frame. Slimmed from deluge-wren's crates/wren-web/app Panel: no CV/gate scope, MIDI monitor,
-// or on-screen keyboard — this faceplate is driven purely by the deluge-protocol
+// or on-screen keyboard — this faceplate is driven purely by the deluge-panel-protocol
 // wire (illumination in, input out).
 import { PanelClient } from "./panel-client";
 import { OLED_W, OLED_H, PAD_ROWS } from "./protocol";

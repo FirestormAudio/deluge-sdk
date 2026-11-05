@@ -73,7 +73,7 @@ pub(crate) async fn encoder_task() {
                     };
                     knob_level[k] = (knob_level[k] + detents as i32).clamp(0, 32);
                     // The host owns the knob indicator LEDs (via
-                    // MSG_TO_SET_KNOB_INDICATOR); we only track the level locally
+                    // `to::SET_KNOB_INDICATOR`); we only track the level locally
                     // to drive the DVU master volume below.
                     info!("knob {} level {}", k, knob_level[k]);
                     if k == controls::knob::MOD_0 as usize {

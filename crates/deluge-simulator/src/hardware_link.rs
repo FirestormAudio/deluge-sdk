@@ -2,7 +2,7 @@
 //! over USB-CDC serial as an *additional* control surface for the in-process
 //! brain (`cargo deluge sim --hardware <port>`).
 //!
-//! The physical Deluge is hardwired as the [`deluge_protocol`] **device**: it
+//! The physical Deluge is hardwired as the [`deluge_panel_protocol`] **device**: it
 //! emits [`FromDeluge`] input and consumes [`ToDeluge`] illumination. So — unlike
 //! the simulator's [`crate::link::PanelLink`], which plays the *panel* role — this
 //! endpoint plays the **brain** role toward the hardware: it consumes the device's
@@ -26,7 +26,7 @@ use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread;
 use std::time::Duration;
 
-use deluge_protocol::{FrameDecoder, FromDeluge, ToDeluge};
+use deluge_panel_protocol::{FrameDecoder, FromDeluge, ToDeluge};
 use deluge_sim_link::{ALL_PADS_BYTES, LED_COUNT, PAD_COLS, PAD_ROWS, SharedPanel};
 use log::{debug, info, warn};
 
@@ -122,7 +122,7 @@ impl HardwareMirror {
         // Now complete the handshake: the device answers PING with PONG. Sending
         // it after the reader is live means the greeting is being consumed, so the
         // device's `rx_loop` is up to receive this and the illumination that follows.
-        match writer.write_all(&ToDeluge::Ping.to_frame()) {
+        match writer.write_all(&ToDeluge::Ping.to_frame().expect("PING has no payload")) {
             Ok(()) => info!("hw: sent handshake PING; waiting for device greeting/PONG…"),
             Err(e) => warn!("hw: handshake PING write failed: {e}"),
         }
@@ -339,7 +339,9 @@ impl HardwareMirror {
     /// Frame a [`ToDeluge`] and queue it for the writer thread. Returns `false` if
     /// the writer has gone (device unplugged) — callers stop the current pass.
     fn send(&self, msg: ToDeluge) -> bool {
-        self.outbound.send(msg.to_frame()).is_ok()
+        // The mirror's bulk payloads are the fixed-size display and pad buffers.
+        let frame = msg.to_frame().expect("mirror payloads fit a frame");
+        self.outbound.send(frame).is_ok()
     }
 }
 
@@ -372,17 +374,21 @@ fn reader_loop(mut stream: Box<dyn serialport::SerialPort>, tx: Sender<FromDelug
                     if n > head { " …" } else { "" }
                 );
                 dec.push(&buf[..n]);
-                while let Some((type_byte, len)) = dec.pop_frame(&mut payload) {
-                    let len = len.min(payload.len());
-                    match FromDeluge::decode(type_byte, &payload[..len]) {
-                        Some(msg) => {
+                while let Some(frame) = dec.pop_frame(&mut payload) {
+                    let type_byte = frame.kind;
+                    if frame.truncated {
+                        warn!("hw rx: oversized frame type=0x{type_byte:02x} dropped");
+                        continue;
+                    }
+                    match FromDeluge::decode(type_byte, &payload[..frame.len]) {
+                        Ok(msg) => {
                             debug!("hw rx: frame type=0x{type_byte:02x} → {msg:?}");
                             if tx.send(msg).is_err() {
                                 return; // GUI gone
                             }
                         }
-                        None => {
-                            warn!("hw rx: undecodable frame type=0x{type_byte:02x} len={len}");
+                        Err(e) => {
+                            warn!("hw rx: undecodable frame ({e}) len={}", frame.len);
                         }
                     }
                 }
@@ -445,8 +451,8 @@ mod tests {
         let mut out = Vec::new();
         while let Ok(frame) = rx.try_recv() {
             dec.push(&frame);
-            while let Some((t, n)) = dec.pop_frame(&mut payload) {
-                out.push((t, payload[..n].to_vec()));
+            while let Some(f) = dec.pop_frame(&mut payload) {
+                out.push((f.kind, payload[..f.len].to_vec()));
             }
         }
         out
@@ -483,17 +489,17 @@ mod tests {
         assert!(
             frames
                 .iter()
-                .any(|(t, _)| *t == deluge_protocol::to::UPDATE_DISPLAY)
+                .any(|(t, _)| *t == deluge_panel_protocol::to::UPDATE_DISPLAY)
         );
         assert!(
             frames
                 .iter()
-                .any(|(t, _)| *t == deluge_protocol::to::SET_ALL_PADS)
+                .any(|(t, _)| *t == deluge_panel_protocol::to::SET_ALL_PADS)
         );
         // The lit LED is encoded as SetLed{index:5,on:true}.
         let set_led = frames
             .iter()
-            .filter_map(|(t, p)| ToDeluge::decode(*t, p))
+            .filter_map(|(t, p)| ToDeluge::decode(*t, p).ok())
             .find(|m| matches!(m, ToDeluge::SetLed { index: 5, on: true }));
         assert!(
             set_led.is_some(),
@@ -523,7 +529,7 @@ mod tests {
         hw.mirror();
         let leds: Vec<_> = drain_frames(&out_rx)
             .iter()
-            .filter_map(|(t, p)| ToDeluge::decode(*t, p))
+            .filter_map(|(t, p)| ToDeluge::decode(*t, p).ok())
             .filter_map(|m| match m {
                 ToDeluge::SetLed { index, on } => Some((index, on)),
                 _ => None,
@@ -553,12 +559,12 @@ mod tests {
         assert!(
             frames
                 .iter()
-                .any(|(t, _)| *t == deluge_protocol::to::UPDATE_DISPLAY)
+                .any(|(t, _)| *t == deluge_panel_protocol::to::UPDATE_DISPLAY)
         );
         assert!(
             frames
                 .iter()
-                .any(|(t, _)| *t == deluge_protocol::to::SET_ALL_PADS)
+                .any(|(t, _)| *t == deluge_panel_protocol::to::SET_ALL_PADS)
         );
     }
 

@@ -1,4 +1,4 @@
-// deluge-protocol codec, byte-faithful to crates/deluge-protocol/src/lib.rs.
+// deluge-panel-protocol codec, byte-faithful to crates/deluge-panel-protocol/src/lib.rs.
 // On the WebSocket transport a binary message carries [type_byte, ...data] with
 // no length prefix, so this module operates on message bodies, not framed bytes.
 

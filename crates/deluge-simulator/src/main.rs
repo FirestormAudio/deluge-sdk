@@ -1,6 +1,6 @@
 //! Deluge desktop front-panel simulator (binary front-end).
 //!
-//! Drives an external brain over the [`deluge_protocol`] wire — point it at
+//! Drives an external brain over the [`deluge_panel_protocol`] wire — point it at
 //! DelugeFirmware's native `deluge_host` (whose `host_link` bridge listens on the
 //! stream) for a true emulator, or omit `--connect` for a passive, blank panel.
 //!

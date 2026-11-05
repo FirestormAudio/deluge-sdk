@@ -33,7 +33,7 @@
 //! firmware is the brain emitting [`ToDeluge`], and the simulator is the panel emitting
 //! [`FromDeluge`]).
 
-#![cfg_attr(not(feature = "std"), no_std)]
+#![no_std]
 #![forbid(unsafe_code)]
 
 #[cfg(feature = "alloc")]
@@ -95,30 +95,74 @@ pub const fn cdc_button_id(raw: u8) -> u8 {
 
 // ── Framing ──────────────────────────────────────────────────────────────────
 
-/// Write `[len_lo][len_hi][type][data…]` into `out`. Returns the total frame length, or
-/// `None` if `out` is too small. `len = 1 + data.len()`.
-pub fn encode_frame(type_byte: u8, data: &[u8], out: &mut [u8]) -> Option<usize> {
+/// The longest payload a frame can carry: the 16-bit length field also counts the type
+/// byte.
+pub const MAX_PAYLOAD: usize = u16::MAX as usize - 1;
+
+/// Why a frame could not be encoded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum EncodeError {
+    /// The output buffer is shorter than the frame.
+    BufferTooSmall,
+    /// The payload is longer than [`MAX_PAYLOAD`], so the length field cannot hold it.
+    TooLong,
+}
+
+impl core::fmt::Display for EncodeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::BufferTooSmall => "output buffer too small for the frame",
+            Self::TooLong => "payload too long for the 16-bit length field",
+        })
+    }
+}
+
+impl core::error::Error for EncodeError {}
+
+/// The length field for a payload of `data_len` bytes.
+fn length_field(data_len: usize) -> Result<u16, EncodeError> {
+    if data_len > MAX_PAYLOAD {
+        return Err(EncodeError::TooLong);
+    }
+    Ok(1 + data_len as u16)
+}
+
+/// Write `[len_lo][len_hi][type][data…]` into `out` and return the total frame length.
+/// `len = 1 + data.len()`.
+pub fn encode_frame(type_byte: u8, data: &[u8], out: &mut [u8]) -> Result<usize, EncodeError> {
+    let len = length_field(data.len())?;
     let total = 3 + data.len();
     if out.len() < total {
-        return None;
+        return Err(EncodeError::BufferTooSmall);
     }
-    let len = 1u16 + data.len() as u16;
-    out[0] = (len & 0xFF) as u8;
-    out[1] = (len >> 8) as u8;
+    out[..2].copy_from_slice(&len.to_le_bytes());
     out[2] = type_byte;
     out[3..total].copy_from_slice(data);
-    Some(total)
+    Ok(total)
 }
 
 /// `Vec`-returning [`encode_frame`].
 #[cfg(feature = "alloc")]
-pub fn frame(type_byte: u8, data: &[u8]) -> Vec<u8> {
-    let len = 1u16 + data.len() as u16;
+pub fn frame(type_byte: u8, data: &[u8]) -> Result<Vec<u8>, EncodeError> {
+    let len = length_field(data.len())?;
     let mut v = Vec::with_capacity(3 + data.len());
     v.extend_from_slice(&len.to_le_bytes());
     v.push(type_byte);
     v.extend_from_slice(data);
-    v
+    Ok(v)
+}
+
+/// A frame taken off a [`FrameDecoder`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Frame {
+    /// The type byte (a [`to`] or [`from`] constant).
+    pub kind: u8,
+    /// How many payload bytes were copied into the caller's buffer.
+    pub len: usize,
+    /// The payload was longer than the caller's buffer, and only its first `len` bytes
+    /// were copied.
+    pub truncated: bool,
 }
 
 /// Streaming frame reassembler: feed arbitrary byte chunks with [`push`](Self::push),
@@ -155,11 +199,10 @@ impl<const N: usize> FrameDecoder<N> {
         n
     }
 
-    /// Pop the next complete frame: copies its payload into `out`, returns
-    /// `(type_byte, payload_len)`, and consumes the frame. Returns `None` when no full
-    /// frame is buffered. If the payload is longer than `out`, it is truncated (the
-    /// frame is still consumed and the true length returned).
-    pub fn pop_frame(&mut self, out: &mut [u8]) -> Option<(u8, usize)> {
+    /// Pop the next complete frame: copies its payload into `out` and consumes the frame.
+    /// Returns `None` when no full frame is buffered. A payload longer than `out` is cut
+    /// to fit, and the frame is still consumed: [`Frame::truncated`] says so.
+    pub fn pop_frame(&mut self, out: &mut [u8]) -> Option<Frame> {
         if self.pos < 3 {
             return None;
         }
@@ -179,16 +222,42 @@ impl<const N: usize> FrameDecoder<N> {
         // consume
         self.buf.copy_within(total..self.pos, 0);
         self.pos -= total;
-        Some((type_byte, payload_len))
+        Some(Frame {
+            kind: type_byte,
+            len: copy,
+            truncated: copy < payload_len,
+        })
     }
 }
 
 // ── Typed messages ─────────────────────────────────────────────────────────────
 
+/// Why a payload did not decode to a message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DecodeError {
+    /// The type byte names no message in this direction.
+    UnknownType(u8),
+    /// The type is known but the payload is too short for it.
+    Malformed,
+}
+
+impl core::fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::UnknownType(t) => write!(f, "unknown message type {t:#04x}"),
+            Self::Malformed => f.write_str("payload too short for its message type"),
+        }
+    }
+}
+
+impl core::error::Error for DecodeError {}
+
 /// Host→device messages (illumination + CV/gate + handshake queries). Borrows the bulk
 /// payloads ([`UpdateDisplay`](Self::UpdateDisplay), [`SetAllPads`](Self::SetAllPads))
 /// straight from the decode buffer — no allocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ToDeluge<'a> {
     /// 768-byte page-major OLED framebuffer ([`DISPLAY_FRAME_BYTES`]).
     UpdateDisplay(&'a [u8]),
@@ -225,10 +294,9 @@ pub enum ToDeluge<'a> {
 }
 
 impl<'a> ToDeluge<'a> {
-    /// Decode one message from its `type` byte + payload (no length header). Returns
-    /// `None` for unknown types or short payloads.
-    pub fn decode(type_byte: u8, data: &'a [u8]) -> Option<Self> {
-        Some(match type_byte {
+    /// Decode one message from its `type` byte + payload (no length header).
+    pub fn decode(type_byte: u8, data: &'a [u8]) -> Result<Self, DecodeError> {
+        Ok(match type_byte {
             to::UPDATE_DISPLAY if data.len() >= DISPLAY_FRAME_BYTES => {
                 Self::UpdateDisplay(&data[..DISPLAY_FRAME_BYTES])
             }
@@ -263,13 +331,23 @@ impl<'a> ToDeluge<'a> {
             to::SET_BRIGHTNESS if !data.is_empty() => Self::SetBrightness(data[0]),
             to::GET_VERSION => Self::GetVersion,
             to::PING => Self::Ping,
-            _ => return None,
+            to::UPDATE_DISPLAY
+            | to::SET_PAD_RGB
+            | to::SET_LED
+            | to::SET_CV
+            | to::SET_GATE
+            | to::SET_ALL_PADS
+            | to::SET_KNOB_INDICATOR
+            | to::SET_SYNCED_LED
+            | to::SET_BRIGHTNESS => return Err(DecodeError::Malformed),
+            t => return Err(DecodeError::UnknownType(t)),
         })
     }
 
-    /// Serialize to a complete framed wire message.
+    /// Serialize to a complete framed wire message. Fails only for a bulk payload longer
+    /// than [`MAX_PAYLOAD`].
     #[cfg(feature = "alloc")]
-    pub fn to_frame(&self) -> Vec<u8> {
+    pub fn to_frame(&self) -> Result<Vec<u8>, EncodeError> {
         let (t, data) = self.type_and_data();
         match self {
             Self::UpdateDisplay(buf) => frame(t, buf),
@@ -333,6 +411,7 @@ impl<'a> ToDeluge<'a> {
 /// / [`ButtonReleased`](Self::ButtonReleased) carry the **wire** id (already +144; see
 /// [`cdc_button_id`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FromDeluge {
     PadPressed { col: u8, row: u8 },
     PadReleased { col: u8, row: u8 },
@@ -346,8 +425,8 @@ pub enum FromDeluge {
 
 impl FromDeluge {
     /// Decode one message from its `type` byte + payload (no length header).
-    pub fn decode(type_byte: u8, data: &[u8]) -> Option<Self> {
-        Some(match type_byte {
+    pub fn decode(type_byte: u8, data: &[u8]) -> Result<Self, DecodeError> {
+        Ok(match type_byte {
             from::PAD_PRESSED if data.len() >= 2 => Self::PadPressed {
                 col: data[0],
                 row: data[1],
@@ -369,7 +448,13 @@ impl FromDeluge {
             },
             from::PONG => Self::Pong,
             from::READY => Self::Ready,
-            _ => return None,
+            from::PAD_PRESSED
+            | from::PAD_RELEASED
+            | from::BUTTON_PRESSED
+            | from::BUTTON_RELEASED
+            | from::ENCODER_ROTATED
+            | from::VERSION => return Err(DecodeError::Malformed),
+            t => return Err(DecodeError::UnknownType(t)),
         })
     }
 
@@ -377,7 +462,7 @@ impl FromDeluge {
     #[cfg(feature = "alloc")]
     pub fn to_frame(&self) -> Vec<u8> {
         let (t, data) = self.type_and_data();
-        frame(t, &data[..data_len(self)])
+        frame(t, &data[..data_len(self)]).expect("device→host payloads are at most 3 bytes")
     }
 
     #[cfg(feature = "alloc")]
@@ -435,19 +520,21 @@ fn data_len(m: &FromDeluge) -> usize {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
     use super::*;
 
     #[test]
     fn frame_roundtrips_through_decoder() {
         let mut dec = FrameDecoder::<2048>::new();
-        let f = frame(to::SET_PAD_RGB, &[3, 4, 10, 20, 30]);
+        let f = frame(to::SET_PAD_RGB, &[3, 4, 10, 20, 30]).unwrap();
         // split across two pushes to exercise reassembly
         dec.push(&f[..2]);
         dec.push(&f[2..]);
         let mut out = [0u8; 64];
-        let (t, n) = dec.pop_frame(&mut out).unwrap();
-        assert_eq!(t, to::SET_PAD_RGB);
-        assert_eq!(&out[..n], &[3, 4, 10, 20, 30]);
+        let f = dec.pop_frame(&mut out).unwrap();
+        assert_eq!(f.kind, to::SET_PAD_RGB);
+        assert_eq!(&out[..f.len], &[3, 4, 10, 20, 30]);
+        assert!(!f.truncated);
         assert!(dec.pop_frame(&mut out).is_none());
     }
 
@@ -457,12 +544,12 @@ mod tests {
             which: 1,
             levels: [1, 2, 3, 4],
         };
-        let f = m.to_frame();
+        let f = m.to_frame().unwrap();
         let mut dec = FrameDecoder::<64>::new();
         dec.push(&f);
         let mut out = [0u8; 16];
-        let (t, n) = dec.pop_frame(&mut out).unwrap();
-        assert_eq!(ToDeluge::decode(t, &out[..n]), Some(m));
+        let f = dec.pop_frame(&mut out).unwrap();
+        assert_eq!(ToDeluge::decode(f.kind, &out[..f.len]), Ok(m));
     }
 
     #[test]
@@ -472,6 +559,54 @@ mod tests {
         }
         .to_frame();
         assert_eq!(f, [2, 0, from::BUTTON_PRESSED, 144]);
+    }
+
+    #[test]
+    fn pop_frame_reports_copied_length_and_truncation() {
+        let mut dec = FrameDecoder::<4096>::new();
+        dec.push(&frame(to::UPDATE_DISPLAY, &[7u8; 2000]).unwrap());
+        let mut out = [0u8; 1024];
+        let f = dec.pop_frame(&mut out).unwrap();
+        assert_eq!(f.kind, to::UPDATE_DISPLAY);
+        assert_eq!(f.len, 1024);
+        assert!(f.truncated);
+        assert!(dec.pop_frame(&mut out).is_none()); // the frame was consumed whole
+    }
+
+    #[test]
+    fn decode_tells_unknown_types_from_malformed_ones() {
+        assert_eq!(
+            ToDeluge::decode(0xEE, &[]),
+            Err(DecodeError::UnknownType(0xEE))
+        );
+        assert_eq!(
+            ToDeluge::decode(to::SET_PAD_RGB, &[1, 2]),
+            Err(DecodeError::Malformed)
+        );
+        assert_eq!(
+            FromDeluge::decode(0xEE, &[]),
+            Err(DecodeError::UnknownType(0xEE))
+        );
+        assert_eq!(
+            FromDeluge::decode(from::PAD_PRESSED, &[1]),
+            Err(DecodeError::Malformed)
+        );
+    }
+
+    #[test]
+    fn encoding_a_payload_the_length_field_cannot_hold_is_an_error() {
+        let big = [0u8; 65_535]; // 1 + 65_535 overflows the 16-bit length
+        let mut out = std::vec![0u8; 70_000];
+        assert_eq!(
+            encode_frame(0x10, &big, &mut out),
+            Err(EncodeError::TooLong)
+        );
+        assert_eq!(frame(0x10, &big), Err(EncodeError::TooLong));
+        assert_eq!(
+            encode_frame(0x10, &[1, 2], &mut [0u8; 4]),
+            Err(EncodeError::BufferTooSmall)
+        );
+        assert_eq!(encode_frame(0x10, &[1, 2], &mut [0u8; 5]), Ok(5));
     }
 
     #[test]

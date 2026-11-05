@@ -14,7 +14,7 @@ use crate::rack::InstrumentRack;
 use crate::renderer::DynamicElementsRenderer;
 use crate::rgb::RGB;
 
-use deluge_protocol::{FromDeluge, ToDeluge};
+use deluge_panel_protocol::{FromDeluge, ToDeluge};
 #[cfg(feature = "rack")]
 use deluge_sim_link::audio::Consumer;
 use deluge_sim_link::audio::HeapCons;
@@ -356,7 +356,7 @@ impl DelugeSimulator {
             }
         }
         for (type_byte, data) in frames {
-            if let Some(msg) = ToDeluge::decode(type_byte, &data) {
+            if let Ok(msg) = ToDeluge::decode(type_byte, &data) {
                 self.apply(msg);
             }
         }
@@ -497,8 +497,9 @@ impl DelugeSimulator {
             ToDeluge::SetGate { channel, on } => {
                 self.rack_set_gate_channel(channel as usize, on);
             }
-            // No panel representation (audio/brightness/handshake).
-            ToDeluge::SetBrightness(_) | ToDeluge::GetVersion | ToDeluge::Ping => {}
+            // No panel representation (audio/brightness/handshake), or a message type
+            // newer than this simulator.
+            _ => {}
         }
     }
 

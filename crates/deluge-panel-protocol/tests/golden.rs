@@ -1,10 +1,10 @@
 //! Golden wire-vector generator + drift guard. The committed JSON at
-//! `tools/deluge-web-sim/src/protocol-golden.json` is the single source the TS
-//! codec is pinned against. Regenerate with:
-//!   UPDATE_GOLDEN=1 cargo test -p deluge-protocol --features std --test golden
-#![cfg(feature = "std")]
+//! `tests/data/protocol-golden.json` is the single source the web simulator's TS codec is
+//! pinned against. Regenerate with:
+//!   UPDATE_GOLDEN=1 cargo test -p deluge-panel-protocol --features alloc --test golden
+#![cfg(feature = "alloc")]
 
-use deluge_protocol::{FromDeluge, ToDeluge, cdc_button_id};
+use deluge_panel_protocol::{FromDeluge, ToDeluge, cdc_button_id};
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -26,9 +26,12 @@ fn vectors() -> serde_json::Value {
     let to: Vec<(&str, Vec<u8>)> = vec![
         (
             "UpdateDisplay",
-            body(ToDeluge::UpdateDisplay(&display).to_frame()),
+            body(ToDeluge::UpdateDisplay(&display).to_frame().unwrap()),
         ),
-        ("ClearDisplay", body(ToDeluge::ClearDisplay.to_frame())),
+        (
+            "ClearDisplay",
+            body(ToDeluge::ClearDisplay.to_frame().unwrap()),
+        ),
         (
             "SetPadRgb",
             body(
@@ -37,10 +40,14 @@ fn vectors() -> serde_json::Value {
                     row: 4,
                     rgb: [10, 20, 30],
                 }
-                .to_frame(),
+                .to_frame()
+                .unwrap(),
             ),
         ),
-        ("ClearAllPads", body(ToDeluge::ClearAllPads.to_frame())),
+        (
+            "ClearAllPads",
+            body(ToDeluge::ClearAllPads.to_frame().unwrap()),
+        ),
         (
             "SetLed",
             body(
@@ -48,7 +55,8 @@ fn vectors() -> serde_json::Value {
                     index: 35,
                     on: true,
                 }
-                .to_frame(),
+                .to_frame()
+                .unwrap(),
             ),
         ),
         (
@@ -58,7 +66,8 @@ fn vectors() -> serde_json::Value {
                     channel: 1,
                     value: 0x1234,
                 }
-                .to_frame(),
+                .to_frame()
+                .unwrap(),
             ),
         ),
         (
@@ -68,10 +77,14 @@ fn vectors() -> serde_json::Value {
                     channel: 2,
                     on: true,
                 }
-                .to_frame(),
+                .to_frame()
+                .unwrap(),
             ),
         ),
-        ("SetAllPads", body(ToDeluge::SetAllPads(&pads).to_frame())),
+        (
+            "SetAllPads",
+            body(ToDeluge::SetAllPads(&pads).to_frame().unwrap()),
+        ),
         (
             "SetKnobIndicator",
             body(
@@ -79,20 +92,24 @@ fn vectors() -> serde_json::Value {
                     which: 2,
                     levels: [1, 2, 3, 4],
                 }
-                .to_frame(),
+                .to_frame()
+                .unwrap(),
             ),
         ),
         (
             "SetSyncedLed",
-            body(ToDeluge::SetSyncedLed(true).to_frame()),
+            body(ToDeluge::SetSyncedLed(true).to_frame().unwrap()),
         ),
-        ("ClearAllLeds", body(ToDeluge::ClearAllLeds.to_frame())),
+        (
+            "ClearAllLeds",
+            body(ToDeluge::ClearAllLeds.to_frame().unwrap()),
+        ),
         (
             "SetBrightness",
-            body(ToDeluge::SetBrightness(200).to_frame()),
+            body(ToDeluge::SetBrightness(200).to_frame().unwrap()),
         ),
-        ("GetVersion", body(ToDeluge::GetVersion.to_frame())),
-        ("Ping", body(ToDeluge::Ping.to_frame())),
+        ("GetVersion", body(ToDeluge::GetVersion.to_frame().unwrap())),
+        ("Ping", body(ToDeluge::Ping.to_frame().unwrap())),
     ];
     let from: Vec<(&str, Vec<u8>)> = vec![
         (
@@ -151,8 +168,7 @@ fn vectors() -> serde_json::Value {
 }
 
 fn golden_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tools/deluge-web-sim/src/protocol-golden.json")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/protocol-golden.json")
 }
 
 #[test]
@@ -167,6 +183,6 @@ fn golden_vectors_up_to_date() {
         .expect("protocol-golden.json missing — run with UPDATE_GOLDEN=1 to create it");
     assert_eq!(
         committed, generated,
-        "protocol-golden.json is stale — regenerate: UPDATE_GOLDEN=1 cargo test -p deluge-protocol --features std --test golden"
+        "protocol-golden.json is stale — regenerate: UPDATE_GOLDEN=1 cargo test -p deluge-panel-protocol --features alloc --test golden"
     );
 }

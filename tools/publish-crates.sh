@@ -41,7 +41,7 @@ trap 'rm -f "$patch"; git checkout -q -- "*Cargo.lock"' EXIT
     rza1-hal:rza1/rza1-hal \
     deluge-embedded-fatfs:crates/embedded-fatfs \
     deluge-block-device-adapters:crates/block-device-adapters \
-    deluge-protocol:crates/deluge-protocol deluge-sim-link:crates/deluge-sim-link \
+    deluge-panel-protocol:crates/deluge-panel-protocol deluge-sim-link:crates/deluge-sim-link \
     deluge-simulator:crates/deluge-simulator \
     deluge-sys:linux/deluge-sys deluge-hal-linux:linux/deluge-hal-linux; do
     echo "${entry%%:*} = { path = \"$root/${entry#*:}\" }"
@@ -124,7 +124,7 @@ if [ ${#mode[@]} -eq 0 ]; then
   publish deluge-embedded-fatfs crates/embedded-fatfs --target "$host"
   publish deluge-block-device-adapters crates/block-device-adapters --target "$host"
   publish deluge-sim-link crates/deluge-sim-link --target "$host"
-  publish deluge-protocol crates/deluge-protocol --target "$host"
+  publish deluge-panel-protocol crates/deluge-panel-protocol --target "$host"
   publish deluge-simulator crates/deluge-simulator --target "$host"
   publish deluge-sys linux/deluge-sys "${linux_verify[@]}"
   publish deluge-hal-linux linux/deluge-hal-linux "${linux_verify[@]}"
@@ -153,7 +153,7 @@ step "FAT forks"
 
 step "simulator link and wire protocol"
 (cd crates/deluge-sim-link && cargo publish "${mode[@]}" --target "$host")
-cargo publish "${mode[@]}" "${config[@]}" -p deluge-protocol --target "$host"
+cargo publish "${mode[@]}" "${config[@]}" -p deluge-panel-protocol --target "$host"
 
 step "simulator"
 (cd crates/deluge-simulator && cargo publish "${mode[@]}" "${config[@]}" --target "$host")
