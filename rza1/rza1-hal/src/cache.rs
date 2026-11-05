@@ -280,7 +280,7 @@ pub unsafe fn l1_i_invalidate_all() {
 // ---------------------------------------------------------------------------
 //
 // Port of `v7_dma_inv_range` and `v7_dma_flush_range` from
-// `deluge/drivers/cache/invalidate.S` (Linux-derived ARMv7 DMA helpers).
+// the Linux-derived ARMv7 DMA helpers (`arch/arm/mm/cache-v7.S`).
 //
 // On the RZA1L the VA=PA flat mapping is always in effect, so "virtual
 // address" and "physical address" are identical.
@@ -357,7 +357,7 @@ pub unsafe fn dma_clean_range(start: usize, end: usize) {
 /// Clean and invalidate D-cache lines that cover the address range
 /// `[start, end)` (DCCIMVAC per line).
 ///
-/// Port of `v7_dma_flush_range` from `deluge/drivers/cache/invalidate.S`.
+/// Port of the Linux-derived ARMv7 `v7_dma_flush_range`.
 ///
 /// **Use case:** bidirectional DMA buffers, or before giving a buffer to a
 /// device that will both read and write it.

@@ -20,7 +20,7 @@ use crate::clocks::ClockConfig;
 
 /// OSTM0 ticks per Embassy tick (1 µs), as an exact reduced rational `num / den`.
 ///
-/// Taken from [`ClockConfig::p0_ticks_per_us`]: 21161/640 on the Deluge (P0φ = 33,064,062.5 Hz),
+/// Taken from [`ClockConfig::p0_ticks_per_us`]: 21161/640 with a 13.225625 MHz crystal (P0φ = 33,064,062.5 Hz),
 /// which avoids the ~0.2% drift of truncating to 33 ticks/µs. `num` < 2^27 and `den` < 2^21.
 /// The all-zero value means "not set yet" (before `init` starts the time driver).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

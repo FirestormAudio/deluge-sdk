@@ -119,23 +119,33 @@ pub const PARA_NORMAL_NOT_CACHE: u32 = 0x1DE2;
 /// Normal write-back, write-allocate (fully cached). TEX=001, C=1, B=1.
 pub const PARA_NORMAL_CACHE: u32 = 0x1DEE;
 
-/// Area table — `(size_in_mb, attribute)` low → high address, mirroring the
-/// RZ/A1L address map (HW manual ch.5). The sizes sum to 4096 (a full 4 GB of
-/// 1 MB sections), checked by the `areas_fill_exactly_4gb` test.
+/// Area table — `(size_in_mb, attribute)` low → high address, mirroring the RZ/A1 address map
+/// (HW manual ch.5). The sizes sum to 4096 (a full 4 GB of 1 MB sections), checked by the
+/// `areas_fill_exactly_4gb` test. The 10 MB internal-RAM area is all SRAM on the RZ/A1H; on the
+/// RZ/A1L only its first 3 MB is, and the rest is mapped strongly-ordered so nothing is ever
+/// speculatively fetched from it.
 pub const AREAS: &[(u32, u32)] = &[
-    (128, PARA_NORMAL_CACHE),      // area  0  CS0/CS1 NOR flash      0x0000_0000
-    (128, PARA_NORMAL_CACHE),      // area  1  CS2/CS3 SDRAM          0x0800_0000
-    (128, PARA_STRONGLY_ORDERED),  // area  2  CS4/CS5                0x1000_0000
-    (128, PARA_NORMAL_CACHE),      // area  3  SPI / SPI2 serial      0x1800_0000
-    (10, PARA_NORMAL_CACHE),       // area  4  internal SRAM          0x2000_0000
-    (502, PARA_STRONGLY_ORDERED),  // area  5  I/O area 1             0x20A0_0000
-    (128, PARA_NORMAL_NOT_CACHE),  // area  6  CS0/CS1 mirror         0x4000_0000
-    (128, PARA_NORMAL_NOT_CACHE),  // area  7  CS2/CS3 mirror (SDRAM) 0x4800_0000
-    (128, PARA_STRONGLY_ORDERED),  // area  8  CS4/CS5 mirror         0x5000_0000
-    (128, PARA_NORMAL_NOT_CACHE),  // area  9  SPI mirror             0x5800_0000
-    (10, PARA_NORMAL_NOT_CACHE),   // area 10  SRAM mirror            0x6000_0000
+    (128, PARA_NORMAL_CACHE),     // area  0  CS0/CS1 NOR flash      0x0000_0000
+    (128, PARA_NORMAL_CACHE),     // area  1  CS2/CS3 SDRAM          0x0800_0000
+    (128, PARA_STRONGLY_ORDERED), // area  2  CS4/CS5                0x1000_0000
+    (128, PARA_NORMAL_CACHE),     // area  3  SPI / SPI2 serial      0x1800_0000
+    (SRAM_MB, PARA_NORMAL_CACHE), // area  4  internal SRAM          0x2000_0000
+    (10 - SRAM_MB, PARA_STRONGLY_ORDERED), //  (rest of the internal-RAM area)
+    (502, PARA_STRONGLY_ORDERED), // area  5  I/O area 1             0x20A0_0000
+    (128, PARA_NORMAL_NOT_CACHE), // area  6  CS0/CS1 mirror         0x4000_0000
+    (128, PARA_NORMAL_NOT_CACHE), // area  7  CS2/CS3 mirror (SDRAM) 0x4800_0000
+    (128, PARA_STRONGLY_ORDERED), // area  8  CS4/CS5 mirror         0x5000_0000
+    (128, PARA_NORMAL_NOT_CACHE), // area  9  SPI mirror             0x5800_0000
+    (SRAM_MB, PARA_NORMAL_NOT_CACHE), // area 10  SRAM mirror         0x6000_0000
+    (10 - SRAM_MB, PARA_STRONGLY_ORDERED), //  (rest of the mirror area)
     (2550, PARA_STRONGLY_ORDERED), // area 11  I/O area 2             0x60A0_0000
 ];
+
+/// The chip's on-chip SRAM, in MB.
+#[cfg(feature = "rza1l")]
+const SRAM_MB: u32 = 3;
+#[cfg(feature = "rza1h")]
+const SRAM_MB: u32 = 10;
 
 /// The attribute of 1 MB section `index` (`address >> 20`) in [`AREAS`].
 fn section_attr(index: usize) -> u32 {
@@ -185,9 +195,10 @@ mod tests {
 
     #[test]
     fn a_range_crossing_out_of_a_mirror_is_refused() {
-        // The SRAM mirror is 10 sections: 0x6000_0000..0x60A0_0000.
-        assert!(is_uncached_range(0x609F_FE00, 512));
-        assert!(!is_uncached_range(0x609F_FF00, 512));
+        // The uncached SRAM mirror is the chip's SRAM, from 0x6000_0000.
+        let end = 0x6000_0000 + ((SRAM_MB as usize) << 20);
+        assert!(is_uncached_range(end - 0x200, 512));
+        assert!(!is_uncached_range(end - 0x100, 512));
     }
 
     #[test]
@@ -339,6 +350,37 @@ mod tests {
             idx += mb;
         }
         unreachable!("address {pa:#x} is outside the 4 GB map");
+    }
+
+    #[cfg(feature = "rza1l")]
+    #[test]
+    fn the_rza1l_maps_only_its_3_mb_of_sram_as_memory() {
+        // The 10 MB internal-RAM area holds 3 MB of SRAM on the RZ/A1L; nothing behind the rest
+        // may be speculatively fetched.
+        assert_eq!(attr_at(0x202F_FFFF), PARA_NORMAL_CACHE, "SRAM top");
+        assert_eq!(attr_at(0x2030_0000), PARA_STRONGLY_ORDERED, "past SRAM");
+        assert_eq!(attr_at(0x209F_FFFF), PARA_STRONGLY_ORDERED, "area end");
+        assert_eq!(
+            attr_at(0x602F_FFFF),
+            PARA_NORMAL_NOT_CACHE,
+            "mirror SRAM top"
+        );
+        assert_eq!(
+            attr_at(0x6030_0000),
+            PARA_STRONGLY_ORDERED,
+            "mirror past SRAM"
+        );
+    }
+
+    #[cfg(feature = "rza1h")]
+    #[test]
+    fn the_rza1h_maps_its_10_mb_of_sram_as_memory() {
+        assert_eq!(attr_at(0x209F_FFFF), PARA_NORMAL_CACHE, "SRAM top");
+        assert_eq!(
+            attr_at(0x609F_FFFF),
+            PARA_NORMAL_NOT_CACHE,
+            "mirror SRAM top"
+        );
     }
 
     #[test]

@@ -257,7 +257,7 @@ mod tests {
         assert_eq!(timer(1).cmp().addr(), 0xFCFE_C400);
     }
 
-    /// 1 ms at the Deluge's P0φ = 33_064 ticks, as with the old `OSTM_HZ / 1000`.
+    /// 1 ms at a P0φ of 33.064 MHz (a 13.225625 MHz crystal) = 33_064 ticks.
     #[test]
     fn one_ms_ticks() {
         assert_eq!(ms_to_ticks(TEST_CLOCKS.p0_hz(), 1), 33_064);

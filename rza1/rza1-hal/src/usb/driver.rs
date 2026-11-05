@@ -575,7 +575,7 @@ impl<'d> Driver<'d> for Rusb1Driver<'d> {
             u.syscfg0().modify(|r| *r |= SYSCFG_USBE);
 
             // Leave the D+ pull-up OFF here.  Per USB 2.0 §7.1.5 a device —
-            // especially a self-powered one like the Deluge — must not assert
+            // especially a self-powered one — must not assert
             // its pull-up until VBUS is present.  Strict USB-C hosts (e.g.
             // Apple-Silicon Macs) never register a clean attach from a device
             // that connects before the port is powered, and power-cycle the port

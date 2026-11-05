@@ -57,6 +57,10 @@ pub(crate) fn uncached<T>(p: *mut T) -> *mut T {
     return p;
 }
 
+// With both logging features on, `defmt` carries the messages and `log` goes unused.
+#[cfg(all(feature = "log", feature = "defmt"))]
+use log as _;
+
 pub use embassy_hal_internal::{Peri, PeripheralType};
 /// The chip's registers, generated from the vendor SVD ([`rza1_pac`], built with the chip feature
 /// this crate is built with). The RZ/A1L's are checked against its manual. Behind the
@@ -65,9 +69,14 @@ pub use embassy_hal_internal::{Peri, PeripheralType};
 pub use rza1_pac as pac;
 #[cfg(not(feature = "unstable-pac"))]
 pub(crate) use rza1_pac as pac;
-/// The MMIO seam every register access goes through (real volatile on the device, a shadow with
-/// an access log under host tests).
+/// The MMIO seam every register access goes through (real volatile access, or with `mock-mmio` a
+/// shadow with an access log, for tests). Behind `unstable-pac` with the PAC itself: it is the
+/// PAC's API, not covered by this crate's semver.
+#[cfg(feature = "unstable-pac")]
 pub use rza1_pac::mmio;
+#[cfg(not(feature = "unstable-pac"))]
+#[allow(unused_imports)]
+pub(crate) use rza1_pac::mmio;
 
 embassy_hal_internal::peripherals! {
     // With `time-driver-ostm`, the time driver owns OSTM0 and OSTM1.

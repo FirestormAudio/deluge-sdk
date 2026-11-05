@@ -104,8 +104,8 @@ embassy-executor = { workspace = true }
 # Polls the host panel's input for `pic::read_byte` (the `host-panel` feature).
 embassy-time = { workspace = true, optional = true }
 # Off the device (the simulator, the host and QEMU tests) the HAL's registers are its in-memory
-# shadow: nothing there is hardware.
-rza1-hal = { path = "../../rza1/rza1-hal", version = "0.2.0", default-features = false, features = ["mock-mmio"] }
+# shadow, which the tests inspect through `rza1_hal::mmio::test` (hence `unstable-pac`).
+rza1-hal = { path = "../../rza1/rza1-hal", version = "0.2.0", default-features = false, features = ["mock-mmio", "unstable-pac"] }
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
 critical-section = { workspace = true, features = ["std"] }

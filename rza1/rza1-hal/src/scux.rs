@@ -573,20 +573,17 @@ pub(crate) unsafe fn configure_mix(cfg: MixConfig) {
 
 /// FDTSEL/FUTSEL SCKSEL: the USB_X1 clock (TRM §37.3.68).
 pub const FDTSEL_SCKSEL_USB_X1: u32 = 0b0011;
-/// USB_X1: the USB module's clock, 48 MHz (UCKSEL=0, as the Deluge runs it, requires it).
-pub const USB_X1_HZ: u32 = 48_000_000;
-
 /// The FDTSEL value (without DIVEN) that paces an asynchronous SRC's input at `input_hz`:
-/// USB_X1 divided down when it divides evenly by an even ratio SCKDIV holds (48 kHz is
-/// USB_X1 / 1000), else the SSIF0 word clock (the codec's rate, which is right only when the
-/// input runs at it). Pacing a 48 kHz input by SSIF0's 44.1 kHz word clock consumed it at
-/// 44.1 kHz: the conversion ran at 1:1.
-pub fn input_timing(input_hz: u32) -> u32 {
+/// USB_X1 (the board's `usb_x1_hz`, 48 MHz when it clocks USB from it) divided down when it
+/// divides evenly by an even ratio SCKDIV holds (48 kHz is 48 MHz / 1000), else the SSIF0 word
+/// clock (the codec's rate, which is right only when the input runs at it). Pacing a 48 kHz input
+/// by SSIF0's 44.1 kHz word clock consumed it at 44.1 kHz: the conversion ran at 1:1.
+pub fn input_timing(input_hz: u32, usb_x1_hz: u32) -> u32 {
     // SCKDIV (bits 26:16) is the division ratio itself; bit 16 must be 0, so the ratio is
     // even, and at most 0x7FE.
-    match USB_X1_HZ.checked_div(input_hz) {
+    match usb_x1_hz.checked_div(input_hz) {
         Some(ratio)
-            if USB_X1_HZ % input_hz == 0 && ratio % 2 == 0 && (2..=0x7FE).contains(&ratio) =>
+            if usb_x1_hz % input_hz == 0 && ratio % 2 == 0 && (2..=0x7FE).contains(&ratio) =>
         {
             (ratio << 16) | FDTSEL_SCKSEL_USB_X1
         }
@@ -809,6 +806,8 @@ pub enum Src {
         input_hz: u32,
         /// The output rate.
         output_hz: u32,
+        /// The board's USB_X1 clock, from which the input is paced when it divides evenly.
+        usb_x1_hz: u32,
     },
 }
 
@@ -979,8 +978,12 @@ impl<'d, C: ChannelId> Channel<'d, C> {
             });
             match src {
                 // DIVEN must be 0 while SCKSEL changes.
-                Src::Async { input_hz, .. } => {
-                    let input = input_timing(input_hz);
+                Src::Async {
+                    input_hz,
+                    usb_x1_hz,
+                    ..
+                } => {
+                    let input = input_timing(input_hz, usb_x1_hz);
                     SCUX.fdtsel(n as usize).write_value(input);
                     SCUX.fdtsel(n as usize).write_value(input | FDTSEL_DIVEN);
                 }
@@ -1042,6 +1045,7 @@ unsafe fn configure_src_dvu<'d>(
         Src::Async {
             input_hz,
             output_hz,
+            ..
         } => (false, intifs(input_hz, output_hz), Some(output_hz)),
     };
     // SAFETY: the caller's contract.
@@ -1215,25 +1219,34 @@ mod tests {
 
     #[test]
     fn an_input_rate_usb_x1_divides_is_paced_by_usb_x1() {
-        assert_eq!(input_timing(48_000), (1000 << 16) | FDTSEL_SCKSEL_USB_X1);
-        assert_eq!(input_timing(96_000), (500 << 16) | FDTSEL_SCKSEL_USB_X1);
-        assert_eq!(input_timing(32_000), (1500 << 16) | FDTSEL_SCKSEL_USB_X1);
+        assert_eq!(
+            input_timing(48_000, 48_000_000),
+            (1000 << 16) | FDTSEL_SCKSEL_USB_X1
+        );
+        assert_eq!(
+            input_timing(96_000, 48_000_000),
+            (500 << 16) | FDTSEL_SCKSEL_USB_X1
+        );
+        assert_eq!(
+            input_timing(32_000, 48_000_000),
+            (1500 << 16) | FDTSEL_SCKSEL_USB_X1
+        );
     }
 
     #[test]
     fn other_input_rates_are_paced_by_the_ssif0_word_clock() {
         assert_eq!(
-            input_timing(44_100),
+            input_timing(44_100, 48_000_000),
             FDTSEL_SCKSEL_SSIF0_WS,
             "not a divisor of 48 MHz"
         );
         assert_eq!(
-            input_timing(16_000),
+            input_timing(16_000, 48_000_000),
             FDTSEL_SCKSEL_SSIF0_WS,
             "ratio 3000 past SCKDIV"
         );
         assert_eq!(
-            input_timing(16_000_000),
+            input_timing(16_000_000, 48_000_000),
             FDTSEL_SCKSEL_SSIF0_WS,
             "odd ratio 3"
         );
@@ -1448,6 +1461,7 @@ mod path_tests {
             Src::Async {
                 input_hz: 48_000,
                 output_hz: 44_100,
+                usb_x1_hz: 48_000_000,
             },
             Dvu::Bypass,
             ring(unsafe { DMA_CH5::steal() }, 512),
@@ -1472,6 +1486,7 @@ mod path_tests {
             Src::Async {
                 input_hz: 48_000,
                 output_hz: 44_100,
+                usb_x1_hz: 48_000_000,
             },
             Dvu::Bypass,
             ring(unsafe { DMA_CH8::steal() }, 512),
@@ -1494,6 +1509,7 @@ mod path_tests {
         let src = Src::Async {
             input_hz: 48_000,
             output_hz: 44_100,
+            usb_x1_hz: 48_000_000,
         };
         let a = chs.ch1.into_ffu_path(
             AudioInfo::STEREO_24,
@@ -1690,6 +1706,7 @@ mod ssi_path_tests {
             Src::Async {
                 input_hz: 48_000,
                 output_hz: 44_100,
+                usb_x1_hz: 48_000_000,
             },
             Dvu::Bypass,
             out,
@@ -1768,13 +1785,14 @@ mod ssi_path_tests {
             Src::Async {
                 input_hz: 48_000,
                 output_hz: 44_100,
+                usb_x1_hz: 48_000_000,
             },
             Dvu::Bypass,
             out,
         );
         assert_eq!(
             test::peek32(SCUX.fdtsel(0).addr()),
-            input_timing(48_000) | FDTSEL_DIVEN
+            input_timing(48_000, 48_000_000) | FDTSEL_DIVEN
         );
         assert_eq!(
             test::peek32(SCUX.futsel(0).addr()),

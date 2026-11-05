@@ -55,7 +55,7 @@ impl ClockConfig {
 
     /// P0φ ticks per microsecond as an exact, fully reduced rational `(num, den)`.
     ///
-    /// For the Deluge's 13,225,625 Hz crystal this is `(21161, 640)`. `num` < 2^27 and
+    /// For a 13,225,625 Hz crystal this is `(21161, 640)`. `num` < 2^27 and
     /// `den` ≤ 2,000,000 < 2^21 for any crystal the part accepts.
     pub const fn p0_ticks_per_us(&self) -> (u32, u32) {
         let num = self.extal_hz as u64 * 5;
@@ -122,7 +122,7 @@ pub fn try_get() -> Option<ClockConfig> {
     STORE.get()
 }
 
-/// The Deluge's crystal, for HAL unit tests only. Every test that registers clocks uses this one
+/// A 13.225625 MHz crystal, for HAL unit tests only. Every test that registers clocks uses this one
 /// value, because the store is global and test threads run in parallel.
 #[cfg(test)]
 pub(crate) const TEST_CLOCKS: ClockConfig = ClockConfig::new(13_225_625);

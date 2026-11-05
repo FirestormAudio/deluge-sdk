@@ -66,6 +66,7 @@ pub fn init(
         Src::Async {
             input_hz: fin_hz,
             output_hz: fout_hz,
+            usb_x1_hz: crate::system::USB_X1_HZ,
         },
         Dvu::Bypass,
         RingBuf {

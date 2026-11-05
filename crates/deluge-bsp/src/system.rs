@@ -85,6 +85,10 @@ pub fn codec_ssi_config() -> rza1_hal::ssi::Config {
 /// hardware; it differs from the SDHI reset default.
 pub const SD_OPTION: u16 = 0x00BD;
 
+/// The USB_X1 clock input: the Deluge's 48 MHz crystal, which clocks USB (UCKSEL = 0) and from
+/// which SCUX paces an asynchronous sample-rate converter's input when the rate divides it.
+pub const USB_X1_HZ: u32 = 48_000_000;
+
 // ---------------------------------------------------------------------------
 // SCUX DMA channel assignments for the Deluge board
 // ---------------------------------------------------------------------------

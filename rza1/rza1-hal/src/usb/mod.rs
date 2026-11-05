@@ -11,8 +11,8 @@
 //! - `pipe`, `fifo`, `regs` — the shared pipe/FIFO/register layers (crate-private).
 //!
 //! USB *class* implementations (UAC2 audio, MIDI, MSC) and the Bulk-Only
-//! Transport engine live in the board-support crate (`deluge_bsp::usb`),
-//! which re-exports this module.
+//! Transport engine are board-agnostic and live in a separate classes crate,
+//! over this module's driver.
 //!
 //! ## Quick start — device mode
 //!

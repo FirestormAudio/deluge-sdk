@@ -3,9 +3,8 @@
 Embassy HAL for the **Renesas RZ/A1L** (Cortex-A9, R7S721020) and, untested on hardware, the
 RZ/A1H: `no_std` Rust with async drivers over owned peripherals.
 
-Developed for the [Synthstrom Deluge] open-source firmware port, but kept
-board-agnostic where possible — board-specific configuration is passed in
-at runtime rather than compiled in.
+Board-agnostic: board-specific configuration (clocks, pins, timings, socket polarities) is
+passed in at runtime rather than compiled in.
 
 ---
 
@@ -56,7 +55,7 @@ without explicit cache maintenance.
 
 | Module        | Description |
 |---------------|-------------|
-| `ostm`        | OS Timer — two 32-bit channels clocked from P0φ = EXTAL × 2.5 (see `clocks`; 33.064 MHz on the Deluge). Owned by the time driver; `delay_ms`/`Delay` busy-wait on OSTM0's counter. |
+| `ostm`        | OS Timer — two 32-bit channels clocked from P0φ = EXTAL × 2.5 (see `clocks`; 33.064 MHz with a 13.225625 MHz crystal). Owned by the time driver; `delay_ms`/`Delay` busy-wait on OSTM0's counter. |
 | `time_driver`  | Embassy `time-driver` implementation backed by OSTM0 (free-running) + OSTM1 (alarm). Behind the `time-driver-ostm` feature (on by default). `init` starts it, and OSTM0/OSTM1 are then not in `Peripherals`. |
 | `time_math`   | Pure tick/µs conversion and wrap arithmetic behind `time_driver` (host-testable). |
 | `mtu2`        | Multi-Function Timer Pulse Unit 2: five 16-bit channels. `OneShot::new(Peri<MTU2_n>, prescaler, priority, Irqs)` for compare-match one-shots and periodic ticks. |
@@ -88,7 +87,7 @@ documented in each peripheral module.
 | `gpio`  | Owned pins: every pin is a `Peripherals` singleton (`P0_0`…`P9_5`), taken into `Input`, `Output` (`OutputCapable` pins only) or `Flex`, which implement the `embedded-hal` digital traits. Levels go through PSRn/PNOTn; `Flex::set_as_alternate` selects a function for pins no driver takes. Pin-function traits (`uart::TxPin<T>` …) are generated from the manual by `rza1/tools/gen-pins.py`. `read_port(Port)` reads a whole port. |
 | `adc`   | 12-bit A/D converter, single-scan polled. |
 | `spibsc` | SPI Multi-I/O Bus Controller — manual-command NOR-flash erase/program/read, with erase and program refused outside the board's writable windows. |
-| `usb` | RUSB1 USB 2.0 dual-role driver: chip plumbing (bases, IRQs, STBCR7 clock gates) plus full `embassy-usb-driver` **device** (`usb::driver`) and **host** (`usb::host`) implementations over crate-private pipe/FIFO/register layers. `usb::init_device_mode(Peri<USBn>, Irqs)` / `usb::init_host_mode(Peri<USBn>, Irqs)` are the entry points, bound to a `DeviceInterruptHandler`, `HostInterruptHandler` or `DualRoleInterruptHandler`; the drivers borrow the port (`Rusb1Driver<'d>`). Isochronous endpoints can become `usb::iso` streams (`into_iso_stream`), whose consumer runs in the USB interrupt; the host's isochronous IN rings are lent with `Rusb1HostDriver::lend_iso_in_buffers`. USB *class* code (UAC2/MIDI/MSC/BOT) lives in `deluge_bsp::usb`. |
+| `usb` | RUSB1 USB 2.0 dual-role driver: chip plumbing (bases, IRQs, STBCR7 clock gates) plus full `embassy-usb-driver` **device** (`usb::driver`) and **host** (`usb::host`) implementations over crate-private pipe/FIFO/register layers. `usb::init_device_mode(Peri<USBn>, Irqs)` / `usb::init_host_mode(Peri<USBn>, Irqs)` are the entry points, bound to a `DeviceInterruptHandler`, `HostInterruptHandler` or `DualRoleInterruptHandler`; the drivers borrow the port (`Rusb1Driver<'d>`). Isochronous endpoints can become `usb::iso` streams (`into_iso_stream`), whose consumer runs in the USB interrupt; the host's isochronous IN rings are lent with `Rusb1HostDriver::lend_iso_in_buffers`. USB *class* code (UAC2/MIDI/MSC/BOT) is board-agnostic and lives in a separate classes crate. |
 
 ---
 
@@ -149,18 +148,25 @@ it, and `tools/check-register-tables.sh` checks the whole crate for hand-written
 |---------|---------|-------------|
 | `rza1l` | | The RZ/A1L (R7S721020 and family). Enable exactly one chip feature. |
 | `rza1h` | | The RZ/A1H: its extra driver instances (RSPI3/RSPI4, the larger interrupt table). Experimental: compiles, not validated on hardware; its pin tables are not filled in, so drivers that take pins are RZ/A1L-only for now. |
-| `rt` | yes | Export `gic_dispatch`, which `rza1-rt`'s IRQ entry calls. Turn off only to dispatch interrupts yourself (`#[rza1_rt::irq]`). |
+| `rt` | yes | Export `gic_dispatch`, which `rza1-rt`'s IRQ entry calls. It doesn't pull `rza1-rt` in; turn it off only to dispatch interrupts yourself (`#[rza1_rt::irq]`). |
 | `critical-section-impl` | yes | The `critical-section` implementation (single core: IRQ masking; FIQ stays enabled). Turn off to bring your own. |
 | `time-driver-ostm` | yes | The Embassy time driver on OSTM0 and OSTM1 (`time_driver`). Turn off to bring your own driver; OSTM0/OSTM1 are then in `Peripherals`. |
 | `log` | | Log through the `log` crate. |
 | `defmt` | | Log through `defmt`, and derive `defmt::Format` on the public types. Not with `log`. |
-| `unstable-pac` | | Re-export the register-level PAC as `rza1_hal::pac`. Not covered by semver. |
-| `unlock-bootloader` | | `spibsc::force_erase_range` / `force_program`: flash writes that skip the writable-window guard and can rewrite the bootloaders. Only for a recovery tool loaded into SRAM over JTAG. |
+| `unstable-pac` | | Re-export the register-level PAC as `rza1_hal::pac`, and its MMIO seam as `rza1_hal::mmio`. Not covered by semver. |
+| `unlock-bootloader` | | `spibsc::force_erase_range` / `force_program`: flash writes that skip the writable-window guard and can rewrite the bootloaders. Only for a recovery tool loaded into SRAM over JTAG. Cargo turns a feature on for the whole build if any crate in it asks, so keep it out of every crate a flashed image depends on. |
 | `mock-mmio` | | Back the registers with `rza1-pac`'s in-memory shadow (`mmio::test`) instead of real volatile access, for host and QEMU tests of code built on the HAL. Never in a build that runs on hardware. |
 
 `unstable-driver-steal` (hidden, not covered by semver) adds `Dma::steal`, `Rspi::steal` and
 `UartRx::steal`, for panic and fault paths that must reach an initialised driver without its
 owner.
+
+## Public dependencies
+
+These crates' types appear in this crate's public API, so a breaking release of any of them is a
+breaking release of `rza1-hal`: `embassy-hal-internal` (`Peri`, `PeripheralType`),
+`embassy-usb-driver` 0.2, `embassy-sync`, `embedded-hal` and `embedded-hal-async` 1, `embedded-hal-nb`,
+and `embedded-io` and `embedded-io-async` 0.7.
 
 ---
 

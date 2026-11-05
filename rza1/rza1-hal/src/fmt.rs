@@ -8,14 +8,15 @@
 #![macro_use]
 #![allow(unused)]
 
-#[cfg(all(feature = "defmt", feature = "log"))]
-compile_error!("rza1-hal: enable at most one of the `log` and `defmt` features");
+// With both `log` and `defmt` on (two crates in one build asking for each), `defmt` wins: Cargo
+// features unify across the graph, so refusing the combination would break the build of a
+// dependent that never asked for both.
 
 #[collapse_debuginfo(yes)]
 macro_rules! trace {
     ($s:literal $(, $x:expr)* $(,)?) => {
         {
-            #[cfg(feature = "log")]
+            #[cfg(all(feature = "log", not(feature = "defmt")))]
             ::log::trace!($s $(, $x)*);
             #[cfg(feature = "defmt")]
             ::defmt::trace!($s $(, $x)*);
@@ -29,7 +30,7 @@ macro_rules! trace {
 macro_rules! debug {
     ($s:literal $(, $x:expr)* $(,)?) => {
         {
-            #[cfg(feature = "log")]
+            #[cfg(all(feature = "log", not(feature = "defmt")))]
             ::log::debug!($s $(, $x)*);
             #[cfg(feature = "defmt")]
             ::defmt::debug!($s $(, $x)*);
@@ -43,7 +44,7 @@ macro_rules! debug {
 macro_rules! info {
     ($s:literal $(, $x:expr)* $(,)?) => {
         {
-            #[cfg(feature = "log")]
+            #[cfg(all(feature = "log", not(feature = "defmt")))]
             ::log::info!($s $(, $x)*);
             #[cfg(feature = "defmt")]
             ::defmt::info!($s $(, $x)*);
@@ -57,7 +58,7 @@ macro_rules! info {
 macro_rules! warn {
     ($s:literal $(, $x:expr)* $(,)?) => {
         {
-            #[cfg(feature = "log")]
+            #[cfg(all(feature = "log", not(feature = "defmt")))]
             ::log::warn!($s $(, $x)*);
             #[cfg(feature = "defmt")]
             ::defmt::warn!($s $(, $x)*);
@@ -71,7 +72,7 @@ macro_rules! warn {
 macro_rules! error {
     ($s:literal $(, $x:expr)* $(,)?) => {
         {
-            #[cfg(feature = "log")]
+            #[cfg(all(feature = "log", not(feature = "defmt")))]
             ::log::error!($s $(, $x)*);
             #[cfg(feature = "defmt")]
             ::defmt::error!($s $(, $x)*);

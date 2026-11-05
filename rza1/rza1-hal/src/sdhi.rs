@@ -1254,7 +1254,7 @@ unsafe fn take_card_detect_events(port: u8) -> (bool, bool) {
 }
 
 // ---------------------------------------------------------------------------
-// Card capacity (set by deluge-bsp after CSD decode)
+// Card capacity (set by the card layer after CSD decode)
 // ---------------------------------------------------------------------------
 
 /// Total card capacity in 512-byte blocks, per port.
@@ -1490,8 +1490,8 @@ impl<'d> Sdhi<'d> {
     /// controller has been stopped and reset to identification mode, and the card must be
     /// re-identified before it is used again.
     ///
-    /// The controller runs one command or transfer at a time, and the caller serialises them (as
-    /// `deluge-bsp`'s SD layer does with one lock): an abort resets the whole controller, so an
+    /// The controller runs one command or transfer at a time, and the caller serialises them
+    /// (with one lock around each card operation, say): an abort resets the whole controller, so an
     /// operation another task had in flight on it would never complete.
     pub fn take_aborted(&self) -> bool {
         self.aborted.swap(false, Ordering::AcqRel)

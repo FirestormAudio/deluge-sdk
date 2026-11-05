@@ -4,9 +4,8 @@
 //! JEDEC transfers, memory-mapped read mode, the JEDEC ID/status reads, and the
 //! chip-bounds anti-alias guard.  The chip geometry and the board's flash map
 //! (sector/page size, app-slot and settings layout, writable regions) are *not*
-//! here — they are board facts carried by [`FlashMap`], which the BSP constructs
-//! (see `deluge-bsp::flash`, which describes the Deluge's 4 MB / 64 KB-sector
-//! part and its FSB/SSB/settings/app-slot layout).
+//! here — they are board facts carried by [`FlashMap`], which the board crate constructs
+//! for its part and its layout (bootloaders, settings, application slots).
 //!
 //! At reset the controller is in **external-address-space read mode**
 //! (memory-mapped): the flash appears at `0x1800_0000` (cached) / `0x5800_0000`
@@ -28,10 +27,8 @@
 //!
 //! ## Register / encoding cross-check
 //! Register layout, bit positions and command sequences here are matched against
-//! the Renesas `spibsc` sample BSP shipped in the Deluge bootloader
-//! (`DelugeBootloader/src/spibsc_flash_api.c`, `inc/iodefines/spibsc_iodefine.h`,
-//! `inc/iobitmasks/spibsc_iobitmask.h`) and the S25FL512 command set in
-//! `DelugeFirmware/src/RZA1/spibsc/sflash.h`:
+//! the Renesas `spibsc` sample BSP (`spibsc_flash_api.c`, `spibsc_iodefine.h`,
+//! `spibsc_iobitmask.h`) and the S25FL512 command set (`sflash.h`):
 //!
 //! | Register | Offset | Purpose |
 //! |----------|--------|---------|
@@ -48,10 +45,9 @@
 //! ## Interrupts must be masked during a manual-mode operation
 //! While the controller is in manual SPI mode the memory-mapped read window at
 //! `0x1800_0000` stops responding.  Taking an interrupt during this window —
-//! specifically the **OLED SPI DMA** completion interrupt — **freezes the
-//! machine** (documented in `DelugeBootloader` `src/spibsc_init2.c`, which masks
-//! `DMA_INTERRUPT_0 + OLED_SPI_DMA_CHANNEL` for the same reason); the ISR (or a
-//! task it wakes) touches the dead flash window and stalls the AHB bus.  So
+//! for instance an SPI DMA completion — **freezes the machine** (the Renesas sample
+//! code masks the DMA interrupt for the same reason); the ISR (or a task it wakes)
+//! touches the dead flash window and stalls the AHB bus.  So
 //! every public erase/program here runs the whole
 //! `to_manual … to_read_mode` window inside a [`critical_section`] (interrupts
 //! masked); `to_read_mode` restores the read window before interrupts come back,
@@ -107,7 +103,7 @@ pub struct FlashMap {
 /// Belt-and-suspenders write protection: every erase and program funnels through
 /// a check against the board's writable windows ([`FlashMap::writable`]), so a
 /// caller bug can never reach a region the board didn't mark writable (the FSB,
-/// device-settings, or SSB on the Deluge).  Empty ranges are never writable.
+/// bootloaders or settings, say).  Empty ranges are never writable.
 #[inline]
 fn within_windows(offset: u32, len: u32, windows: &[core::ops::Range<u32>]) -> bool {
     if len == 0 {
@@ -139,7 +135,7 @@ fn chip_capacity() -> u32 {
     let id = read_id(); // [manufacturer, memory type, density]
     // For these serial NOR parts the density byte `d` encodes 2^d bytes. Reject a
     // blank/no-response ID (all 0x00 or 0xFF) and clamp to a sane window
-    // (2^18 = 256 KB .. 2^26 = 64 MB).  The Deluge's part is 4 MB (density 0x16);
+    // (2^18 = 256 KB .. 2^26 = 64 MB).
     // we never assume a size larger than the chip actually reports.
     let density = id[2];
     let cap = if id[0] == 0x00 || id[0] == 0xFF || !(18..=26).contains(&density) {
@@ -153,7 +149,7 @@ fn chip_capacity() -> u32 {
 
 /// Override the cached usable-flash capacity (bytes) used by the write-bounds
 /// guard.  The BSP calls this with the capacity decoded from the
-/// JEDEC ID (`deluge-bsp::flash`), which is authoritative — the driver's own
+/// JEDEC ID, which is authoritative — the driver's own
 /// `1 << density` probe is only a fallback for parts whose density byte is
 /// a true `log2(size)` (it isn't on e.g. the AT25, whose ID byte is `0x01`).  A
 /// value of `0` is ignored, preserving the fail-safe "unknown ⇒ refuse writes".
@@ -216,8 +212,8 @@ const SMENR_SPIDE_32: u32 = 0xF; // transfer-data width = 32 bit
 const CMNSR_TEND: u32 = 1 << 0; // transfer end
 const CMNSR_SSLF: u32 = 1 << 1; // SSL flag: 1 = SSL (chip select) currently asserted
 
-// JEDEC SPI-NOR opcodes (common to every supported part; command set originally
-// cross-checked against the S25FL512 reference in the Deluge C firmware).
+// JEDEC SPI-NOR opcodes (common to every supported part; command set
+// cross-checked against the S25FL512 reference).
 const CMD_WREN: u32 = 0x06;
 const CMD_RDSR: u32 = 0x05; // Read Status Register-1 (SR1)
 const CMD_RDID: u32 = 0x9F;
@@ -231,7 +227,7 @@ const SR_WIP: u32 = 1 << 0; // SR1: write-in-progress
 // (read 05h) holds the block-protect field, SR2 (read 35h) holds CMP and the
 // SRP/SRL lock-down bit. Writes go via WRSR1 (01h) and — on parts that don't
 // accept a combined two-byte 01h — WRSR2 (31h). The *per-part* recipe (which
-// bytes, which write method) lives in the BSP (`deluge-bsp::flash::protect`);
+// bytes, which write method) lives in the board crate;
 // this module only moves the bytes.
 const CMD_WRSR1: u32 = 0x01; // Write Status Register-1 (optionally SR1+SR2 combined)
 const CMD_WRSR2: u32 = 0x31; // Write Status Register-2 (separate-write parts)
@@ -272,7 +268,7 @@ unsafe fn wait_tend() -> bool {
 /// (memory-mapped) access is released.
 ///
 /// **This is mandatory** — mirrors the reference `spibsc_stop()`
-/// (`DelugeBootloader/src/spibsc_ioset_drv.c`).  Flipping `MD` while SSL is still
+/// (Renesas `spibsc_ioset_drv.c`).  Flipping `MD` while SSL is still
 /// asserted wedges the controller: manual transfers never complete, `TEND` never
 /// sets, and reads come back as `0x00` (a JEDEC ID of `00 00 00`).
 /// Bounded so a stuck `SSLF` can't hang.
@@ -649,7 +645,7 @@ pub enum WriteMethod {
 /// Read the two protection status registers `(SR1, SR2)` in one manual-mode
 /// window (interrupts masked). SR1 (`05h`) holds the block-protect field; SR2
 /// (`35h`) holds `CMP` and the SRP/SRL lock-down bit. Decoding the bits into a
-/// per-part meaning is the BSP's job (`deluge-bsp::flash::protect`).
+/// per-part meaning is the board crate's job.
 pub fn protection_regs() -> (u8, u8) {
     critical_section::with(|_| unsafe {
         to_manual();
@@ -664,7 +660,7 @@ pub fn protection_regs() -> (u8, u8) {
 /// the part's [`WriteMethod`]; `None` leaves that register unwritten. Each write
 /// is `WREN`-preceded and non-volatile (`06h`→`01h`/`31h`). The bytes are sent as
 /// given: choosing them, and keeping permanent bits out of them, is the caller's
-/// job (`deluge-bsp::flash::protect`). Runs the whole transfer in one window with
+/// job. Runs the whole transfer in one window with
 /// interrupts masked.
 ///
 /// Returns `false` if the chip timed out or flagged an error, and without
@@ -833,8 +829,7 @@ impl FlashMap {
 // firmware (or the app-loader) by accident.  The anti-aliasing chip-bounds check
 // ([`in_chip`]) is retained: that is what prevents an out-of-range offset from
 // wrapping onto a low sector, and dropping it is what once erased the FSB.  The
-// caller passes the geometry (which lives in the BSP profile, e.g.
-// `deluge-bsp::flash`).
+// caller passes the geometry (which lives in the board crate's part profile).
 
 /// Erase every `sector_size`-byte block touched by `[offset, offset+len)`
 /// (flash-relative), **including the protected FSB / settings / SSB regions**.
@@ -954,9 +949,9 @@ mod tests {
         );
     }
 
-    // Generic-controller invariants only.  The Deluge flash *map* (slot/settings
+    // Generic-controller invariants only.  A board's flash *map* (slot/settings
     // layout, the writable windows it feeds `FlashMap`) is board policy and is
-    // tested in `deluge-bsp::flash`.  Test sizes here are arbitrary stand-ins for
+    // tested in the board crate.  Test sizes here are arbitrary stand-ins for
     // a 4 MB / 64 KB-sector part.
     const TEST_CHIP: u32 = 0x0040_0000;
     const TEST_SECTOR: u32 = 0x0001_0000;
@@ -1007,6 +1002,5 @@ mod tests {
     }
 
     // The per-part protection-bit encoding (which SR1/SR2 bytes for the bottom
-    // 1 MB lock) now lives with the recipe in `deluge-bsp::flash::protect` and is
-    // tested there; this module only moves bytes via the generic `WriteMethod`.
+    // 1 MB lock) lives with the board's recipe and is tested there; this module only moves bytes via the generic `WriteMethod`.
 }

@@ -1,12 +1,12 @@
-//! Bus State Controller (BSC) chip-select area timing for RZ/A1L.
+//! Bus State Controller (BSC) chip-select area timing for CS0 and CS1.
 //!
-//! The BSC divides the external address space into six areas (CS0–CS5).
-//! CS2 and CS3 are configured for SDRAM by the board crate (`deluge_bsp::sdram`).  This module
-//! handles CS0 and CS1, which the Renesas BSP configures for a 16-bit
-//! external-bus device (NOR flash timing from `bsc_userdef.c`).
+//! The BSC divides the external address space into six areas (CS0–CS5). CS2 and CS3 are
+//! configured for SDRAM by the board. This module sets CS0 and CS1 up for a static device (NOR
+//! flash, say) with the bus timing the board's part needs: [`CsTiming`] carries the two
+//! registers, and [`CsTiming::RENESAS_SAMPLE_NOR`] is the Renesas sample BSP's 16-bit NOR timing.
 //!
-//! ## BSC register addresses (RZ/A1L HW Manual §8)
-//! BSC base: `0x3FFF_C000` (struct `st_bsc`, field `CMNCR` first).
+//! ## BSC register addresses (RZ/A1 HW Manual §8)
+//! BSC base: `0x3FFF_C000` (`CMNCR` first).
 //!
 //! | Register | Offset | Absolute         |
 //! |----------|--------|-----------------|
@@ -15,57 +15,47 @@
 //! | CS0WCR   | 0x28   | `0x3FFF_C028`   |
 //! | CS1WCR   | 0x2C   | `0x3FFF_C02C`   |
 //!
-//! (BSC struct layout: `CMNCR` at 0x00, six `CSnBCR` at 0x04–0x18,
-//!  twelve padding bytes, six `CSnWCR` at 0x28–0x3C, then SDRAM regs.)
-//!
-//! ## Timing values
-//! Taken verbatim from `userdef_bsc_cs0_init()` and `userdef_bsc_cs1_init()`
-//! in the Renesas `bsc_userdef.c` sample BSP:
-//!
-//! | Field | Value | Meaning |
-//! |-------|-------|---------|
-//! | `CSnBCR` | `0x1000_0C00` | 16-bit bus, 1 idle cycle between W/R and W/W |
-//! | `CSnWCR` | `0x0000_0B40` | 1.5-cycle setup, 6 wait cycles, 0.5-cycle teardown |
-//!
-//! These must be called after the MMU is enabled (so the BSC register window
-//! at `0x3FFF_Cxxx` is in the strongly-ordered I/O region) and before any
-//! accesses to the CS0/CS1 address spaces.
+//! Call these after the MMU is enabled (so the BSC register window at `0x3FFF_Cxxx` is in the
+//! strongly-ordered I/O region) and before any access to the CS0/CS1 address spaces.
 
 use crate::pac::{BSC, bsc};
 
-// Timing values from Renesas bsc_userdef.c.
-// CSxBCR: bus size = 16-bit (IW[31:28]=0x1), 1 idle cycle (TYPE[11:9]=0x6, ICY[3:0]=0x0).
-const BCR_16BIT_1IDLE: u32 = 0x1000_0C00;
-// CSxWCR (non-SDRAM): setup 1.5 cyc, access 6 wait, teardown 0.5 cyc.
-const WCR_6WAIT: u32 = 0x0000_0B40;
-
-/// Configure CS0 for 16-bit external bus access.
-///
-/// Sets bus timing to match the Renesas RSK+ NOR-flash configuration:
-/// 16-bit bus width, 1 idle cycle between accesses, 6 wait-state access
-/// cycles.  Safe to call even if no device is connected to CS0 — the timing
-/// registers have no side-effects when the area is not accessed.
-///
-/// Must be called after [`crate::mmu::init_and_enable`] so the BSC register
-/// window is in the strongly-ordered memory region.
-///
-/// # Safety
-/// Writes to memory-mapped BSC registers.
-pub unsafe fn init_cs0() {
-    BSC.cs0bcr().write_value(bsc::regs::Cs0bcr(BCR_16BIT_1IDLE));
-    BSC.cs0wcr().write_value(bsc::regs::Cs0wcr(WCR_6WAIT));
+/// A chip-select area's bus timing: the `CSnBCR` (bus width, idle cycles, device type) and
+/// `CSnWCR` (setup, wait and hold cycles) values, as the RZ/A1 manual §8 lays them out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CsTiming {
+    /// `CSnBCR`.
+    pub bcr: u32,
+    /// `CSnWCR` (the normal-space layout).
+    pub wcr: u32,
 }
 
-/// Configure CS1 for 16-bit external bus access.
-///
-/// Identical timing to [`init_cs0`].  CS1 is configured as a second 16-bit
-/// external-bus area; on the Deluge this area is not populated.
+impl CsTiming {
+    /// The Renesas sample BSP's NOR-flash timing (`userdef_bsc_cs0_init` in `bsc_userdef.c`):
+    /// 16-bit bus, one idle cycle between accesses, 1.5-cycle setup, 6 wait cycles, 0.5-cycle hold.
+    pub const RENESAS_SAMPLE_NOR: CsTiming = CsTiming {
+        bcr: 0x1000_0C00,
+        wcr: 0x0000_0B40,
+    };
+}
+
+/// Configure CS0's bus timing. Safe to call with no device on CS0: the timing registers have no
+/// side effects until the area is accessed.
 ///
 /// # Safety
-/// Writes to memory-mapped BSC registers.
-pub unsafe fn init_cs1() {
-    BSC.cs1bcr().write_value(bsc::regs::Cs1bcr(BCR_16BIT_1IDLE));
-    BSC.cs1wcr().write_value(bsc::regs::Cs1wcr(WCR_6WAIT));
+/// Writes the BSC's memory-mapped registers; call after [`crate::mmu::init_and_enable`].
+pub unsafe fn init_cs0(timing: CsTiming) {
+    BSC.cs0bcr().write_value(bsc::regs::Cs0bcr(timing.bcr));
+    BSC.cs0wcr().write_value(bsc::regs::Cs0wcr(timing.wcr));
+}
+
+/// Configure CS1's bus timing, as [`init_cs0`] does CS0's.
+///
+/// # Safety
+/// Writes the BSC's memory-mapped registers; call after [`crate::mmu::init_and_enable`].
+pub unsafe fn init_cs1(timing: CsTiming) {
+    BSC.cs1bcr().write_value(bsc::regs::Cs1bcr(timing.bcr));
+    BSC.cs1wcr().write_value(bsc::regs::Cs1wcr(timing.wcr));
 }
 
 #[cfg(all(test, not(target_os = "none")))]
@@ -74,26 +64,35 @@ mod tests {
     use crate::mmio;
 
     #[test]
-    fn init_cs0_writes_bcr_then_wcr() {
+    fn init_cs0_writes_the_given_timing_bcr_then_wcr() {
         mmio::test::reset();
-        unsafe { init_cs0() };
+        unsafe {
+            init_cs0(CsTiming {
+                bcr: 0x1234_5600,
+                wcr: 0x0000_0789,
+            })
+        };
         assert_eq!(
             mmio::test::writes(),
-            [(0x3FFF_C004, BCR_16BIT_1IDLE), (0x3FFF_C028, WCR_6WAIT)],
+            [(0x3FFF_C004, 0x1234_5600), (0x3FFF_C028, 0x0000_0789)],
         );
-        // 16-bit bus width (IW=0x1) + 6 wait states encoded in the timing words.
-        assert_eq!(BCR_16BIT_1IDLE, 0x1000_0C00);
-        assert_eq!(WCR_6WAIT, 0x0000_0B40);
     }
 
     #[test]
     fn init_cs1_targets_cs1_registers() {
         mmio::test::reset();
-        unsafe { init_cs1() };
+        unsafe { init_cs1(CsTiming::RENESAS_SAMPLE_NOR) };
         assert_eq!(
             mmio::test::writes(),
-            [(0x3FFF_C008, BCR_16BIT_1IDLE), (0x3FFF_C02C, WCR_6WAIT)],
+            [(0x3FFF_C008, 0x1000_0C00), (0x3FFF_C02C, 0x0000_0B40)],
         );
+    }
+
+    #[test]
+    fn the_sample_nor_timing_is_16_bit_with_6_waits() {
+        // 16-bit bus width (IW=0x1) + 6 wait states, from Renesas' bsc_userdef.c.
+        assert_eq!(CsTiming::RENESAS_SAMPLE_NOR.bcr, 0x1000_0C00);
+        assert_eq!(CsTiming::RENESAS_SAMPLE_NOR.wcr, 0x0000_0B40);
     }
 
     #[test]

@@ -3,7 +3,7 @@
 
 use crate::pac::{CPG, L2C, cpg};
 
-/// Program the clock pulse generator with the board's FRQCR value (the Deluge's `0x1035` is
+/// Program the clock pulse generator with the board's FRQCR value (`0x1035`, for example, is
 /// PLL ×30, I:G:B:P1:P0 = 30:20:10:5:5/2). Each write is read back, as the hardware manual
 /// requires before the next access. FRQCR2 is not written: it exists only on the RZ/A1H.
 ///

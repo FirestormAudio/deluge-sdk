@@ -10,11 +10,11 @@
 //! `SpiBus` of `u8` or `u32` words.
 //!
 //! ## Channel map
-//! | Channel | Base address  | Use on Deluge         |
-//! |---------|---------------|-----------------------|
-//! | RSPI0   | `0xE800_C800` | CV DAC + OLED display |
-//! | RSPI1   | `0xE800_D000` | (unused)              |
-//! | RSPI2   | `0xE800_D800` | (unused)              |
+//! | Channel | Base address  |
+//! |---------|---------------|
+//! | RSPI0   | `0xE800_C800` |
+//! | RSPI1   | `0xE800_D000` |
+//! | RSPI2   | `0xE800_D800` |
 //!
 //! ## Clock gating
 //! RSPI0–2 (the RZ/A1L has three channels) are clocked through `Config::module_clocks` (STBCR10).
@@ -85,10 +85,9 @@ const SPBFCR_DUPLEX_32BIT: u8 = 0b0010_0010;
 // TRM §16 SPCMD bit fields: bit[1] = CPOL (0 = RSPCK idle low), bit[0] = CPHA
 // (0 = sample on odd/leading edge).  Reset value = H'070D (CPOL=0, CPHA=1).
 //
-// The Deluge peripherals (MAX5136 CV DAC, SSD1309 OLED) both specify SPI
-// Mode 0 (CPOL=0, CPHA=0).  The C firmware's SPCMD0 = 0x0302/0x0702 selects
-// CPOL=1 (Mode 2), which both parts tolerate in practice; this driver uses the
-// datasheet polarity.
+// Common SPI parts (the MAX5136 DAC, the SSD1309 OLED controller) specify SPI
+// Mode 0 (CPOL=0, CPHA=0), which this driver uses; some vendor code selects
+// CPOL=1 (Mode 2), which those parts tolerate in practice.
 
 /// 8-bit Mode 0 (CPOL=0, CPHA=0), SSL0.
 /// SPB[3:0] (bits 11:8) = 0b0111 → 8 bits per frame.

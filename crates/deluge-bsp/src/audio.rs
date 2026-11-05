@@ -230,6 +230,7 @@ pub fn init_with_scux_src(
         Src::Async {
             input_hz: engine_hz,
             output_hz: SSI_HZ,
+            usb_x1_hz: crate::system::USB_X1_HZ,
         },
     );
 }

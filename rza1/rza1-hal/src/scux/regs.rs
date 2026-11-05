@@ -43,8 +43,7 @@ pub const DMARS_SCURXI3: u32 = 0x010E;
 // ── DMA channel assignments ──────────────────────────────────────────────────
 //
 // DMA channels are board-specific: callers pass them as the `dma_ch` parameter
-// of `init_ffd_dma` / `init_ffu_dma`. The Deluge values are in
-// `deluge_bsp::system`.
+// of `init_ffd_dma` / `init_ffu_dma`.
 
 // CHCFG for SCUX FFD DMA (SRAM → SCUX FIFO, source increments, destination fixed):
 //   DMS | DEM | DAD | DDS_32BIT | SDS_32BIT | AM_BURST | HIEN | REQD | LVL | channel
