@@ -311,6 +311,127 @@ pub(crate) fn load_wav(path: &Path) -> Result<Vec<[f32; 2]>, String> {
         .collect())
 }
 
+/// What [`choose_config`] needs to know about one of a device's supported configurations.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SupportedRange {
+    channels: u16,
+    min_hz: u32,
+    max_hz: u32,
+    format: cpal::SampleFormat,
+}
+
+impl From<&cpal::SupportedStreamConfigRange> for SupportedRange {
+    fn from(r: &cpal::SupportedStreamConfigRange) -> Self {
+        Self {
+            channels: r.channels(),
+            min_hz: r.min_sample_rate(),
+            max_hz: r.max_sample_rate(),
+            format: r.sample_format(),
+        }
+    }
+}
+
+/// How to open a device for the simulator's rate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Choice {
+    /// The supported range at this index runs at the rate: open it there.
+    Native(usize),
+    /// No range offers the rate: open the device's default and resample.
+    Resample,
+}
+
+/// Pick a configuration running at `want_hz` in a sample format the stream builders drive,
+/// preferring stereo, then `f32`.
+fn choose_config(supported: &[SupportedRange], want_hz: u32) -> Choice {
+    let format_rank = |f| match f {
+        cpal::SampleFormat::F32 => Some(0),
+        cpal::SampleFormat::I16 => Some(1),
+        cpal::SampleFormat::U16 => Some(2),
+        _ => None,
+    };
+    supported
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| (r.min_hz..=r.max_hz).contains(&want_hz))
+        .filter_map(|(i, r)| Some((i, (r.channels < 2, format_rank(r.format)?))))
+        .min_by_key(|&(_, score)| score)
+        .map_or(Choice::Resample, |(i, _)| Choice::Native(i))
+}
+
+/// A linear-interpolating sample-rate converter for one stereo stream, for a device that won't
+/// run at the simulator's rate. Linear interpolation is enough to hear an app at the right pitch
+/// and speed; it is not a mastering-grade converter.
+struct LinearResampler {
+    /// Source frames per output frame.
+    step: f64,
+    /// Where the next output frame falls between `prev` and `cur`, in source frames.
+    pos: f64,
+    prev: [f32; 2],
+    cur: [f32; 2],
+}
+
+impl LinearResampler {
+    fn new(from_hz: u32, to_hz: u32) -> Self {
+        Self {
+            step: from_hz as f64 / to_hz as f64,
+            pos: 0.0,
+            prev: [0.0; 2],
+            cur: [0.0; 2],
+        }
+    }
+
+    fn lerp(&self) -> [f32; 2] {
+        let t = self.pos as f32;
+        [0, 1].map(|c| self.prev[c] + (self.cur[c] - self.prev[c]) * t)
+    }
+
+    /// The next output frame, pulling source frames from `src` as it needs them (the output
+    /// direction: the device callback asks for a fixed number of frames).
+    fn pull(&mut self, mut src: impl FnMut() -> [f32; 2]) -> [f32; 2] {
+        while self.pos >= 1.0 {
+            self.prev = self.cur;
+            self.cur = src();
+            self.pos -= 1.0;
+        }
+        let out = self.lerp();
+        self.pos += self.step;
+        out
+    }
+
+    /// Feed one source frame, emitting the output frames that fall before it (the input
+    /// direction: the device callback hands over what it captured).
+    fn push(&mut self, frame: [f32; 2], mut emit: impl FnMut([f32; 2])) {
+        self.prev = self.cur;
+        self.cur = frame;
+        while self.pos < 1.0 {
+            emit(self.lerp());
+            self.pos += self.step;
+        }
+        self.pos -= 1.0;
+    }
+}
+
+/// Open `dev` at the simulator's rate if it offers it, otherwise at its default with a
+/// resampler (logging the rates once).
+fn open_config(
+    dir: &str,
+    supported: Result<Vec<cpal::SupportedStreamConfigRange>, cpal::Error>,
+    default: impl FnOnce() -> Result<cpal::SupportedStreamConfig, cpal::Error>,
+) -> Result<(cpal::SupportedStreamConfig, Option<u32>), String> {
+    let ranges = supported.unwrap_or_default();
+    let summary: Vec<SupportedRange> = ranges.iter().map(SupportedRange::from).collect();
+    if let Choice::Native(i) = choose_config(&summary, SAMPLE_RATE_HZ) {
+        return Ok((ranges[i].with_sample_rate(SAMPLE_RATE_HZ), None));
+    }
+    let cfg = default().map_err(|e| format!("{dir} config: {e}"))?;
+    log::warn!(
+        "simulator audio: the {dir} device runs at {} Hz, not {SAMPLE_RATE_HZ} Hz; resampling",
+        cfg.sample_rate()
+    );
+    let rate = cfg.sample_rate();
+    Ok((cfg, Some(rate)))
+}
+
 fn start_output(
     host: &cpal::Host,
     out: HeapCons<[f32; 2]>,
@@ -322,15 +443,24 @@ fn start_output(
     let dev = host
         .default_output_device()
         .ok_or("no default output device")?;
-    let cfg = dev
-        .default_output_config()
-        .map_err(|e| format!("output config: {e}"))?;
+    let (cfg, device_hz) = open_config(
+        "output",
+        dev.supported_output_configs().map(Iterator::collect),
+        || dev.default_output_config(),
+    )?;
+    let rs = device_hz.map(|hz| LinearResampler::new(SAMPLE_RATE_HZ, hz));
     let fmt = cfg.sample_format();
     let config: cpal::StreamConfig = cfg.into();
     let stream = match fmt {
-        cpal::SampleFormat::F32 => build_output::<f32>(&dev, &config, out, mon, volume, boost, rec),
-        cpal::SampleFormat::I16 => build_output::<i16>(&dev, &config, out, mon, volume, boost, rec),
-        cpal::SampleFormat::U16 => build_output::<u16>(&dev, &config, out, mon, volume, boost, rec),
+        cpal::SampleFormat::F32 => {
+            build_output::<f32>(&dev, &config, out, mon, volume, boost, rec, rs)
+        }
+        cpal::SampleFormat::I16 => {
+            build_output::<i16>(&dev, &config, out, mon, volume, boost, rec, rs)
+        }
+        cpal::SampleFormat::U16 => {
+            build_output::<u16>(&dev, &config, out, mon, volume, boost, rec, rs)
+        }
         other => return Err(format!("unsupported output sample format {other:?}")),
     }
     .map_err(|e| format!("build output stream: {e}"))?;
@@ -346,6 +476,7 @@ fn build_output<T>(
     volume: Volume,
     boost: Boost,
     mut rec: Option<HeapProd<[f32; 2]>>,
+    mut rs: Option<LinearResampler>,
 ) -> Result<cpal::Stream, cpal::Error>
 where
     T: cpal::SizedSample + cpal::FromSample<f32>,
@@ -358,15 +489,22 @@ where
             let gain = volume_gain(&volume) * 10f32.powf(boost_db / 20.0);
             // At 0 dB the speakers get the app's output exactly, as the device's DAC does.
             let shape = |v: f32| if boost_db > 0.0 { soft_clip(v) } else { v };
-            for frame in data.chunks_mut(channels.max(1)) {
+            // The app's next frame. Tee it, *pre-volume* and at the app's rate, to the scope
+            // monitor (and the recorder, if any), so both capture the app's true output
+            // regardless of the monitor knob.
+            let mut next = || {
                 let s = out.try_pop().unwrap_or([0.0, 0.0]);
-                // Tee the *pre-volume* stereo frame to the scope monitor (and the
-                // recorder, if any), so both capture the app's true output
-                // regardless of the monitor knob.
                 let _ = mon.try_push(s);
                 if let Some(rec) = rec.as_mut() {
                     let _ = rec.try_push(s);
                 }
+                s
+            };
+            for frame in data.chunks_mut(channels.max(1)) {
+                let s = match rs.as_mut() {
+                    Some(rs) => rs.pull(&mut next),
+                    None => next(),
+                };
                 for (i, ch) in frame.iter_mut().enumerate() {
                     let v = match i {
                         0 => s[0],
@@ -386,15 +524,18 @@ fn start_input(host: &cpal::Host, in_: HeapProd<[f32; 2]>) -> Result<cpal::Strea
     let dev = host
         .default_input_device()
         .ok_or("no default input device")?;
-    let cfg = dev
-        .default_input_config()
-        .map_err(|e| format!("input config: {e}"))?;
+    let (cfg, device_hz) = open_config(
+        "input",
+        dev.supported_input_configs().map(Iterator::collect),
+        || dev.default_input_config(),
+    )?;
+    let rs = device_hz.map(|hz| LinearResampler::new(hz, SAMPLE_RATE_HZ));
     let fmt = cfg.sample_format();
     let config: cpal::StreamConfig = cfg.into();
     let stream = match fmt {
-        cpal::SampleFormat::F32 => build_input::<f32>(&dev, &config, in_),
-        cpal::SampleFormat::I16 => build_input::<i16>(&dev, &config, in_),
-        cpal::SampleFormat::U16 => build_input::<u16>(&dev, &config, in_),
+        cpal::SampleFormat::F32 => build_input::<f32>(&dev, &config, in_, rs),
+        cpal::SampleFormat::I16 => build_input::<i16>(&dev, &config, in_, rs),
+        cpal::SampleFormat::U16 => build_input::<u16>(&dev, &config, in_, rs),
         other => return Err(format!("unsupported input sample format {other:?}")),
     }
     .map_err(|e| format!("build input stream: {e}"))?;
@@ -406,6 +547,7 @@ fn build_input<T>(
     dev: &cpal::Device,
     config: &cpal::StreamConfig,
     mut in_: HeapProd<[f32; 2]>,
+    mut rs: Option<LinearResampler>,
 ) -> Result<cpal::Stream, cpal::Error>
 where
     T: cpal::SizedSample,
@@ -422,7 +564,14 @@ where
                 } else {
                     l
                 };
-                let _ = in_.try_push([l, r]);
+                match rs.as_mut() {
+                    Some(rs) => rs.push([l, r], |s| {
+                        let _ = in_.try_push(s);
+                    }),
+                    None => {
+                        let _ = in_.try_push([l, r]);
+                    }
+                }
             }
         },
         |e| log::warn!("simulator audio input error: {e}"),
@@ -433,6 +582,78 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A 1 kHz stereo tone, `secs` long at `rate`.
+    fn tone(rate: u32, secs: f64) -> Vec<[f32; 2]> {
+        (0..(rate as f64 * secs) as usize)
+            .map(|n| {
+                let v =
+                    (std::f64::consts::TAU * 1000.0 * n as f64 / rate as f64 + 0.3).sin() as f32;
+                [v, v]
+            })
+            .collect()
+    }
+
+    /// The left channel's frequency, from its rising zero crossings.
+    fn frequency(frames: &[[f32; 2]], rate: u32) -> f64 {
+        let rising = frames
+            .windows(2)
+            .filter(|w| w[0][0] < 0.0 && w[1][0] >= 0.0)
+            .count();
+        rising as f64 * rate as f64 / frames.len() as f64
+    }
+
+    #[test]
+    fn resample_48k_to_44k1_preserves_a_1khz_tone_frequency() {
+        let mut rs = LinearResampler::new(48_000, 44_100);
+        let mut out = Vec::new();
+        for frame in tone(48_000, 1.0) {
+            rs.push(frame, |s| out.push(s));
+        }
+        assert!(out.len().abs_diff(44_100) <= 1, "{} frames", out.len());
+        let hz = frequency(&out, 44_100);
+        assert!((hz - 1000.0).abs() <= 1.0, "{hz} Hz");
+    }
+
+    #[test]
+    fn resample_44k1_to_48k_for_the_output_device_preserves_a_1khz_tone_frequency() {
+        let mut src = tone(44_100, 1.0).into_iter();
+        let mut rs = LinearResampler::new(44_100, 48_000);
+        let out: Vec<_> = (0..48_000)
+            .map(|_| rs.pull(|| src.next().unwrap_or([0.0; 2])))
+            .collect();
+        assert!(src.len() <= 1, "{} source frames left over", src.len());
+        let hz = frequency(&out, 48_000);
+        assert!((hz - 1000.0).abs() <= 1.0, "{hz} Hz");
+    }
+
+    #[test]
+    fn choose_config_takes_a_range_offering_the_rate_and_prefers_stereo_f32() {
+        use cpal::SampleFormat::{F32, I16};
+        let range = |channels, min_hz, max_hz, format| SupportedRange {
+            channels,
+            min_hz,
+            max_hz,
+            format,
+        };
+        let fixed_48k = range(2, 48_000, 48_000, F32);
+        assert_eq!(choose_config(&[fixed_48k], 44_100), Choice::Resample);
+        assert_eq!(
+            choose_config(&[fixed_48k, range(2, 8_000, 96_000, I16)], 44_100),
+            Choice::Native(1)
+        );
+        let ranges = [
+            range(1, 8_000, 96_000, F32),
+            range(2, 44_100, 44_100, I16),
+            range(2, 8_000, 192_000, F32),
+        ];
+        assert_eq!(choose_config(&ranges, 44_100), Choice::Native(2));
+        // A format the stream builders can't drive is never chosen.
+        assert_eq!(
+            choose_config(&[range(2, 8_000, 96_000, cpal::SampleFormat::F64)], 44_100),
+            Choice::Resample
+        );
+    }
 
     #[test]
     fn the_soft_clip_is_linear_below_the_knee_and_stays_within_full_scale() {
