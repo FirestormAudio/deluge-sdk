@@ -52,6 +52,12 @@ if [ ${#mode[@]} -ne 0 ]; then
 fi
 host=x86_64-unknown-linux-gnu
 
+# Multi-crate publishes verify against a local overlay registry that cargo extracts under
+# registry/src/-<hash>/ and never refreshes for an unchanged version, so a crate packaged by an
+# earlier run would be verified in its old form. Those dash-named directories hold only such
+# overlays (crates.io's are index.crates.io-*); clear them first.
+rm -rf "${CARGO_HOME:-$HOME/.cargo}"/registry/src/-*/
+
 linux_verify=(--no-verify)
 if [ -n "${DELUGE_SDK_ROOT:-}" ] && [ -f "$DELUGE_SDK_ROOT/lib/libdeluge.a" ]; then
   linux_verify=()
