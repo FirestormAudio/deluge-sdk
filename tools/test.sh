@@ -63,6 +63,10 @@ echo "==> the vendored async FAT stack builds for the device, LFN on, no alloc"
 cargo check --manifest-path crates/embedded-fatfs/Cargo.toml --target armv7a-none-eabihf \
   --no-default-features --features lfn
 cargo check --manifest-path crates/block-device-adapters/Cargo.toml --target armv7a-none-eabihf
+echo "==> the FAT forks build for a bare-metal target at their default features"
+cargo build --manifest-path crates/embedded-fatfs/Cargo.toml --target thumbv7em-none-eabihf
+cargo build --manifest-path crates/block-device-adapters/Cargo.toml --target thumbv7em-none-eabihf \
+  --features log,defmt
 
 echo "==> Host bucket ($HOST)"
 # Portable-fallback / non-NEON paths of the fixed-point crates (the QEMU bucket

@@ -37,9 +37,9 @@ embedded-hal = "1"
 embedded-graphics-core = "0.4"
 # `Sd`'s FAT volume on the device: async embedded-fatfs, vendored from DelugeFirmware (each
 # crate's VENDOR.md), over the board's 512-byte block device. Long names on, no `alloc`.
-embedded-fatfs = { package = "deluge-embedded-fatfs", path = "../embedded-fatfs", version = "0.1.0", default-features = false, features = ["lfn"] }
+embedded-fatfs = { package = "deluge-embedded-fatfs", path = "../embedded-fatfs", version = "0.2.0", default-features = false, features = ["lfn"] }
 block-device-driver = "0.2"
-block-device-adapters = { package = "deluge-block-device-adapters", path = "../block-device-adapters", version = "0.2.0" }
+block-device-adapters = { package = "deluge-block-device-adapters", path = "../block-device-adapters", version = "0.3.0" }
 embedded-io-async = "0.7"
 aligned = "0.4"
 rtt-target = { workspace = true, optional = true }
