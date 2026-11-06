@@ -21,7 +21,7 @@ blinks an indicator LED a few times, and exits.
 
 The launcher that lists and runs `/LINUX/APPS/` now lives in
 [deluge-linux](https://github.com/FirestormAudio/deluge-linux): it is the app
-slot of the `platform` image (`LINUX-platform.ELF` in each release). Drop bare
+slot of the `platform` image (`LINUX.ELF` in each release). Drop bare
 app binaries (built with `cargo deluge linux --bare` from each app's own
 directory) into the card's `/LINUX/APPS/`. SHIFT+TRIPLETS+LEARN, held about a
 second, always returns to the list. See deluge-linux's
