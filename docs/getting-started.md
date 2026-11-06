@@ -334,11 +334,16 @@ jacks.apply_speaker_mute();   // stock policy: amp off when HP/line-out present
 
 In bare-metal builds the clock's edges come from the MTU2 channel 4 timer, so their timing
 doesn't depend on what the executor is doing; native Linux and the simulator use a software
-loop. `set_period` and `set_pulse_width` take effect at the next period boundary, so a tempo
-change never gives a short or doubled pulse. Dropping the `ClockOut` stops the clock and leaves
-the gate low; `pulse()` while the clock runs returns at once, and a cancelled `pulse()` ends low
-at once. Starting a running clock begins a new period at once and cuts the current pulse.
-Periods are clamped to 1 ms–2 s.
+loop. `start` makes the first rising edge at once, and the next one a period later.
+`set_period` and `set_pulse_width` take effect at the next period boundary, so a tempo change
+never gives a short or doubled pulse. `is_running()` says whether the clock is running.
+Dropping the `ClockOut` stops the clock and leaves the gate low; `pulse()` while the clock runs
+returns at once, and a cancelled `pulse()` ends low at once. Starting a running clock begins a
+new period at once and cuts the current pulse.
+
+A period outside 1 ms–2 s is clamped to that range, and the pulse width is clamped to under the
+period. The first period clamp logs one warning at `warn`, and so does the first width clamp,
+each giving the value asked for and the value used.
 
 ### SD card — [`examples/baremetal/sd_demo`](../examples/baremetal/sd_demo)
 

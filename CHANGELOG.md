@@ -11,7 +11,8 @@ breaking changes.
 
 - `ClockOut::start`, `set_period`, `stop` and `is_running`. `set_period` and `set_pulse_width`
   take effect at the next period boundary, so a tempo change never gives a short or doubled
-  pulse. Periods are clamped to 1 ms–2 s and logged once at `warn`.
+  pulse. Periods are clamped to 1 ms–2 s and the pulse width to under the period; the first
+  clamp of each is logged at `warn`.
 
 ### Changed
 
@@ -21,7 +22,8 @@ breaking changes.
   runs returns at once.
 - `Deluge::clock_out(ch)` panics up front for a gate channel of 4 or more; the Deluge has
   gates 0–3.
-- The `clock_jacks` example free-runs a 24 ppqn clock and switches its tempo on PLAY.
+- The `clock_jacks` example free-runs a 24 ppqn clock and switches its tempo on PLAY. Its clock
+  in no longer echoes to the clock out: it only toggles the SYNC LED and shows its BPM.
 
 ## [0.1.0] - 2026-11-05
 

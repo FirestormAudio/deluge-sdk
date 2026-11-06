@@ -102,8 +102,8 @@ const DEFAULT_PERIOD: Duration = Duration::from_millis(500);
 /// clk.stop();
 /// ```
 ///
-/// Periods are clamped to 1 ms..=2 s and the pulse width to under the period; the first clamp is
-/// logged at `warn`.
+/// Periods are clamped to 1 ms..=2 s and the pulse width to under the period. The first period
+/// clamp and the first width clamp are each logged once at `warn`.
 pub struct ClockOut {
     /// The period the train runs at, or will at the next start.
     period: Duration,
