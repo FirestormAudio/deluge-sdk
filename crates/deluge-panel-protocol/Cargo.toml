@@ -2,6 +2,7 @@
 name = "deluge-panel-protocol"
 version.workspace = true
 edition.workspace = true
+rust-version = "1.85"
 license.workspace = true
 readme = "README.md"
 authors.workspace = true

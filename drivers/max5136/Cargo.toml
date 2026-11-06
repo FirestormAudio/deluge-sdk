@@ -2,6 +2,7 @@
 name = "max5136"
 version.workspace = true
 edition.workspace = true
+rust-version = "1.85"
 authors.workspace = true
 license = "MIT OR Apache-2.0"
 readme = "README.md"

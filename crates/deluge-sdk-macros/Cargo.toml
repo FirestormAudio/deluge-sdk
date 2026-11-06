@@ -8,6 +8,7 @@ version.workspace = true
 # Pinned to 2021 (not the workspace 2024): proc-macro expansion is edition-
 # sensitive and this crate is validated against 2021.
 edition = "2021"
+rust-version = "1.85"
 authors.workspace = true
 license.workspace = true
 repository.workspace = true

@@ -2,6 +2,7 @@
 name = "deluge-simulator"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 authors = ["Katherine Whitlock <kate@skylinesynths.nyc>"]
 repository = "https://github.com/FirestormAudio/deluge-sdk"
