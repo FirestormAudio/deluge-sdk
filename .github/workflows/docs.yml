@@ -27,12 +27,14 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly
+          toolchain: nightly-2026-11-06
           targets: armv7a-none-eabihf
           components: rust-src
 
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: Build docs
         env:

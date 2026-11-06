@@ -15,7 +15,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly
+          toolchain: nightly-2026-11-06
           # QEMU ARM bucket + host bucket (see tools/test.sh).
           # + wasm32-wasip1 for the web sim's build guard, and the Cortex-M targets
           # arm-dsp builds for (see tools/test.sh).
@@ -24,6 +24,16 @@ jobs:
 
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
+        with:
+          # tools/test.sh also builds these standalone crates, each in its own target/.
+          workspaces: |
+            . -> target
+            rza1 -> target
+            tools/cargo-deluge -> target
+            crates/deluge-simulator -> target
+            crates/embedded-fatfs -> target
+            crates/block-device-adapters -> target
+          cache-on-failure: true
 
       - name: Install QEMU + ARM cross toolchain + libudev (for serialport)
         run: |

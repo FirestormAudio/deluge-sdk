@@ -41,12 +41,16 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly
+          toolchain: nightly-2026-11-06
           targets: armv7a-none-eabihf
           components: rust-src,llvm-tools-preview
 
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
+        with:
+          # One cache per image: the legs build different crates and would overwrite each other.
+          key: ${{ matrix.name }}
+          cache-on-failure: true
 
       - name: Install cargo-binutils
         if: matrix.name == 'app-loader' # only the .bin (objcopy) leg needs it

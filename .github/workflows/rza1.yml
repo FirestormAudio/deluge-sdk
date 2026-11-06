@@ -22,7 +22,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly
+          toolchain: nightly-2026-11-06
           targets: armv7a-none-eabihf, armv7-unknown-linux-gnueabihf
           components: rust-src,llvm-tools-preview,clippy,rustfmt
 
@@ -30,6 +30,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: rza1
+          cache-on-failure: true
 
       - name: Install QEMU + ARM cross toolchain
         run: |

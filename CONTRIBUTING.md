@@ -5,9 +5,14 @@ build, test, and submit changes.
 
 ## Getting set up
 
-The toolchain is pinned in [`rust-toolchain.toml`](rust-toolchain.toml) — a
-nightly channel plus the `armv7a-none-eabihf` target. `rustup show` from the
+The toolchain is pinned in [`rust-toolchain.toml`](rust-toolchain.toml) — one dated
+nightly plus the `armv7a-none-eabihf` target. `rustup show` from the
 repo root installs both.
+
+To move to a newer nightly, change the date in `rust-toolchain.toml`, `rza1/rust-toolchain.toml`,
+`tools/cargo-deluge/templates/rust-toolchain.toml` and every `toolchain:` line under
+`.github/workflows/` together; `tools/test.sh` fails if they disagree. Run the full suite on the
+new nightly before committing.
 
 ```sh
 rustup show

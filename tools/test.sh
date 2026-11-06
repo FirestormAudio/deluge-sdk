@@ -29,6 +29,19 @@ cd "$(dirname "$0")/.."
 
 tools/check-layering.sh
 
+echo "==> one pinned nightly: the toolchain files, the app template and every CI workflow agree"
+pinned="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
+for f in rza1/rust-toolchain.toml tools/cargo-deluge/templates/rust-toolchain.toml; do
+  if [ "$(sed -n 's/^channel = "\(.*\)"$/\1/p' "$f")" != "$pinned" ]; then
+    echo "error: $f does not name $pinned" >&2
+    exit 1
+  fi
+done
+if grep -n 'toolchain:' .github/workflows/*.yml | grep -v "toolchain: $pinned\$"; then
+  echo "error: a workflow installs a toolchain other than $pinned" >&2
+  exit 1
+fi
+
 echo "==> rustfmt-clean (the workspace and the crates it excludes; rza1/ checks its own)"
 cargo fmt --all -- --check
 for d in tools/cargo-deluge crates/deluge-simulator linux/libdeluge-sys \

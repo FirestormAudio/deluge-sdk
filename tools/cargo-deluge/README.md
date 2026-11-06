@@ -16,8 +16,8 @@ Or, from a clone of the repository, `cargo install --path tools/cargo-deluge`. I
 stable Rust 1.88 or later. On Linux, `serialport` needs the udev headers and `pkg-config`
 (`libudev-dev` and `pkg-config` on Debian and Ubuntu, `systemd-libs` and `pkgconf` on Arch).
 
-New apps use the `nightly` channel: `cargo deluge new` writes a `rust-toolchain.toml` naming it,
-and `rustup` installs it on first use.
+New apps use the dated nightly the SDK is tested with: `cargo deluge new` writes a
+`rust-toolchain.toml` naming it, and `rustup` installs it on first use.
 
 Cargo then runs the installed `cargo-deluge` binary for `cargo deluge <command>`.
 `cargo deluge help` prints every command with its options.

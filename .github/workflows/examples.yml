@@ -27,12 +27,14 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly
+          toolchain: nightly-2026-11-06
           targets: armv7a-none-eabihf
           components: rust-src,llvm-tools-preview
 
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: Install bare-metal ARM toolchain (arm-none-eabi-g++ for additive_osc's C++/Argon core)
         run: |
