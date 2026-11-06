@@ -57,8 +57,10 @@ async fn main(dlg: Deluge) {
     let input = dlg.input();
 
     clk_out.set_pulse_width(Duration::from_millis(10));
-    let mut tempo = 120.0f32;
-    clk_out.start(ClockOut::period_from_bpm(tempo, 24));
+    // PLAY switches between the two tempos.
+    let mut fast = false;
+    let tempo = |fast: bool| if fast { 140u32 } else { 120 };
+    clk_out.start(ClockOut::period_from_bpm(tempo(fast) as f32, 24));
 
     let mut bpm = 0u32;
     loop {
@@ -75,8 +77,8 @@ async fn main(dlg: Deluge) {
                 if id == controls::button::PLAY =>
             {
                 // Takes effect at the next period boundary.
-                tempo = if tempo == 120.0 { 140.0 } else { 120.0 };
-                clk_out.set_period(ClockOut::period_from_bpm(tempo, 24));
+                fast = !fast;
+                clk_out.set_period(ClockOut::period_from_bpm(tempo(fast) as f32, 24));
             }
             Either3::Second(_) | Either3::Third(()) => {}
         }
@@ -91,7 +93,7 @@ async fn main(dlg: Deluge) {
         oled.text(0, 22, "IN ");
         oled.text(18, 22, fmt_u32(&mut nbuf, bpm));
         oled.text(54, 22, "OUT ");
-        oled.text(78, 22, fmt_u32(&mut obuf, tempo as u32));
+        oled.text(78, 22, fmt_u32(&mut obuf, tempo(fast)));
         oled.text(
             0,
             34,
