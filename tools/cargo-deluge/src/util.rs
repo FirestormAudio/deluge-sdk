@@ -38,7 +38,7 @@ pub(crate) fn locate_objcopy() -> Option<PathBuf> {
         .join("rustlib")
         .join(host)
         .join("bin")
-        .join("llvm-objcopy");
+        .join(format!("llvm-objcopy{}", std::env::consts::EXE_SUFFIX));
     path.is_file().then_some(path)
 }
 

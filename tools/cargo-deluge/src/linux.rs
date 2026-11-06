@@ -15,6 +15,44 @@ use crate::util::{arg_value, strip_elf};
 /// The Deluge's Linux userland triple (musl, static).
 const LINUX_TARGET: &str = "armv7-unknown-linux-musleabihf";
 
+/// The child `cargo build` for the Linux userland, against the bundle at `base`. It carries the
+/// whole cross setup (linker, static CRT, the bundle's toolchain on `PATH`, the libdeluge
+/// sysroot), so it works from any app, whatever its own `.cargo/config.toml` says.
+fn build_command(base: &str, debug: bool, features: Option<&str>) -> Result<Command, String> {
+    let sysroot = format!("{base}/toolchain/arm-buildroot-linux-musleabihf/sysroot/usr");
+    // The bundle's toolchain first, so `arm-linux-gcc` resolves.
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let path = std::env::join_paths(
+        std::iter::once(PathBuf::from(format!("{base}/toolchain/bin")))
+            .chain(std::env::split_paths(&path)),
+    )
+    .map_err(|e| format!("PATH: {e}"))?;
+    let rustflags_var = "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_RUSTFLAGS";
+    let rustflags = match std::env::var(rustflags_var) {
+        Ok(existing) if !existing.trim().is_empty() => {
+            format!("{existing} -C target-feature=+crt-static")
+        }
+        _ => "-C target-feature=+crt-static".to_string(),
+    };
+
+    let mut cmd = Command::new("cargo");
+    cmd.args(["build", "--target", LINUX_TARGET, "--no-default-features"]);
+    if !debug {
+        cmd.arg("--release");
+    }
+    if let Some(features) = features.filter(|f| !f.is_empty()) {
+        cmd.arg("--features").arg(features);
+    }
+    cmd.env("DELUGE_SDK_ROOT", &sysroot)
+        .env("PATH", &path)
+        .env(
+            "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER",
+            "arm-linux-gcc",
+        )
+        .env(rustflags_var, rustflags);
+    Ok(cmd)
+}
+
 pub(crate) fn cmd_linux(args: &[String]) -> Result<(), String> {
     let debug = args.iter().any(|a| a == "--debug");
     let bare = args.iter().any(|a| a == "--bare");
@@ -57,28 +95,12 @@ pub(crate) fn cmd_linux(args: &[String]) -> Result<(), String> {
 
     let base = std::env::var("DELUGE_BASE")
         .map_err(|_| "set DELUGE_BASE to an unpacked deluge-linux bundle".to_string())?;
-    let sysroot = format!("{base}/toolchain/arm-buildroot-linux-musleabihf/sysroot/usr");
     let mkimage = PathBuf::from(&base).join("tools/deluge-mkimage");
     if !mkimage.is_file() {
         return Err(format!("bundle has no packer at {}", mkimage.display()));
     }
-    // Prepend the bundle toolchain bin so the config's `arm-linux-gcc` resolves.
-    let path = format!(
-        "{base}/toolchain/bin:{}",
-        std::env::var("PATH").unwrap_or_default()
-    );
 
-    let mut cmd = Command::new("cargo");
-    cmd.args(["build", "--target", LINUX_TARGET, "--no-default-features"]);
-    if !debug {
-        cmd.arg("--release");
-    }
-    if let Some(features) = &features {
-        if !features.is_empty() {
-            cmd.arg("--features").arg(features);
-        }
-    }
-    cmd.env("DELUGE_SDK_ROOT", &sysroot).env("PATH", &path);
+    let mut cmd = build_command(&base, debug, features.as_deref())?;
     if !cmd.status().map_err(|e| format!("cargo: {e}"))?.success() {
         return Err("build failed".to_string());
     }
@@ -139,4 +161,46 @@ pub(crate) fn cmd_linux(args: &[String]) -> Result<(), String> {
         crate::run::upload_elf(&product, args)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn env(cmd: &Command, key: &str) -> Option<String> {
+        cmd.get_envs()
+            .find(|(k, _)| *k == key)
+            .and_then(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+    }
+
+    #[test]
+    fn linux_sets_the_cross_linker_for_the_child_cargo() {
+        let cmd = build_command("/bundle", false, Some("linux")).unwrap();
+        assert_eq!(
+            env(&cmd, "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER").as_deref(),
+            Some("arm-linux-gcc")
+        );
+        let flags = env(
+            &cmd,
+            "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_RUSTFLAGS",
+        )
+        .unwrap();
+        assert!(flags.contains("target-feature=+crt-static"), "{flags}");
+        let path = env(&cmd, "PATH").unwrap();
+        let first = std::env::split_paths(&path).next().unwrap();
+        assert_eq!(first, std::path::Path::new("/bundle/toolchain/bin"));
+        assert_eq!(
+            env(&cmd, "DELUGE_SDK_ROOT").as_deref(),
+            Some("/bundle/toolchain/arm-buildroot-linux-musleabihf/sysroot/usr")
+        );
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.iter().any(|a| a == "--release"), "{args:?}");
+        assert!(
+            args.windows(2).any(|w| w == ["--features", "linux"]),
+            "{args:?}"
+        );
+    }
 }

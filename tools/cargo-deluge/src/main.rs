@@ -16,9 +16,10 @@
 //! - `cargo deluge log [--port <path>]` — connect to a running app's USB
 //!   serial-log channel (the `usb-log` feature) and stream it to stdout.
 //! - `cargo deluge sim [--release] [--audio-in <wav>] [--audio-out <wav>]
-//!   [--hardware [<port>]]` — build for the host and run in the desktop simulator.
-//! - `cargo deluge linux [--bare] [--profile <base|platform>] [--out <NAME>]
-//!   [--features <list>] [--no-strip] [--run]`
+//!   [--hardware [<port>]] [--headless] [--script <file>] [--out <dir>]` — build for the
+//!   host and run in the desktop simulator.
+//! - `cargo deluge linux [--bare] [--profile <base|platform>] [--overlay <dir>] [--out <NAME>]
+//!   [--features <list>] [--no-strip] [--debug] [--run]`
 //!   — build the current app for the Deluge's Linux userland and pack it with
 //!   the bundle's deluge-mkimage. Needs DELUGE_BASE set to an unpacked bundle.
 //!   `--run` then dev-uploads + launches the packed appliance image from RAM
@@ -32,7 +33,7 @@
 //! ever emits an ELF (UF2 is the separate firmware-flash path).
 //!
 //! Each subcommand lives in its own module; this file is just argument dispatch,
-//! the shared device constants, and the help text.
+//! the shared device constants, and the help text ([`HELP`], which the README's table copies).
 
 mod build;
 mod deploy;
@@ -113,16 +114,30 @@ Commands:
                                --port <path>  serial port override (else auto)
                                --log          tail the app's USB log after launch
                                --no-strip     send the full ELF (debug info etc.)
+  upload <path> [opts]       Upload an already-built ELF or appliance image over
+                             USB and launch it from RAM, without rebuilding.
+                               --port <path>  serial port override (else auto)
+                               --log          tail the app's USB log after launch
   deploy [--release] [opts]  Build, then copy the ELF to a mounted Deluge SD card.
                                --dest <dir>   copy to <dir>/APPS/ (else print how)
   log [--port <path>]        Connect to a running app's USB serial-log channel
                              (the `usb-log` feature) and stream it to stdout.
                                --port <path>  serial port override (else auto)
-  sim [--release]            Build for the host and run the app in the desktop
+  sim [opts]                 Build for the host and run the app in the desktop
                              simulator (OLED/pads/LEDs/audio), no hardware needed.
+                               --release          optimized build
+                               --audio-in <wav>   feed a WAV (looped) as the input
+                               --audio-out <wav>  record the output to a WAV
+                               --hardware [port]  also drive the app from a Deluge
+                                                  running controller-firmware
+                               --headless         no window: replay a script and
+                                                  write snapshots (CI)
+                               --script <file>    the headless input script
+                               --out <dir>        where headless snapshots go
   linux [opts]               Build the current app for the Deluge's Linux userland
                              (armv7 musl, static) and pack it with the bundle's
                              deluge-mkimage. Needs DELUGE_BASE=<unpacked bundle>.
+                             Builds with --no-default-features (plus --features).
                                --bare           emit the bare /LINUX/APPS/ binary
                                --profile P      rootfs profile to bake into:
                                                 base (default) or platform
@@ -134,6 +149,7 @@ Commands:
                                --out N          image basename (else PACKAGE-NAME)
                                --features LIST  cargo --features to build with
                                --no-strip       keep debug info (larger image)
+                               --debug          debug profile instead of release
                                --run            dev-upload + launch the packed
                                                 image from RAM (needs DEV MODE
                                                 on the boot menu; not with --bare)
@@ -145,4 +161,30 @@ Commands:
 
 fn print_help() {
     println!("{HELP}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HELP;
+
+    #[test]
+    fn help_lists_every_subcommand() {
+        // Every arm of the dispatch in `main`, read from this file's source.
+        let src = include_str!("main.rs");
+        let dispatch =
+            &src[src.find("match cmd.as_str()").unwrap()..src.find("other => Err").unwrap()];
+        let names: Vec<&str> = dispatch
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix('"')?.split('"').next())
+            .filter(|n| !n.is_empty() && !n.starts_with('-'))
+            .collect();
+        assert!(names.contains(&"upload"), "{names:?}");
+        for name in names {
+            assert!(
+                HELP.lines()
+                    .any(|l| l.trim_start().starts_with(&format!("{name} ")) || l.trim() == name),
+                "`{name}` is missing from the help"
+            );
+        }
+    }
 }

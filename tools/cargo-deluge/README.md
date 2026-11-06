@@ -12,13 +12,19 @@ only dependency is `serialport`, for the USB upload path. It has no Cargo featur
 cargo install cargo-deluge
 ```
 
-Or, from a clone of the repository, `cargo install --path tools/cargo-deluge`. A new app pins
-its nightly toolchain in `rust-toolchain.toml`, which `rustup` installs on first use.
+Or, from a clone of the repository, `cargo install --path tools/cargo-deluge`. It builds on
+stable Rust 1.88 or later. On Linux, `serialport` needs the udev headers and `pkg-config`
+(`libudev-dev` and `pkg-config` on Debian and Ubuntu, `systemd-libs` and `pkgconf` on Arch).
+
+New apps use the `nightly` channel: `cargo deluge new` writes a `rust-toolchain.toml` naming it,
+and `rustup` installs it on first use.
 
 Cargo then runs the installed `cargo-deluge` binary for `cargo deluge <command>`.
 `cargo deluge help` prints every command with its options.
 
 ## Commands
+
+The table follows `cargo deluge help`, which lists every option.
 
 | Command | Does |
 |---------|------|
@@ -28,7 +34,7 @@ Cargo then runs the installed `cargo-deluge` binary for `cargo deluge <command>`
 | `cargo deluge upload <path> [--port <p>] [--log]` | Upload an already-built ELF or appliance image without rebuilding |
 | `cargo deluge deploy [--release] [--dest <mount>]` | Build, then copy the ELF to a mounted SD card's `/APPS/` |
 | `cargo deluge log [--port <p>]` | Stream a running app's USB serial log (the app's `usb-log` feature) |
-| `cargo deluge sim [--release] [--headless ...]` | Build for the host and run the app in the [desktop simulator](../../docs/simulator.md) |
+| `cargo deluge sim [opts]` | Build for the host and run the app in the [desktop simulator](../../docs/simulator.md) |
 | `cargo deluge linux [opts]` | Build for the Deluge's Linux userland and pack a bootable image (needs `DELUGE_BASE`) |
 | `cargo deluge debug [--release] [-- ...]` | Build, then `probe-rs run` over J-Link |
 | `cargo deluge trace [--release] [--flow] [-- ...]` | Build, then `probe-rs read-trace` (needs the `trace-a9` probe-rs fork) |
@@ -40,11 +46,17 @@ Notes on the less obvious ones:
   `--log` follows the app's USB log after launch.
 - **`deploy`** is the path for a unit without dev mode. Without `--dest` it builds and prints
   where to copy the file.
-- **`sim`** also takes `--audio-in <wav>`, `--audio-out <wav>` and `--hardware [<port>]`.
+- **`sim`** takes `--release`, `--audio-in <wav>` (fed, looped, as the input),
+  `--audio-out <wav>` (records the output), `--hardware [<port>]` (also drive the app from a
+  Deluge running controller-firmware), and for CI `--headless`, `--script <file>` and
+  `--out <dir>` (replay a script without a window and write snapshots).
 - **`linux`** cross-builds a static armv7 musl binary and packs it with the bundle's
-  `deluge-mkimage`; `DELUGE_BASE` points at an unpacked release bundle. Options include
-  `--bare`, `--profile <base|platform>`, `--overlay <dir>`, `--out <name>`, `--features <list>`,
-  `--no-strip` and `--run` (dev-upload the packed image and launch it from RAM).
+  `deluge-mkimage`; `DELUGE_BASE` points at an unpacked release bundle. It sets the bundle's
+  `arm-linux-gcc` as the linker and a static CRT itself, so any app builds without its own
+  cross configuration, and it builds with `--no-default-features` plus `--features <list>`.
+  Options: `--bare`, `--profile <base|platform>`, `--overlay <dir>`, `--out <name>`,
+  `--features <list>`, `--no-strip`, `--debug` (debug profile) and `--run` (dev-upload the packed
+  image and launch it from RAM).
 - **`debug`** and **`trace`** pass the RZ/A1L chip name to `probe-rs`; anything after `--` is
   forwarded to it. `trace` also takes `--duration-ms <n>` (default 2000).
 
