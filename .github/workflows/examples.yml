@@ -34,6 +34,8 @@ jobs:
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
         with:
+          # rust-cache names caches after the job id; docs.yml, examples.yml and images.yml all use `build`.
+          key: examples
           cache-on-failure: true
 
       - name: Install bare-metal ARM toolchain (arm-none-eabi-g++ for additive_osc's C++/Argon core)

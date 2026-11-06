@@ -30,6 +30,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: rza1
+          # rust-cache names caches after the job id, and test.yml's job is also `test`.
+          key: rza1
           cache-on-failure: true
 
       - name: Install QEMU + ARM cross toolchain
