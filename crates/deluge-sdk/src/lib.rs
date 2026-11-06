@@ -417,10 +417,11 @@ impl Deluge {
         ClockIn::new()
     }
 
-    /// Take a software clock **output** on gate channel `gate_ch`. Takeable once.
+    /// Take the clock **output** on gate channel `gate_ch` (0-3). Takeable once.
     ///
     /// There is no dedicated clock-out jack: this pulses one of the V-trig gate
     /// outputs, so don't also drive `gate_ch` through [`gate`](Deluge::gate).
+    /// On the device it takes MTU2 channel 4, which times the pulses.
     ///
     /// ```ignore
     /// let mut clk = dlg.clock_out(0);
@@ -433,11 +434,15 @@ impl Deluge {
     /// which the display shares, and panics if an OLED frame holds the bus at that moment.
     pub fn clock_out(&self, gate_ch: u8) -> ClockOut {
         use core::sync::atomic::{AtomicBool, Ordering};
+        assert!(
+            gate_ch < 4,
+            "Deluge::clock_out(): gate channel {gate_ch} is not 0-3"
+        );
         static TAKEN: AtomicBool = AtomicBool::new(false);
         if TAKEN.swap(true, Ordering::Relaxed) {
             panic!("Deluge::clock_out() called more than once");
         }
-        ClockOut::new(gate_ch)
+        ClockOut::new(gate_ch, self.spawner)
     }
 
     /// Take the audio jack-detect inputs + speaker-amplifier control. Takeable
@@ -703,6 +708,7 @@ pub mod __rt {
                 pic_pins: Some(board.pins.pic),
                 gate_timer: Some(board.gate_timer),
                 encoder_poll_timer: Some(board.encoder_poll_timer),
+                clock_timer: Some(board.clock_timer),
                 sd_card: Some(board.sd_card),
                 sd_tx_dma: Some(board.dma.sd_tx),
                 sd_rx_dma: Some(board.dma.sd_rx),

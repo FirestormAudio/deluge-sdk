@@ -361,6 +361,48 @@ impl<'d> Input<'d> {
     }
 }
 
+/// A pin's level, writable in a single PSRn store.
+///
+/// It writes only its own pin, as one store to the port's set/reset register, so it is safe from
+/// any context, interrupt handlers included, with no critical section. It does not keep the pin
+/// configured: the [`Output`] it came from must outlive its use.
+#[derive(Clone, Copy)]
+pub struct LevelWriter {
+    n: u8,
+    mask: u16,
+}
+
+impl LevelWriter {
+    /// Drive the pin to `level` (one PSRn store).
+    #[inline]
+    pub fn set(&self, level: Level) {
+        GPIO.psr(self.n as usize)
+            .write_value(set_reset(self.mask, level.into()));
+    }
+
+    /// Pack the writer into a word, for holding in an atomic.
+    #[inline]
+    pub fn into_raw(self) -> u32 {
+        ((self.n as u32) << 16) | self.mask as u32
+    }
+
+    /// Unpack a writer packed by [`into_raw`](Self::into_raw).
+    ///
+    /// # Safety
+    ///
+    /// - `raw` came from [`into_raw`](Self::into_raw) on a [`LevelWriter`].
+    /// - That writer's pin is still configured as an output (its [`Output`] has not been
+    ///   dropped or reconfigured).
+    /// - Nothing reconfigures the pin while the returned writer is in use.
+    #[inline]
+    pub unsafe fn from_raw(raw: u32) -> LevelWriter {
+        LevelWriter {
+            n: (raw >> 16) as u8,
+            mask: raw as u16,
+        }
+    }
+}
+
 /// A software-controlled output.
 pub struct Output<'d>(Flex<'d>);
 
@@ -376,6 +418,16 @@ impl<'d> Output<'d> {
     #[inline]
     pub fn set_level(&mut self, level: Level) {
         self.0.set_level(level)
+    }
+
+    /// A [`LevelWriter`] for this pin, to drive it from any context. The `Output` must outlive
+    /// its use.
+    #[inline]
+    pub fn level_writer(&self) -> LevelWriter {
+        LevelWriter {
+            n: self.0.n() as u8,
+            mask: self.0.mask(),
+        }
     }
 
     /// Drive high.
@@ -503,6 +555,45 @@ mod owned_pin_tests {
         assert_eq!(
             test::writes(),
             [(0xFCFE_3118, 1 << 23), (0xFCFE_3718, 1 << 7)]
+        );
+    }
+
+    #[test]
+    fn a_level_writer_is_one_psr_store() {
+        let led = Output::new(unsafe { P6_7::steal() }, Level::High);
+        let w = led.level_writer();
+        test::reset();
+        w.set(Level::Low);
+        w.set(Level::High);
+        assert_eq!(
+            test::writes(),
+            [(0xFCFE_3118, 1 << 23), (0xFCFE_3118, (1 << 23) | (1 << 7))]
+        );
+    }
+
+    #[test]
+    fn a_level_writer_round_trips_through_raw() {
+        let led = Output::new(unsafe { P6_7::steal() }, Level::High);
+        let w = led.level_writer();
+        let back = unsafe { LevelWriter::from_raw(w.into_raw()) };
+        test::reset();
+        w.set(Level::Low);
+        let direct = test::writes();
+        test::reset();
+        back.set(Level::Low);
+        assert_eq!(test::writes(), direct);
+        assert_eq!(direct, [(0xFCFE_3118, 1 << 23)]);
+
+        // A pin above 7: its mask bit is in the high byte of the packed mask.
+        let pin = Output::new(unsafe { P2_9::steal() }, Level::Low);
+        let w = pin.level_writer();
+        let back = unsafe { LevelWriter::from_raw(w.into_raw()) };
+        test::reset();
+        back.set(Level::High);
+        back.set(Level::Low);
+        assert_eq!(
+            test::writes(),
+            [(0xFCFE_3108, (1 << 25) | (1 << 9)), (0xFCFE_3108, 1 << 25)]
         );
     }
 

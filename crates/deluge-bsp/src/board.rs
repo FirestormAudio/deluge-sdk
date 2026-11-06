@@ -51,6 +51,8 @@ pub type PicScif = SCIF1;
 pub type GateTimer = MTU2_2;
 /// MTU2 channel 3: the encoder pin poll ([`crate::encoder`]).
 pub type EncoderPollTimer = MTU2_3;
+/// MTU2 channel 4: the trigger clock's output ([`crate::clock_out`]).
+pub type ClockTimer = MTU2_4;
 /// SDHI1: the SD card slot ([`crate::sd`]).
 pub type SdCard = SDHI1;
 /// SSIF0: the codec's I²S port ([`crate::audio`]).
@@ -235,6 +237,8 @@ pub struct Board {
     pub gate_timer: Peri<'static, GateTimer>,
     /// MTU2 channel 3, the encoder pin poll.
     pub encoder_poll_timer: Peri<'static, EncoderPollTimer>,
+    /// MTU2 channel 4, the trigger clock's output.
+    pub clock_timer: Peri<'static, ClockTimer>,
     /// SDHI1, the SD card slot.
     pub sd_card: Peri<'static, SdCard>,
     /// SSIF0, the codec's I²S port.
@@ -256,6 +260,12 @@ const DRIVER_PRIORITY: rza1_hal::interrupt::Priority = rza1_hal::interrupt::Prio
 /// behind USB servicing.
 const GATE_TIMER_PRIORITY: rza1_hal::interrupt::Priority = rza1_hal::interrupt::Priority::P5;
 
+/// The clock-out timer's (MTU2_4, [`crate::clock_out`]): its handlers write the clock's edges, so
+/// their latency is the clock's jitter. It sits above every other interrupt the board enables:
+/// the gate timer (5), USB and the drivers (10), the DMAC that carries audio (13), and the time
+/// driver, the encoder pins, the encoder poll timer and the trigger clock input (14).
+const CLOCK_TIMER_PRIORITY: rza1_hal::interrupt::Priority = rza1_hal::interrupt::Priority::P4;
+
 /// The encoder pins' and the encoder poll timer's (MTU2_3, [`crate::encoder`]): one level, so
 /// neither preempts the other.
 const ENCODER_PRIORITY: rza1_hal::interrupt::Priority = rza1_hal::interrupt::Priority::P14;
@@ -269,7 +279,7 @@ const TRIGGER_PRIORITY: rza1_hal::interrupt::Priority = rza1_hal::interrupt::Pri
 /// the HAL's `init`.
 pub(crate) fn apply_irq_priorities() {
     use rza1_hal::interrupt::{Interrupt, Priority, typelevel::*};
-    let set: [(fn(Priority), Priority); 19] = [
+    let set: [(fn(Priority), Priority); 21] = [
         (USB0::set_priority, DRIVER_PRIORITY),
         (USB1::set_priority, DRIVER_PRIORITY),
         (BRI0::set_priority, DRIVER_PRIORITY),
@@ -282,6 +292,9 @@ pub(crate) fn apply_irq_priorities() {
         (SDHI1_OP::set_priority, DRIVER_PRIORITY),
         // The gate timer (MTU2_2).
         (TGI2A::set_priority, GATE_TIMER_PRIORITY),
+        // The clock-out timer (MTU2_4).
+        (TGI4A::set_priority, CLOCK_TIMER_PRIORITY),
+        (TGI4B::set_priority, CLOCK_TIMER_PRIORITY),
         // The encoder poll timer (MTU2_3) and the encoder pins.
         (TGI3A::set_priority, ENCODER_PRIORITY),
         (IRQ0::set_priority, ENCODER_PRIORITY),
@@ -376,6 +389,7 @@ impl Board {
             pic_uart: p.SCIF1,
             gate_timer: p.MTU2_2,
             encoder_poll_timer: p.MTU2_3,
+            clock_timer: p.MTU2_4,
             sd_card: p.SDHI1,
             audio_ssi: p.SSIF0,
             scux: p.SCUX,
@@ -586,7 +600,8 @@ mod tests {
         super::apply_irq_priorities();
         // What the drivers set before priorities moved to the board: USB, SCIF and SDHI at 10;
         // the encoder poll timer (MTU2_3), the encoder pins (IRQ0–4, IRQ7) and the trigger
-        // input (IRQ6) at 14; the gate timer (MTU2_2) at 5.
+        // input (IRQ6) at 14; the gate timer (MTU2_2) at 5. Since then: the clock-out timer
+        // (MTU2_4) at 4.
         let got = [
             ("USB0", USB0::get_priority()),
             ("USB1", USB1::get_priority()),
@@ -598,6 +613,8 @@ mod tests {
             ("SDHI1_OP", SDHI1_OP::get_priority()),
             ("TGI2A", TGI2A::get_priority()),
             ("TGI3A", TGI3A::get_priority()),
+            ("TGI4A", TGI4A::get_priority()),
+            ("TGI4B", TGI4B::get_priority()),
             ("IRQ0", IRQ0::get_priority()),
             ("IRQ1", IRQ1::get_priority()),
             ("IRQ2", IRQ2::get_priority()),
@@ -608,7 +625,8 @@ mod tests {
         ];
         use Priority::*;
         let want = [
-            P10, P10, P10, P10, P10, P10, P10, P10, P5, P14, P14, P14, P14, P14, P14, P14, P14,
+            P10, P10, P10, P10, P10, P10, P10, P10, P5, P14, P4, P4, P14, P14, P14, P14, P14, P14,
+            P14,
         ];
         for ((name, got), want) in got.iter().zip(want) {
             assert_eq!(*got, want, "{name}");

@@ -25,7 +25,8 @@
 //! - Audio: [`audio`], `audio_block`, [`scux_dvu_path`], [`scux_src_path`],
 //!   [`scux_usb_tx_path`], [`jacks`].
 //! - I/O: [`uart`] (MIDI DIN and the PIC), [`bus`] (RSPI0, shared by the OLED and the CV DAC),
-//!   [`cv_gate`], `midi_gate`, `trigger_clock`, [`battery`].
+//!   [`cv_gate`], `midi_gate`, `trigger_clock`, [`clock_out`] (the trigger clock's
+//!   output), [`battery`].
 //! - Storage and USB: [`sd`], `sd_block`, `fat`, [`usb`].
 //!
 //! Modules that need the bare-metal target are gated on `target_os = "none"`; the rest also
@@ -73,6 +74,7 @@ pub mod board;
 pub mod heap;
 pub use board::Board;
 pub mod bus;
+pub mod clock_out;
 pub mod controls;
 #[cfg(target_os = "none")]
 pub mod cpu_load;

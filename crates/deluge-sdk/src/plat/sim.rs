@@ -99,6 +99,12 @@ pub(crate) fn gate_set(ch: u8, on: bool) {
     crate::host::panel().set_gate(ch as usize, on);
 }
 
+/// The clock out: a task times it with `Timer`s (see `clock::soft`).
+pub(crate) use crate::clock::soft::{
+    clock_out_init, clock_out_pulse, clock_out_retime, clock_out_running, clock_out_start,
+    clock_out_stop,
+};
+
 pub(crate) fn midi_init() {}
 pub(crate) async fn midi_send(data: &[u8]) {
     // Hand the bytes to the simulator panel (lights the MIDI OUT activity
