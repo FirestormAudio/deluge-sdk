@@ -25,7 +25,8 @@
 //! // Once at startup, with the Board's MTU2 channel 4 (after `cv_gate::init`):
 //! clock_out::init(board.clock_timer);
 //!
-//! // Gate 0 (V-trig, active low): P0φ/1024, a period of 64578 ticks, a pulse of 163.
+//! // Gate 0 (V-trig, active low): P0φ/1024, compare A = 64578 (so a period of 64579 ticks), a
+//! // pulse of 163 ticks.
 //! let gate = cv_gate::gate_writer(0).unwrap();
 //! clock_out::start(gate, Level::Low, 1024, 64_578, 163);
 //! // The tempo moved: the next period takes the new timing.
@@ -225,13 +226,17 @@ fn clamp_timing(period: u16, width: u16) -> (u16, u16) {
     (period, width.clamp(1, period - 1))
 }
 
-/// Run the clock: at P0φ / `prescaler`, `gate` goes `active` at every boundary of a `period`-tick
-/// period and back after `width` ticks.
+/// Run the clock: at P0φ / `prescaler`, `gate` goes `active` at every period boundary and back
+/// after `width` ticks. Compare A = `period`, and the counter clears on it, so the interval
+/// between boundaries is `period + 1` ticks.
 ///
 /// The first edge is now: the gate goes active and the counter starts from 0, so this call is a
 /// boundary. Compare B ends that first pulse after `width` ticks, and compare A brings the next
 /// edge one period later. Whatever ran before (a clock, or a single shot) is stopped first, and
 /// a timing [`retime`] left pending is dropped.
+///
+/// Starting a running clock begins a new period at once and cuts the current pulse: the stop
+/// drives the gate inactive, and it goes active again a few hundred nanoseconds later.
 ///
 /// `width` is clamped to 1 to `period - 1`, and `period` to at least 2. The clock drives `gate`
 /// until [`stop`] and then lets go of it, so `gate`'s `Output` must outlive the clock.
@@ -245,7 +250,6 @@ pub fn start(gate: LevelWriter, active: Level, prescaler: u16, period: u16, widt
     check_prescaler(prescaler);
     let (period, width) = clamp_timing(period, width);
     stop();
-    PENDING.store(0, Ordering::Relaxed);
     // The timer is masked: the handlers see the new gate once `timer.start` unmasks them.
     set_gate(gate, active);
     RUNNING.store(true, Ordering::Release);
@@ -256,8 +260,8 @@ pub fn start(gate: LevelWriter, active: Level, prescaler: u16, period: u16, widt
 }
 
 /// Change the running clock's timing at its next period boundary: the compare-A handler applies
-/// it. A later call before that boundary replaces it. `period` and `width` are clamped as
-/// [`start`] clamps them.
+/// it. A later call before that boundary replaces it, and [`stop`] drops it. `period` (compare
+/// A, an interval of `period + 1` ticks) and `width` are clamped as [`start`] clamps them.
 ///
 /// The handler writes the new compares right after the boundary, while the counter is still
 /// near 0, so they take effect within the period that just began. At the running prescaler the
@@ -288,6 +292,9 @@ pub fn retime(prescaler: u16, period: u16, width: u16) {
 /// [`PULSE_DONE`]. With nothing running it writes no pin. Does nothing to the timer before
 /// [`init`].
 pub fn stop() {
+    // Dropped before the timer stops: a TGI4A already pending, taken during or after the stop,
+    // finds no timing to apply, so it can't restart the counter at a new prescaler.
+    PENDING.store(0, Ordering::Release);
     if let Some(timer) = TIMER.try_get() {
         // Masked first, so no handler raises the gate after it drops.
         timer.stop();
@@ -317,12 +324,20 @@ pub fn pulse(gate: LevelWriter, active: Level, prescaler: u16, width: u16) {
     check_prescaler(prescaler);
     let (_, width) = clamp_timing(SINGLE_SHOT_PERIOD, width);
     stop();
-    PENDING.store(0, Ordering::Relaxed);
     set_gate(gate, active);
     SINGLE_SHOT.store(true, Ordering::Release);
     gate.set(active);
     compiler_fence(Ordering::SeqCst);
     timer.start(prescaler, SINGLE_SHOT_PERIOD, width);
+}
+
+/// End a single shot ([`pulse`]) still in flight, as [`stop`] does: its gate goes inactive at
+/// once. A periodic clock, or nothing running, is left alone. For a pulse's waiter to call when
+/// it is cancelled.
+pub fn cancel_pulse() {
+    if pulse_pending() {
+        stop();
+    }
 }
 
 /// Whether the periodic clock ([`start`]) is running.
@@ -534,6 +549,28 @@ mod tests {
     }
 
     #[test]
+    fn a_boundary_taken_after_stop_applies_no_pending_timing() {
+        let _g = exclusive();
+        let led = led();
+        start(led.level_writer(), Level::High, 1024, 64_578, 163);
+        // A new prescaler: applied, it would restart the counter.
+        retime(256, 50_000, 120);
+        stop();
+        // A TGI4A pending at the stop, taken after it.
+        test::reset();
+        test::poke8(TCR4, 0b101 | (0b001 << 5));
+        boundary();
+        let writes = test::writes();
+        assert!(
+            !writes
+                .iter()
+                .any(|&(a, v)| a == TGRA4 || a == TGRB4 || (a == TSTR && v & CST4 != 0)),
+            "a stopped clock stays stopped: {writes:x?}"
+        );
+        assert_eq!(test::peek8(TSTR) & CST4 as u8, 0);
+    }
+
+    #[test]
     fn a_pulse_raises_the_gate_and_its_end_stops_the_timer() {
         let _g = exclusive();
         let led = led();
@@ -559,6 +596,29 @@ mod tests {
         test::reset();
         stop();
         assert!(!test::writes().iter().any(|&(a, _)| is_psr(a)));
+    }
+
+    #[test]
+    fn cancelling_a_pulse_ends_it_and_leaves_a_clock_alone() {
+        let _g = exclusive();
+        let led = led();
+        pulse(led.level_writer(), Level::High, 64, 500);
+        test::reset();
+        cancel_pulse();
+        assert!(!pulse_pending());
+        assert_eq!(
+            test::writes().last(),
+            Some(&(PSR6, P6_7_LOW)),
+            "the gate drops"
+        );
+        assert_eq!(test::peek8(TSTR) & CST4 as u8, 0, "the counter stopped");
+
+        start(led.level_writer(), Level::High, 1024, 64_578, 163);
+        test::reset();
+        cancel_pulse();
+        assert!(running(), "a running clock is not a pulse");
+        assert!(test::writes().is_empty(), "{:x?}", test::writes());
+        stop();
     }
 
     #[test]
