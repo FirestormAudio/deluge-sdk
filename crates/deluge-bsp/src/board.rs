@@ -262,8 +262,8 @@ const GATE_TIMER_PRIORITY: rza1_hal::interrupt::Priority = rza1_hal::interrupt::
 
 /// The clock-out timer's (MTU2_4, [`crate::clock_out`]): its handlers write the clock's edges, so
 /// their latency is the clock's jitter. It sits above every other interrupt the board enables:
-/// the gate timer (5), USB and the drivers (10), the DMAC that carries audio (13) and the time
-/// driver (14).
+/// the gate timer (5), USB and the drivers (10), the DMAC that carries audio (13), and the time
+/// driver, the encoder pins, the encoder poll timer and the trigger clock input (14).
 const CLOCK_TIMER_PRIORITY: rza1_hal::interrupt::Priority = rza1_hal::interrupt::Priority::P4;
 
 /// The encoder pins' and the encoder poll timer's (MTU2_3, [`crate::encoder`]): one level, so
