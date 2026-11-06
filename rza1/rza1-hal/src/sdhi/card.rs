@@ -160,7 +160,7 @@ pub fn decode_csd_capacity(csd: [u32; 4], high_capacity: bool) -> u32 {
     if high_capacity {
         // C_SIZE spans word1[5:0] (bits 69:64) and word2[31:16] (bits 63:48).
         let c_size = ((csd[1] & 0x3F) << 16) | ((csd[2] >> 16) & 0xFFFF);
-        (c_size + 1) * 1024
+        (c_size + 1).saturating_mul(1024)
     } else {
         // READ_BL_LEN word1[19:16]; C_SIZE word1[9:0] ++ word2[31:30]; C_SIZE_MULT word2[17:15].
         let read_bl_len = (csd[1] >> 16) & 0xF;
@@ -293,6 +293,15 @@ pub async fn identify(sdhi: &Sdhi<'_>) -> Result<Card, CardError> {
     })
 }
 
+/// Check a PIO buffer is exactly `count` blocks. The arithmetic is `u32` so it overflows on the
+/// host exactly as `usize` would on the 32-bit device.
+fn pio_byte_len(count: u32, len: usize) -> Result<(), CardError> {
+    match count.checked_mul(512) {
+        Some(bytes) if bytes as usize == len => Ok(()),
+        _ => Err(CardError::BufferTooSmall),
+    }
+}
+
 /// How many whole blocks `bounce` holds, and the byte count `count` blocks need.
 fn plan(count: u32, len: usize, bounce: &UncachedMut<'_>) -> Result<(u32, usize), CardError> {
     let per_command = (bounce.len() / 512) as u32;
@@ -383,9 +392,7 @@ pub async fn read_blocks_pio(
     if count == 0 {
         return Ok(());
     }
-    if buf.len() != (count as usize) * 512 {
-        return Err(CardError::BufferTooSmall);
-    }
+    pio_byte_len(count, buf.len())?;
     let cmd = if count > 1 { CMD18_MULTI } else { CMD17 };
     sdhi.set_block_count(count);
     sdhi.set_arg(card.block_address(lba));
@@ -414,9 +421,7 @@ pub async fn write_blocks_pio(
     if count == 0 {
         return Ok(());
     }
-    if buf.len() != (count as usize) * 512 {
-        return Err(CardError::BufferTooSmall);
-    }
+    pio_byte_len(count, buf.len())?;
     let cmd = if count > 1 { CMD25 } else { CMD24 };
     sdhi.set_block_count(count);
     sdhi.set_arg(card.block_address(lba));
@@ -428,6 +433,22 @@ pub async fn write_blocks_pio(
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pio_length_check_rejects_a_count_whose_byte_length_overflows_32_bits() {
+        // 0x80_0000 blocks is 4 GiB: on the 32-bit device `count * 512` wraps to 0.
+        assert_eq!(pio_byte_len(0x80_0000, 0), Err(CardError::BufferTooSmall));
+        assert_eq!(pio_byte_len(0x80_0001, 512), Err(CardError::BufferTooSmall));
+        assert_eq!(pio_byte_len(2, 1024), Ok(()));
+        assert_eq!(pio_byte_len(2, 1023), Err(CardError::BufferTooSmall));
+    }
+
+    #[test]
+    fn a_corrupt_high_capacity_csd_saturates_instead_of_overflowing() {
+        // C_SIZE = 0x3FFFFF, the field's maximum: (C_SIZE + 1) * 1024 is 2^32.
+        let csd = [0, 0x3F, 0xFFFF_0000, 0];
+        assert_eq!(decode_csd_capacity(csd, true), u32::MAX);
+    }
 
     #[test]
     fn hs_supported_and_selected() {
