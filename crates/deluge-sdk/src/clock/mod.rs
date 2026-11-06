@@ -219,11 +219,13 @@ impl Drop for ClockOut {
 #[cfg(all(test, feature = "sim"))]
 mod tests {
     use std::sync::mpsc::{Sender, channel};
-    use std::sync::{Mutex, PoisonError};
+    use std::sync::{Mutex, OnceLock, PoisonError};
 
     use embassy_executor::{Executor, Spawner};
     use embassy_futures::select::{Either, select};
-    use embassy_time::{Duration, Timer};
+    use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+    use embassy_sync::channel::Channel;
+    use embassy_time::{Duration, Instant, Timer};
 
     use super::ClockOut;
     use super::soft::{self, Timing};
@@ -231,14 +233,26 @@ mod tests {
     /// The soft clock is one per process, so these tests take turns.
     static SERIAL: Mutex<()> = Mutex::new(());
 
-    /// A clock out on `ch` with the simulator panel installed, without its timing task (a test
-    /// has no executor): what it does synchronously is what these tests see.
-    fn clock_out(ch: u8) -> ClockOut {
+    fn install_panel() {
         crate::plat::sim_panel::install(
             deluge_simulator::link::SharedPanel::new(),
             deluge_simulator::link::audio::new_bridge().0,
         );
+    }
+
+    /// A clock out on `ch` with the simulator panel installed, without spawning its timing task:
+    /// what it does synchronously is what most of these tests see. Once the real-loop test has
+    /// spawned the task it stays alive, so a test that reads the gate after a start runs a long
+    /// pulse, which the task can't end first.
+    fn clock_out(ch: u8) -> ClockOut {
+        install_panel();
         ClockOut::unspawned(ch)
+    }
+
+    /// Start `clk` with a 1 s pulse every 2 s.
+    fn start_long(clk: &mut ClockOut) {
+        clk.set_pulse_width(Duration::from_secs(1));
+        clk.start(Duration::from_secs(2));
     }
 
     fn gate(ch: u8) -> bool {
@@ -249,7 +263,7 @@ mod tests {
     fn start_then_stop_leaves_the_gate_low() {
         let _turn = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
         let mut clk = clock_out(1);
-        clk.start(Duration::from_millis(10));
+        start_long(&mut clk);
         assert!(clk.is_running());
         assert!(gate(1), "start is a boundary: the gate rises at once");
         clk.stop();
@@ -261,7 +275,7 @@ mod tests {
     fn pulse_while_running_is_a_no_op() {
         let _turn = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
         let mut clk = clock_out(2);
-        clk.start(Duration::from_millis(10));
+        start_long(&mut clk);
         // Ready on the first poll: it waits on nothing and changes nothing.
         embassy_futures::block_on(clk.pulse());
         assert!(clk.is_running());
@@ -273,7 +287,7 @@ mod tests {
     fn dropping_a_clock_out_stops_it() {
         let _turn = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
         let mut clk = clock_out(3);
-        clk.start(Duration::from_millis(10));
+        start_long(&mut clk);
         assert!(gate(3));
         drop(clk);
         assert!(!crate::plat::clock_out_running());
@@ -289,14 +303,35 @@ mod tests {
         assert!(!gate(0));
     }
 
-    /// Run `spawn`'s task on an executor of its own, in a thread of its own: a pulse awaits an
-    /// embassy `Timer`, which only an embassy executor's waker can wait on. The thread parks in
-    /// the executor once the task is done.
-    fn on_an_executor(spawn: impl FnOnce(Spawner) + Send + 'static) {
-        std::thread::spawn(move || {
-            let executor: &'static mut Executor = Box::leak(Box::new(Executor::new()));
-            executor.run(spawn)
+    /// A job for the test executor: spawn a task with its spawner.
+    type Job = Box<dyn FnOnce(Spawner) + Send>;
+
+    /// Jobs for the test executor's dispatcher.
+    static JOBS: Channel<CriticalSectionRawMutex, Job, 4> = Channel::new();
+
+    /// The test executor's one task of its own: run each job as it arrives.
+    #[embassy_executor::task]
+    async fn dispatch(spawner: Spawner) -> ! {
+        loop {
+            JOBS.receive().await(spawner);
+        }
+    }
+
+    /// Run `spawn` on the test executor, so it can spawn its task: a pulse awaits an embassy
+    /// `Timer`, which only an embassy executor's waker can wait on. These tests share one
+    /// executor, started on its own thread by the first of them, so the suite leaks one thread.
+    /// The tasks are not `Send`, so the job, not a spawner, crosses to the executor's thread.
+    fn on_the_test_executor(spawn: impl FnOnce(Spawner) + Send + 'static) {
+        static STARTED: OnceLock<()> = OnceLock::new();
+        STARTED.get_or_init(|| {
+            std::thread::spawn(|| {
+                let executor: &'static mut Executor = Box::leak(Box::new(Executor::new()));
+                executor.run(|s| s.spawn(dispatch(s).unwrap()))
+            });
         });
+        if JOBS.try_send(Box::new(spawn)).is_err() {
+            panic!("the test executor's job queue is full");
+        }
     }
 
     /// Start a 500 ms pulse on `clk` and drop it 1 ms in. Returns whether the gate was up at that
@@ -328,7 +363,7 @@ mod tests {
     fn dropping_a_pulse_mid_way_leaves_the_gate_low() {
         let _turn = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
         let (tx, rx) = channel();
-        on_an_executor(move |s| s.spawn(a_pulse_dropped_mid_way(tx).unwrap()));
+        on_the_test_executor(move |s| s.spawn(a_pulse_dropped_mid_way(tx).unwrap()));
         let (up, after) = rx.recv().unwrap();
         assert!(up, "the pulse was up");
         assert!(
@@ -350,7 +385,9 @@ mod tests {
     fn dropping_a_clock_out_with_a_pending_pulse_leaves_the_gate_low() {
         let _turn = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
         let (tx, rx) = channel();
-        on_an_executor(move |s| s.spawn(a_clock_out_dropped_with_a_pending_pulse(tx).unwrap()));
+        on_the_test_executor(move |s| {
+            s.spawn(a_clock_out_dropped_with_a_pending_pulse(tx).unwrap())
+        });
         let (up, after) = rx.recv().unwrap();
         assert!(up, "the pulse was up");
         assert!(!after);
@@ -378,5 +415,76 @@ mod tests {
             );
         }
         clk.stop();
+    }
+
+    /// What a clock run on the real loop did.
+    #[derive(Debug)]
+    struct RealRun {
+        /// The gate was up straight after the start.
+        up_at_start: bool,
+        /// The first change seen after the start was a fall.
+        fell_first: bool,
+        rises: u32,
+        falls: u32,
+        /// The gate was down straight after the stop.
+        down_at_stop: bool,
+        /// The gate stayed down for 100 ms after the stop.
+        stayed_down: bool,
+    }
+
+    /// Run a 10 ms clock on gate 3 with its real timing task until it has made three rises and
+    /// three falls (or 5 s pass), then stop it and watch the gate for 100 ms.
+    #[embassy_executor::task]
+    async fn a_clock_on_the_real_loop(spawner: Spawner, done: Sender<RealRun>) {
+        install_panel();
+        let mut clk = ClockOut::new(3, spawner);
+        clk.start(Duration::from_millis(10));
+        let up_at_start = gate(3);
+        let (mut level, mut first_change) = (up_at_start, None);
+        let (mut rises, mut falls) = (0, 0);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while (rises < 3 || falls < 3) && Instant::now() < deadline {
+            Timer::after_micros(500).await;
+            let now = gate(3);
+            if now != level {
+                first_change.get_or_insert(now);
+                if now {
+                    rises += 1
+                } else {
+                    falls += 1
+                }
+                level = now;
+            }
+        }
+        clk.stop();
+        let down_at_stop = !gate(3);
+        let mut stayed_down = true;
+        for _ in 0..20 {
+            Timer::after_millis(5).await;
+            stayed_down &= !gate(3);
+        }
+        drop(clk);
+        done.send(RealRun {
+            up_at_start,
+            fell_first: first_change == Some(false),
+            rises,
+            falls,
+            down_at_stop,
+            stayed_down,
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn the_real_loop_pulses_until_stopped() {
+        let _turn = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        let (tx, rx) = channel();
+        on_the_test_executor(move |s| s.spawn(a_clock_on_the_real_loop(s, tx).unwrap()));
+        let run = rx.recv().unwrap();
+        assert!(run.up_at_start, "{run:?}");
+        assert!(run.fell_first, "{run:?}");
+        assert!(run.rises >= 2 && run.falls >= 2, "{run:?}");
+        assert!(run.down_at_stop, "{run:?}");
+        assert!(run.stayed_down, "{run:?}");
     }
 }
