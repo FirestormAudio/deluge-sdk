@@ -1,8 +1,8 @@
 #![macro_use]
 #![allow(unused_macros)]
 
-#[cfg(all(feature = "defmt", feature = "log"))]
-compile_error!("You may not enable both `defmt` and `log` features.");
+// With both `log` and `defmt` on, `defmt` wins: a dependency graph that enables `log` somewhere
+// else must not break a defmt build.
 
 macro_rules! assert {
     ($($x:tt)*) => {
@@ -106,7 +106,7 @@ macro_rules! panic {
 macro_rules! trace {
     ($s:literal $(, $x:expr)* $(,)?) => {
         {
-            #[cfg(feature = "log")]
+            #[cfg(all(feature = "log", not(feature = "defmt")))]
             ::log::trace!($s $(, $x)*);
             #[cfg(feature = "defmt")]
             ::defmt::trace!($s $(, $x)*);
@@ -119,7 +119,7 @@ macro_rules! trace {
 macro_rules! debug {
     ($s:literal $(, $x:expr)* $(,)?) => {
         {
-            #[cfg(feature = "log")]
+            #[cfg(all(feature = "log", not(feature = "defmt")))]
             ::log::debug!($s $(, $x)*);
             #[cfg(feature = "defmt")]
             ::defmt::debug!($s $(, $x)*);
@@ -132,7 +132,7 @@ macro_rules! debug {
 macro_rules! info {
     ($s:literal $(, $x:expr)* $(,)?) => {
         {
-            #[cfg(feature = "log")]
+            #[cfg(all(feature = "log", not(feature = "defmt")))]
             ::log::info!($s $(, $x)*);
             #[cfg(feature = "defmt")]
             ::defmt::info!($s $(, $x)*);
@@ -145,7 +145,7 @@ macro_rules! info {
 macro_rules! warn {
     ($s:literal $(, $x:expr)* $(,)?) => {
         {
-            #[cfg(feature = "log")]
+            #[cfg(all(feature = "log", not(feature = "defmt")))]
             ::log::warn!($s $(, $x)*);
             #[cfg(feature = "defmt")]
             ::defmt::warn!($s $(, $x)*);
@@ -158,7 +158,7 @@ macro_rules! warn {
 macro_rules! error {
     ($s:literal $(, $x:expr)* $(,)?) => {
         {
-            #[cfg(feature = "log")]
+            #[cfg(all(feature = "log", not(feature = "defmt")))]
             ::log::error!($s $(, $x)*);
             #[cfg(feature = "defmt")]
             ::defmt::error!($s $(, $x)*);

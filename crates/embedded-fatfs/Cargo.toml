@@ -4,7 +4,7 @@
 
 [package]
 name = "deluge-embedded-fatfs"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Rafał Harabień", "Scott Mabin", "Katherine Whitlock <kate@skylinesynths.nyc>"]
 repository = "https://github.com/FirestormAudio/deluge-sdk"
@@ -34,15 +34,16 @@ lfn = []
 alloc = []
 # Full Unicode support. Disabling it reduces code size by avoiding Unicode-aware character case conversion
 unicode = []
-# enable log support
+# Logging through `log` or `defmt`; with both on, `defmt` is used.
 log = ["dep:log"]
-# enable defmt support
 defmt = ["dep:defmt"]
+# chrono conversions for `Date`/`DateTime`, and the local clock as the time provider (needs std)
+chrono = ["dep:chrono", "std"]
 # panic when dropping dirty files, files should be flushed before hand
 dirty-file-panic = []
 
 # Default features
-default = ["chrono", "lfn", "unicode", "log"]
+default = ["lfn", "unicode"]
 
 [dependencies]
 # core deps
@@ -53,7 +54,6 @@ embedded-io-async = "0.7.0"
 embedded-io-adapters = { version = "0.7", package = "embedded-io-adapters", features = ["tokio-1"], optional = true }
 chrono = { version = "0.4", default-features = false, features = ["clock"], optional = true }
 tokio = { version = "1", default-features = false, optional = true }
-elain = { version = "0.3", optional = true }
 log = { version = "0.4", optional = true }
 defmt = { version = "0.3", optional = true }
 

@@ -7,11 +7,13 @@ fixes and a few additions applied, maintained for the
 
 ```toml
 [dependencies]
-embedded-fatfs = { package = "deluge-embedded-fatfs", version = "0.1" }
+embedded-fatfs = { package = "deluge-embedded-fatfs", version = "0.2" }
 ```
 
-See [VENDOR.md](VENDOR.md) for exactly what differs from upstream. The rest of this README is
-upstream's.
+Unlike upstream, the default features (`lfn`, `unicode`) build for `no_std` targets: `chrono`
+(which needs `std`) and logging are opt-in, and `log` and `defmt` may both be on, in which case
+`defmt` is used. See [VENDOR.md](VENDOR.md) for exactly what differs from upstream. The rest of
+this README is upstream's.
 
 A FAT filesystem library implemented in Rust. Built on the shoulders of the amazing [rust-fatfs](https://github.com/rafalh/rust-fatfs) crate by [@rafalh](https://github.com/rafalh).
 
@@ -40,7 +42,7 @@ There a are a few key differences between the crates:
 Add this to your `Cargo.toml`:
 
     [dependencies]
-    embedded-fatfs = { version = "0.1", default-features = false }
+    embedded-fatfs = { package = "deluge-embedded-fatfs", version = "0.2", default-features = false }
 
 Additional features:
 
@@ -49,6 +51,8 @@ Additional features:
 a memory allocator implementation.
 * `unicode` - use Unicode-compatible case conversion in file names - you may want to have it disabled for lower memory
 footprint
+* `chrono` - `chrono` conversions and the local clock as the time provider (implies `std`)
+* `log` / `defmt` - log through either; `defmt` wins when both are on
 
 License
 -------

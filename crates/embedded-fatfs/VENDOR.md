@@ -34,6 +34,10 @@ keeps `cargo fmt --all` from reformatting it.
   name hashes first and always verify a hit against the entry on disk, so the cache can go stale
   without giving a wrong answer.
 
+- **Features (0.2.0).** The defaults are `lfn` and `unicode`, so a default build is `no_std`;
+  `chrono` is opt-in and implies `std`; `log` and `defmt` may both be on, with `defmt` used;
+  the unused `elain` dependency is gone.
+
 ## Not applied
 
 - **#66** (updating a moved directory's own `..` entry): not yet exercised by our tests.

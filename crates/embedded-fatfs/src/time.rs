@@ -312,6 +312,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "chrono")]
     fn date_time_from_chrono_leap_second() {
         use super::TimeZone;
         let chrono_date_time = super::Local.ymd(2016, 12, 31).and_hms_milli(23, 59, 59, 1999);
