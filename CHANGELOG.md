@@ -12,6 +12,10 @@ breaking changes.
 The first developer preview of the Deluge SDK. The API is not stable yet: until 1.0, a minor
 release may contain breaking changes.
 
+The RZ/A1 chip crates and `deluge-embedded-fatfs` are released as 0.2.0, and
+`deluge-block-device-adapters` as 0.3.0: earlier versions briefly published under those names
+had a different API and were yanked.
+
 ### Added
 
 - **The SDK** (`deluge-sdk`, imported as `deluge`): write apps for the OLED Deluge in async Rust.
@@ -27,21 +31,27 @@ release may contain breaking changes.
   `/APPS/` loading, storing an app to flash, and a recovery boot. Optional bootloader write
   protection (`flash-protect`, off by default) locks the bootloader region at app hand-off.
 - **Board support** (`deluge-bsp`): the PIC front panel, SSD1309 OLED, codec and SSI audio, the
-  MAX5136 CV DAC, SD card (with High-Speed mode where the card supports it), SPI flash
-  identification and write protection, USB device classes, and USB host with hubs.
-- **USB** (`usb-classes`): UAC2 audio, USB-MIDI (including raw packet mode), mass storage
+  MAX5136 CV DAC (`max5136`), SD card (with High-Speed mode where the card supports it), SPI
+  flash identification and write protection, the SRAM and SDRAM heaps, USB device classes, and
+  USB host with hubs.
+- **USB** (`deluge-usb-classes`, imported as `usb_classes`): UAC2 audio, USB-MIDI (including raw packet mode), mass storage
   (Bulk-Only Transport) device classes; host-side USB-MIDI and UAC2 audio; and
   Elektron Overbridge 2 host and device classes.
-- **RZ/A1 chip crates** (`rza1-pac`, `rza1-rt`, `rza1-rt-macros`, `rza1-hal`, `rza1-alloc`): a
-  peripheral access crate generated from the vendor SVD for the RZ/A1L and RZ/A1H, a runtime with
-  `#[entry]`, `#[irq]` and `#[fault]`, an Embassy HAL, and heap allocators. They form their own
-  workspace under `rza1/` with no dependency on any `deluge-*` crate.
+- **RZ/A1 chip crates** (`rza1-pac`, `rza1-rt`, `rza1-rt-macros`, `rza1-hal`): a peripheral
+  access crate generated from the vendor SVD for the RZ/A1L and RZ/A1H, a runtime with
+  `#[entry]`, `#[irq]` and `#[fault]`, and an Embassy HAL including the SD card protocol. They
+  form their own workspace under `rza1/` with no dependency on any `deluge-*` crate.
+- **Async FAT** (`deluge-embedded-fatfs`, `deluge-block-device-adapters`): forks of MabezDev's
+  `embedded-fatfs` and `block-device-adapters` with upstream fixes applied.
 - **DSP and UI libraries**: `deluge-fixedpoint` and `arm-dsp` (`MIT OR Apache-2.0`);
-  `deluge-ui-toolkit`, `deluge-grid-toolkit` and `deluge-fonts` (`GPL-3.0-or-later`).
-- **A desktop simulator** (`cargo deluge sim`) with an on-screen front panel, audio, MIDI and SD
-  bridges, and headless golden-frame testing, plus a browser front panel
-  (`tools/deluge-web-sim`).
-- **A native Linux backend** (`linux/`) for apps that run on the Deluge's Linux userland.
+  `deluge-ui-toolkit`, `deluge-grid-toolkit` and `deluge-fonts` (`GPL-3.0-or-later`, in the
+  repository but not published to crates.io yet).
+- **A desktop simulator** (`deluge-simulator`, run by `cargo deluge sim`) with an on-screen front
+  panel, audio, MIDI and SD bridges, and headless golden-frame testing, plus a browser front panel
+  (`tools/deluge-web-sim`). `deluge-panel-protocol` is the front-panel wire protocol shared by
+  the simulator, the controller firmware and an external brain.
+- **A native Linux backend** for apps that run on the Deluge's Linux userland: `libdeluge-sys`
+  and `libdeluge`, bindings to its hardware library.
 - **A from-scratch boot chain, in development**: `stage0`, an execute-in-place first stage that
   validates and enters a CRC-checked boot slot, and `mkslot`, the host tool that builds slot
   images. For development units only.

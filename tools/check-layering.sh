@@ -4,7 +4,7 @@
 #   - The bare-metal examples consume the SDK only through the `deluge` facade, never
 #     the BSP or chip crates beneath it, so SDK-internal changes can't silently break
 #     them. (deluge-wren holds its own Wren code to the same rule.)
-#   - The chip crates (rza1-pac, rza1-hal, rza1-rt) never name the Deluge, and the HAL has no
+#   - The chip crates (everything under rza1/) never name the Deluge, and the HAL has no
 #     global_asm! (startup is rza1-rt's).
 #   - usb/ and drivers/ are board-agnostic: they never name the chip HAL or any deluge-* crate.
 #   - deluge-bsp never depends on the simulator; deluge-sdk's sim backend plugs into
@@ -45,12 +45,14 @@ if [ -n "$code_hits$dep_hits" ]; then
   echo "error: facade-only code (examples/baremetal/) reaches past \`deluge\` into deluge-bsp or the rza1 chip crates" >&2
   exit 1
 fi
-# The chip crates are board-agnostic: no Deluge names in their code or linker scripts (comments
-# may cite the Deluge as an example). Their dependencies are checked against Cargo's graph at the
-# end.
+# The chip crates are board-agnostic: no file under rza1/, comments and docs included, names the
+# Deluge, its firmware or its bootloader. The only Deluge words allowed are the repository they
+# sit in (`deluge-sdk`) and the guard that keeps `deluge-*` crates out of their graph. Their
+# dependencies are checked against Cargo's graph at the end.
 CHIP_DIRS=(rza1)
-chip_code_hits="$(grep -rniE --include='*.rs' --include='*.x' 'deluge' "${CHIP_DIRS[@]}" \
-  | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)' || true)"
+chip_code_hits="$(git grep -n -i -E 'deluge|libdeluge|delugebootloader' -- "${CHIP_DIRS[@]}" \
+  | sed -E 's/deluge-sdk//gI; s/`deluge-\*`//g; s/startswith\("deluge"\)//g' \
+  | grep -iE '^[^:]+:[0-9]+:.*deluge' || true)"
 if [ -n "$chip_code_hits" ]; then
   printf '%s\n' "$chip_code_hits"
   echo "error: a chip crate (rza1-pac, rza1-hal, rza1-rt) names the Deluge; board facts belong in deluge-bsp" >&2

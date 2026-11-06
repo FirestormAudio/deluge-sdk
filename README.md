@@ -199,14 +199,16 @@ compile-proves all of them on the firmware target).
 |------|-------|------|
 | `crates/deluge-sdk` | `deluge-sdk` (imported as `deluge`) | the SDK facade + `#[deluge::app]` runtime |
 | `crates/deluge-sdk-macros` | `deluge-sdk-macros` | the `#[deluge::app]` proc-macro |
-| `crates/deluge-bsp` | `deluge-bsp` | board support: peripherals, PIC, OLED, SD, … |
-| `rza1/rza1-hal` | `rza1-hal` | RZ/A1L hardware abstraction layer |
-| `rza1/rza1-rt` | `rza1-rt` | Runtime for the RZ/A1L: reset vector, exception entry, linker script |
-| `usb/usb-classes` | `usb-classes` | board-agnostic Embassy USB classes: UAC2, USB-MIDI, MSC + Bulk-Only Transport, host MIDI/UAC |
+| `crates/deluge-bsp` | `deluge-bsp` | board support: peripherals, PIC, OLED, SD, the SRAM/SDRAM heaps, … |
+| `rza1/rza1-hal` | `rza1-hal` | RZ/A1 hardware abstraction layer, including the SD card protocol |
+| `rza1/rza1-rt` | `rza1-rt` (+ `rza1-rt-macros`) | runtime for the RZ/A1: reset vector, exception entry, linker script |
+| `rza1/rza1-pac` | `rza1-pac` | RZ/A1L and RZ/A1H registers, generated from the vendor SVD |
+| `usb/usb-classes` | `deluge-usb-classes` (imported as `usb_classes`) | board-agnostic Embassy USB classes: UAC2, USB-MIDI, MSC + Bulk-Only Transport, host MIDI/UAC |
 | `drivers/max5136` | `max5136` | board-agnostic embedded-hal driver for the MAX5136 CV DAC |
 | `crates/deluge-image` | `deluge-image` | firmware-image format logic shared by the app-loader and `cargo deluge` |
-| `crates/deluge-fixedpoint` (imported as `fixedpoint`), `crates/arm-dsp` | | fixed-point DSP math + ARMv7 intrinsics |
-| `crates/deluge-simulator`, `crates/deluge-panel-protocol` | | the desktop simulator and its wire protocol |
+| `crates/deluge-fixedpoint`, `crates/arm-dsp` | `deluge-fixedpoint` (imported as `fixedpoint`), `arm-dsp` | fixed-point DSP math + ARMv7 intrinsics |
+| `crates/deluge-simulator`, `crates/deluge-panel-protocol` | `deluge-simulator`, `deluge-panel-protocol` | the desktop simulator and its wire protocol |
+| `crates/embedded-fatfs`, `crates/block-device-adapters` | `deluge-embedded-fatfs`, `deluge-block-device-adapters` | the async FAT stack (forks of MabezDev's crates) |
 | `crates/deluge-ui-toolkit`, `crates/deluge-grid-toolkit` | | OLED menu/text and pad-grid UI toolkits (GPL) |
 | `crates/deluge-fonts` | `deluge-fonts` | bitmap fonts for the toolkit (GPL) |
 | `linux/` | | the native Linux backend: `libdeluge-sys` (libdeluge FFI), `libdeluge`, `deluge-linux-ui` |

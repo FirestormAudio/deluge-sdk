@@ -652,7 +652,7 @@ table are in [`rza1-rt`](../rza1/rza1-rt/README.md).
 | `pads` / `rgb` | RGB pad matrix + colour conversions |
 | `sdram` | SDRAM controller init |
 | `encoder` | encoder IRQ accumulators + waker |
-| `usb` | the Deluge's USB identities, the SD-backed MSC medium (`sd_block`) and, with `usb-host-core` (plus `usb-host-uac` / `usb-host-overbridge`), the host-role supervisor; the classes are in the `usb-classes` crate |
+| `usb` | the Deluge's USB identities, the SD-backed MSC medium (`sd_block`) and, with `usb-host-core` (plus `usb-host-uac` / `usb-host-overbridge`), the host-role supervisor; the classes are in the `deluge-usb-classes` crate (`usb_classes`) |
 | `flash` | SPI-NOR chip profile + board flash map (`flash` feature) |
 | `scux_*_path` / `battery` / `uart` | SCUX audio paths (built from the HAL's SCUX channels on the Deluge's DMA channels), battery sense, SCIF (MIDI + PIC) |
 | `sample_fmt` / `encoder_detent` | pure (host-testable) conversion + quadrature logic |
