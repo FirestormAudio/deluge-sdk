@@ -372,9 +372,6 @@ pub struct LevelWriter {
     mask: u16,
 }
 
-// SAFETY: `set` is one store to a register that only affects this writer's own pin.
-unsafe impl Sync for LevelWriter {}
-
 impl LevelWriter {
     /// Drive the pin to `level` (one PSRn store).
     #[inline]
@@ -393,8 +390,10 @@ impl LevelWriter {
     ///
     /// # Safety
     ///
-    /// `raw` must come from [`into_raw`](Self::into_raw), and the pin's [`Output`] must still
-    /// exist and be owned by the caller's use of the writer.
+    /// - `raw` came from [`into_raw`](Self::into_raw) on a [`LevelWriter`].
+    /// - That writer's pin is still configured as an output (its [`Output`] has not been
+    ///   dropped or reconfigured).
+    /// - Nothing reconfigures the pin while the returned writer is in use.
     #[inline]
     pub unsafe fn from_raw(raw: u32) -> LevelWriter {
         LevelWriter {
@@ -584,6 +583,18 @@ mod owned_pin_tests {
         back.set(Level::Low);
         assert_eq!(test::writes(), direct);
         assert_eq!(direct, [(0xFCFE_3118, 1 << 23)]);
+
+        // A pin above 7: its mask bit is in the high byte of the packed mask.
+        let pin = Output::new(unsafe { P2_9::steal() }, Level::Low);
+        let w = pin.level_writer();
+        let back = unsafe { LevelWriter::from_raw(w.into_raw()) };
+        test::reset();
+        back.set(Level::High);
+        back.set(Level::Low);
+        assert_eq!(
+            test::writes(),
+            [(0xFCFE_3108, (1 << 25) | (1 << 9)), (0xFCFE_3108, 1 << 25)]
+        );
     }
 
     #[test]
