@@ -259,6 +259,12 @@ pub(crate) fn gate_set(ch: u8, on: bool) {
     }
 }
 
+/// The clock out: libdeluge has no timer for it, so a task times it with `Timer`s (see `clock::soft`).
+pub(crate) use crate::clock::soft::{
+    clock_out_init, clock_out_pulse, clock_out_retime, clock_out_running, clock_out_start,
+    clock_out_stop,
+};
+
 /// Received DIN-MIDI bytes not yet handed to the app.
 ///
 /// libdeluge's `midi_read` is a non-blocking bulk read over ALSA rawmidi, while

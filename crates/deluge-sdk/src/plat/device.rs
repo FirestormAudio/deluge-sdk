@@ -1,7 +1,7 @@
 //! Device backend ops (deluge-bsp peripherals).
 use core::convert::Infallible;
 use core::future::poll_fn;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use core::task::Poll;
 
 use deluge_bsp::audio_block::{self, BlockState};
@@ -13,10 +13,13 @@ use deluge_bsp::rgb::PadLeds;
 use deluge_bsp::trigger_clock;
 use deluge_bsp::uart as bsp_uart;
 use embassy_executor::Spawner;
-use embassy_time::Instant;
 #[cfg(not(feature = "audio-irq"))]
-use embassy_time::{Duration, Ticker};
+use embassy_time::Ticker;
+use embassy_time::{Duration, Instant};
 use embedded_hal::digital::{OutputPin, StatefulOutputPin};
+use rza1_hal::gpio::{Level, LevelWriter};
+
+use crate::clock::timing::{MAX_PERIOD, MIN_PERIOD, PulseTiming, pulse_timing};
 
 /// Run `f` over every audio block, forever.
 pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame]) + Send + 'static>(
@@ -198,6 +201,86 @@ pub(crate) async fn cv_set(ch: u8, code: u16) {
 }
 pub(crate) fn gate_set(ch: u8, on: bool) {
     deluge_bsp::cv_gate::gate_set(ch, on);
+}
+
+/// The gate channel the clock out drives.
+static CLOCK_OUT_CH: AtomicU8 = AtomicU8::new(0);
+
+/// Bind the clock out to gate channel `ch` and MTU2 channel 4. Runs once; the timer's
+/// interrupts drive the gate, so no task is spawned.
+pub(crate) fn clock_out_init(ch: u8, _spawner: Spawner) {
+    let timer = crate::parts::take("MTU2 channel 4 (the clock out)", |p| p.clock_timer.take());
+    deluge_bsp::clock_out::init(timer);
+    CLOCK_OUT_CH.store(ch, Ordering::Relaxed);
+}
+
+/// The clock out's gate, for its interrupt handlers to drive.
+fn clock_out_gate() -> LevelWriter {
+    deluge_bsp::cv_gate::gate_writer(CLOCK_OUT_CH.load(Ordering::Relaxed))
+        .expect("the gate outputs are configured before the clock out")
+}
+
+/// `period` and `width` as MTU2 channel 4's prescaler and compare values, logging the first
+/// clamp.
+fn clock_out_timing(period: Duration, width: Duration) -> PulseTiming {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    let (timing, clamped) = pulse_timing(
+        period,
+        width,
+        deluge_bsp::system::CLOCKS.p0_hz(),
+        rza1_hal::mtu2::prescalers(4),
+        u32::from(u16::MAX),
+    );
+    if clamped && !WARNED.swap(true, Ordering::Relaxed) {
+        log::warn!(
+            "clock out: period {} us / width {} us is out of range, clamped",
+            period.as_micros(),
+            width.as_micros()
+        );
+    }
+    timing
+}
+
+// The timing's compare values fit 16 bits: `clock_out_timing` caps them at `u16::MAX`.
+pub(crate) fn clock_out_start(period: Duration, width: Duration) {
+    let t = clock_out_timing(period, width);
+    deluge_bsp::clock_out::start(
+        clock_out_gate(),
+        Level::Low,
+        t.prescaler,
+        t.period as u16,
+        t.width as u16,
+    );
+}
+pub(crate) fn clock_out_retime(period: Duration, width: Duration) {
+    let t = clock_out_timing(period, width);
+    deluge_bsp::clock_out::retime(t.prescaler, t.period as u16, t.width as u16);
+}
+pub(crate) fn clock_out_stop() {
+    deluge_bsp::clock_out::stop();
+}
+pub(crate) fn clock_out_running() -> bool {
+    deluge_bsp::clock_out::running()
+}
+/// One pulse of `width`, its end timed by compare B.
+pub(crate) async fn clock_out_pulse(width: Duration) {
+    // A period of twice the width picks the finest prescaler that holds the width. Clamped here,
+    // so only a width out of range is logged.
+    let period = width
+        .checked_mul(2)
+        .unwrap_or(MAX_PERIOD)
+        .clamp(MIN_PERIOD, MAX_PERIOD);
+    let t = clock_out_timing(period, width);
+    deluge_bsp::clock_out::pulse(clock_out_gate(), Level::Low, t.prescaler, t.width as u16);
+    poll_fn(|cx| {
+        deluge_bsp::clock_out::PULSE_DONE.register(cx.waker());
+        if deluge_bsp::clock_out::pulse_pending() {
+            Poll::Pending
+        } else {
+            Poll::Ready(())
+        }
+    })
+    .await;
 }
 
 /// MIDI DIN baud rate.
