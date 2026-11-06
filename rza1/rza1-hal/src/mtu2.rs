@@ -43,7 +43,8 @@
 //! rza1_hal::bind_interrupts!(struct Irqs { TGI4A => PeriodHandler; TGI4B => WidthHandler; });
 //!
 //! let train = mtu2::PulseTrain::new(p.MTU2_4, Irqs);
-//! train.start(1024, 64_578, 163); // P0φ/1024: a period of 64578 ticks, a pulse of 163
+//! // P0φ/1024: compare A = 64578, so the period is 64579 ticks; a pulse of 163 ticks.
+//! train.start(1024, 64_578, 163);
 //! // From the compare-A handler, right after a boundary:
 //! train.retime(1024, 64_000, 163);
 //! ```
@@ -134,8 +135,14 @@ pub(crate) const TGIA_IRQ: [u16; 5] = [139, 146, 150, 154, 159];
 /// GIC interrupt IDs for the compare-match-B (TGInB) interrupt on channels 0–4.
 pub(crate) const TGIB_IRQ: [u16; 5] = [140, 147, 151, 155, 160];
 
+/// TSR: the compare-A flag.
 const TGFA: u8 = 0x01;
+/// TSR: the compare-B flag.
 const TGFB: u8 = 0x02;
+/// TIER: the compare-A interrupt enable.
+const TGIEA: u8 = 0x01;
+/// TIER: the compare-B interrupt enable.
+const TGIEB: u8 = 0x02;
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -152,7 +159,6 @@ fn stop_counter(ch: usize) {
 fn start_counter(ch: usize) {
     critical_section::with(|_| MTU2.tstr().modify(|r| r.0 |= CST[ch]));
 }
-// ---------------------------------------------------------------------------
 
 /// Encode the TPSC field in TCR for the given channel and prescaler.
 ///
@@ -437,16 +443,20 @@ impl<'d> PulseTrain<'d> {
         }
     }
 
-    /// Run at P0φ / `prescaler` with a period of `period` ticks and a pulse of `width` ticks: the
-    /// counter restarts from 0, stale flags are cleared, both interrupts are unmasked and the
+    /// Run at P0φ / `prescaler` with compare A = `period` and compare B = `width`: the counter
+    /// clears on compare A, so each period is `period + 1` ticks, and the pulse is `width` ticks.
+    /// The counter restarts from 0, stale flags are cleared, both interrupts are unmasked and the
     /// counter starts.
+    ///
+    /// `width` must be below `period` (and above 0), or compare B never matches inside the period
+    /// and the pulse never ends.
     ///
     /// # Panics
     /// If the channel has no /`prescaler` (see [`prescalers`]).
     pub fn start(&self, prescaler: u16, period: u16, width: u16) {
         let ch = self.ch as usize;
         let code = self.code(prescaler);
-        stop_counter(ch as usize);
+        stop_counter(ch);
         TCR[ch].write_value(code | (1 << 5));
         TCNT[ch].write_value(0);
         TGRA[ch].write_value(period);
@@ -457,13 +467,19 @@ impl<'d> PulseTrain<'d> {
             crate::gic::enable(TGIA_IRQ[ch]);
             crate::gic::enable(TGIB_IRQ[ch]);
         }
-        TIER[ch].write_value(TGFA | TGFB); // TGIEA | TGIEB
-        start_counter(ch as usize);
+        TIER[ch].write_value(TGIEA | TGIEB);
+        start_counter(ch);
     }
 
-    /// Change the period and pulse width. Call it from the compare-A handler, right after a
-    /// boundary. At the running prescaler only the compares are written; at a new one the
-    /// counter stops, takes the new prescaler, restarts from 0 and runs again.
+    /// Change the period and pulse width, with compare A = `period` (a period of `period + 1`
+    /// ticks) and compare B = `width`, which must be below `period` (and above 0), as for
+    /// [`start`](Self::start). At the running prescaler only the compares are written; at a new
+    /// one the counter stops, takes the new prescaler, restarts from 0 and runs again.
+    ///
+    /// Call it from the compare-A handler, promptly after a boundary, while the counter is still
+    /// below the new compare B. At the running prescaler a counter already past the new compare B
+    /// misses that period's pulse end, and one past a new, lower compare A runs on to 0xFFFF and
+    /// wraps before the next boundary.
     ///
     /// # Panics
     /// If the channel has no /`prescaler` (see [`prescalers`]).
@@ -474,20 +490,25 @@ impl<'d> PulseTrain<'d> {
             TGRA[ch].write_value(period);
             TGRB[ch].write_value(width);
         } else {
-            stop_counter(ch as usize);
+            stop_counter(ch);
             TCR[ch].write_value(code | (1 << 5));
             TCNT[ch].write_value(0);
             TGRA[ch].write_value(period);
             TGRB[ch].write_value(width);
-            start_counter(ch as usize);
+            start_counter(ch);
         }
     }
 
-    /// Stop the counter, clear both flags and mask both interrupts. Safe to call from a handler.
+    /// Mask both interrupts, stop the counter and clear both flags. Safe to call from a handler.
+    ///
+    /// The channel's interrupts are disabled in TIER before the counter stops, as
+    /// [`OneShot::disarm`] does, so no compare match from here on raises one. A request the GIC
+    /// already holds can still be taken before its line is masked, so a handler that may run
+    /// across a `stop` must not restart the counter on its own.
     pub fn stop(&self) {
         let ch = self.ch as usize;
-        stop_counter(ch as usize);
         TIER[ch].write_value(0);
+        stop_counter(ch);
         clear_flags(self.ch, TGFA | TGFB);
         // SAFETY: the owned channel's own GIC lines.
         unsafe {
@@ -758,7 +779,7 @@ mod tests {
     }
 
     #[test]
-    fn stopping_clears_both_flags_and_masks_both() {
+    fn stopping_masks_first_then_clears_both_flags() {
         let train = PulseTrain::new(unsafe { MTU2_4::steal() }, TrainIrqs);
         train.start(1024, 64_578, 163);
         mmio::test::reset();
@@ -767,8 +788,8 @@ mod tests {
         assert_eq!(
             mmio::test::writes(),
             [
+                (TIER4, 0), // masked before the counter stops, as OneShot::disarm does
                 (TSTR, 0),
-                (TIER4, 0),
                 (TSR4, 0),
                 (0xE820_1190, 1 << 31), // GICD_ICENABLER4, bit 159
                 (0xE820_1194, 1 << 0),  // GICD_ICENABLER5, bit 160
