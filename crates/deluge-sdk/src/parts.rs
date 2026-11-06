@@ -11,8 +11,8 @@
 use core::cell::RefCell;
 
 use deluge_bsp::board::{
-    AudioSsi, EncoderPollTimer, GateTimer, MidiRxDma, MidiScif, OledDma, PicRxDma, PicScif,
-    PicTxDma, ScuxFfd0Dma, SdCard, SdRxDma, SdTxDma, SharedSpi, SsiRxDma, SsiTxDma,
+    AudioSsi, ClockTimer, EncoderPollTimer, GateTimer, MidiRxDma, MidiScif, OledDma, PicRxDma,
+    PicScif, PicTxDma, ScuxFfd0Dma, SdCard, SdRxDma, SdTxDma, SharedSpi, SsiRxDma, SsiTxDma,
 };
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -45,6 +45,8 @@ pub struct Parts {
     pub gate_timer: Option<Peri<'static, GateTimer>>,
     /// MTU2 channel 3, for `deluge_bsp::encoder::irq_init`.
     pub encoder_poll_timer: Option<Peri<'static, EncoderPollTimer>>,
+    /// MTU2 channel 4, for `deluge_bsp::clock_out::init`.
+    pub clock_timer: Option<Peri<'static, ClockTimer>>,
     /// SDHI1, for `deluge_bsp::sd::init_hw`.
     pub sd_card: Option<Peri<'static, SdCard>>,
     /// The SD card's transmit DMA channel, for `deluge_bsp::sd::init_hw`.

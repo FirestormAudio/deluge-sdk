@@ -27,7 +27,7 @@
 use core::cell::RefCell;
 
 use critical_section::Mutex;
-use rza1_hal::gpio::{Level, Output};
+use rza1_hal::gpio::{Level, LevelWriter, Output};
 #[cfg(target_os = "none")]
 use rza1_hal::ostm;
 
@@ -211,6 +211,21 @@ pub fn gate_set(ch: u8, on: bool) {
             l.gates[ch as usize].set_level((!on).into());
         }
     });
+}
+
+/// A writer for gate output `ch`'s pin, to drive it from an interrupt handler (V-trig: the gate
+/// is active at [`Level::Low`]). `None` before [`init`], or for `ch` 4 or more.
+///
+/// The pin stays this module's: [`gate_set`] still drives it, so a caller that hands the writer
+/// to a handler (`crate::clock_out`) owns the gate while it does.
+pub fn gate_writer(ch: u8) -> Option<LevelWriter> {
+    critical_section::with(|cs| {
+        LINES
+            .borrow_ref(cs)
+            .as_ref()
+            .and_then(|l| l.gates.get(ch as usize))
+            .map(Output::level_writer)
+    })
 }
 
 // ── Address / logic tests (host only) ────────────────────────────────────────
