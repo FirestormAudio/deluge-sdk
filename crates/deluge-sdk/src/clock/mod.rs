@@ -119,7 +119,8 @@ impl ClockOut {
         Self::handle()
     }
 
-    /// A handle on `channel` with no timing task, for tests, which have no executor.
+    /// A handle on `channel` without spawning the timing task, for tests that check what the
+    /// handle does synchronously. The task may still be alive from the real-loop test.
     #[cfg(all(test, feature = "sim"))]
     fn unspawned(channel: u8) -> Self {
         crate::cv_gate::ensure_init();
@@ -218,7 +219,7 @@ impl Drop for ClockOut {
 
 #[cfg(all(test, feature = "sim"))]
 mod tests {
-    use std::sync::mpsc::{Sender, channel};
+    use std::sync::mpsc::{Receiver, Sender, channel};
     use std::sync::{Mutex, OnceLock, PoisonError};
 
     use embassy_executor::{Executor, Spawner};
@@ -321,6 +322,8 @@ mod tests {
     /// `Timer`, which only an embassy executor's waker can wait on. These tests share one
     /// executor, started on its own thread by the first of them, so the suite leaks one thread.
     /// The tasks are not `Send`, so the job, not a spawner, crosses to the executor's thread.
+    /// A task that panics kills that thread for every later test, so wait for a task's result
+    /// with [`result_of`], which fails rather than hangs.
     fn on_the_test_executor(spawn: impl FnOnce(Spawner) + Send + 'static) {
         static STARTED: OnceLock<()> = OnceLock::new();
         STARTED.get_or_init(|| {
@@ -332,6 +335,24 @@ mod tests {
         if JOBS.try_send(Box::new(spawn)).is_err() {
             panic!("the test executor's job queue is full");
         }
+    }
+
+    #[test]
+    fn a_rise_from_the_task_after_a_stop_leaves_the_gate_low() {
+        let _turn = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut clk = clock_out(2);
+        start_long(&mut clk);
+        clk.stop();
+        // The task decided on a rise before the stop, and writes it after.
+        soft::task_edge(true);
+        assert!(!gate(2), "the stop wins the gate");
+    }
+
+    /// The result a task on the test executor sends on `rx`. Panics after 30 s: the executor's
+    /// thread died with an earlier task's panic, or is wedged, and its jobs will never run.
+    fn result_of<T>(rx: Receiver<T>) -> T {
+        rx.recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the shared clock-test executor is gone: an earlier task panicked or wedged it")
     }
 
     /// Start a 500 ms pulse on `clk` and drop it 1 ms in. Returns whether the gate was up at that
@@ -364,7 +385,7 @@ mod tests {
         let _turn = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
         let (tx, rx) = channel();
         on_the_test_executor(move |s| s.spawn(a_pulse_dropped_mid_way(tx).unwrap()));
-        let (up, after) = rx.recv().unwrap();
+        let (up, after) = result_of(rx);
         assert!(up, "the pulse was up");
         assert!(
             !after,
@@ -388,7 +409,7 @@ mod tests {
         on_the_test_executor(move |s| {
             s.spawn(a_clock_out_dropped_with_a_pending_pulse(tx).unwrap())
         });
-        let (up, after) = rx.recv().unwrap();
+        let (up, after) = result_of(rx);
         assert!(up, "the pulse was up");
         assert!(!after);
     }
@@ -480,7 +501,7 @@ mod tests {
         let _turn = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
         let (tx, rx) = channel();
         on_the_test_executor(move |s| s.spawn(a_clock_on_the_real_loop(s, tx).unwrap()));
-        let run = rx.recv().unwrap();
+        let run = result_of(rx);
         assert!(run.up_at_start, "{run:?}");
         assert!(run.fell_first, "{run:?}");
         assert!(run.rises >= 2 && run.falls >= 2, "{run:?}");

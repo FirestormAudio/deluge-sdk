@@ -248,9 +248,25 @@ pub(crate) fn clock_out_retime(period: Duration, width: Duration) {
 
 /// Stop the train and drop the gate.
 pub(crate) fn clock_out_stop() {
-    update(|s| s.running = false);
-    gate_set(false);
+    SHARED.lock(|c| {
+        let mut s = c.get();
+        s.running = false;
+        c.set(s);
+        gate_set(false);
+    });
     KICK.signal(());
+}
+
+/// Write an edge the task decided on. A rise is only written while the train runs, checked
+/// under the lock [`clock_out_stop`] takes, so a stop from another thread always wins the gate.
+/// When the handle and the task share an executor, a stop can't land between the task's decision
+/// and this write, so every edge is written.
+pub(super) fn task_edge(on: bool) {
+    SHARED.lock(|c| {
+        if !on || c.get().running {
+            gate_set(on);
+        }
+    });
 }
 
 /// The gate, up while this lives: dropping it ends the pulse.
@@ -316,7 +332,7 @@ async fn soft_clock() -> ! {
             state = s.running.then(|| Soft::started(s.started, s.timing));
         } else if let Some(s) = state.as_mut() {
             match step(s, running_timing(), Instant::now()) {
-                Some(on) => gate_set(on),
+                Some(on) => task_edge(on),
                 None => state = None,
             }
         }
