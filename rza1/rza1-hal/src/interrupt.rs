@@ -124,7 +124,12 @@ pub unsafe trait Binding<I: Interrupt, H: Handler<I>> {}
 
 /// Install `H` as the handler for `I`. A driver's constructor calls this with the binding it
 /// takes.
-pub fn bind<I: Interrupt, H: Handler<I>>(_binding: impl Binding<I, H>) {
+pub fn bind<I: Interrupt, H: Handler<I>>(binding: impl Binding<I, H>) {
+    bind_ref::<I, H>(&binding);
+}
+
+/// [`bind`] for a driver that installs two handlers from the one binding it took.
+pub(crate) fn bind_ref<I: Interrupt, H: Handler<I>>(_binding: &impl Binding<I, H>) {
     gic::set_handler(I::ID, dispatch_to::<I, H>);
 }
 
@@ -160,6 +165,8 @@ pub mod typelevel {
         USB0 = 73, USB1 = 74,
         // MTU2 channel n's compare-match A.
         TGI0A = 139, TGI1A = 146, TGI2A = 150, TGI3A = 154, TGI4A = 159,
+        // MTU2 channel n's compare-match B.
+        TGI0B = 140, TGI1B = 147, TGI2B = 151, TGI3B = 155, TGI4B = 160,
         // SCIF channel n's break/overrun, receive error, receive-FIFO-full and transmit-FIFO-empty.
         BRI0 = 221, ERI0 = 222, RXI0 = 223, TXI0 = 224,
         BRI1 = 225, ERI1 = 226, RXI1 = 227, TXI1 = 228,
@@ -360,6 +367,17 @@ mod tests {
             ],
             crate::mtu2::TGIA_IRQ
         );
+        assert_eq!(
+            [
+                typelevel::TGI0B::ID,
+                typelevel::TGI1B::ID,
+                typelevel::TGI2B::ID,
+                typelevel::TGI3B::ID,
+                typelevel::TGI4B::ID
+            ],
+            crate::mtu2::TGIB_IRQ
+        );
+        assert_eq!(crate::mtu2::TGIB_IRQ, [140, 147, 151, 155, 160]);
         // SCIFn: ERI = 222 + 4n, TXI = 224 + 4n (RZ/A1L hardware manual, table A.2).
         assert_eq!(
             [

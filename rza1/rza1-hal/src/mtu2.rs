@@ -1,8 +1,9 @@
 //! Multi-Function Timer Pulse Unit 2 (MTU2) driver for the RZ/A1L.
 //!
 //! The RZ/A1L MTU2 has five 16-bit timer channels (0–4), all clocked by P0φ
-//! (see [`crate::clocks::ClockConfig::p0_hz`]). Each is driven as a one-shot compare-match timer,
-//! [`OneShot`].
+//! (see [`crate::clocks::ClockConfig::p0_hz`]). Each is driven in one of two modes:
+//! - [`OneShot`]: a one-shot compare-match timer.
+//! - [`PulseTrain`]: a free-running period (compare A) with a pulse end (compare B) inside it.
 //!
 //! ## Register layout peculiarity
 //! The MTU2 register block at `0xFCFF_0000` is non-contiguous: channels 2, 3,
@@ -25,6 +26,24 @@
 //!
 //! let timer = mtu2::OneShot::new(p.MTU2_2, 64, Irqs); // P0φ/64
 //! timer.arm(520); // fires after 520 ticks ≈ 1 ms
+//! ```
+//!
+//! ## Usage (period and pulse width)
+//! ```ignore
+//! struct PeriodHandler;
+//! impl Handler<typelevel::TGI4A> for PeriodHandler {
+//!     unsafe fn on_interrupt() { /* train.clear_a(); the period began: raise the output */ }
+//! }
+//! struct WidthHandler;
+//! impl Handler<typelevel::TGI4B> for WidthHandler {
+//!     unsafe fn on_interrupt() { /* train.clear_b(); the pulse ended: lower the output */ }
+//! }
+//! rza1_hal::bind_interrupts!(struct Irqs { TGI4A => PeriodHandler; TGI4B => WidthHandler; });
+//!
+//! let train = mtu2::PulseTrain::new(p.MTU2_4, Irqs);
+//! train.start(1024, 64_578, 163); // P0φ/1024: a period of 64578 ticks, a pulse of 163
+//! // From the compare-A handler, right after a boundary:
+//! train.retime(1024, 64_000, 163);
 //! ```
 
 // ---------------------------------------------------------------------------
@@ -49,6 +68,7 @@ const TCR: [Reg<u8, RW>; 5] = [
 
 // Per-channel TIER (Timer Interrupt Enable Register) — 8-bit
 //   bit 0 = TGIEA: enable compare-match-A interrupt
+//   bit 1 = TGIEB: enable compare-match-B interrupt
 const TIER: [Reg<u8, RW>; 5] = [
     MTU2.tier_0(),
     MTU2.tier_1(),
@@ -59,6 +79,7 @@ const TIER: [Reg<u8, RW>; 5] = [
 
 // Per-channel TSR (Timer Status Register) — 8-bit
 //   bit 0 = TGFA: compare-match-A flag (write 0 to clear)
+//   bit 1 = TGFB: compare-match-B flag (write 0 to clear)
 const TSR: [Reg<u8, RW>; 5] = [
     MTU2.tsr_0(),
     MTU2.tsr_1(),
@@ -85,6 +106,15 @@ const TGRA: [Reg<u16, RW>; 5] = [
     MTU2.tgra_4(),
 ];
 
+// Per-channel TGRB (Timer General Register B) — 16-bit compare value
+const TGRB: [Reg<u16, RW>; 5] = [
+    MTU2.tgrb_0(),
+    MTU2.tgrb_1(),
+    MTU2.tgrb_2(),
+    MTU2.tgrb_3(),
+    MTU2.tgrb_4(),
+];
+
 // Shared registers: MTU2.tstr() (Timer Start) and MTU2.trwer() (Timer Read/Write Enable).
 
 // TSTR bit for each channel (CST0..CST4).
@@ -98,6 +128,12 @@ const CST: [u8; 5] = [0x01, 0x02, 0x04, 0x40, 0x80];
 /// GIC interrupt IDs for the compare-match-A (TGInA) interrupt on channels 0–4.
 /// Source: `devdrv_intc.h`.
 pub(crate) const TGIA_IRQ: [u16; 5] = [139, 146, 150, 154, 159];
+
+/// GIC interrupt IDs for the compare-match-B (TGInB) interrupt on channels 0–4.
+pub(crate) const TGIB_IRQ: [u16; 5] = [140, 147, 151, 155, 160];
+
+const TGFA: u8 = 0x01;
+const TGFB: u8 = 0x02;
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -206,15 +242,19 @@ unsafe fn arm(ch: u8, tgra: u16) {
 /// # Safety
 /// Reads and writes to memory-mapped MTU2 registers.
 unsafe fn clear_flag(ch: u8) {
+    clear_flags(ch, TGFA);
+}
+
+/// Clear the TSR flags in `mask` on channel `ch`, re-reading until they read back clear (bounded
+/// to 64 iterations so a continuously re-firing timer cannot trap the CPU here indefinitely).
+fn clear_flags(ch: u8, mask: u8) {
     let tsr = TSR[ch as usize];
-    // Loop until the flag is clear (normally 1–2 reads; bounded to 64 iterations
-    // so a continuously re-firing timer cannot trap the CPU here indefinitely).
     for _ in 0..64u8 {
         let val = tsr.read();
-        if val & 0x01 == 0 {
+        if val & mask == 0 {
             break;
         }
-        tsr.write_value(val & !0x01);
+        tsr.write_value(val & !mask);
     }
 }
 
@@ -257,24 +297,27 @@ pub trait Instance: crate::PeripheralType + sealed::Sealed + 'static {
     const CH: u8;
     /// Its compare-match-A interrupt, `TGI<CH>A`.
     type Interrupt: Interrupt;
+    /// Its compare-match-B interrupt, `TGI<CH>B`.
+    type InterruptB: Interrupt;
 }
 
 macro_rules! instances {
-    ($($t:ident = $n:literal, $irq:ident;)*) => {$(
+    ($($t:ident = $n:literal, $irq:ident, $irq_b:ident;)*) => {$(
         impl sealed::Sealed for crate::peripherals::$t {}
         impl Instance for crate::peripherals::$t {
             const CH: u8 = $n;
             type Interrupt = crate::interrupt::typelevel::$irq;
+            type InterruptB = crate::interrupt::typelevel::$irq_b;
         }
     )*};
 }
 
 instances! {
-    MTU2_0 = 0, TGI0A;
-    MTU2_1 = 1, TGI1A;
-    MTU2_2 = 2, TGI2A;
-    MTU2_3 = 3, TGI3A;
-    MTU2_4 = 4, TGI4A;
+    MTU2_0 = 0, TGI0A, TGI0B;
+    MTU2_1 = 1, TGI1A, TGI1B;
+    MTU2_2 = 2, TGI2A, TGI2B;
+    MTU2_3 = 3, TGI3A, TGI3B;
+    MTU2_4 = 4, TGI4A, TGI4B;
 }
 
 /// An MTU2 channel as a one-shot timer: [`arm`](Self::arm) it for a number of ticks and its
@@ -333,6 +376,124 @@ impl<'d> OneShot<'d> {
     pub fn clear_flag(&self) {
         // SAFETY: the owned channel.
         unsafe { clear_flag(self.ch) }
+    }
+}
+
+/// The prescalers channel `ch` offers, as [`PulseTrain::start`] takes them: `[1, 4, 16, 64]`, then
+/// 256 and 1024 where the channel has them.
+pub fn prescalers(ch: u8) -> &'static [u16] {
+    match (tpsc(ch, 256).is_some(), tpsc(ch, 1024).is_some()) {
+        (true, true) => &[1, 4, 16, 64, 256, 1024],
+        (true, false) => &[1, 4, 16, 64, 256],
+        (false, true) => &[1, 4, 16, 64, 1024],
+        (false, false) => &[1, 4, 16, 64],
+    }
+}
+
+/// An MTU2 channel as a pulse generator: the counter clears on a compare-A match, which starts
+/// each period, and a compare-B match inside the period ends the pulse. Both interrupts run, so
+/// the handlers drive the output: raise it on A, lower it on B.
+///
+/// Its methods take `&self`, so an interrupt handler can reach it through a static.
+pub struct PulseTrain<'d> {
+    ch: u8,
+    _timer: PhantomData<&'d mut ()>,
+}
+
+impl<'d> PulseTrain<'d> {
+    /// Configure channel `T` with `HA` handling compare A and `HB` compare B. Stopped, both
+    /// interrupts bound but masked, until [`start`](Self::start). The interrupts' priorities are
+    /// the application's.
+    pub fn new<T: Instance, HA: Handler<T::Interrupt>, HB: Handler<T::InterruptB>>(
+        _timer: Peri<'d, T>,
+        irq: impl Binding<T::Interrupt, HA> + Binding<T::InterruptB, HB> + 'd,
+    ) -> Self {
+        interrupt::bind_ref::<T::Interrupt, HA>(&irq);
+        interrupt::bind_ref::<T::InterruptB, HB>(&irq);
+        // SAFETY: channel T is owned. TRWER opens channels 3 and 4's registers and is harmless
+        // to write again.
+        unsafe {
+            enable_write();
+            setup_one_shot(T::CH, 0b000);
+        }
+        Self {
+            ch: T::CH,
+            _timer: PhantomData,
+        }
+    }
+
+    /// Run at P0φ / `prescaler` with a period of `period` ticks and a pulse of `width` ticks: the
+    /// counter restarts from 0, stale flags are cleared, both interrupts are unmasked and the
+    /// counter starts.
+    ///
+    /// # Panics
+    /// If the channel has no /`prescaler` (see [`prescalers`]).
+    pub fn start(&self, prescaler: u16, period: u16, width: u16) {
+        let ch = self.ch as usize;
+        let code = self.code(prescaler);
+        MTU2.tstr().modify(|r| r.0 &= !CST[ch]);
+        TCR[ch].write_value(code | (1 << 5));
+        TCNT[ch].write_value(0);
+        TGRA[ch].write_value(period);
+        TGRB[ch].write_value(width);
+        clear_flags(self.ch, TGFA | TGFB);
+        // SAFETY: the owned channel's own GIC lines.
+        unsafe {
+            crate::gic::enable(TGIA_IRQ[ch]);
+            crate::gic::enable(TGIB_IRQ[ch]);
+        }
+        TIER[ch].write_value(TGFA | TGFB); // TGIEA | TGIEB
+        MTU2.tstr().modify(|r| r.0 |= CST[ch]);
+    }
+
+    /// Change the period and pulse width. Call it from the compare-A handler, right after a
+    /// boundary. At the running prescaler only the compares are written; at a new one the
+    /// counter stops, takes the new prescaler, restarts from 0 and runs again.
+    ///
+    /// # Panics
+    /// If the channel has no /`prescaler` (see [`prescalers`]).
+    pub fn retime(&self, prescaler: u16, period: u16, width: u16) {
+        let ch = self.ch as usize;
+        let code = self.code(prescaler);
+        if TCR[ch].read() & 0b111 == code {
+            TGRA[ch].write_value(period);
+            TGRB[ch].write_value(width);
+        } else {
+            MTU2.tstr().modify(|r| r.0 &= !CST[ch]);
+            TCR[ch].write_value(code | (1 << 5));
+            TCNT[ch].write_value(0);
+            TGRA[ch].write_value(period);
+            TGRB[ch].write_value(width);
+            MTU2.tstr().modify(|r| r.0 |= CST[ch]);
+        }
+    }
+
+    /// Stop the counter, clear both flags and mask both interrupts. Safe to call from a handler.
+    pub fn stop(&self) {
+        let ch = self.ch as usize;
+        MTU2.tstr().modify(|r| r.0 &= !CST[ch]);
+        TIER[ch].write_value(0);
+        clear_flags(self.ch, TGFA | TGFB);
+        // SAFETY: the owned channel's own GIC lines.
+        unsafe {
+            crate::gic::disable(TGIA_IRQ[ch]);
+            crate::gic::disable(TGIB_IRQ[ch]);
+        }
+    }
+
+    /// Clear the compare-A flag. The compare-A handler must do this before it returns.
+    pub fn clear_a(&self) {
+        clear_flags(self.ch, TGFA);
+    }
+
+    /// Clear the compare-B flag. The compare-B handler must do this before it returns.
+    pub fn clear_b(&self) {
+        clear_flags(self.ch, TGFB);
+    }
+
+    fn code(&self, prescaler: u16) -> u8 {
+        tpsc(self.ch, prescaler)
+            .unwrap_or_else(|| panic!("MTU2 channel {} has no /{} prescaler", self.ch, prescaler))
     }
 }
 
@@ -464,6 +625,168 @@ mod tests {
                 (0xE820_1190, 1 << 22),       // GICD_ICENABLER4, bit 150 - 128
             ]
         );
+    }
+
+    // ── PulseTrain (channel 4) ──────────────────────────────────────────────
+    use crate::peripherals::MTU2_4;
+
+    struct Period;
+    impl Handler<typelevel::TGI4A> for Period {
+        unsafe fn on_interrupt() {}
+    }
+    struct Width;
+    impl Handler<typelevel::TGI4B> for Width {
+        unsafe fn on_interrupt() {}
+    }
+
+    crate::bind_interrupts!(struct TrainIrqs {
+        TGI4A => Period;
+        TGI4B => Width;
+    });
+
+    const TSTR: usize = 0xFCFF_0280;
+    const TCR4: usize = 0xFCFF_0201;
+    const TIER4: usize = 0xFCFF_0209;
+    const TSR4: usize = 0xFCFF_022D;
+    const TCNT4: usize = 0xFCFF_0212;
+    const TGRA4: usize = 0xFCFF_021C;
+    const TGRB4: usize = 0xFCFF_021E;
+
+    #[test]
+    fn a_pulse_train_is_bound_stopped_and_masked() {
+        mmio::test::reset();
+        let _train = PulseTrain::new(unsafe { MTU2_4::steal() }, TrainIrqs);
+        assert!(crate::gic::handler(159).is_some(), "TGI4A bound");
+        assert!(crate::gic::handler(160).is_some(), "TGI4B bound");
+        assert_eq!(
+            mmio::test::writes(),
+            [
+                (0xFCFF_0284, 1),
+                (TSTR, 0),
+                (TCR4, 0b000 | (0b001 << 5)), // P0φ/1, counter cleared on a TGRA match
+                (TIER4, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn starting_programs_both_compares_then_runs() {
+        let train = PulseTrain::new(unsafe { MTU2_4::steal() }, TrainIrqs);
+        mmio::test::reset();
+        mmio::test::poke8(TSR4, 0b11);
+        train.start(1024, 64_578, 163);
+        assert_eq!(
+            mmio::test::writes(),
+            [
+                (TSTR, 0),
+                (TCR4, 0b101 | (0b001 << 5)),
+                (TCNT4, 0),
+                (TGRA4, 64_578),
+                (TGRB4, 163),
+                (TSR4, 0),              // both flags cleared
+                (0xE820_1110, 1 << 31), // GICD_ISENABLER4, bit 159 - 128
+                (0xE820_1114, 1 << 0),  // GICD_ISENABLER5, bit 160 - 160
+                (TIER4, 0b11),
+                (TSTR, CST[4] as u32),
+            ]
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "MTU2 channel 4 has no /8 prescaler")]
+    fn starting_at_a_prescaler_the_channel_lacks_is_refused() {
+        let train = PulseTrain::new(unsafe { MTU2_4::steal() }, TrainIrqs);
+        train.start(8, 100, 10);
+    }
+
+    #[test]
+    fn retiming_at_the_same_prescaler_writes_only_the_compares() {
+        let train = PulseTrain::new(unsafe { MTU2_4::steal() }, TrainIrqs);
+        train.start(1024, 64_578, 163);
+        mmio::test::reset();
+        mmio::test::poke8(TCR4, 0b101 | (0b001 << 5)); // reset wiped the running configuration
+        train.retime(1024, 60_000, 150);
+        assert_eq!(mmio::test::writes(), [(TGRA4, 60_000), (TGRB4, 150)]);
+    }
+
+    #[test]
+    fn retiming_to_a_new_prescaler_restarts_from_zero() {
+        let train = PulseTrain::new(unsafe { MTU2_4::steal() }, TrainIrqs);
+        train.start(1024, 64_578, 163);
+        mmio::test::reset();
+        mmio::test::poke8(TCR4, 0b101 | (0b001 << 5));
+        train.retime(256, 50_000, 120);
+        assert_eq!(
+            mmio::test::writes(),
+            [
+                (TSTR, 0),
+                (TCR4, 0b100 | (0b001 << 5)),
+                (TCNT4, 0),
+                (TGRA4, 50_000),
+                (TGRB4, 120),
+                (TSTR, CST[4] as u32),
+            ]
+        );
+    }
+
+    #[test]
+    fn stopping_clears_both_flags_and_masks_both() {
+        let train = PulseTrain::new(unsafe { MTU2_4::steal() }, TrainIrqs);
+        train.start(1024, 64_578, 163);
+        mmio::test::reset();
+        mmio::test::poke8(TSR4, 0b11);
+        train.stop();
+        assert_eq!(
+            mmio::test::writes(),
+            [
+                (TSTR, 0),
+                (TIER4, 0),
+                (TSR4, 0),
+                (0xE820_1190, 1 << 31), // GICD_ICENABLER4, bit 159
+                (0xE820_1194, 1 << 0),  // GICD_ICENABLER5, bit 160
+            ]
+        );
+    }
+
+    #[test]
+    fn each_compare_flag_clears_on_its_own() {
+        let train = PulseTrain::new(unsafe { MTU2_4::steal() }, TrainIrqs);
+        mmio::test::reset();
+        mmio::test::poke8(TSR4, 0b11);
+        train.clear_a();
+        assert_eq!(mmio::test::writes(), [(TSR4, 0b10)]);
+        train.clear_b();
+        assert_eq!(mmio::test::writes(), [(TSR4, 0b10), (TSR4, 0)]);
+    }
+
+    #[test]
+    fn channel_prescalers_match_tpsc() {
+        for ch in 0..5u8 {
+            for &p in prescalers(ch) {
+                assert!(tpsc(ch, p).is_some(), "ch {ch} /{p}");
+            }
+            for p in [1u16, 4, 16, 64, 256, 1024] {
+                assert_eq!(
+                    prescalers(ch).contains(&p),
+                    tpsc(ch, p).is_some(),
+                    "ch {ch} /{p}"
+                );
+            }
+        }
+        assert_eq!(prescalers(4), [1, 4, 16, 64, 256, 1024]);
+    }
+
+    #[test]
+    fn the_pac_names_the_tgrb_registers() {
+        let tgrb = [
+            MTU2.tgrb_0().addr(),
+            MTU2.tgrb_1().addr(),
+            MTU2.tgrb_2().addr(),
+            MTU2.tgrb_3().addr(),
+            MTU2.tgrb_4().addr(),
+        ];
+        assert_eq!(tgrb[4], TGRB4);
+        assert_eq!(MTU2.tgrb_4().width(), 2);
     }
 
     #[test]
