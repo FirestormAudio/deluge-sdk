@@ -4,7 +4,7 @@
 
 [package]
 name = "deluge-block-device-adapters"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["Scott Mabin", "Katherine Whitlock <kate@skylinesynths.nyc>"]
 repository = "https://github.com/FirestormAudio/deluge-sdk"
@@ -37,5 +37,6 @@ anyhow = "1"
 embedded-io-adapters = { version = "0.7", package = "embedded-io-adapters", features = ["tokio-1"] }
 
 [features]
+# Logging through `log` or `defmt`; with both on, `defmt` is used.
 log = ["dep:log"]
 defmt = ["dep:defmt"]
