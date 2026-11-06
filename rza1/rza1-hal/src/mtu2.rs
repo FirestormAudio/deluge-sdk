@@ -14,7 +14,9 @@
 //! ## TSTR (Timer Start Register)
 //! One shared TSTR register at `0xFCFF_0280` controls which channels run.
 //! Channels 3 and 4 have a write gate, `TRWER`: it is open at reset, and [`OneShot::new`] opens
-//! it again in case earlier code closed it.
+//! it again in case earlier code closed it. TSTR changes run in a critical section, so they are
+//! atomic with respect to other channels' timers, including ones started or stopped from an
+//! interrupt handler.
 //!
 //! ## Usage (one-shot)
 //! ```ignore
@@ -139,6 +141,19 @@ const TGFB: u8 = 0x02;
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+/// Clear channel `ch`'s CST bit. TSTR is shared by all five channels, so the read-modify-write
+/// runs in a critical section: an interrupt on another channel cannot lose its own start or stop.
+fn stop_counter(ch: usize) {
+    critical_section::with(|_| MTU2.tstr().modify(|r| r.0 &= !CST[ch]));
+}
+
+/// Set channel `ch`'s CST bit, atomically with respect to the other channels (see
+/// [`stop_counter`]).
+fn start_counter(ch: usize) {
+    critical_section::with(|_| MTU2.tstr().modify(|r| r.0 |= CST[ch]));
+}
+// ---------------------------------------------------------------------------
+
 /// Encode the TPSC field in TCR for the given channel and prescaler.
 ///
 /// Valid prescalers:
@@ -193,7 +208,7 @@ unsafe fn enable_write() {
 /// # Safety
 /// Writes MTU2 registers; `ch` is owned.
 unsafe fn setup_one_shot(ch: u8, tpsc: u8) {
-    MTU2.tstr().modify(|r| r.0 &= !CST[ch as usize]);
+    stop_counter(ch as usize);
     TCR[ch as usize].write_value(tpsc | (1 << 5));
     TIER[ch as usize].write_value(0);
 }
@@ -213,7 +228,7 @@ unsafe fn setup_one_shot(ch: u8, tpsc: u8) {
 unsafe fn arm(ch: u8, tgra: u16) {
     unsafe {
         // Stop while reconfiguring.
-        MTU2.tstr().modify(|r| r.0 &= !CST[ch as usize]);
+        stop_counter(ch as usize);
 
         // Write compare value then reset counter.
         TGRA[ch as usize].write_value(tgra);
@@ -229,7 +244,7 @@ unsafe fn arm(ch: u8, tgra: u16) {
         TIER[ch as usize].write_value(1); // TGIEA = 1
 
         // Start.
-        MTU2.tstr().modify(|r| r.0 |= CST[ch as usize]);
+        start_counter(ch as usize);
     }
 }
 
@@ -271,7 +286,7 @@ unsafe fn disarm(ch: u8) {
         TIER[ch as usize].write_value(0);
 
         // Stop the counter.
-        MTU2.tstr().modify(|r| r.0 &= !CST[ch as usize]);
+        stop_counter(ch as usize);
 
         // Mask the GIC source.
         crate::gic::disable(TGIA_IRQ[ch as usize]);
@@ -431,7 +446,7 @@ impl<'d> PulseTrain<'d> {
     pub fn start(&self, prescaler: u16, period: u16, width: u16) {
         let ch = self.ch as usize;
         let code = self.code(prescaler);
-        MTU2.tstr().modify(|r| r.0 &= !CST[ch]);
+        stop_counter(ch as usize);
         TCR[ch].write_value(code | (1 << 5));
         TCNT[ch].write_value(0);
         TGRA[ch].write_value(period);
@@ -443,7 +458,7 @@ impl<'d> PulseTrain<'d> {
             crate::gic::enable(TGIB_IRQ[ch]);
         }
         TIER[ch].write_value(TGFA | TGFB); // TGIEA | TGIEB
-        MTU2.tstr().modify(|r| r.0 |= CST[ch]);
+        start_counter(ch as usize);
     }
 
     /// Change the period and pulse width. Call it from the compare-A handler, right after a
@@ -459,19 +474,19 @@ impl<'d> PulseTrain<'d> {
             TGRA[ch].write_value(period);
             TGRB[ch].write_value(width);
         } else {
-            MTU2.tstr().modify(|r| r.0 &= !CST[ch]);
+            stop_counter(ch as usize);
             TCR[ch].write_value(code | (1 << 5));
             TCNT[ch].write_value(0);
             TGRA[ch].write_value(period);
             TGRB[ch].write_value(width);
-            MTU2.tstr().modify(|r| r.0 |= CST[ch]);
+            start_counter(ch as usize);
         }
     }
 
     /// Stop the counter, clear both flags and mask both interrupts. Safe to call from a handler.
     pub fn stop(&self) {
         let ch = self.ch as usize;
-        MTU2.tstr().modify(|r| r.0 &= !CST[ch]);
+        stop_counter(ch as usize);
         TIER[ch].write_value(0);
         clear_flags(self.ch, TGFA | TGFB);
         // SAFETY: the owned channel's own GIC lines.
@@ -630,13 +645,21 @@ mod tests {
     // ── PulseTrain (channel 4) ──────────────────────────────────────────────
     use crate::peripherals::MTU2_4;
 
+    use core::sync::atomic::{AtomicBool, Ordering};
+    static PERIOD_RAN: AtomicBool = AtomicBool::new(false);
+    static WIDTH_RAN: AtomicBool = AtomicBool::new(false);
+
     struct Period;
     impl Handler<typelevel::TGI4A> for Period {
-        unsafe fn on_interrupt() {}
+        unsafe fn on_interrupt() {
+            PERIOD_RAN.store(true, Ordering::SeqCst);
+        }
     }
     struct Width;
     impl Handler<typelevel::TGI4B> for Width {
-        unsafe fn on_interrupt() {}
+        unsafe fn on_interrupt() {
+            WIDTH_RAN.store(true, Ordering::SeqCst);
+        }
     }
 
     crate::bind_interrupts!(struct TrainIrqs {
@@ -656,8 +679,13 @@ mod tests {
     fn a_pulse_train_is_bound_stopped_and_masked() {
         mmio::test::reset();
         let _train = PulseTrain::new(unsafe { MTU2_4::steal() }, TrainIrqs);
-        assert!(crate::gic::handler(159).is_some(), "TGI4A bound");
-        assert!(crate::gic::handler(160).is_some(), "TGI4B bound");
+        // The handler table is process-global: run what is bound and check it is this module's.
+        PERIOD_RAN.store(false, Ordering::SeqCst);
+        WIDTH_RAN.store(false, Ordering::SeqCst);
+        crate::gic::handler(159).expect("TGI4A bound")();
+        crate::gic::handler(160).expect("TGI4B bound")();
+        assert!(PERIOD_RAN.load(Ordering::SeqCst), "TGI4A is Period");
+        assert!(WIDTH_RAN.load(Ordering::SeqCst), "TGI4B is Width");
         assert_eq!(
             mmio::test::writes(),
             [
@@ -757,6 +785,22 @@ mod tests {
         assert_eq!(mmio::test::writes(), [(TSR4, 0b10)]);
         train.clear_b();
         assert_eq!(mmio::test::writes(), [(TSR4, 0b10), (TSR4, 0)]);
+    }
+
+    #[test]
+    fn other_channels_keep_their_start_bits() {
+        let train = PulseTrain::new(unsafe { MTU2_4::steal() }, TrainIrqs);
+        let shot = OneShot::new(unsafe { MTU2_2::steal() }, 64, Irqs);
+        mmio::test::reset();
+        mmio::test::poke8(TSTR, CST[3]);
+        train.start(1024, 64_578, 163);
+        assert_eq!(mmio::test::peek8(TSTR), CST[3] | CST[4]);
+        train.stop();
+        assert_eq!(mmio::test::peek8(TSTR), CST[3]);
+        shot.arm(520);
+        assert_eq!(mmio::test::peek8(TSTR), CST[3] | CST[2]);
+        shot.disarm();
+        assert_eq!(mmio::test::peek8(TSTR), CST[3]);
     }
 
     #[test]
