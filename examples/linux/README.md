@@ -17,35 +17,15 @@ other options.
 `examples/linux/rust-app` is the smallest possible app: it opens the device,
 blinks an indicator LED a few times, and exits.
 
-## The launcher (reference appliance)
+## The launcher
 
-The generic `LINUX` image's app is the launcher (`examples/linux/launcher`).
-Build it as `LINUX.ELF` from the `launcher/` directory:
-
-    cargo deluge linux --out LINUX   # -> target/LINUX.ELF for /APPS/
-
-Copy `LINUX.ELF` to the card's `/APPS/`, and drop bare app binaries
-(built with `cargo deluge linux --bare` from each app's own directory) into
-`/LINUX/APPS/`. On boot the app-loader launches `LINUX.ELF`; the launcher
-lists `/LINUX/APPS/` on the OLED, the select encoder browses and launches, and
-SHIFT+TRIPLETS+LEARN (held ~1s) always returns to it.
-
-### On-device manual verification checklist
-
-Deploy `target/LINUX.ELF` to `/APPS/` and one or more bare apps to
-`/LINUX/APPS/`, boot it, and confirm:
-
-- The app list renders (title "APPS", rows for each `/LINUX/APPS/` binary),
-  and "NO APPS" shows when the folder is empty.
-- Select-encoder rotation moves the highlight; the label scrolls when it
-  overflows; the scrollbar appears with >3 apps.
-- Select-encoder click launches the highlighted app (it takes over the OLED).
-- Holding SHIFT+TRIPLETS+LEARN for ~1s kills the running app and returns to
-  the list, regardless of what the app is doing; a shorter hold does not.
-- A clean-exiting app returns silently; a crashing app shows the
-  `… CRASHED (sig)` toast briefly.
-- The OLED image is correct (not mirrored/inverted); a mirror within 8-pixel
-  groups points at the OLED bit order.
+The launcher that lists and runs `/LINUX/APPS/` now lives in
+[deluge-linux](https://github.com/FirestormAudio/deluge-linux): it is the app
+slot of the `platform` image (`LINUX.ELF` in each release). Drop bare
+app binaries (built with `cargo deluge linux --bare` from each app's own
+directory) into the card's `/LINUX/APPS/`. SHIFT+TRIPLETS+LEARN, held about a
+second, always returns to the list. See deluge-linux's
+[docs/launcher.md](https://github.com/FirestormAudio/deluge-linux/blob/main/docs/launcher.md).
 
 ## Snake (pad-grid bare app)
 
