@@ -6,11 +6,11 @@ Raw FFI bindings to `libdeluge`, the hardware library of the Deluge's Linux user
 ## Building
 
 The bindings are checked in (`src/bindings.rs`, generated for `armv7-unknown-linux-musleabihf`),
-so a build needs only `libdeluge.a`, from a `deluge-linux` release bundle's sysroot. The build
-script asks `pkg-config` for `deluge` first; failing that it looks under `DELUGE_SDK_ROOT` (the
-prefix holding `include/` and `lib/`, default `/usr/local`). `cargo deluge linux` sets
-`DELUGE_SDK_ROOT` for you from `DELUGE_BASE`. The crate links `libdeluge` statically and
-`libasound` dynamically, and exports the header directory to dependent build scripts as
+so a build needs only libdeluge, from a `deluge-linux` release bundle's sysroot. The build script
+looks under `DELUGE_SDK_ROOT` (the prefix holding `include/` and `lib/`) when it is set, then
+asks `pkg-config` for `deluge`, then tries `/usr/local`. `cargo deluge linux` sets
+`DELUGE_SDK_ROOT` for you from `DELUGE_BASE`. The crate links `libdeluge` statically when
+`libdeluge.a` is there (dynamically otherwise) and `libasound` dynamically, and exports the header directory to dependent build scripts as
 `DEP_DELUGE_INCLUDE`.
 
 | Feature | Effect |

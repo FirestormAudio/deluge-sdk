@@ -94,5 +94,6 @@ cargo test --target "$HOST" --manifest-path tools/cargo-deluge/Cargo.toml
 # libdeluge-sys builds from its checked-in bindings with no libdeluge present, as on docs.rs.
 DOCS_RS=1 cargo doc --no-deps --target armv7-unknown-linux-musleabihf \
   --manifest-path linux/libdeluge-sys/Cargo.toml --target-dir target/libdeluge-docs
+tools/test-libdeluge-sys-root.sh
 
 echo "==> All tests passed."

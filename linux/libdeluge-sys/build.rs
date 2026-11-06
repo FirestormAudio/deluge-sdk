@@ -1,6 +1,7 @@
-//! Find libdeluge and link it: through pkg-config (`deluge`) when it answers, otherwise under
-//! `DELUGE_SDK_ROOT` (default `/usr/local`). docs.rs has no libdeluge, so there the build only
-//! compiles the checked-in bindings.
+//! Find libdeluge and link it: under `DELUGE_SDK_ROOT` when it is set (`cargo deluge linux` points
+//! it at the bundle's sysroot), otherwise through pkg-config (`deluge`), otherwise under
+//! `/usr/local`. docs.rs has no libdeluge, so there the build only compiles the checked-in
+//! bindings.
 
 use std::path::PathBuf;
 
@@ -12,21 +13,20 @@ fn main() {
         return;
     }
 
-    let (include, lib_dirs) = match pkg_config::Config::new()
-        .cargo_metadata(false)
-        .env_metadata(true)
-        .probe("deluge")
-    {
-        Ok(lib) => (
-            lib.include_paths.first().cloned().unwrap_or_default(),
-            lib.link_paths,
-        ),
-        Err(_) => {
-            let root = PathBuf::from(
-                std::env::var("DELUGE_SDK_ROOT").unwrap_or_else(|_| "/usr/local".into()),
-            );
-            (root.join("include"), vec![root.join("lib")])
-        }
+    let under = |root: PathBuf| (root.join("include"), vec![root.join("lib")]);
+    let (include, lib_dirs) = match std::env::var_os("DELUGE_SDK_ROOT") {
+        Some(root) => under(PathBuf::from(root)),
+        None => match pkg_config::Config::new()
+            .cargo_metadata(false)
+            .env_metadata(true)
+            .probe("deluge")
+        {
+            Ok(lib) => (
+                lib.include_paths.first().cloned().unwrap_or_default(),
+                lib.link_paths,
+            ),
+            Err(_) => under(PathBuf::from("/usr/local")),
+        },
     };
 
     for dir in &lib_dirs {
@@ -38,7 +38,11 @@ fn main() {
             dir.join("libdeluge.a").display()
         );
     }
-    println!("cargo:rustc-link-lib=static=deluge");
+    // Static when an archive is there (the bundle ships `libdeluge.a`); a pkg-config install may
+    // have only the shared library.
+    let has_archive = lib_dirs.iter().any(|d| d.join("libdeluge.a").is_file());
+    let kind = if has_archive { "static" } else { "dylib" };
+    println!("cargo:rustc-link-lib={kind}=deluge");
     // The static archive's ALSA references are not resolved transitively.
     println!("cargo:rustc-link-lib=asound");
     println!("cargo:include={}", include.display());
