@@ -192,11 +192,44 @@ pub(crate) fn clock_out_stop() {
     KICK.signal(());
 }
 
-/// One pulse of `width`. The caller has checked the train is stopped.
+/// The gate, up while this lives: dropping it ends the pulse.
+struct PulseUp;
+
+impl PulseUp {
+    fn raise() -> Self {
+        gate_set(true);
+        Self
+    }
+}
+
+impl Drop for PulseUp {
+    fn drop(&mut self) {
+        gate_set(false);
+    }
+}
+
+/// One pulse of `width`, clamped as the device clamps it. The caller has checked the train is
+/// stopped. A pulse dropped before it ends still ends low, as the device's does.
 pub(crate) async fn clock_out_pulse(width: Duration) {
-    gate_set(true);
-    Timer::after(width).await;
-    gate_set(false);
+    let _up = PulseUp::raise();
+    Timer::after(pulse_width(width)).await;
+}
+
+/// The timing the train runs, or last ran, at.
+#[cfg(all(test, feature = "sim"))]
+pub(crate) fn current_timing() -> Timing {
+    shared().timing
+}
+
+/// A single pulse's width, clamped as the device clamps it: under a period of twice the width,
+/// itself clamped to [`MIN_PERIOD`]..=[`MAX_PERIOD`] first, so only a width out of range is
+/// logged.
+fn pulse_width(width: Duration) -> Duration {
+    let period = width
+        .checked_mul(2)
+        .unwrap_or(MAX_PERIOD)
+        .clamp(MIN_PERIOD, MAX_PERIOD);
+    clamped_timing(period, width).width
 }
 
 /// The train is running.
@@ -298,5 +331,16 @@ mod tests {
         let (t, clamped) = Timing::new(Duration::from_micros(10), Duration::from_micros(2));
         assert!(clamped);
         assert_eq!(t.period, ms(1));
+    }
+
+    #[test]
+    fn a_pulse_width_is_clamped_to_the_range_the_device_uses() {
+        assert_eq!(pulse_width(ms(5)), ms(5));
+        assert_eq!(
+            pulse_width(Duration::from_ticks(0)),
+            Duration::from_ticks(1)
+        );
+        let long = pulse_width(Duration::from_secs(5));
+        assert!(long < MAX_PERIOD, "{long:?}");
     }
 }

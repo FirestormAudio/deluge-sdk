@@ -119,7 +119,7 @@ impl ClockOut {
     }
 
     /// A handle on `channel` with no timing task, for tests, which have no executor.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "sim"))]
     fn unspawned(channel: u8) -> Self {
         crate::cv_gate::ensure_init();
         soft::bind(channel);
@@ -141,8 +141,10 @@ impl ClockOut {
         crate::plat::clock_out_start(period, self.pulse_width);
     }
 
-    /// Change the period. A running clock takes it at the next period boundary; a stopped one
-    /// keeps it and doesn't start.
+    /// Change the period. A running clock takes it at the next period boundary. A stopped one
+    /// doesn't start: the period is only kept, as the one a later
+    /// [`set_pulse_width`](ClockOut::set_pulse_width) retimes against once
+    /// [`start`](ClockOut::start), which takes its own period, has run.
     pub fn set_period(&mut self, period: Duration) {
         self.period = period;
         if self.is_running() {
@@ -211,11 +213,15 @@ impl Drop for ClockOut {
 
 #[cfg(all(test, feature = "sim"))]
 mod tests {
+    use std::sync::mpsc::{Sender, channel};
     use std::sync::{Mutex, PoisonError};
 
-    use embassy_time::Duration;
+    use embassy_executor::{Executor, Spawner};
+    use embassy_futures::select::{Either, select};
+    use embassy_time::{Duration, Timer};
 
     use super::ClockOut;
+    use super::soft::{self, Timing};
 
     /// The soft clock is one per process, so these tests take turns.
     static SERIAL: Mutex<()> = Mutex::new(());
@@ -276,5 +282,93 @@ mod tests {
         clk.set_period(Duration::from_millis(20));
         assert!(!clk.is_running());
         assert!(!gate(0));
+    }
+
+    /// Run `spawn`'s task on an executor of its own, in a thread of its own: a pulse awaits an
+    /// embassy `Timer`, which only an embassy executor's waker can wait on. The thread parks in
+    /// the executor once the task is done.
+    fn on_an_executor(spawn: impl FnOnce(Spawner) + Send + 'static) {
+        std::thread::spawn(move || {
+            let executor: &'static mut Executor = Box::leak(Box::new(Executor::new()));
+            executor.run(spawn)
+        });
+    }
+
+    /// Start a 500 ms pulse on `clk` and drop it 1 ms in. Returns whether the gate was up at that
+    /// moment. The long pulse keeps a slow test machine from ending it first.
+    async fn drop_a_pulse_mid_way(clk: &mut ClockOut, ch: u8) -> bool {
+        clk.set_pulse_width(Duration::from_millis(500));
+        let one_ms_in = async {
+            Timer::after_millis(1).await;
+            gate(ch)
+        };
+        match select(clk.pulse(), one_ms_in).await {
+            Either::First(()) => panic!("a 500 ms pulse ended within 1 ms"),
+            Either::Second(up) => up,
+        }
+    }
+
+    /// (gate up mid-pulse, gate after the pulse is dropped)
+    #[embassy_executor::task]
+    async fn a_pulse_dropped_mid_way(done: Sender<(bool, bool)>) {
+        let mut clk = clock_out(0);
+        let up = drop_a_pulse_mid_way(&mut clk, 0).await;
+        done.send((up, gate(0))).unwrap();
+    }
+
+    #[test]
+    fn dropping_a_pulse_mid_way_leaves_the_gate_low() {
+        let _turn = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        let (tx, rx) = channel();
+        on_an_executor(move |s| s.spawn(a_pulse_dropped_mid_way(tx).unwrap()));
+        let (up, after) = rx.recv().unwrap();
+        assert!(up, "the pulse was up");
+        assert!(
+            !after,
+            "the dropped pulse ends low, with the handle still alive"
+        );
+    }
+
+    /// (gate up mid-pulse, gate after the pulse and then the handle are dropped)
+    #[embassy_executor::task]
+    async fn a_clock_out_dropped_with_a_pending_pulse(done: Sender<(bool, bool)>) {
+        let mut clk = clock_out(1);
+        let up = drop_a_pulse_mid_way(&mut clk, 1).await;
+        drop(clk);
+        done.send((up, gate(1))).unwrap();
+    }
+
+    #[test]
+    fn dropping_a_clock_out_with_a_pending_pulse_leaves_the_gate_low() {
+        let _turn = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        let (tx, rx) = channel();
+        on_an_executor(move |s| s.spawn(a_clock_out_dropped_with_a_pending_pulse(tx).unwrap()));
+        let (up, after) = rx.recv().unwrap();
+        assert!(up, "the pulse was up");
+        assert!(!after);
+    }
+
+    #[test]
+    fn degenerate_periods_clamp_to_1_ms_and_2_s() {
+        let _turn = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut clk = clock_out(2);
+        for (period, clamped) in [
+            (ClockOut::period_from_bpm(0.0, 24), Duration::from_millis(1)),
+            (Duration::from_ticks(0), Duration::from_millis(1)),
+            (Duration::from_secs(10), Duration::from_secs(2)),
+            (Duration::from_secs(2), Duration::from_secs(2)),
+        ] {
+            clk.start(period);
+            let t: Timing = soft::current_timing();
+            assert_eq!(t.period, clamped, "start({period:?})");
+            assert!(t.width < t.period, "start({period:?})");
+            clk.set_period(period);
+            assert_eq!(
+                soft::current_timing().period,
+                clamped,
+                "set_period({period:?})"
+            );
+        }
+        clk.stop();
     }
 }
