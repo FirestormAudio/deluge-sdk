@@ -20,7 +20,8 @@ An app has full control of the hardware while it runs, so one that drives the HA
 can write to the SPI flash. Even then, the stock first-stage bootloader can reinstall the
 loader or any firmware from the SD card. For a unit that runs untrusted apps, a loader built
 with [bootloader write protection](app-loader.md#bootloader-write-protection) locks both
-bootloaders in the flash chip before it launches an app.
+bootloaders in the flash chip before it launches an app; reinstalling over it then needs the
+loader's `SSB UPDATE: ARM` step first (see below).
 
 ## Do I need a debug probe?
 
@@ -39,8 +40,20 @@ standing in for the SD card.
 
 Install it the way you installed the app loader: put the firmware's `.bin` on the SD card
 and hold SHIFT while powering on. The app loader and the SDK's normal workflows never change
-the first-stage bootloader, so this always works. See
+the first-stage bootloader, so with the default loader this always works. See
 [Installing the loader](app-loader.md#installing-the-loader).
+
+A loader built with the `flash-protect` feature write-protects the bootloader region, and that
+protection stays on across power cycles, so the first-stage bootloader can't write the new
+firmware until the loader lifts it:
+
+1. Hold LOAD while powering on to reach the boot menu.
+2. **`SETTINGS` → `SSB UPDATE: ARM`**, then `BACK`.
+3. Power-cycle. The loader clears the protection and shows `SSB UPDATE READY / POWER-CYCLE NOW`.
+4. Put the firmware's `.bin` on the SD card and hold SHIFT while powering on.
+
+Stock and Community firmware never set the protection again. See
+[Bootloader write protection](app-loader.md#bootloader-write-protection).
 
 ## Why nightly Rust?
 

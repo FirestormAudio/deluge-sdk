@@ -285,16 +285,30 @@ block-protect bits over the bottom 1 MB and locks them each time it launches an 
 the next power cycle, nothing the app runs can erase or overwrite either bootloader, by
 accident or otherwise. The boot menu itself always runs unlocked.
 
-To update the loader on a protected unit:
+The protection has two parts that behave differently:
+
+- **The region protection** (the block-protect bits) is non-volatile: it stays on across power
+  cycles, until `SSB UPDATE: ARM` clears it. The first-stage bootloader runs before the loader,
+  so it can't write a new second-stage image while it is on, whether that's a new loader or
+  stock or Community firmware.
+- **The lock** (the status register made read-only) lasts only until the next power cycle. The
+  loader sets it again each time it launches an app.
+
+To update the loader on a protected unit, or to install stock or Community firmware on it:
 
 1. **`SETTINGS` → `SSB UPDATE: ARM`**, then `BACK`.
 2. Power-cycle. The loader clears the protection, launches nothing, and shows
    `SSB UPDATE READY / POWER-CYCLE NOW`.
-3. Install the new loader as in [Installing the loader](#installing-the-loader).
+3. Install the new loader, or the firmware's `.bin`, as in
+   [Installing the loader](#installing-the-loader).
+
+Stock and Community firmware never set the protection again, so a unit returned to them stays
+unprotected.
 
 The protection recipe is written only for the three parts `FLASH INFO` can identify; on any
 other part the loader launches unlocked and logs why. Nothing the feature writes is permanent:
-a power cycle always clears the lock, and holding LOAD at power-on reaches the menu unlocked.
+a power cycle clears the lock, `SSB UPDATE: ARM` clears the region protection, holding LOAD at
+power-on reaches the menu unlocked, and a J-Link can clear the protection while the loader runs.
 
 The feature is off in the default build and in the CI image. To build it:
 
@@ -319,7 +333,9 @@ The loader is designed so you can always get back to a working state:
 - **Locking a unit down** — turn dev mode **off** so it will no longer accept
   USB uploads.
 - **Reinstalling the loader itself** — repeat
-  [Installing the loader](#installing-the-loader).
+  [Installing the loader](#installing-the-loader). On a loader built with `flash-protect`, run
+  `SSB UPDATE: ARM` first (see [Bootloader write protection](#bootloader-write-protection)); the
+  same goes for going back to stock or Community firmware.
 
 ---
 
