@@ -1,0 +1,26 @@
+[package]
+name = "libdeluge-sys"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["Katherine Whitlock <kate@skylinesynths.nyc>"]
+repository = "https://github.com/FirestormAudio/deluge-sdk"
+readme = "README.md"
+description = "Raw FFI bindings to libdeluge, the Deluge Linux userland's hardware library. Links libdeluge found through pkg-config or under DELUGE_SDK_ROOT."
+categories = ["external-ffi-bindings"]
+keywords = ["deluge", "ffi"]
+links = "deluge"
+build = "build.rs"
+include = ["src/**", "build.rs", "wrapper.h", "README.md", "LICENSE-*"]
+
+[features]
+## Regenerate the bindings from the installed headers with bindgen (needs libclang) instead of
+## using the checked-in `src/bindings.rs`.
+bindgen = ["dep:bindgen"]
+
+[build-dependencies]
+bindgen = { version = "0.70", optional = true }
+pkg-config = "0.3"
+
+[package.metadata.docs.rs]
+targets = ["armv7-unknown-linux-musleabihf"]
