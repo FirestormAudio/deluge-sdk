@@ -8,7 +8,7 @@
 //! applies at a period boundary.
 
 use core::cell::Cell;
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::Mutex;
@@ -16,7 +16,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer, with_deadline};
 
-use super::timing::{MAX_PERIOD, MIN_PERIOD};
+use super::timing::{ClampWarnings, Clamped, MAX_PERIOD, MIN_PERIOD};
 
 /// One period and pulse width of the train.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,8 +27,8 @@ pub(crate) struct Timing {
 
 impl Timing {
     /// `period` clamped to [`MIN_PERIOD`]..=[`MAX_PERIOD`] and `width` to one tick..=one tick
-    /// under the period, and whether either clamp changed a value.
-    pub(crate) fn new(period: Duration, width: Duration) -> (Self, bool) {
+    /// under the period, and which clamps changed a value.
+    pub(crate) fn new(period: Duration, width: Duration) -> (Self, Clamped) {
         let tick = Duration::from_ticks(1);
         let p = period.clamp(MIN_PERIOD, MAX_PERIOD);
         let w = width.clamp(tick, p - tick);
@@ -37,7 +37,10 @@ impl Timing {
                 period: p,
                 width: w,
             },
-            p != period || w != width,
+            Clamped {
+                period: p != period,
+                width: w != width,
+            },
         )
     }
 }
@@ -161,14 +164,20 @@ fn running_timing() -> Option<Timing> {
     s.running.then_some(s.timing)
 }
 
-/// `Timing::new`, logging the first clamp.
+/// `Timing::new`, logging the first period clamp and the first width clamp.
 fn clamped_timing(period: Duration, width: Duration) -> Timing {
-    static WARNED: AtomicBool = AtomicBool::new(false);
+    static WARNINGS: ClampWarnings = ClampWarnings::new();
     let (timing, clamped) = Timing::new(period, width);
-    if clamped && !WARNED.swap(true, Ordering::Relaxed) {
+    let warn = WARNINGS.first(clamped);
+    if warn.period {
         log::warn!(
-            "clock out: period {period:?} / width {width:?} is out of range, running at {:?} / {:?}",
-            timing.period,
+            "clock out: period {period:?} is out of range, running at {:?}",
+            timing.period
+        );
+    }
+    if warn.width {
+        log::warn!(
+            "clock out: pulse width {width:?} is out of range, running at {:?}",
             timing.width
         );
     }
@@ -382,10 +391,10 @@ mod tests {
     #[test]
     fn a_width_at_or_over_the_period_is_clamped_below_it() {
         let (t, clamped) = Timing::new(ms(10), ms(10));
-        assert!(clamped);
+        assert!(clamped.width && !clamped.period);
         assert!(t.width < t.period);
         let (t, clamped) = Timing::new(ms(10), ms(3));
-        assert!(!clamped);
+        assert_eq!(clamped, Clamped::default());
         assert_eq!(
             t,
             Timing {
@@ -398,7 +407,7 @@ mod tests {
     #[test]
     fn a_period_outside_the_range_is_clamped() {
         let (t, clamped) = Timing::new(Duration::from_micros(10), Duration::from_micros(2));
-        assert!(clamped);
+        assert!(clamped.period && !clamped.width);
         assert_eq!(t.period, ms(1));
     }
 

@@ -19,7 +19,7 @@ use embassy_time::{Duration, Instant};
 use embedded_hal::digital::{OutputPin, StatefulOutputPin};
 use rza1_hal::gpio::{Level, LevelWriter};
 
-use crate::clock::timing::{MAX_PERIOD, MIN_PERIOD, PulseTiming, pulse_timing};
+use crate::clock::timing::{ClampWarnings, MAX_PERIOD, MIN_PERIOD, PulseTiming, pulse_timing};
 
 /// Run `f` over every audio block, forever.
 pub(crate) async fn audio_run<F: FnMut(&mut [crate::audio::StereoFrame]) + Send + 'static>(
@@ -221,21 +221,30 @@ fn clock_out_gate() -> LevelWriter {
 }
 
 /// `period` and `width` as MTU2 channel 4's prescaler and compare values, logging the first
-/// clamp.
+/// period clamp and the first width clamp.
 fn clock_out_timing(period: Duration, width: Duration) -> PulseTiming {
-    static WARNED: AtomicBool = AtomicBool::new(false);
+    static WARNINGS: ClampWarnings = ClampWarnings::new();
+    let hz = deluge_bsp::system::CLOCKS.p0_hz();
     let (timing, clamped) = pulse_timing(
         period,
         width,
-        deluge_bsp::system::CLOCKS.p0_hz(),
+        hz,
         rza1_hal::mtu2::prescalers(4),
         u32::from(u16::MAX),
     );
-    if clamped && !WARNED.swap(true, Ordering::Relaxed) {
+    let warn = WARNINGS.first(clamped);
+    if warn.period {
         log::warn!(
-            "clock out: period {} us / width {} us is out of range, clamped",
+            "clock out: period {} us is out of range, running at {} us",
             period.as_micros(),
-            width.as_micros()
+            timing.period_time(hz).as_micros()
+        );
+    }
+    if warn.width {
+        log::warn!(
+            "clock out: pulse width {} us is out of range, running at {} us",
+            width.as_micros(),
+            timing.width_time(hz).as_micros()
         );
     }
     timing
