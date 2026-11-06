@@ -332,12 +332,13 @@ jacks.apply_speaker_mute();   // stock policy: amp off when HP/line-out present
 > `clock_out(ch)` pulses a V-trig gate output — don't also drive that channel
 > through `gate()`. The Deluge has gates 0–3; a higher channel panics.
 
-On the Deluge the clock's edges come from a hardware timer (MTU2 channel 4), so their timing
-doesn't depend on what the executor is doing. `set_period` and `set_pulse_width` take effect at
-the next period boundary, so a tempo change never gives a short or doubled pulse. Dropping the
-`ClockOut` stops the clock and leaves the gate low; `pulse()` while the clock runs returns at
-once. Periods are clamped to 1 ms–2 s. The Linux and simulator builds keep a software timer
-behind the same API.
+In bare-metal builds the clock's edges come from the MTU2 channel 4 timer, so their timing
+doesn't depend on what the executor is doing; native Linux and the simulator use a software
+loop. `set_period` and `set_pulse_width` take effect at the next period boundary, so a tempo
+change never gives a short or doubled pulse. Dropping the `ClockOut` stops the clock and leaves
+the gate low; `pulse()` while the clock runs returns at once, and a cancelled `pulse()` ends low
+at once. Starting a running clock begins a new period at once and cuts the current pulse.
+Periods are clamped to 1 ms–2 s.
 
 ### SD card — [`examples/baremetal/sd_demo`](../examples/baremetal/sd_demo)
 

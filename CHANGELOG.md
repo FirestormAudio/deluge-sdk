@@ -15,8 +15,8 @@ breaking changes.
 
 ### Changed
 
-- `ClockOut` is edged by the Deluge's MTU2 channel 4 timer, so its timing no longer depends on
-  the executor. Native Linux and the simulator keep a software loop behind the same API.
+- In bare-metal builds `ClockOut`'s edges come from the MTU2 channel 4 timer, so its timing no
+  longer depends on the executor; native Linux and the simulator use a software loop.
   Dropping a `ClockOut` stops the clock and leaves the gate low, and `pulse()` while the clock
   runs returns at once.
 - `Deluge::clock_out(ch)` panics up front for a gate channel of 4 or more; the Deluge has
