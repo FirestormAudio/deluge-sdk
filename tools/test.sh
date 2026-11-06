@@ -46,7 +46,7 @@ echo "==> rustfmt-clean (the workspace and the crates it excludes; rza1/ checks 
 cargo fmt --all -- --check
 for d in tools/cargo-deluge crates/deluge-simulator linux/libdeluge-sys \
   linux/libdeluge linux/deluge-linux-ui examples/linux/rust-app examples/linux/snake \
-  examples/linux/launcher examples/linux/terminal; do
+  examples/linux/terminal; do
   (cd "$d" && cargo fmt -- --check)
 done
 

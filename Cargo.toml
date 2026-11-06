@@ -61,7 +61,6 @@ exclude = [
   "linux/deluge-linux-ui",
   "examples/linux/rust-app",
   "examples/linux/snake",
-  "examples/linux/launcher",
   "examples/linux/terminal",
 ]
 resolver = "2"
