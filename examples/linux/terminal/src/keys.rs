@@ -3,10 +3,6 @@
 use deluge_linux_ui::controls;
 use deluge_linux_ui::deluge_grid_toolkit::KeyPress;
 
-/// Event kinds (mirror `include/deluge/input.h`).
-pub const EV_BUTTON: u8 = 1;
-pub const EV_ENCODER: u8 = 2;
-
 /// Bytes for a resolved keyboard key. `Shift` returns `None` (the caller toggles
 /// shift state instead of writing anything).
 pub fn keypress_bytes(k: KeyPress) -> Option<Vec<u8>> {

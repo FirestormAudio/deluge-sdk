@@ -6,16 +6,14 @@ mod render_pads;
 mod tick;
 mod ui;
 
-use deluge_hal_linux::{Deluge, Event};
 use deluge_linux_ui::{controls, OledTarget};
 use game::{Game, State};
+use libdeluge::{Deluge, Event, EventKind};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Instant;
 use tick::Ticker;
 
 // Event kinds (mirror deluge-linux / include/deluge/input.h).
-const EV_BUTTON: u8 = 1;
-const EV_ENCODER: u8 = 2;
 
 /// Seed the RNG from the monotonic clock (no `rand` crate).
 fn seed() -> u64 {
@@ -66,13 +64,13 @@ fn main() {
         let mut dirty = false;
         match rx.recv_timeout(ticker.wait(Instant::now())) {
             Ok(ev) => {
-                if ev.kind == EV_ENCODER
+                if ev.kind == EventKind::Encoder
                     && ev.id == controls::encoder::TEMPO
                     && game.state() == State::Playing
                 {
                     game.turn(ev.value);
                     dirty = true;
-                } else if ev.kind == EV_BUTTON
+                } else if ev.kind == EventKind::Button
                     && ev.id == controls::encoder_button::TEMPO
                     && ev.value == 1
                     && game.state() == State::GameOver

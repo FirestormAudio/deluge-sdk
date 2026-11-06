@@ -209,7 +209,7 @@ compile-proves all of them on the firmware target).
 | `crates/deluge-simulator`, `crates/deluge-panel-protocol` | | the desktop simulator and its wire protocol |
 | `crates/deluge-ui-toolkit`, `crates/deluge-grid-toolkit` | | OLED menu/text and pad-grid UI toolkits (GPL) |
 | `crates/deluge-fonts` | `deluge-fonts` | bitmap fonts for the toolkit (GPL) |
-| `linux/` | | the native Linux backend: `deluge-sys` (libdeluge FFI), `deluge-hal-linux`, `deluge-linux-ui` |
+| `linux/` | | the native Linux backend: `libdeluge-sys` (libdeluge FFI), `libdeluge`, `deluge-linux-ui` |
 | `firmwares/` | | standalone firmware images: the app-loader (second-stage bootloader), demo, controller, MSC |
 | `hw-tests/` | | single-purpose hardware bring-up / validation probes |
 | `examples/baremetal/`, `examples/linux/` | | SDK example apps for each backend |

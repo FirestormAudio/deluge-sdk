@@ -10,9 +10,9 @@ mod model;
 mod supervisor;
 mod ui;
 
-use deluge_hal_linux::{Deluge, Event};
 use deluge_linux_ui::{controls, OledTarget};
 use killwatch::KillWatch;
+use libdeluge::{Deluge, Event, EventKind};
 use model::{Model, Screen};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
@@ -22,8 +22,6 @@ const FRAME: Duration = Duration::from_millis(33);
 const HOLD_MS: u64 = 1000;
 
 // Event kinds (mirror deluge-linux / include/deluge/input.h).
-const EV_BUTTON: u8 = 1;
-const EV_ENCODER: u8 = 2;
 
 enum Msg {
     Input(Event),
@@ -75,7 +73,7 @@ fn main() {
         match rx.recv_timeout(FRAME) {
             Ok(Msg::Input(ev)) => {
                 let t = now_ms();
-                if ev.kind == EV_BUTTON {
+                if ev.kind == EventKind::Button {
                     let pressed = ev.value == 1;
                     // Track SHIFT for chords (SHIFT+SELECT → SETTINGS).
                     if ev.id == controls::button::SHIFT {
@@ -112,7 +110,7 @@ fn main() {
                             model.back();
                         }
                     }
-                } else if ev.kind == EV_ENCODER
+                } else if ev.kind == EventKind::Encoder
                     && ev.id == controls::encoder::SELECT
                     && model.is_browsing()
                 {

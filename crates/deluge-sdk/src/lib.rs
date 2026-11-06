@@ -880,7 +880,7 @@ pub mod __rt {
     /// Native Linux runtime.
     ///
     /// Unlike the sim runtime, there is no GUI competing for the main thread and
-    /// no in-memory panel bridge: `libdeluge` (via `deluge-hal-linux`) owns its
+    /// no in-memory panel bridge: `libdeluge` (via `libdeluge`) owns its
     /// own input/audio threads, so the app's `async fn main` runs directly on a
     /// std Embassy executor on the main thread.
     #[cfg(all(not(target_os = "none"), feature = "linux"))]
@@ -897,7 +897,7 @@ pub mod __rt {
             let _ =
                 env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
                     .try_init();
-            let dev = deluge_hal_linux::Deluge::open().expect("deluge_open failed");
+            let dev = libdeluge::Deluge::open().expect("deluge_open failed");
             crate::linux::init(dev);
             log::info!("libdeluge opened; linux backend running");
             setup();

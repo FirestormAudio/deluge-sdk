@@ -1,5 +1,5 @@
 //! `OledTarget`: an embedded-graphics `DrawTarget` over the Linux OLED
-//! framebuffer (`deluge_hal_linux::Deluge::oled_write`).
+//! framebuffer (`libdeluge::Deluge::oled_write`).
 //!
 //! The Linux `deluge-oled` fb is linear/row-major: 43 rows × 16 bytes, 1bpp,
 //! 128 px/row. Byte `y * 16 + x / 8`, bit `7 - (x % 8)` (MSB = leftmost pixel).
@@ -9,13 +9,13 @@
 //! This is the same layout the `deluge` SDK's Linux backend transposes into
 //! (`plat::linux::oled_flush`), which has been validated on hardware.
 
-use deluge_hal_linux::{Deluge, Error};
 use embedded_graphics::{
     draw_target::DrawTarget,
     geometry::{OriginDimensions, Size},
     pixelcolor::BinaryColor,
     Pixel,
 };
+use libdeluge::{Deluge, Error};
 
 pub const WIDTH: usize = 128;
 pub const HEIGHT: usize = 43;

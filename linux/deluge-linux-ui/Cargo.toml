@@ -7,7 +7,7 @@ publish = false
 description = "Bridge from deluge-linux's OLED framebuffer to the deluge-ui-toolkit (embedded-graphics)."
 
 [dependencies]
-deluge-hal-linux = { path = "../deluge-hal-linux" }
+libdeluge = { path = "../libdeluge" }
 embedded-graphics = "0.8"
 deluge-ui-toolkit = { path = "../../crates/deluge-ui-toolkit" }
 deluge-grid-toolkit = { path = "../../crates/deluge-grid-toolkit" }

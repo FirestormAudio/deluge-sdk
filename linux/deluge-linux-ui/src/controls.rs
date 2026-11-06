@@ -10,9 +10,9 @@
 //!   `Deluge::leds_indicator` **equals the button id**, so this module doubles
 //!   as the indicator-LED id list.
 //! - [`encoder_button`] — the six encoder shaft-clicks, also reported in the
-//!   button space (`kind == EV_BUTTON`).
+//!   button space (`kind == EventKind::Button`).
 //! - [`encoder`] — encoder *rotation* ids, a separate `0..=5` space
-//!   (`kind == EV_ENCODER`, `value` = signed detents).
+//!   (`kind == EventKind::Encoder`, `value` = signed detents).
 //! - [`knob`] — the two gold-knob indicator bars (the `col` argument to
 //!   `Deluge::leds_gold`).
 
@@ -56,7 +56,7 @@ pub mod button {
 }
 
 /// The six encoder shaft-click ids, reported by the PIC as button presses
-/// (`kind == EV_BUTTON`) in the same `0..=35` space as [`button`].
+/// (`kind == EventKind::Button`) in the same `0..=35` space as [`button`].
 pub mod encoder_button {
     pub const SCROLL_Y: u8 = 0;
     pub const SCROLL_X: u8 = 9;
@@ -66,7 +66,7 @@ pub mod encoder_button {
     pub const SELECT: u8 = 31;
 }
 
-/// Encoder *rotation* ids (`kind == EV_ENCODER`), a separate `0..=5` space.
+/// Encoder *rotation* ids (`kind == EventKind::Encoder`), a separate `0..=5` space.
 /// The event's `value` is the signed detent count.
 pub mod encoder {
     pub const SCROLL_X: u8 = 0;

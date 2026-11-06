@@ -7,7 +7,7 @@
 # it skips every crate whose version is already on crates.io, and when crates.io's limit on new
 # crate names stops it, it waits until the time crates.io gives and carries on.
 #
-# deluge-sys and deluge-hal-linux link libdeluge, so they are packaged without the build check
+# libdeluge-sys and libdeluge link libdeluge, so they are packaged without the build check
 # unless DELUGE_SDK_ROOT points at a prefix that has it.
 #
 # Usage: tools/publish-crates.sh [--publish]
@@ -43,7 +43,7 @@ trap 'rm -f "$patch"; git checkout -q -- "*Cargo.lock"' EXIT
     deluge-block-device-adapters:crates/block-device-adapters \
     deluge-panel-protocol:crates/deluge-panel-protocol \
     deluge-simulator:crates/deluge-simulator \
-    deluge-sys:linux/deluge-sys deluge-hal-linux:linux/deluge-hal-linux; do
+    libdeluge-sys:linux/libdeluge-sys libdeluge:linux/libdeluge; do
     echo "${entry%%:*} = { path = \"$root/${entry#*:}\" }"
   done
 } > "$patch"
@@ -125,8 +125,8 @@ if [ ${#mode[@]} -eq 0 ]; then
   publish deluge-block-device-adapters crates/block-device-adapters --target "$host"
   publish deluge-panel-protocol crates/deluge-panel-protocol --target "$host"
   publish deluge-simulator crates/deluge-simulator --target "$host"
-  publish deluge-sys linux/deluge-sys "${linux_verify[@]}"
-  publish deluge-hal-linux linux/deluge-hal-linux "${linux_verify[@]}"
+  publish libdeluge-sys linux/libdeluge-sys "${linux_verify[@]}"
+  publish libdeluge linux/libdeluge "${linux_verify[@]}"
   publish arm-dsp crates/arm-dsp "${sdk[@]}"
   publish deluge-fixedpoint crates/deluge-fixedpoint "${sdk[@]}"
   publish deluge-sdk-macros crates/deluge-sdk-macros "${sdk[@]}"
@@ -157,8 +157,8 @@ step "simulator"
 (cd crates/deluge-simulator && cargo publish "${mode[@]}" "${config[@]}" --target "$host")
 
 step "Linux backend"
-(cd linux/deluge-sys && cargo publish "${mode[@]}" "${linux_verify[@]}")
-(cd linux/deluge-hal-linux && cargo publish "${mode[@]}" "${config[@]}" "${linux_verify[@]}")
+(cd linux/libdeluge-sys && cargo publish "${mode[@]}" "${linux_verify[@]}")
+(cd linux/libdeluge && cargo publish "${mode[@]}" "${config[@]}" "${linux_verify[@]}")
 
 step "SDK"
 cargo publish "${mode[@]}" "${config[@]}" -Zbuild-std=core,alloc \

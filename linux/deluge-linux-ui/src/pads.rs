@@ -7,13 +7,10 @@
 
 use deluge_grid_toolkit::imode::PadInput;
 use deluge_grid_toolkit::{Grid, Pad, GRID_COLS, GRID_ROWS};
-use deluge_hal_linux::{Deluge, Error, Event};
+use libdeluge::{Deluge, Error, Event, EventKind};
 
 pub const STRIDE: usize = GRID_COLS * 3; // 54
 pub const PAD_FRAME_BYTES: usize = STRIDE * GRID_ROWS; // 432
-
-/// Event kind for pad events (mirrors `DELUGE_EV_PAD` in `include/deluge/input.h`).
-pub const EV_PAD: u8 = 0;
 
 pub struct PadTarget {
     buf: [u8; PAD_FRAME_BYTES],
@@ -62,7 +59,7 @@ impl Default for PadTarget {
 /// Convert a Deluge pad event into a `(Pad, pressed)` pair.
 /// Returns `None` for non-pad events or out-of-grid coordinates.
 pub fn pad_from_event(ev: &Event) -> Option<(Pad, bool)> {
-    if ev.kind != EV_PAD {
+    if ev.kind != EventKind::Pad {
         return None;
     }
     let (row, col) = (ev.y as usize, ev.x as usize);
@@ -118,7 +115,7 @@ mod tests {
         assert_eq!(&t.frame()[60..63], &[1, 2, 3]);
     }
 
-    fn ev(kind: u8, value: i16, x: u16, y: u16) -> Event {
+    fn ev(kind: EventKind, value: i16, x: u16, y: u16) -> Event {
         Event {
             kind,
             id: 0,
@@ -131,23 +128,26 @@ mod tests {
 
     #[test]
     fn pad_event_maps_to_pad_and_pressed() {
-        let (pad, pressed) = pad_from_event(&ev(EV_PAD, 1, 3, 2)).unwrap();
+        let (pad, pressed) = pad_from_event(&ev(EventKind::Pad, 1, 3, 2)).unwrap();
         assert_eq!(pad, Pad::new(2, 3));
         assert!(pressed);
     }
 
     #[test]
     fn release_has_pressed_false() {
-        assert_eq!(pad_from_event(&ev(EV_PAD, 0, 1, 1)).unwrap().1, false);
+        assert_eq!(
+            pad_from_event(&ev(EventKind::Pad, 0, 1, 1)).unwrap().1,
+            false
+        );
     }
 
     #[test]
     fn non_pad_event_is_none() {
-        assert!(pad_from_event(&ev(1, 1, 0, 0)).is_none());
+        assert!(pad_from_event(&ev(EventKind::Button, 1, 0, 0)).is_none());
     }
 
     #[test]
     fn out_of_grid_is_none() {
-        assert!(pad_from_event(&ev(EV_PAD, 1, 99, 0)).is_none());
+        assert!(pad_from_event(&ev(EventKind::Pad, 1, 99, 0)).is_none());
     }
 }

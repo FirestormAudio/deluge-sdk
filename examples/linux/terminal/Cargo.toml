@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
-deluge-hal-linux = { path = "../../../linux/deluge-hal-linux" }
+libdeluge = { path = "../../../linux/libdeluge" }
 deluge-linux-ui = { path = "../../../linux/deluge-linux-ui" }
 embedded-graphics = "0.8"
 vte = "0.15"

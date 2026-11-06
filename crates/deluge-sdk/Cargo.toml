@@ -78,7 +78,7 @@ critical-section = { version = "1", features = ["std"] }
 env_logger = "0.11"
 # The simulator's library only: its `cli` feature is the standalone binary's.
 deluge-simulator = { path = "../deluge-simulator", version = "0.1.0", optional = true, default-features = false, features = ["rack"] }
-deluge-hal-linux = { path = "../../linux/deluge-hal-linux", version = "0.1.0", optional = true }
+libdeluge = { path = "../../linux/libdeluge", version = "0.1.0", optional = true }
 # Linux backend: `sched_getscheduler`, to check the audio thread got SCHED_FIFO.
 libc = { version = "0.2", optional = true }
 
@@ -92,8 +92,8 @@ fault-blink = ["deluge-bsp/fault-blink"]
 ## Desktop simulator backend (`cargo deluge sim`): drives the in-process
 ## simulator panel (`deluge_simulator::link`) instead of real peripherals.
 sim = ["dep:deluge-simulator", "deluge-bsp/host-panel"]
-## Linux backend: drives the hardware through libdeluge (deluge-hal-linux).
-linux = ["dep:deluge-hal-linux", "dep:libc"]
+## Linux backend: drives the hardware through libdeluge (libdeluge).
+linux = ["dep:libdeluge", "dep:libc"]
 ## Register the on-chip SRAM heap (`deluge_bsp::heap`) as the global allocator, so
 ## `String`, `Vec` and `format!` work (the GPL `deluge-ui-toolkit` needs this).
 ## SDRAM stays reserved for explicit bulk buffers via `deluge::heap::SDRAM`.

@@ -31,8 +31,8 @@ tools/check-layering.sh
 
 echo "==> rustfmt-clean (the workspace and the crates it excludes; rza1/ checks its own)"
 cargo fmt --all -- --check
-for d in tools/cargo-deluge crates/deluge-simulator linux/deluge-sys \
-  linux/deluge-hal-linux linux/deluge-linux-ui examples/linux/rust-app examples/linux/snake \
+for d in tools/cargo-deluge crates/deluge-simulator linux/libdeluge-sys \
+  linux/libdeluge linux/deluge-linux-ui examples/linux/rust-app examples/linux/snake \
   examples/linux/launcher examples/linux/terminal; do
   (cd "$d" && cargo fmt -- --check)
 done
@@ -87,5 +87,8 @@ cargo test --target "$HOST" -p deluge-sdk --features sim
 cargo build --target "$HOST" --manifest-path crates/deluge-sdk/tests/host-app/Cargo.toml \
   --target-dir target/host-app
 cargo test --target "$HOST" --manifest-path tools/cargo-deluge/Cargo.toml
+# libdeluge-sys builds from its checked-in bindings with no libdeluge present, as on docs.rs.
+DOCS_RS=1 cargo doc --no-deps --target armv7-unknown-linux-musleabihf \
+  --manifest-path linux/libdeluge-sys/Cargo.toml --target-dir target/libdeluge-docs
 
 echo "==> All tests passed."

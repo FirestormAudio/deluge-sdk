@@ -6,10 +6,10 @@ mod pty;
 mod render;
 mod term;
 
-use deluge_hal_linux::{Deluge, Event};
 use deluge_linux_ui::deluge_grid_toolkit::imode::{GridUi, PadInput};
 use deluge_linux_ui::deluge_grid_toolkit::{KeyPress, KeyboardLayout, TextKeyboardComponent};
 use deluge_linux_ui::{pads, OledTarget, PadTarget};
+use libdeluge::{Deluge, Event, EventKind};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use term::Term;
@@ -148,7 +148,7 @@ fn main() {
                     }
                 }
             }
-            Msg::Input(ev) if ev.kind == keys::EV_BUTTON && ev.value == 1 => {
+            Msg::Input(ev) if ev.kind == EventKind::Button && ev.value == 1 => {
                 if ev.id == deluge_linux_ui::controls::button::SHIFT {
                     shift = !shift;
                     // reflect the new shift state on the pad keyboard immediately
@@ -165,7 +165,7 @@ fn main() {
                     let _ = session.pty.write_all(b);
                 }
             }
-            Msg::Input(ev) if ev.kind == keys::EV_ENCODER => {
+            Msg::Input(ev) if ev.kind == EventKind::Encoder => {
                 let b = keys::encoder_bytes(ev.id, ev.value);
                 if !b.is_empty() {
                     let _ = session.pty.write_all(&b);

@@ -1,4 +1,4 @@
-//! Native Linux backend ops (real `libdeluge`, via `deluge-hal-linux`).
+//! Native Linux backend ops (real `libdeluge`, via `libdeluge`).
 //!
 //! Implemented: audio, OLED, pads, indicator/gold/sync LEDs, pad brightness,
 //! input, jacks, CV/gate, DIN MIDI, trigger-clock input.
@@ -380,7 +380,7 @@ pub(crate) async fn midi_recv() -> u8 {
 // ── Trigger-clock input ───────────────────────────────────────────────────────
 //
 // The kernel exposes the clock-in pin as an input device ("Deluge Clock In"),
-// so edges arrive through libdeluge's input stream as `DELUGE_EV_CLOCK` (kind 3)
+// so edges arrive through libdeluge's input stream as `EventKind::Clock` (`DELUGE_EV_CLOCK`)
 // rather than needing an API of their own. `input_start_pump` routes them here
 // instead of dropping them. Mirrors the device backend's `trigger_clock`
 // statics, so the SDK-facing semantics are identical — only the edge source
@@ -548,18 +548,17 @@ pub(crate) fn input_start_pump(_spawner: Spawner) {
     if INPUT_PUMP_STARTED.swap(true, Ordering::Relaxed) {
         return;
     }
-    let cb = |ev: deluge_hal_linux::Event| {
-        // Kinds mirror `DELUGE_EV_*` in `deluge/input.h`: 0=pad, 1=button,
-        // 2=encoder, 3=clock. Clock is not an `Event` variant — it feeds the
+    let cb = |ev: libdeluge::Event| {
+        // Clock is not an `Event` variant — it feeds the
         // trigger-clock statics instead, which is how `clock_in_*` is served on
         // this backend (the kernel exposes the clock pin as an input device, so
         // edges arrive here rather than through an IRQ of our own).
-        if ev.kind == 3 {
+        if ev.kind == libdeluge::EventKind::Clock {
             clock_note_edge();
             return;
         }
         let mapped = match ev.kind {
-            0 => crate::input::Event::Pad {
+            libdeluge::EventKind::Pad => crate::input::Event::Pad {
                 x: ev.x as u8,
                 // Flip the row axis, as `pads_flush` does: libdeluge reports
                 // pads top-origin (the kernel's `pad_id_to_coord`), while the
@@ -569,11 +568,11 @@ pub(crate) fn input_start_pump(_spawner: Spawner) {
                     .clamp(0, deluge_bsp::rgb::ROWS as isize - 1) as u8,
                 pressed: ev.value != 0,
             },
-            1 => crate::input::Event::Button {
+            libdeluge::EventKind::Button => crate::input::Event::Button {
                 id: ev.id,
                 pressed: ev.value != 0,
             },
-            2 => crate::input::Event::Encoder {
+            libdeluge::EventKind::Encoder => crate::input::Event::Encoder {
                 index: ev.id,
                 delta: ev.value as i8,
             },

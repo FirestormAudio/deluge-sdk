@@ -31,8 +31,8 @@ Thumbs.db
 
 # The excluded libdeluge crates + linux examples are built ad-hoc against a
 # bundle (not workspace members); their Cargo.lock files are build artifacts.
-/linux/deluge-sys/Cargo.lock
-/linux/deluge-hal-linux/Cargo.lock
+/linux/libdeluge-sys/Cargo.lock
+/linux/libdeluge/Cargo.lock
 /linux/deluge-linux-ui/Cargo.lock
 examples/linux/*/Cargo.lock
 

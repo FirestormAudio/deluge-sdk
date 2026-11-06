@@ -1,6 +1,6 @@
 # Linux example apps
 
-Native `deluge-hal-linux` apps for the Deluge's Linux userland, built with
+Native `libdeluge` apps for the Deluge's Linux userland, built with
 `cargo deluge linux`. The build needs an unpacked `deluge-linux` release bundle
 (its musl toolchain, `libdeluge` sysroot and `deluge-mkimage` packer): point
 `DELUGE_BASE` at it.

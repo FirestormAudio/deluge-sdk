@@ -1,5 +1,5 @@
 [package]
-name = "deluge-hal-linux"
+name = "libdeluge"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
@@ -11,4 +11,7 @@ categories = ["hardware-support"]
 keywords = ["deluge", "linux", "audio", "midi"]
 
 [dependencies]
-deluge-sys = { path = "../deluge-sys", version = "0.1.0" }
+libdeluge-sys = { path = "../libdeluge-sys", version = "0.1.0" }
+
+[package.metadata.docs.rs]
+targets = ["armv7-unknown-linux-musleabihf"]
