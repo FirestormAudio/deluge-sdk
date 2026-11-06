@@ -262,7 +262,17 @@ pub(crate) fn clock_out_stop() {
 pub(crate) fn clock_out_running() -> bool {
     deluge_bsp::clock_out::running()
 }
-/// One pulse of `width`, its end timed by compare B.
+/// Ends a single shot still in flight when dropped, so a cancelled pulse ends low at once, as
+/// the soft backend's does.
+struct PulseInFlight;
+
+impl Drop for PulseInFlight {
+    fn drop(&mut self) {
+        deluge_bsp::clock_out::cancel_pulse();
+    }
+}
+
+/// One pulse of `width`, its end timed by compare B. Dropped before it ends, it ends at once.
 pub(crate) async fn clock_out_pulse(width: Duration) {
     // A period of twice the width picks the finest prescaler that holds the width. Clamped here,
     // so only a width out of range is logged.
@@ -272,6 +282,7 @@ pub(crate) async fn clock_out_pulse(width: Duration) {
         .clamp(MIN_PERIOD, MAX_PERIOD);
     let t = clock_out_timing(period, width);
     deluge_bsp::clock_out::pulse(clock_out_gate(), Level::Low, t.prescaler, t.width as u16);
+    let _in_flight = PulseInFlight;
     poll_fn(|cx| {
         deluge_bsp::clock_out::PULSE_DONE.register(cx.waker());
         if deluge_bsp::clock_out::pulse_pending() {

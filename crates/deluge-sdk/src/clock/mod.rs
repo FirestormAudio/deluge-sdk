@@ -4,8 +4,8 @@
 //! ([`deluge_bsp::trigger_clock`]) behind the SDK's take-once handle style.
 //! [`ClockOut`] has no dedicated jack — it pulses one of the V-trig gate outputs
 //! (see [`Gate`](crate::Gate)), so the channel it claims should not also be
-//! driven through `Gate`. On the device it is timed by MTU2 channel 4
-//! (`deluge_bsp::clock_out`).
+//! driven through `Gate`. In bare-metal builds it is timed by MTU2 channel 4
+//! (`deluge_bsp::clock_out`); native Linux and the simulator use a software loop.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -90,8 +90,9 @@ const DEFAULT_PERIOD: Duration = Duration::from_millis(500);
 /// [`stop`](ClockOut::stop), or until the handle is dropped; [`pulse`](ClockOut::pulse) emits one
 /// pulse by hand.
 ///
-/// On the device, MTU2 channel 4 times the train and its interrupts drive the gate, so the edges
-/// don't wait on the executor. On a host backend a task times it with `Timer`s.
+/// In bare-metal builds, MTU2 channel 4 times the train and its interrupts drive the gate, so the
+/// edges don't wait on the executor. Native Linux and the simulator time it with a software loop
+/// (a task and `Timer`s).
 ///
 /// ```ignore
 /// let mut clk = dlg.clock_out(0);
@@ -134,8 +135,11 @@ impl ClockOut {
         }
     }
 
-    /// Run a pulse every `period`. The first pulse starts now; a running clock restarts from
-    /// here.
+    /// Run a pulse every `period`. The first pulse starts now.
+    ///
+    /// Starting a running clock begins a new period at once and cuts the current pulse: the new
+    /// pulse starts now. In bare-metal builds the gate goes inactive for a few hundred
+    /// nanoseconds first.
     pub fn start(&mut self, period: Duration) {
         self.period = period;
         crate::plat::clock_out_start(period, self.pulse_width);
@@ -174,7 +178,8 @@ impl ClockOut {
 
     /// Emit one pulse: raise the gate for the pulse width, then drop it.
     ///
-    /// Returns at once, changing nothing, while the clock runs.
+    /// Returns at once, changing nothing, while the clock runs. A cancelled pulse (the future
+    /// dropped before it completes) ends low at once on every backend.
     pub async fn pulse(&mut self) {
         if self.is_running() {
             return;
@@ -313,7 +318,10 @@ mod tests {
     async fn a_pulse_dropped_mid_way(done: Sender<(bool, bool)>) {
         let mut clk = clock_out(0);
         let up = drop_a_pulse_mid_way(&mut clk, 0).await;
-        done.send((up, gate(0))).unwrap();
+        let after = gate(0);
+        // Dropped before the test hears back, so its stop can't reach the next test's clock.
+        drop(clk);
+        done.send((up, after)).unwrap();
     }
 
     #[test]
@@ -325,7 +333,7 @@ mod tests {
         assert!(up, "the pulse was up");
         assert!(
             !after,
-            "the dropped pulse ends low, with the handle still alive"
+            "the dropped pulse ends low at once, with the handle still alive"
         );
     }
 
