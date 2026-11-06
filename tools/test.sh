@@ -91,8 +91,9 @@ cargo test --target "$HOST" -p deluge-sdk --features sim
 cargo build --target "$HOST" --manifest-path crates/deluge-sdk/tests/host-app/Cargo.toml \
   --target-dir target/host-app
 cargo test --target "$HOST" --manifest-path tools/cargo-deluge/Cargo.toml
-# libdeluge-sys builds from its checked-in bindings with no libdeluge present, as on docs.rs.
-DOCS_RS=1 cargo doc --no-deps --target armv7-unknown-linux-musleabihf \
+# libdeluge-sys builds from its checked-in bindings with no libdeluge present, as on docs.rs. On
+# the host: CI has no musl target, and the bindings compile for either.
+DOCS_RS=1 cargo doc --no-deps --target "$HOST" \
   --manifest-path linux/libdeluge-sys/Cargo.toml --target-dir target/libdeluge-docs
 tools/test-libdeluge-sys-root.sh
 
