@@ -10,6 +10,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use embassy_time::{Duration, Instant, Timer};
 
+mod timing;
+
 // ── Clock input ─────────────────────────────────────────────────────────────
 
 /// Bring up the trigger-clock input's edge-counting IRQ once. No-op on the
