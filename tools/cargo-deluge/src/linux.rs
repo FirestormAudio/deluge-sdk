@@ -19,20 +19,43 @@ const LINUX_TARGET: &str = "armv7-unknown-linux-musleabihf";
 /// whole cross setup (linker, static CRT, the bundle's toolchain on `PATH`, the libdeluge
 /// sysroot), so it works from any app, whatever its own `.cargo/config.toml` says.
 fn build_command(base: &str, debug: bool, features: Option<&str>) -> Result<Command, String> {
+    build_command_with(base, debug, features, |k| std::env::var(k).ok())
+}
+
+/// [`build_command`], reading the environment through `var`.
+fn build_command_with(
+    base: &str,
+    debug: bool,
+    features: Option<&str>,
+    var: impl Fn(&str) -> Option<String>,
+) -> Result<Command, String> {
     let sysroot = format!("{base}/toolchain/arm-buildroot-linux-musleabihf/sysroot/usr");
     // The bundle's toolchain first, so `arm-linux-gcc` resolves.
-    let path = std::env::var_os("PATH").unwrap_or_default();
+    let path = var("PATH").unwrap_or_default();
     let path = std::env::join_paths(
         std::iter::once(PathBuf::from(format!("{base}/toolchain/bin")))
             .chain(std::env::split_paths(&path)),
     )
     .map_err(|e| format!("PATH: {e}"))?;
-    let rustflags_var = "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_RUSTFLAGS";
-    let rustflags = match std::env::var(rustflags_var) {
-        Ok(existing) if !existing.trim().is_empty() => {
-            format!("{existing} -C target-feature=+crt-static")
+    // The static CRT goes into whichever flags cargo will read: CARGO_ENCODED_RUSTFLAGS beats
+    // RUSTFLAGS, which beats the per-target variable. With `--target`, none of them reach build
+    // scripts.
+    const CRT_STATIC: &str = "-C target-feature=+crt-static";
+    let set = |k: &str| var(k).filter(|v| !v.trim().is_empty());
+    let (rustflags_var, rustflags) = if let Some(encoded) = set("CARGO_ENCODED_RUSTFLAGS") {
+        let static_crt = CRT_STATIC.replace(' ', "\x1f");
+        (
+            "CARGO_ENCODED_RUSTFLAGS",
+            format!("{encoded}\x1f{static_crt}"),
+        )
+    } else if let Some(flags) = set("RUSTFLAGS") {
+        ("RUSTFLAGS", format!("{flags} {CRT_STATIC}"))
+    } else {
+        let target_var = "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_RUSTFLAGS";
+        match set(target_var) {
+            Some(flags) => (target_var, format!("{flags} {CRT_STATIC}")),
+            None => (target_var, CRT_STATIC.to_string()),
         }
-        _ => "-C target-feature=+crt-static".to_string(),
     };
 
     let mut cmd = Command::new("cargo");
@@ -174,8 +197,36 @@ mod tests {
     }
 
     #[test]
+    fn crt_static_survives_a_global_rustflags() {
+        // Cargo ignores target.<triple>.rustflags when RUSTFLAGS is set, so the flag goes there.
+        let cmd = build_command_with("/b", false, None, |k| {
+            (k == "RUSTFLAGS").then(|| "-C target-cpu=native".to_string())
+        })
+        .unwrap();
+        assert_eq!(
+            env(&cmd, "RUSTFLAGS").as_deref(),
+            Some("-C target-cpu=native -C target-feature=+crt-static")
+        );
+    }
+
+    #[test]
+    fn crt_static_survives_encoded_rustflags() {
+        let cmd = build_command_with("/b", false, None, |k| {
+            (k == "CARGO_ENCODED_RUSTFLAGS").then(|| "-Cfoo\x1f-Cbar".to_string())
+        })
+        .unwrap();
+        assert_eq!(
+            env(&cmd, "CARGO_ENCODED_RUSTFLAGS").as_deref(),
+            Some("-Cfoo\x1f-Cbar\x1f-C\x1ftarget-feature=+crt-static")
+        );
+    }
+
+    #[test]
     fn linux_sets_the_cross_linker_for_the_child_cargo() {
-        let cmd = build_command("/bundle", false, Some("linux")).unwrap();
+        let cmd = build_command_with("/bundle", false, Some("linux"), |k| {
+            (k == "PATH").then(|| "/usr/bin".to_string())
+        })
+        .unwrap();
         assert_eq!(
             env(&cmd, "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER").as_deref(),
             Some("arm-linux-gcc")
