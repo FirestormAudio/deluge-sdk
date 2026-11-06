@@ -58,6 +58,9 @@ pub(crate) struct Soft {
     next: Edge,
     /// When the next edge is due.
     at: Instant,
+    /// The grid time of the period in progress's rise. The rise itself may have been made later;
+    /// the next is due on the grid at `rise + current.period`.
+    rise: Instant,
     /// The timing of the period in progress, taken at its rising edge.
     current: Timing,
 }
@@ -68,6 +71,7 @@ impl Soft {
         Self {
             next: Edge::Fall,
             at: at + timing.width,
+            rise: at,
             current: timing,
         }
     }
@@ -78,46 +82,71 @@ impl Soft {
     }
 }
 
+impl Timing {
+    /// Half the low time between a pulse and the next rise.
+    fn half_low(&self) -> Duration {
+        (self.period - self.width) / 2
+    }
+}
+
 /// Make the edge `state` has due at `now`, and schedule the one after it.
 ///
 /// `timing` is the train's timing now, or `None` once it has stopped. A rising edge takes it as
 /// the new period's timing, so a change lands at a boundary. Returns the gate's new level (`true`
 /// active), or `None` when the train has stopped: no rise is made, and the gate is left alone.
 ///
+/// Rises are due on a grid anchored at the start (re-anchored at each rise's grid time when the
+/// period changes), so the number of ticks never drifts. An edge made late by under a period still
+/// keeps the gate's pulses and lows usable, so gear downstream reads each one:
+///
+/// - A late rise keeps its full width, measured from when it was made, when that still leaves
+///   half the nominal low time before the next grid rise. Otherwise it ends half the low time
+///   before that rise, but never less than half the width after its own rise: a rise too late
+///   even for that keeps half its width, and the next rise waits as after a late fall.
+/// - A fall is always made, and the next rise follows at its grid time or half the nominal low
+///   time after the fall, whichever is later. A rise that waits this way is late on the grid, so
+///   its pulse is shortened as above, and the rise after it is back on the grid.
+///
 /// A due edge more than a period late (the task stalled, or picked a start up late) is not
 /// caught up edge by edge, which would burst near-zero-width pulses that gear downstream counts
-/// as ticks. The lost periods are skipped instead: the gate goes inactive, and the next rise is
-/// the first one past `now` on the grid of the period in progress.
+/// as ticks. A rise counts as late from its grid time, even when it was waiting for half a low.
+/// The lost periods are skipped instead: the gate goes inactive, and the next rise is the first
+/// one past `now` on the grid of the period in progress.
 pub(crate) fn step(state: &mut Soft, timing: Option<Timing>, now: Instant) -> Option<bool> {
     let period = state.current.period;
+    let next_rise = state.rise + period;
+    let due = match state.next {
+        Edge::Fall => state.at,
+        Edge::Rise => next_rise,
+    };
     if now
-        .checked_duration_since(state.at)
+        .checked_duration_since(due)
         .is_some_and(|late| late > period)
     {
         if state.next == Edge::Rise && timing.is_none() {
             return None;
         }
-        // The rise of the period in progress, or the one due.
-        let rise = match state.next {
-            Edge::Fall => state.at - state.current.width,
-            Edge::Rise => state.at,
-        };
-        let skipped = (now - rise).as_ticks() / period.as_ticks() + 1;
+        let skipped = (now - state.rise).as_ticks() / period.as_ticks();
+        state.rise += Duration::from_ticks(period.as_ticks() * skipped);
         state.next = Edge::Rise;
-        state.at = rise + Duration::from_ticks(period.as_ticks() * skipped);
+        state.at = state.rise + period;
         return Some(false);
     }
     match state.next {
         Edge::Fall => {
             state.next = Edge::Rise;
-            state.at += state.current.period - state.current.width;
+            state.at = next_rise.max(now + state.current.half_low());
             Some(false)
         }
         Edge::Rise => {
             let timing = timing?;
             state.current = timing;
+            state.rise = next_rise;
             state.next = Edge::Fall;
-            state.at += timing.width;
+            let after = next_rise + timing.period;
+            let half_width = (timing.width / 2).max(Duration::from_ticks(1));
+            let fall = (now + timing.width).min(after - timing.half_low());
+            state.at = fall.max(now + half_width);
             Some(true)
         }
     }
@@ -383,9 +412,98 @@ mod tests {
 
     #[test]
     fn a_wake_late_by_under_a_period_still_makes_every_edge() {
-        // 8 ms late for the fall: the rise at 10 is still made, at once.
+        // 8 ms late for the fall: the rise due at 10 waits half the low time (4 ms) after it.
         let rises = rises_after_a_stall(timing(10, 2), at(10), at(20));
-        assert_eq!(rises, [at(10), at(20)]);
+        assert_eq!(rises, [at(14), at(20)]);
+    }
+
+    /// Step `s` at `now`, returning the level made and the next wake-up.
+    fn step_at(s: &mut Soft, t: Timing, now: u64) -> (Option<bool>, Instant) {
+        let level = step(s, Some(t), at(now));
+        (level, s.wake())
+    }
+
+    #[test]
+    fn edges_on_time_stay_on_the_grid() {
+        let t = timing(10, 2);
+        let mut s = Soft::started(at(0), t);
+        for k in 0..5 {
+            assert_eq!(
+                step_at(&mut s, t, 10 * k + 2),
+                (Some(false), at(10 * k + 10))
+            );
+            assert_eq!(
+                step_at(&mut s, t, 10 * k + 10),
+                (Some(true), at(10 * k + 12))
+            );
+        }
+    }
+
+    #[test]
+    fn a_rise_late_by_more_than_the_width_keeps_its_width() {
+        // A 20 ms period with a 4 ms pulse: the nominal low is 16 ms, half of it 8.
+        let t = timing(20, 4);
+        let mut s = Soft::started(at(0), t);
+        assert_eq!(step_at(&mut s, t, 4), (Some(false), at(20)));
+        // 6 ms late: a full pulse to 30 still leaves 10 ms low before the rise at 40.
+        assert_eq!(step_at(&mut s, t, 26), (Some(true), at(30)));
+        assert_eq!(step_at(&mut s, t, 30), (Some(false), at(40)));
+        assert_eq!(step_at(&mut s, t, 40), (Some(true), at(44)));
+    }
+
+    #[test]
+    fn a_rise_too_late_for_its_full_width_ends_half_the_low_before_the_next_rise() {
+        let t = timing(20, 4);
+        let mut s = Soft::started(at(0), t);
+        step_at(&mut s, t, 4);
+        // 9 ms late: a full pulse would end at 33, leaving under 8 ms low before 40.
+        assert_eq!(step_at(&mut s, t, 29), (Some(true), at(32)));
+        assert_eq!(step_at(&mut s, t, 32), (Some(false), at(40)));
+        assert_eq!(step_at(&mut s, t, 40), (Some(true), at(44)));
+    }
+
+    #[test]
+    fn a_rise_too_late_for_half_its_width_keeps_half_and_the_next_rise_waits() {
+        let t = timing(20, 4);
+        let mut s = Soft::started(at(0), t);
+        step_at(&mut s, t, 4);
+        // 15 ms late: past 32, so the pulse keeps half its width, and the rise due at 40 waits
+        // half the low time after the fall.
+        assert_eq!(step_at(&mut s, t, 35), (Some(true), at(37)));
+        assert_eq!(step_at(&mut s, t, 37), (Some(false), at(45)));
+        // That rise is 5 ms late, and the train is back on the grid by the next one.
+        assert_eq!(step_at(&mut s, t, 45), (Some(true), at(49)));
+        assert_eq!(step_at(&mut s, t, 49), (Some(false), at(60)));
+    }
+
+    #[test]
+    fn a_fall_late_past_the_next_rise_still_falls_and_the_rise_waits_half_the_low() {
+        let t = timing(10, 2);
+        let mut s = Soft::started(at(0), t);
+        // Due at 2, made at 11, past the rise due at 10.
+        assert_eq!(step_at(&mut s, t, 11), (Some(false), at(15)));
+        // The late rise's pulse ends half the low time before the rise at 20.
+        assert_eq!(step_at(&mut s, t, 15), (Some(true), at(16)));
+        assert_eq!(step_at(&mut s, t, 16), (Some(false), at(20)));
+        assert_eq!(step_at(&mut s, t, 20), (Some(true), at(22)));
+    }
+
+    #[test]
+    fn a_late_fall_still_leaves_half_the_low() {
+        let t = timing(10, 2);
+        let mut s = Soft::started(at(0), t);
+        // Due at 2, made at 7: the rise at 10 would follow 3 ms after it, under half the low.
+        assert_eq!(step_at(&mut s, t, 7), (Some(false), at(11)));
+    }
+
+    #[test]
+    fn a_waiting_rise_more_than_a_period_past_its_grid_time_is_skipped() {
+        let t = timing(10, 2);
+        let mut s = Soft::started(at(0), t);
+        assert_eq!(step_at(&mut s, t, 11), (Some(false), at(15)));
+        // Woken at 21: 6 ms late for the wait, but 11 ms past the grid rise at 10.
+        assert_eq!(step_at(&mut s, t, 21), (Some(false), at(30)));
+        assert_eq!(step_at(&mut s, t, 30), (Some(true), at(32)));
     }
 
     #[test]
