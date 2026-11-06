@@ -28,8 +28,10 @@ fn ticks(us: u64, clock_hz: u32, prescaler: u16) -> u64 {
 /// The finest prescaler whose counter holds `period`.
 ///
 /// `period` is clamped to [`MIN_PERIOD`]..=[`MAX_PERIOD`] and `width` to
-/// 1..=`period - 1` ticks; the returned flag says whether either clamp changed
-/// a value. `period` in the result is the compare-A value: the counter clears
+/// 1..=(`PulseTiming::period` - 1) ticks: the longest width is the compare
+/// value minus one. A width under half a tick rounds up to one tick. The
+/// returned flag says whether either clamp changed a value, including that
+/// round-up. `period` in the result is the compare-A value: the counter clears
 /// on it, so it runs `period + 1` states. `max_count` is the largest compare
 /// value the timer holds. If no prescaler holds the period, the coarsest is
 /// used and `period` saturates at `max_count`.
@@ -48,7 +50,9 @@ pub(crate) fn pulse_timing(
     let clamped_period = period.clamp(MIN_PERIOD, MAX_PERIOD);
     let mut clamped = clamped_period != period;
     let period_us = clamped_period.as_micros();
-    let width_us = width.as_micros();
+    // Cap the width at the period before converting, so a huge width cannot
+    // overflow the tick arithmetic; the tick clamp below still reports it.
+    let width_us = width.min(clamped_period).as_micros();
 
     let last = *prescalers.last().expect("no prescalers");
     let prescaler = prescalers
@@ -95,7 +99,10 @@ mod tests {
     fn the_default_tempo_uses_the_finest_prescaler() {
         let (t, clamped) = timing(Duration::from_micros(20_833), Duration::from_millis(5));
         assert_eq!(t.prescaler, 16);
-        assert!(near(t.period + 1, 43_051), "{t:?}");
+        // 20_833 us at 33_064_062 / 16 Hz is 43_051.48 ticks: 43_051 states,
+        // so compare A is exactly 43_050.
+        assert_eq!(t.period, 43_050, "{t:?}");
+        // 5 ms is 10_332.52 ticks; rounding makes +-1 legitimate here.
         assert!(near(t.width, 10_333), "{t:?}");
         assert!(!clamped);
     }
@@ -104,6 +111,7 @@ mod tests {
     fn two_seconds_needs_1024() {
         let (t, clamped) = timing(Duration::from_secs(2), Duration::from_millis(5));
         assert_eq!(t.prescaler, 1024);
+        // 64_578.25 ticks; rounding makes +-1 legitimate here.
         assert!(near(t.period + 1, 64_578), "{t:?}");
         assert!(!clamped);
     }
@@ -133,8 +141,16 @@ mod tests {
 
     #[test]
     fn a_width_below_one_tick_is_one_tick() {
-        let (t, _) = timing(Duration::from_secs(2), Duration::from_micros(1));
+        let (t, clamped) = timing(Duration::from_secs(2), Duration::from_micros(1));
         assert_eq!(t.width, 1);
+        assert!(clamped);
+    }
+
+    #[test]
+    fn a_huge_width_clamps_to_the_period() {
+        let (t, clamped) = timing(Duration::from_micros(20_833), Duration::MAX);
+        assert_eq!(t.width, t.period - 1);
+        assert!(clamped);
     }
 
     #[test]
