@@ -75,12 +75,35 @@ impl Soft {
     }
 }
 
-/// Make the edge `state` has due, and schedule the one after it.
+/// Make the edge `state` has due at `now`, and schedule the one after it.
 ///
 /// `timing` is the train's timing now, or `None` once it has stopped. A rising edge takes it as
 /// the new period's timing, so a change lands at a boundary. Returns the gate's new level (`true`
 /// active), or `None` when the train has stopped: no rise is made, and the gate is left alone.
-pub(crate) fn step(state: &mut Soft, timing: Option<Timing>) -> Option<bool> {
+///
+/// A due edge more than a period late (the task stalled, or picked a start up late) is not
+/// caught up edge by edge, which would burst near-zero-width pulses that gear downstream counts
+/// as ticks. The lost periods are skipped instead: the gate goes inactive, and the next rise is
+/// the first one past `now` on the grid of the period in progress.
+pub(crate) fn step(state: &mut Soft, timing: Option<Timing>, now: Instant) -> Option<bool> {
+    let period = state.current.period;
+    if now
+        .checked_duration_since(state.at)
+        .is_some_and(|late| late > period)
+    {
+        if state.next == Edge::Rise && timing.is_none() {
+            return None;
+        }
+        // The rise of the period in progress, or the one due.
+        let rise = match state.next {
+            Edge::Fall => state.at - state.current.width,
+            Edge::Rise => state.at,
+        };
+        let skipped = (now - rise).as_ticks() / period.as_ticks() + 1;
+        state.next = Edge::Rise;
+        state.at = rise + Duration::from_ticks(period.as_ticks() * skipped);
+        return Some(false);
+    }
     match state.next {
         Edge::Fall => {
             state.next = Edge::Rise;
@@ -209,7 +232,7 @@ impl Drop for PulseUp {
 }
 
 /// One pulse of `width`, clamped as the device clamps it. The caller has checked the train is
-/// stopped. A pulse dropped before it ends still ends low, as the device's does.
+/// stopped. A pulse dropped before it ends still ends low at once, as the bare-metal one does.
 pub(crate) async fn clock_out_pulse(width: Duration) {
     let _up = PulseUp::raise();
     Timer::after(pulse_width(width)).await;
@@ -254,7 +277,7 @@ async fn soft_clock() -> ! {
             let s = shared();
             state = s.running.then(|| Soft::started(s.started, s.timing));
         } else if let Some(s) = state.as_mut() {
-            match step(s, running_timing()) {
+            match step(s, running_timing(), Instant::now()) {
                 Some(on) => gate_set(on),
                 None => state = None,
             }
@@ -282,9 +305,9 @@ mod tests {
     fn a_started_train_falls_after_the_width_and_rises_after_the_period() {
         let mut s = Soft::started(at(100), timing(10, 2));
         assert_eq!(s.wake(), at(102));
-        assert_eq!(step(&mut s, Some(timing(10, 2))), Some(false));
+        assert_eq!(step(&mut s, Some(timing(10, 2)), at(102)), Some(false));
         assert_eq!(s.wake(), at(110));
-        assert_eq!(step(&mut s, Some(timing(10, 2))), Some(true));
+        assert_eq!(step(&mut s, Some(timing(10, 2)), at(110)), Some(true));
         assert_eq!(s.wake(), at(112));
     }
 
@@ -296,7 +319,7 @@ mod tests {
         let new = Some(timing(5, 2));
         for _ in 0..4 {
             let now = s.wake();
-            if step(&mut s, new) == Some(true) {
+            if step(&mut s, new, now) == Some(true) {
                 rises.push(now);
             }
         }
@@ -306,8 +329,54 @@ mod tests {
     #[test]
     fn a_stopped_train_leaves_the_gate_alone_at_its_next_rise() {
         let mut s = Soft::started(at(0), timing(10, 2));
-        assert_eq!(step(&mut s, None), Some(false), "the pulse in flight ends");
-        assert_eq!(step(&mut s, None), None, "no rise once stopped");
+        assert_eq!(
+            step(&mut s, None, at(2)),
+            Some(false),
+            "the pulse in flight ends"
+        );
+        assert_eq!(step(&mut s, None, at(10)), None, "no rise once stopped");
+    }
+
+    /// The rises a train started at 0 makes up to `until`, when the task makes no edge before
+    /// `stalled_until` and then catches up at each wake-up.
+    fn rises_after_a_stall(t: Timing, stalled_until: Instant, until: Instant) -> Vec<Instant> {
+        let mut rises = vec![];
+        let mut s = Soft::started(at(0), t);
+        while s.wake() <= until {
+            let now = s.wake().max(stalled_until);
+            if step(&mut s, Some(t), now) == Some(true) {
+                rises.push(now);
+            }
+        }
+        rises
+    }
+
+    #[test]
+    fn a_stall_of_three_and_a_half_periods_gives_one_rise_on_the_grid() {
+        // Due to fall at 2 ms, the task wakes at 37: the edges at 2..=30 are lost, not burst.
+        let rises = rises_after_a_stall(timing(10, 2), at(37), at(40));
+        assert_eq!(rises, [at(40)]);
+    }
+
+    #[test]
+    fn a_stall_ends_the_pulse_in_flight_and_rises_on_the_grid() {
+        let mut s = Soft::started(at(0), timing(10, 2));
+        assert_eq!(step(&mut s, Some(timing(10, 2)), at(37)), Some(false));
+        assert_eq!(s.wake(), at(40));
+        // Late for a rise, by more than a period: no rise until the grid's next.
+        let mut s = Soft::started(at(0), timing(10, 2));
+        step(&mut s, Some(timing(10, 2)), at(2));
+        assert_eq!(step(&mut s, Some(timing(10, 2)), at(25)), Some(false));
+        assert_eq!(s.wake(), at(30));
+        assert_eq!(step(&mut s, Some(timing(10, 2)), at(30)), Some(true));
+        assert_eq!(s.wake(), at(32));
+    }
+
+    #[test]
+    fn a_wake_late_by_under_a_period_still_makes_every_edge() {
+        // 8 ms late for the fall: the rise at 10 is still made, at once.
+        let rises = rises_after_a_stall(timing(10, 2), at(10), at(20));
+        assert_eq!(rises, [at(10), at(20)]);
     }
 
     #[test]
