@@ -7,6 +7,22 @@ breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- `ClockOut::start`, `set_period`, `stop` and `is_running`. `set_period` and `set_pulse_width`
+  take effect at the next period boundary, so a tempo change never gives a short or doubled
+  pulse. Periods are clamped to 1 ms–2 s and logged once at `warn`.
+
+### Changed
+
+- `ClockOut` is edged by the Deluge's MTU2 channel 4 timer, so its timing no longer depends on
+  the executor. Native Linux and the simulator keep a software loop behind the same API.
+  Dropping a `ClockOut` stops the clock and leaves the gate low, and `pulse()` while the clock
+  runs returns at once.
+- `Deluge::clock_out(ch)` panics up front for a gate channel of 4 or more; the Deluge has
+  gates 0–3.
+- The `clock_jacks` example free-runs a 24 ppqn clock and switches its tempo on PLAY.
+
 ## [0.1.0] - 2026-11-05
 
 The first developer preview of the Deluge SDK. The API is not stable yet: until 1.0, a minor

@@ -318,8 +318,11 @@ gate.set(0, true);
 let mut clk_in = dlg.clock_in();
 if let Some(dt) = clk_in.tick().await { /* dt = interval since last pulse */ }
 
-let mut clk_out = dlg.clock_out(0);                 // pulses a gate channel
-clk_out.run(ClockOut::period_from_bpm(120.0, 24)).await;  // free-run forever
+let mut clk_out = dlg.clock_out(0);                 // pulses gate channel 0 (gates 0-3)
+clk_out.start(ClockOut::period_from_bpm(120.0, 24)); // first edge now, then every period
+clk_out.set_period(ClockOut::period_from_bpm(140.0, 24)); // applied at the next boundary
+clk_out.stop();                                      // gate low; also happens on drop
+// or: clk_out.run(period).await;                    // start, then never return
 
 let mut jacks = dlg.jacks();
 if jacks.headphone() { /* ... */ }
@@ -327,7 +330,14 @@ jacks.apply_speaker_mute();   // stock policy: amp off when HP/line-out present
 ```
 
 > `clock_out(ch)` pulses a V-trig gate output — don't also drive that channel
-> through `gate()`.
+> through `gate()`. The Deluge has gates 0–3; a higher channel panics.
+
+On the Deluge the clock's edges come from a hardware timer (MTU2 channel 4), so their timing
+doesn't depend on what the executor is doing. `set_period` and `set_pulse_width` take effect at
+the next period boundary, so a tempo change never gives a short or doubled pulse. Dropping the
+`ClockOut` stops the clock and leaves the gate low; `pulse()` while the clock runs returns at
+once. Periods are clamped to 1 ms–2 s. The Linux and simulator builds keep a software timer
+behind the same API.
 
 ### SD card — [`examples/baremetal/sd_demo`](../examples/baremetal/sd_demo)
 
