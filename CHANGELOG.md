@@ -7,6 +7,14 @@ breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- `usb_classes::midi`: the MIDI 2.0 alternate setting works on Linux. The Group Terminal Block
+  descriptors now answer the standard `GET_DESCRIPTOR` (0x26 << 8 | alternate) the USB MIDI 2.0
+  spec defines, instead of a class request no host sends, so Linux no longer gives up with
+  "Failed to parse GTB"; and the block declares MIDI 2.0 (`bMIDIProtocol` 0x11), not MIDI 1.0
+  with timestamps (0x02).
+
 ### Added
 
 - `usb_classes::midi` and `usb_classes::midi_packets` can run more than one USB-MIDI device:
