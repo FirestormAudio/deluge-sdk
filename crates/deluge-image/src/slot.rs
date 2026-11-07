@@ -7,9 +7,10 @@
 //!
 //! ## Slot layout
 //!
-//! Slot A is flash `0x010000`, slot B `0x080000`, each [`SLOT_LEN`] long. The
-//! first [`HEADER_LEN`] bytes are the header page; the body (an XIP image linked
-//! to run at slot + `0x100`) follows it.
+//! On the Deluge, slot A is flash `0x010000`, slot B `0x080000`, each [`SLOT_LEN`]
+//! long ([`CLASSIC`]); another board passes its own [`SlotLayout`] to the `_with`
+//! functions. The first [`HEADER_LEN`] bytes are the header page; the body (an XIP
+//! image linked to run at slot + `0x100`) follows it.
 //!
 //! ## Header page (all fields little-endian; every other byte is `0xFF`)
 //!
@@ -17,7 +18,7 @@
 //! |--------|----------------|--------------------------------------------------------------|
 //! | `0x00` | `magic` u32    | [`MAGIC`] (`b"DSLT"`)                                        |
 //! | `0x04` | `version` u16  | [`VERSION`]                                                  |
-//! | `0x06` | `variant` u16  | [`Variant`]: `0` OLED, `1` 7SEG                              |
+//! | `0x06` | `variant` u16  | the variant code: `0` OLED, `1` 7SEG Deluge; see [`VARIANT_OLED`] |
 //! | `0x08` | `sequence` u32 | higher is newer                                              |
 //! | `0x0C` | `body_len` u32 | `1..=MAX_BODY_LEN`                                           |
 //! | `0x10` | `body_crc` u32 | [`crc32`] of the body                                        |
@@ -53,6 +54,37 @@ pub const SLOT_B_OFFSET: u32 = 0x08_0000;
 pub const SLOT_LEN: u32 = 0x7_0000;
 /// The longest body that fits in a slot after its header page.
 pub const MAX_BODY_LEN: u32 = SLOT_LEN - HEADER_LEN as u32;
+
+/// Where a board's two boot slots lie in its flash. The header format is the same on every
+/// board; the geometry is the board's, frozen with its stage-0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SlotLayout {
+    /// Flash offsets of slots A and B.
+    pub slot_offsets: [u32; 2],
+    /// Length of each slot, header page included.
+    pub slot_len: u32,
+}
+
+impl SlotLayout {
+    /// The longest body that fits in a slot after its header page.
+    pub const fn max_body_len(self) -> u32 {
+        self.slot_len - HEADER_LEN as u32
+    }
+}
+
+/// The Deluge's slots: A at [`SLOT_A_OFFSET`], B at [`SLOT_B_OFFSET`], [`SLOT_LEN`] each.
+pub const CLASSIC: SlotLayout = SlotLayout {
+    slot_offsets: [SLOT_A_OFFSET, SLOT_B_OFFSET],
+    slot_len: SLOT_LEN,
+};
+
+/// Variant codes: which build a slot carries. `0` and `1` are the Deluge's front panels; another
+/// board documents its code where its own stage-0 lives. A stage-0 accepts only its own codes.
+pub const VARIANT_OLED: u16 = 0;
+/// The seven-segment Deluge.
+pub const VARIANT_SEVEN_SEG: u16 = 1;
+/// The codes the Deluge's stage-0 accepts.
+const CLASSIC_VARIANTS: &[u16] = &[VARIANT_OLED, VARIANT_SEVEN_SEG];
 /// The confirm word of a slot that has not yet confirmed a good boot (erased flash).
 pub const CONFIRM_PENDING: u32 = 0xFFFF_FFFF;
 /// The confirm word of a slot that has booted and confirmed itself (`b"MFNC"` LE).
@@ -66,20 +98,28 @@ pub const BOOT_INFO_TAG: u32 = 0x5330_0000;
 const CONFIRM_OFFSET: usize = 0xFC;
 const HEADER_CRC_OFFSET: usize = 0xF8;
 
-/// Which front panel the slot's image is built for.
+/// Which front panel a Deluge slot's image is built for: the Deluge's variant codes by name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum Variant {
     /// The OLED Deluge.
-    Oled = 0,
+    Oled = VARIANT_OLED,
     /// The seven-segment Deluge.
-    SevenSeg = 1,
+    SevenSeg = VARIANT_SEVEN_SEG,
+}
+
+impl Variant {
+    /// Its variant code.
+    pub const fn code(self) -> u16 {
+        self as u16
+    }
 }
 
 /// A parsed header that passed every check [`parse`] makes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SlotHeader {
-    pub variant: Variant,
+    /// The variant code, one the caller accepted.
+    pub variant: u16,
     pub sequence: u32,
     pub body_len: u32,
     pub body_crc: u32,
@@ -98,7 +138,7 @@ pub enum SlotError {
     BadVersion,
     /// The header CRC does not match: a torn or corrupted page.
     HeaderCrc,
-    /// A variant number that is not a [`Variant`].
+    /// A variant code the caller doesn't accept.
     BadVariant,
     /// `body_len` is zero or does not fit in the slot.
     BodyLen,
@@ -132,8 +172,8 @@ fn half(page: &[u8], at: usize) -> u16 {
     u16::from_le_bytes([page[at], page[at + 1]])
 }
 
-fn check_body_len(body_len: u32) -> Result<(), SlotError> {
-    if body_len == 0 || body_len > MAX_BODY_LEN {
+fn check_body_len(body_len: u32, layout: SlotLayout) -> Result<(), SlotError> {
+    if body_len == 0 || body_len > layout.max_body_len() {
         return Err(SlotError::BodyLen);
     }
     Ok(())
@@ -154,6 +194,16 @@ fn check_entry(entry_offset: u32, body_len: u32) -> Result<(), SlotError> {
 /// `page` must be at least [`HEADER_LEN`] bytes; a longer slice (a whole slot)
 /// is fine and only its first page is read.
 pub fn parse(page: &[u8]) -> Result<SlotHeader, SlotError> {
+    parse_with(page, CLASSIC, CLASSIC_VARIANTS)
+}
+
+/// [`parse`] for a board with its own slot `layout`, accepting only the variant codes in
+/// `accepts`.
+pub fn parse_with(
+    page: &[u8],
+    layout: SlotLayout,
+    accepts: &[u16],
+) -> Result<SlotHeader, SlotError> {
     if page.len() < HEADER_LEN {
         return Err(SlotError::Truncated);
     }
@@ -166,13 +216,12 @@ pub fn parse(page: &[u8]) -> Result<SlotHeader, SlotError> {
     if half(page, 0x04) != VERSION {
         return Err(SlotError::BadVersion);
     }
-    let variant = match half(page, 0x06) {
-        0 => Variant::Oled,
-        1 => Variant::SevenSeg,
-        _ => return Err(SlotError::BadVariant),
-    };
+    let variant = half(page, 0x06);
+    if !accepts.contains(&variant) {
+        return Err(SlotError::BadVariant);
+    }
     let body_len = word(page, 0x0C);
-    check_body_len(body_len)?;
+    check_body_len(body_len, layout)?;
     let entry_offset = word(page, 0x14);
     check_entry(entry_offset, body_len)?;
     Ok(SlotHeader {
@@ -190,8 +239,17 @@ pub fn parse(page: &[u8]) -> Result<SlotHeader, SlotError> {
 /// `slot` starts at the header page and may run past the body (a whole slot
 /// read through the XIP window); only `HEADER_LEN + body_len` bytes are read.
 pub fn validate(slot: &[u8]) -> Result<SlotHeader, SlotError> {
-    let header = parse(slot)?;
-    // `body_len <= MAX_BODY_LEN` (checked by `parse`), so this cannot overflow.
+    validate_with(slot, CLASSIC, CLASSIC_VARIANTS)
+}
+
+/// [`validate`] for a board with its own slot `layout` and variant codes (see [`parse_with`]).
+pub fn validate_with(
+    slot: &[u8],
+    layout: SlotLayout,
+    accepts: &[u16],
+) -> Result<SlotHeader, SlotError> {
+    let header = parse_with(slot, layout, accepts)?;
+    // `body_len <= layout.max_body_len()` (checked by `parse_with`), so this cannot overflow.
     let end = HEADER_LEN + header.body_len as usize;
     let body = slot.get(HEADER_LEN..end).ok_or(SlotError::Truncated)?;
     if crc32(body) != header.body_crc {
@@ -208,13 +266,24 @@ pub fn encode_header(
     sequence: u32,
     entry_offset: u32,
 ) -> Result<[u8; HEADER_LEN], SlotError> {
+    encode_header_with(body, variant.code(), sequence, entry_offset, CLASSIC)
+}
+
+/// [`encode_header`] for a board with its own slot `layout` and variant code.
+pub fn encode_header_with(
+    body: &[u8],
+    variant: u16,
+    sequence: u32,
+    entry_offset: u32,
+    layout: SlotLayout,
+) -> Result<[u8; HEADER_LEN], SlotError> {
     let body_len = u32::try_from(body.len()).map_err(|_| SlotError::BodyLen)?;
-    check_body_len(body_len)?;
+    check_body_len(body_len, layout)?;
     check_entry(entry_offset, body_len)?;
     let mut page = [0xFF; HEADER_LEN];
     page[0x00..0x04].copy_from_slice(&MAGIC.to_le_bytes());
     page[0x04..0x06].copy_from_slice(&VERSION.to_le_bytes());
-    page[0x06..0x08].copy_from_slice(&(variant as u16).to_le_bytes());
+    page[0x06..0x08].copy_from_slice(&variant.to_le_bytes());
     page[0x08..0x0C].copy_from_slice(&sequence.to_le_bytes());
     page[0x0C..0x10].copy_from_slice(&body_len.to_le_bytes());
     page[0x10..0x14].copy_from_slice(&crc32(body).to_le_bytes());
@@ -254,7 +323,7 @@ mod tests {
         assert_eq!(
             validate(&image(BODY)),
             Ok(SlotHeader {
-                variant: Variant::Oled,
+                variant: VARIANT_OLED,
                 sequence: 7,
                 body_len: 4,
                 body_crc: crc32(BODY),
@@ -262,6 +331,66 @@ mod tests {
                 confirmed: false,
             })
         );
+    }
+
+    #[test]
+    fn classic_images_parse_as_before() {
+        let img = image(BODY);
+        let classic = parse_with(&img, CLASSIC, &[VARIANT_OLED, VARIANT_SEVEN_SEG]);
+        assert_eq!(parse(&img), classic);
+        assert_eq!(validate(&img), validate_with(&img, CLASSIC, &[0, 1]));
+        assert_eq!(CLASSIC.slot_offsets, [SLOT_A_OFFSET, SLOT_B_OFFSET]);
+        assert_eq!(CLASSIC.slot_len, SLOT_LEN);
+        assert_eq!(CLASSIC.max_body_len(), MAX_BODY_LEN);
+    }
+
+    #[test]
+    fn another_layouts_bound_applies() {
+        let small = SlotLayout {
+            slot_offsets: [0x1000, 0x2000],
+            slot_len: 0x1000,
+        };
+        let body = [0u8; 0x1000 - HEADER_LEN + 4];
+        assert_eq!(
+            encode_header_with(&body, 0x100, 1, 0x100, small),
+            Err(SlotError::BodyLen)
+        );
+        let mut img = image(BODY);
+        put(&mut img, 0x0C, 0x1000 - HEADER_LEN as u32 + 1);
+        recrc(&mut img);
+        assert_eq!(parse_with(&img, small, &[0]), Err(SlotError::BodyLen));
+    }
+
+    #[test]
+    fn an_unaccepted_variant_is_bad_variant() {
+        let mut img = image(BODY);
+        img[6..8].copy_from_slice(&7u16.to_le_bytes());
+        recrc(&mut img);
+        assert_eq!(
+            parse_with(&img, CLASSIC, &[0, 1]),
+            Err(SlotError::BadVariant)
+        );
+        let mut img = image(BODY);
+        img[6..8].copy_from_slice(&1u16.to_le_bytes());
+        recrc(&mut img);
+        assert_eq!(
+            parse_with(&img, CLASSIC, &[0x100]),
+            Err(SlotError::BadVariant)
+        );
+    }
+
+    #[test]
+    fn encode_with_round_trips() {
+        let layout = SlotLayout {
+            slot_offsets: [0x2_0000, 0x4_0000],
+            slot_len: 0x2_0000,
+        };
+        let page = encode_header_with(BODY, 0x100, 9, 0x100, layout).unwrap();
+        let mut img = page.to_vec();
+        img.extend_from_slice(BODY);
+        let h = validate_with(&img, layout, &[0x100]).unwrap();
+        assert_eq!((h.variant, h.sequence, h.body_len), (0x100, 9, 4));
+        assert!(!h.confirmed);
     }
 
     #[test]
