@@ -19,6 +19,7 @@ members = [
   "hw-tests/xip-slot-blinky",
   "crates/deluge-sdk",
   "crates/deluge-image",
+  "crates/flash-protect",
   "crates/deluge-sdk-macros",
   "crates/arm-dsp",
   "crates/deluge-fixedpoint",
@@ -115,6 +116,7 @@ max5136 = { path = "drivers/max5136", version = "0.1.0" }
 
 # Board-agnostic USB classes. Published as `deluge-usb-classes`, imported as `usb_classes`.
 usb-classes = { package = "deluge-usb-classes", path = "usb/usb-classes", version = "0.1.0" }
+deluge-flash-protect = { path = "crates/flash-protect", version = "0.1.0" }
 
 [profile.release]
 opt-level = "s"

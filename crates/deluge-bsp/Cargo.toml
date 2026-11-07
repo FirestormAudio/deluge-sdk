@@ -73,6 +73,7 @@ usb-msc = ["usb-classes/device-msc"]
 host-panel = ["dep:embassy-time"]
 
 [dependencies]
+deluge-flash-protect = { workspace = true }
 max5136 = { workspace = true }
 usb-classes = { workspace = true, features = ["device-midi"] }
 # `time-driver-ostm`: the board relies on `rza1_hal::init` starting the OSTM time driver, so it

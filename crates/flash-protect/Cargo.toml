@@ -1,0 +1,11 @@
+[package]
+name = "deluge-flash-protect"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "Status-register block protection for JEDEC SPI-NOR flash: which bytes to write, and the checks around writing them."
+categories = ["embedded", "no-std"]
+keywords = ["flash", "spi-nor", "write-protect", "no-std"]
