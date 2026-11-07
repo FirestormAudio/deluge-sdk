@@ -37,14 +37,103 @@ pub const RX_PACKET_CAPACITY: usize = 4 * PACKETS_PER_TRANSFER;
 /// 1024 packets (4 KiB) holds ~3 KiB of SysEx payload.
 pub const TX_PACKET_CAPACITY: usize = 1024;
 
-/// Packets received from the host, in packet mode.
-static RX_PACKETS: Channel<CriticalSectionRawMutex, Packet, RX_PACKET_CAPACITY> = Channel::new();
+/// One USB-MIDI device's packet queues and mode: what each consumer and transport function works
+/// on. A firmware with more than one USB-MIDI device keeps one per device (a `static`); the free
+/// functions in this module work on [`DEFAULT`].
+pub struct PacketQueues {
+    /// Packets received from the host, in packet mode.
+    rx: Channel<CriticalSectionRawMutex, Packet, RX_PACKET_CAPACITY>,
+    /// Packets queued for transmission to the host, in packet mode.
+    tx: Channel<CriticalSectionRawMutex, Packet, TX_PACKET_CAPACITY>,
+    /// `true` once a consumer has selected packet mode.
+    mode: AtomicBool,
+}
 
-/// Packets queued for transmission to the host, in packet mode.
-static TX_PACKETS: Channel<CriticalSectionRawMutex, Packet, TX_PACKET_CAPACITY> = Channel::new();
+/// The queues the module's free functions use: the single USB-MIDI device's.
+pub static DEFAULT: PacketQueues = PacketQueues::new();
 
-/// `true` once a consumer has selected packet mode.
-static PACKET_MODE: AtomicBool = AtomicBool::new(false);
+impl Default for PacketQueues {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PacketQueues {
+    /// Empty queues, byte mode.
+    pub const fn new() -> Self {
+        Self {
+            rx: Channel::new(),
+            tx: Channel::new(),
+            mode: AtomicBool::new(false),
+        }
+    }
+
+    /// As [`use_packets`], for these queues.
+    #[inline]
+    pub fn use_packets(&self) {
+        self.mode.store(true, Ordering::Release);
+    }
+
+    /// As [`packets_enabled`].
+    #[inline]
+    pub fn packets_enabled(&self) -> bool {
+        self.mode.load(Ordering::Acquire)
+    }
+
+    /// As [`try_recv_packet_from_host`].
+    #[inline]
+    pub fn try_recv_packet_from_host(&self) -> Option<Packet> {
+        self.rx.try_receive().ok()
+    }
+
+    /// As [`try_send_packet_to_host`].
+    #[inline]
+    pub fn try_send_packet_to_host(&self, packet: Packet) -> bool {
+        self.tx.try_send(packet).is_ok()
+    }
+
+    /// As [`tx_packet_free`].
+    #[inline]
+    pub fn tx_packet_free(&self) -> usize {
+        self.tx.free_capacity()
+    }
+
+    /// As [`tx_packet_pending`].
+    #[inline]
+    pub fn tx_packet_pending(&self) -> usize {
+        self.tx.len()
+    }
+
+    /// As [`deliver_packet_from_host`].
+    pub async fn deliver_packet_from_host(&self, packet: Packet) {
+        self.rx.send(packet).await;
+    }
+
+    /// As [`next_packet_to_host`].
+    pub async fn next_packet_to_host(&self) -> Packet {
+        self.tx.receive().await
+    }
+
+    /// As [`drain_packets_to_host`].
+    pub fn drain_packets_to_host(&self, buf: &mut [u8]) -> usize {
+        let mut n = 0;
+        while buf.len() - n >= 4 {
+            let Ok(packet) = self.tx.try_receive() else {
+                break;
+            };
+            buf[n..n + 4].copy_from_slice(&packet);
+            n += 4;
+        }
+        n
+    }
+
+    /// Empty both queues, keeping the mode: for a session that ended, so nothing queued for one
+    /// host reaches the next.
+    pub fn clear(&self) {
+        self.rx.clear();
+        self.tx.clear();
+    }
+}
 
 // ============================================================================
 // Consumer side
@@ -57,13 +146,13 @@ static PACKET_MODE: AtomicBool = AtomicBool::new(false);
 /// permanent: the byte API's queues receive nothing afterwards.
 #[inline]
 pub fn use_packets() {
-    PACKET_MODE.store(true, Ordering::Release);
+    DEFAULT.use_packets();
 }
 
 /// Returns `true` once [`use_packets`] has selected packet mode.
 #[inline]
 pub fn packets_enabled() -> bool {
-    PACKET_MODE.load(Ordering::Acquire)
+    DEFAULT.packets_enabled()
 }
 
 /// Try to receive the next USB-MIDI 1.0 event packet from the host, exactly
@@ -71,7 +160,7 @@ pub fn packets_enabled() -> bool {
 /// Only meaningful in packet mode and when `!midi2_active()`.
 #[inline]
 pub fn try_recv_packet_from_host() -> Option<Packet> {
-    RX_PACKETS.try_receive().ok()
+    DEFAULT.try_recv_packet_from_host()
 }
 
 /// Queue one USB-MIDI 1.0 event packet for transmission to the host, unchanged.
@@ -79,19 +168,19 @@ pub fn try_recv_packet_from_host() -> Option<Packet> {
 /// Only meaningful in packet mode and when `!midi2_active()`.
 #[inline]
 pub fn try_send_packet_to_host(packet: Packet) -> bool {
-    TX_PACKETS.try_send(packet).is_ok()
+    DEFAULT.try_send_packet_to_host(packet)
 }
 
 /// Free space, in packets, in the host-bound packet queue.
 #[inline]
 pub fn tx_packet_free() -> usize {
-    TX_PACKETS.free_capacity()
+    DEFAULT.tx_packet_free()
 }
 
 /// Packets queued for transmission to the host but not yet on the wire.
 #[inline]
 pub fn tx_packet_pending() -> usize {
-    TX_PACKETS.len()
+    DEFAULT.tx_packet_pending()
 }
 
 // ============================================================================
@@ -150,12 +239,12 @@ pub fn packets_in(transfer: &[u8]) -> impl Iterator<Item = Packet> + '_ {
 /// Waiting holds back the next OUT transfer, so the host is flow-controlled
 /// (NAKed) instead of losing packets mid-SysEx.
 pub async fn deliver_packet_from_host(packet: Packet) {
-    RX_PACKETS.send(packet).await;
+    DEFAULT.deliver_packet_from_host(packet).await;
 }
 
 /// Wait for the next packet the consumer queued for the host.
 pub async fn next_packet_to_host() -> Packet {
-    TX_PACKETS.receive().await
+    DEFAULT.next_packet_to_host().await
 }
 
 /// Move queued host-bound packets into `buf` without waiting, while a whole
@@ -164,15 +253,7 @@ pub async fn next_packet_to_host() -> Packet {
 /// The TX task uses it to fill the rest of a bulk IN transfer behind the
 /// packet [`next_packet_to_host`] returned.
 pub fn drain_packets_to_host(buf: &mut [u8]) -> usize {
-    let mut n = 0;
-    while buf.len() - n >= 4 {
-        let Ok(packet) = TX_PACKETS.try_receive() else {
-            break;
-        };
-        buf[n..n + 4].copy_from_slice(&packet);
-        n += 4;
-    }
-    n
+    DEFAULT.drain_packets_to_host(buf)
 }
 
 /// Return the number of 32-bit words in a UMP message.
@@ -267,13 +348,56 @@ mod tests {
         );
     }
 
-    /// The only test touching the queues: they are process-wide statics.
+    /// Tests touching [`DEFAULT`] (process-wide) take this.
+    fn default_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn two_instances_do_not_share_packets() {
+        static A: PacketQueues = PacketQueues::new();
+        static B: PacketQueues = PacketQueues::new();
+        embassy_futures::block_on(A.deliver_packet_from_host(SYSEX_CABLE2[0]));
+        assert_eq!(B.try_recv_packet_from_host(), None);
+        assert_eq!(A.try_recv_packet_from_host(), Some(SYSEX_CABLE2[0]));
+        assert!(B.try_send_packet_to_host(SYSEX_CABLE2[1]));
+        assert_eq!(A.tx_packet_pending(), 0);
+        let mut buf = [0u8; 4];
+        assert_eq!(A.drain_packets_to_host(&mut buf), 0);
+        assert_eq!(B.drain_packets_to_host(&mut buf), 4);
+        assert_eq!(buf, SYSEX_CABLE2[1]);
+    }
+
+    #[test]
+    fn clear_empties_both_queues() {
+        static Q: PacketQueues = PacketQueues::new();
+        Q.use_packets();
+        embassy_futures::block_on(Q.deliver_packet_from_host(SYSEX_CABLE2[0]));
+        assert!(Q.try_send_packet_to_host(SYSEX_CABLE2[1]));
+        Q.clear();
+        assert_eq!(Q.try_recv_packet_from_host(), None);
+        assert_eq!(Q.tx_packet_pending(), 0);
+        assert!(Q.packets_enabled(), "the mode is kept");
+    }
+
+    #[test]
+    fn the_free_functions_use_the_default_queues() {
+        let _g = default_lock();
+        assert!(try_send_packet_to_host(SYSEX_CABLE2[0]));
+        assert_eq!(DEFAULT.tx_packet_pending(), 1);
+        let mut buf = [0u8; 4];
+        assert_eq!(DEFAULT.drain_packets_to_host(&mut buf), 4);
+        assert_eq!(buf, SYSEX_CABLE2[0]);
+    }
+
     #[test]
     fn queues_carry_packets_unchanged_in_both_directions() {
+        let _g = default_lock();
         // Host → device: what the RX task delivers is what the consumer reads.
         let note_on = [0x09, 0x90, 0x3C, 0x64];
         for p in SYSEX_CABLE2.iter().chain([&note_on]) {
-            assert!(RX_PACKETS.try_send(*p).is_ok());
+            embassy_futures::block_on(DEFAULT.deliver_packet_from_host(*p));
         }
         let received: Vec<Packet> = core::iter::from_fn(try_recv_packet_from_host).collect();
         assert_eq!(
