@@ -51,7 +51,13 @@ use super::FlashId;
 /// which case nothing is ever written. Keyed on the raw JEDEC ID (the
 /// authoritative protection mapping; [`super::decode_jedec`] is the parallel
 /// display/capacity mapping).
+///
+/// Only the Deluge's 4 MB parts ([`super::decode_jedec`] at [`super::FLASH_SIZE`]): a part the
+/// shared table knows for another board stays unknown here, so nothing is written to it.
 pub const fn recipe(id: FlashId) -> Option<ProtectionRecipe> {
+    if super::decode_jedec(id.raw).1 != super::FLASH_SIZE {
+        return None;
+    }
     deluge_flash_protect::recipe(id.raw)
 }
 
@@ -194,6 +200,9 @@ mod tests {
             );
         }
         assert_eq!(recipe(id([0x01, 0x02, 0x15])), None);
+        // A part the shared table knows but the Deluge's 4 MB geometry doesn't describe stays
+        // unknown here: nothing is written, as before the table was shared.
+        assert_eq!(recipe(id([0x1F, 0x88, 0x01])), None);
         assert_eq!(protected_range(TOP_64K), Some(0x3F_0000..0x40_0000));
     }
 

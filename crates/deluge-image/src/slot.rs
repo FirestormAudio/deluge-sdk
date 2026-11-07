@@ -68,7 +68,7 @@ pub struct SlotLayout {
 impl SlotLayout {
     /// The longest body that fits in a slot after its header page.
     pub const fn max_body_len(self) -> u32 {
-        self.slot_len - HEADER_LEN as u32
+        self.slot_len.saturating_sub(HEADER_LEN as u32)
     }
 }
 
@@ -306,7 +306,8 @@ pub enum Choice {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Reason {
-    /// The only valid slot, confirmed.
+    /// The only valid slot, confirmed. (A stage-0 that checks only slot A, as the Deluge's first
+    /// one does, reports `0` for a valid slot A confirmed or not.)
     OnlyValid = 0,
     /// The newer of two valid slots, confirmed.
     Newest = 1,
@@ -316,6 +317,22 @@ pub enum Reason {
     RolledBack = 3,
     /// As `RolledBack`, but there is no other valid slot: the pending slot is tried again.
     PendingRetry = 4,
+}
+
+impl TryFrom<u8> for Reason {
+    type Error = u8;
+
+    /// The reason in a boot-info word's low byte, or the byte back if it isn't one.
+    fn try_from(b: u8) -> Result<Self, u8> {
+        Ok(match b {
+            0 => Reason::OnlyValid,
+            1 => Reason::Newest,
+            2 => Reason::PendingTry,
+            3 => Reason::RolledBack,
+            4 => Reason::PendingRetry,
+            _ => return Err(b),
+        })
+    }
 }
 
 /// Pick the slot to enter from both slots' checks (`a`, `b`: [`validate_with`]'s results) and
@@ -485,6 +502,33 @@ mod tests {
     #[test]
     fn no_valid_slot_is_no_slot() {
         assert_eq!(select(BAD, Err(SlotError::BadMagic), true), Choice::NoSlot);
+    }
+
+    #[test]
+    fn a_slot_too_small_for_a_header_takes_no_body() {
+        let tiny = SlotLayout {
+            slot_offsets: [0, 0x80],
+            slot_len: 0x80,
+        };
+        assert_eq!(tiny.max_body_len(), 0);
+        assert_eq!(
+            parse_with(&image(BODY), tiny, &[0]),
+            Err(SlotError::BodyLen)
+        );
+    }
+
+    #[test]
+    fn reasons_decode_from_the_boot_info_byte() {
+        for r in [
+            Reason::OnlyValid,
+            Reason::Newest,
+            Reason::PendingTry,
+            Reason::RolledBack,
+            Reason::PendingRetry,
+        ] {
+            assert_eq!(Reason::try_from(r as u8), Ok(r));
+        }
+        assert_eq!(Reason::try_from(5), Err(5));
     }
 
     #[test]

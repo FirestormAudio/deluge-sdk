@@ -116,6 +116,7 @@ max5136 = { path = "drivers/max5136", version = "0.1.0" }
 
 # Board-agnostic USB classes. Published as `deluge-usb-classes`, imported as `usb_classes`.
 usb-classes = { package = "deluge-usb-classes", path = "usb/usb-classes", version = "0.1.0" }
+# SPI-NOR status-register block protection, shared by the boot chains and their tools.
 deluge-flash-protect = { path = "crates/flash-protect", version = "0.1.0" }
 
 [profile.release]

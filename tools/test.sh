@@ -87,7 +87,7 @@ echo "==> Host bucket ($HOST)"
 cargo test --target "$HOST" -p arm-dsp
 cargo test --target "$HOST" -p deluge-fixedpoint
 cargo test --target "$HOST" -p deluge-image
-echo "==> the flash protection core (host)"
+echo "==> the flash protection core (QEMU)"
 cargo test --target "$QEMU" -p deluge-flash-protect
 cargo test --target "$HOST" -p deluge-ui-toolkit
 cargo test --target "$HOST" -p deluge-sdk-macros

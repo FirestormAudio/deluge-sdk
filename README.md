@@ -206,6 +206,7 @@ compile-proves all of them on the firmware target).
 | `usb/usb-classes` | `deluge-usb-classes` (imported as `usb_classes`) | board-agnostic Embassy USB classes: UAC2, USB-MIDI, MSC + Bulk-Only Transport, host MIDI/UAC |
 | `drivers/max5136` | `max5136` | board-agnostic embedded-hal driver for the MAX5136 CV DAC |
 | `crates/deluge-image` | `deluge-image` | firmware-image format logic shared by the app-loader and `cargo deluge` |
+| `crates/flash-protect` | `deluge-flash-protect` | SPI-NOR status-register block protection: which bytes to write, and the checks around them |
 | `crates/deluge-fixedpoint`, `crates/arm-dsp` | `deluge-fixedpoint` (imported as `fixedpoint`), `arm-dsp` | fixed-point DSP math + ARMv7 intrinsics |
 | `crates/deluge-simulator`, `crates/deluge-panel-protocol` | `deluge-simulator`, `deluge-panel-protocol` | the desktop simulator and its wire protocol |
 | `crates/embedded-fatfs`, `crates/block-device-adapters` | `deluge-embedded-fatfs`, `deluge-block-device-adapters` | the async FAT stack (forks of MabezDev's crates) |

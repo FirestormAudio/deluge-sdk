@@ -127,8 +127,9 @@ fn opt_num(opts: &HashMap<String, String>, key: &str, default: u32) -> Result<u3
     opts.get(key).map_or(Ok(default), |v| num(v))
 }
 
-/// The slot geometry from the options, the Deluge's by default.
-fn layout(opts: &HashMap<String, String>) -> Result<SlotLayout, String> {
+/// The slot geometry from the options, the Deluge's by default. `placed`: the slots are laid out
+/// in flash (`compose`), so slot A must end before slot B; `wrap` only needs the length.
+fn layout(opts: &HashMap<String, String>, placed: bool) -> Result<SlotLayout, String> {
     let d = slot::CLASSIC;
     let l = SlotLayout {
         slot_offsets: [
@@ -143,9 +144,10 @@ fn layout(opts: &HashMap<String, String>) -> Result<SlotLayout, String> {
             l.slot_len
         ));
     }
-    if l.slot_offsets[0]
-        .checked_add(l.slot_len)
-        .is_none_or(|end| end > l.slot_offsets[1])
+    if placed
+        && l.slot_offsets[0]
+            .checked_add(l.slot_len)
+            .is_none_or(|end| end > l.slot_offsets[1])
     {
         return Err("slot A must end at or before slot B".into());
     }
@@ -174,7 +176,7 @@ fn wrap(opts: &HashMap<String, String>, flags: &[String]) -> Result<(), String> 
         (None, Some(code)) => code,
         (None, None) => return Err(format!("missing --variant or --variant-code\n{USAGE}")),
     };
-    let header = slot::encode_header_with(&body, variant, sequence, entry, layout(opts)?)
+    let header = slot::encode_header_with(&body, variant, sequence, entry, layout(opts, false)?)
         .map_err(|e| format!("cannot wrap this body: {e:?}"))?;
     let mut img = header.to_vec();
     img.extend_from_slice(&body);
@@ -182,7 +184,7 @@ fn wrap(opts: &HashMap<String, String>, flags: &[String]) -> Result<(), String> 
 }
 
 fn compose(opts: &HashMap<String, String>, flags: &[String]) -> Result<(), String> {
-    let layout = layout(opts)?;
+    let layout = layout(opts, true)?;
     let accepts: Vec<u16> = match variant_code(opts)? {
         Some(code) => vec![code],
         None => vec![Variant::Oled.code(), Variant::SevenSeg.code()],

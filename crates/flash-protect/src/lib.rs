@@ -15,7 +15,8 @@
 //! # Nothing permanent
 //!
 //! Some status-register bits can never be cleared once set: the `LB` security
-//! register locks (SR2 bits 5:2) on all supported parts, and `SRP1:SRP0 = (1,1)`, a
+//! register locks (`LB`: SR2 bits 5:2, or 5:3 on the AT25QF641B, where bit 2 is `P_SUS`), and
+//! `SRP1:SRP0 = (1,1)`, a
 //! permanent status-register lock on the S25FL132K and undefined on the AT25
 //! parts. So every write is composed from scratch
 //! by [`plan`] rather than read-modified-written: SR1 carries only region bits,
@@ -41,7 +42,7 @@ pub enum WriteMethod {
     Separate,
 }
 
-// Status-register bit positions — identical across all three supported parts.
+// Status-register bit positions — identical across all the supported parts.
 
 /// SR1 block-protect field: AT25 `BP4:BP0`, W25/S25FL132K `SEC|TB|BP2:BP0` — both
 /// occupy bits 6:2. (SR1 bit 7 is `SRP0`; bits 1:0 are read-only `WEL`/`BUSY`.)
@@ -52,10 +53,10 @@ const SR1_TB: u8 = 1 << 5;
 const SR1_BP2: u8 = 1 << 4;
 /// SR1 bit 2: `BP0`.
 const SR1_BP0: u8 = 1 << 2;
-/// SR1 region value protecting `0x000000..0x100000` (FSB + SSB) on all three
-/// parts: from the bottom, `BP2:BP0 = 101` = lower 1/4 (AT25 `BP4:BP0 = 01101`,
-/// Table 6; W25 / S25FL132K `SEC=0, TB=1, BP=101`). Checked against the
-/// datasheet tables by [`protected_range`]'s tests.
+/// SR1 region value protecting `0x000000..0x100000` (a board's boot region) on the 4 MB parts:
+/// from the bottom, `BP2:BP0 = 101` = lower 1/4 (AT25SF321B `BP4:BP0 = 01101`, Table 6; W25 /
+/// S25FL132K `SEC=0, TB=1, BP=101`). (The 8 MB AT25QF641B's is `TB|BP2`, lower 1/8.) Checked
+/// against the datasheet tables by [`protected_range_for`]'s tests.
 const BOTTOM_1MB: u8 = SR1_TB | SR1_BP2 | SR1_BP0;
 /// SR1 `SRP0`, bit 7. Never written `1`: with the lock bit it would form the
 /// permanent `(1,1)` state.
@@ -75,10 +76,11 @@ const SR2_LOCK: u8 = 1 << 0;
 /// are never written `1` and are ignored when verifying.
 const SR2_OWNED: u8 = SR2_QE | SR2_CMP | SR2_LOCK;
 
-/// SR1 region value protecting only the top 64 KB (`0x3F0000..0x400000`, free in
-/// the flash map) on all three parts: AT25 `BP0` = upper 1/64 (Table 6), W25 /
-/// S25FL132K `TB=0, BP2:BP0=001`. `flash-sr-probe` proves the write path and the
-/// lock-down here before anything touches the bootloader region.
+/// SR1 region value protecting only the top 1/64 of a part: the top 64 KB
+/// (`0x3F0000..0x400000`) of the 4 MB parts (AT25SF321B `BP0` = upper 1/64, Table 6; W25 /
+/// S25FL132K `TB=0, BP2:BP0=001`), the top 128 KB (`0x7E0000..0x800000`) of the 8 MB
+/// AT25QF641B. `flash-sr-probe` proves the write path and the lock-down there before anything
+/// touches the boot region.
 pub const TOP_64K: u8 = SR1_BP0;
 
 /// The range an SR1 region value protects (with `CMP = 0`) on a part of `capacity` bytes, by the
@@ -250,7 +252,7 @@ impl Goal {
         }
     }
 
-    /// The top 64 KB ([`TOP_64K`]), optionally locked: `flash-sr-probe`'s harmless
+    /// The top 1/64 of the part ([`TOP_64K`]), optionally locked: `flash-sr-probe`'s harmless
     /// stand-in for the bootloader region.
     pub const fn top_test(lock: bool) -> Self {
         Goal {
@@ -450,9 +452,30 @@ fn volatile_region<B: SrBus>(bus: &mut B, method: WriteMethod, region: u8, qe: u
 
 /// Open the protected region for a program without touching the non-volatile protection: clear
 /// the block-protect bits through the volatile path (`50h`), which a power cycle or software
-/// reset undoes. Refused, with nothing sent, while the lock-down is armed or a bit this crate
-/// doesn't expect is set (the arming rules). Pair with [`restore_volatile`].
-pub fn lift_volatile<B: SrBus>(bus: &mut B, r: ProtectionRecipe) -> Result<Lifted, Refusal> {
+/// reset undoes. Pair with [`restore_volatile`].
+///
+/// As [`apply`]: refused with nothing sent for an unknown part, a part other than `id`, after a
+/// write that failed this boot (`faulted`), while the lock-down is armed, or with a bit this crate
+/// doesn't expect set (`SRP0`, `CMP`, an `LB` beyond the factory one, a suspend flag). If the
+/// write goes out but doesn't read back as planned, a software reset reloads the non-volatile
+/// protection, `faulted` latches, and the error says so: the region is never left open behind an
+/// `Err`.
+///
+/// While lifted (until [`restore_volatile`], a power cycle, `66h`/`99h`, or an [`apply`] of a
+/// provisioning or lock-down goal, which rewrites the region) the boot region is writable:
+/// run nothing untrusted in between.
+pub fn lift_volatile<B: SrBus>(
+    bus: &mut B,
+    faulted: &AtomicBool,
+    id: [u8; 3],
+) -> Result<Lifted, Refusal> {
+    if faulted.load(Ordering::Acquire) {
+        return Err(Refusal::Faulted);
+    }
+    let r = recipe(id).ok_or(Refusal::UnknownPart)?;
+    if bus.read_id() != id {
+        return Err(Refusal::PartChanged);
+    }
     let (sr1, sr2) = read_stable(bus)?;
     if sr1 & SR1_BUSY != 0 {
         return Err(Refusal::Busy);
@@ -460,7 +483,8 @@ pub fn lift_volatile<B: SrBus>(bus: &mut B, r: ProtectionRecipe) -> Result<Lifte
     if sr2 & SR2_LOCK != 0 {
         return Err(Refusal::Locked);
     }
-    if sr1 & SR1_SRP0 != 0 || sr2 & !SR2_OWNED & !r.factory_sr2 != 0 {
+    let odd_sr2 = sr2 & !(SR2_QE | SR2_LOCK) & !r.factory_sr2;
+    if sr1 & SR1_SRP0 != 0 || odd_sr2 != 0 {
         return Err(Refusal::UnexpectedBits { sr1, sr2 });
     }
     let lifted = Lifted {
@@ -472,27 +496,47 @@ pub fn lift_volatile<B: SrBus>(bus: &mut B, r: ProtectionRecipe) -> Result<Lifte
         return Ok(lifted);
     }
     let sent = volatile_region(bus, r.method, 0, lifted.qe);
-    match read_stable(bus)? {
-        (got1, _) if sent && got1 & SR1_REGION_MASK == 0 => Ok(lifted),
-        (got1, got2) => Err(Refusal::VerifyFailed {
-            sr1: got1,
-            sr2: got2,
-        }),
-    }
+    checked(bus, faulted, sent, 0).map(|()| lifted)
 }
 
-/// Put back the block-protect bits [`lift_volatile`] cleared, volatile.
-pub fn restore_volatile<B: SrBus>(bus: &mut B, lifted: Lifted) -> Result<(), Refusal> {
+/// Put back the block-protect bits [`lift_volatile`] cleared, volatile. If the write doesn't read
+/// back as planned, a software reset reloads the non-volatile protection instead (and `faulted`
+/// latches): the region ends protected either way.
+pub fn restore_volatile<B: SrBus>(
+    bus: &mut B,
+    faulted: &AtomicBool,
+    lifted: Lifted,
+) -> Result<(), Refusal> {
     if lifted.region == 0 {
         return Ok(());
     }
     let sent = volatile_region(bus, lifted.method, lifted.region, lifted.qe);
-    match read_stable(bus)? {
-        (got1, _) if sent && got1 & SR1_REGION_MASK == lifted.region => Ok(()),
-        (got1, got2) => Err(Refusal::VerifyFailed {
+    checked(bus, faulted, sent, lifted.region)
+}
+
+/// Check a volatile region write read back as `region`; if not, software-reset to the
+/// non-volatile bits and latch `faulted`.
+fn checked<B: SrBus>(
+    bus: &mut B,
+    faulted: &AtomicBool,
+    sent: bool,
+    region: u8,
+) -> Result<(), Refusal> {
+    let read = read_stable(bus);
+    if let Ok((got1, _)) = read
+        && sent
+        && got1 & SR1_REGION_MASK == region
+    {
+        return Ok(());
+    }
+    bus.software_reset();
+    faulted.store(true, Ordering::Release);
+    match read {
+        Ok((got1, got2)) => Err(Refusal::VerifyFailed {
             sr1: got1,
             sr2: got2,
         }),
+        Err(e) => Err(e),
     }
 }
 
@@ -956,7 +1000,7 @@ mod tests {
         assert_eq!(r.sr1_region, 0x30, "TB=1, BP2:0=100");
         assert_eq!(r.method, WriteMethod::Separate);
         assert_eq!(r.factory_sr2, 0);
-        // The datasheet's 9Fh order; the bytes swapped are another part.
+        // Keyed on the datasheet's 9Fh order (Table 16) until the bench settles what the part sends.
         assert_eq!(recipe([0x1F, 0x01, 0x88]), None);
     }
 
@@ -978,9 +1022,9 @@ mod tests {
 
     #[test]
     fn lift_clears_bp_volatile_and_restore_puts_it_back() {
-        let r = recipe(AT25QF641B).unwrap();
+        let faulted = AtomicBool::new(false);
         let mut chip = at25qf_protected();
-        let lifted = lift_volatile(&mut chip, r).unwrap();
+        let lifted = lift_volatile(&mut chip, &faulted, AT25QF641B).unwrap();
         assert_eq!(
             chip.sr1 & SR1_REGION_MASK,
             0,
@@ -988,20 +1032,85 @@ mod tests {
         );
         assert_eq!(chip.nv1, 0x30, "the non-volatile protection is untouched");
         assert_eq!((chip.writes, chip.volatile_writes), (0, 1));
-        restore_volatile(&mut chip, lifted).unwrap();
+        restore_volatile(&mut chip, &faulted, lifted).unwrap();
         assert_eq!(chip.sr1 & SR1_REGION_MASK, 0x30);
-        assert_eq!((chip.writes, chip.volatile_writes), (0, 2));
+        assert_eq!((chip.writes, chip.volatile_writes, chip.resets), (0, 2, 0));
         assert_eq!(chip.sr2 & SR2_QE, SR2_QE, "QE as found");
     }
 
     #[test]
     fn lift_refused_while_locked() {
-        let r = recipe(AT25QF641B).unwrap();
+        let faulted = AtomicBool::new(false);
         let mut chip = at25qf_protected();
         chip.sr2 |= SR2_LOCK;
         chip.nv2 |= SR2_LOCK;
-        assert_eq!(lift_volatile(&mut chip, r), Err(Refusal::Locked));
+        assert_eq!(
+            lift_volatile(&mut chip, &faulted, AT25QF641B),
+            Err(Refusal::Locked)
+        );
         assert_eq!((chip.writes, chip.volatile_writes), (0, 0));
+    }
+
+    #[test]
+    fn a_failed_lift_reloads_the_protection() {
+        let faulted = AtomicBool::new(false);
+        let mut chip = at25qf_protected();
+        chip.deaf = true;
+        assert!(matches!(
+            lift_volatile(&mut chip, &faulted, AT25QF641B),
+            Err(Refusal::VerifyFailed { .. })
+        ));
+        assert_eq!(
+            chip.resets, 1,
+            "a software reset reloaded the non-volatile bits"
+        );
+        assert_eq!(chip.sr1 & SR1_REGION_MASK, 0x30, "protected again");
+        assert!(faulted.load(Ordering::Acquire), "no more writes this boot");
+        assert_eq!(
+            lift_volatile(&mut at25qf_protected(), &faulted, AT25QF641B),
+            Err(Refusal::Faulted)
+        );
+    }
+
+    #[test]
+    fn a_failed_restore_reloads_the_protection() {
+        let faulted = AtomicBool::new(false);
+        let mut chip = at25qf_protected();
+        let lifted = lift_volatile(&mut chip, &faulted, AT25QF641B).unwrap();
+        chip.deaf = true;
+        assert!(restore_volatile(&mut chip, &faulted, lifted).is_err());
+        assert_eq!(chip.resets, 1);
+        assert_eq!(chip.sr1 & SR1_REGION_MASK, 0x30, "the reset restored it");
+        assert!(faulted.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn lift_refuses_cmp() {
+        let faulted = AtomicBool::new(false);
+        let mut chip = at25qf_protected();
+        chip.sr2 |= SR2_CMP;
+        chip.nv2 |= SR2_CMP;
+        assert!(matches!(
+            lift_volatile(&mut chip, &faulted, AT25QF641B),
+            Err(Refusal::UnexpectedBits { .. })
+        ));
+        assert_eq!(chip.volatile_writes, 0);
+    }
+
+    #[test]
+    fn lift_reidentifies_the_part() {
+        let faulted = AtomicBool::new(false);
+        let mut chip = at25qf_protected();
+        chip.id = W25;
+        assert_eq!(
+            lift_volatile(&mut chip, &faulted, AT25QF641B),
+            Err(Refusal::PartChanged)
+        );
+        assert_eq!(
+            lift_volatile(&mut chip, &faulted, [0x01, 0x02, 0x15]),
+            Err(Refusal::UnknownPart)
+        );
+        assert_eq!(chip.volatile_writes, 0);
     }
 
     /// Records what is sent, for every register state.
@@ -1031,15 +1140,15 @@ mod tests {
     #[test]
     fn lift_never_sends_srp_or_lb() {
         // The S25's combined write sends SR2 too: the widest case.
-        let r = recipe(S25).unwrap();
         for sr1 in 0..=255u8 {
             for sr2 in 0..=255u8 {
                 let mut bus = Recorder {
                     regs: (sr1, sr2),
                     sent: std::vec::Vec::new(),
                 };
-                if let Ok(lifted) = lift_volatile(&mut bus, r) {
-                    let _ = restore_volatile(&mut bus, lifted);
+                let faulted = AtomicBool::new(false);
+                if let Ok(lifted) = lift_volatile(&mut bus, &faulted, S25) {
+                    let _ = restore_volatile(&mut bus, &faulted, lifted);
                 }
                 for &(a, b, volatile) in &bus.sent {
                     assert!(volatile, "only volatile writes");
