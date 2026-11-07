@@ -61,6 +61,8 @@ struct Wiring {
     irq_num: u8,
     /// A and B are swapped relative to the others, so the direction is reversed.
     invert: bool,
+    /// A black encoder, which clicks into a detent: it rests with both contacts open (A and B high).
+    detented: bool,
 }
 
 #[cfg(target_os = "none")]
@@ -71,6 +73,7 @@ const WIRING: [Wiring; NUM_ENCODERS] = [
         gic_id: 35,
         irq_num: 3,
         invert: false,
+        detented: true,
     },
     Wiring {
         irq_pin: 6,
@@ -78,6 +81,7 @@ const WIRING: [Wiring; NUM_ENCODERS] = [
         gic_id: 34,
         irq_num: 2,
         invert: true,
+        detented: true,
     },
     Wiring {
         irq_pin: 0,
@@ -85,6 +89,7 @@ const WIRING: [Wiring; NUM_ENCODERS] = [
         gic_id: 36,
         irq_num: 4,
         invert: false,
+        detented: false,
     },
     Wiring {
         irq_pin: 5,
@@ -92,6 +97,7 @@ const WIRING: [Wiring; NUM_ENCODERS] = [
         gic_id: 33,
         irq_num: 1,
         invert: false,
+        detented: false,
     },
     Wiring {
         irq_pin: 8,
@@ -99,6 +105,7 @@ const WIRING: [Wiring; NUM_ENCODERS] = [
         gic_id: 32,
         irq_num: 0,
         invert: false,
+        detented: true,
     },
     // SELECT: P1_14 (trigger-clock input) owns IRQ6 (GIC 38), so SELECT uses IRQ7 on P1_3
     // instead. A/B are swapped versus the polled wiring, so `invert` keeps CW positive.
@@ -108,6 +115,7 @@ const WIRING: [Wiring; NUM_ENCODERS] = [
         gic_id: 39,
         irq_num: 7,
         invert: true,
+        detented: true,
     },
 ];
 
@@ -258,12 +266,19 @@ pub unsafe fn irq_init(
             Input::new(comp);
         }
 
-        // Start every decoder at the pins' current levels, so bring-up isn't read as a turn.
+        // Start each gold encoder at its pins' current levels, so bring-up isn't read as a turn. A black one
+        // starts at the detent's resting state instead, whatever the pins read: its clicks are counted from that
+        // state, so a read that catches contact bounce or an unsettled input would put every click out of step
+        // until the next reboot, making the first click after each reversal do nothing.
         let pins = rza1_hal::gpio::read_port(rza1_hal::gpio::Port::P1);
         critical_section::with(|cs| {
             let mut decoders = DECODERS.borrow_ref_mut(cs);
             for (decoder, w) in decoders.iter_mut().zip(&WIRING) {
-                *decoder = QuadratureDecoder::new(pin(pins, w.irq_pin), pin(pins, w.comp_pin));
+                *decoder = if w.detented {
+                    QuadratureDecoder::new(true, true)
+                } else {
+                    QuadratureDecoder::new(pin(pins, w.irq_pin), pin(pins, w.comp_pin))
+                };
             }
         });
 
