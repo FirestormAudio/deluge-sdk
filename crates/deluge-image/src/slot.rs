@@ -158,8 +158,8 @@ impl SlotError {
     }
 }
 
-/// The boot-info word for `slot` (`0` = A) entered for `reason` (`0` = it was
-/// the only valid slot): `0x5330_xxyy`.
+/// The boot-info word for `slot` (`0` = A) entered for `reason` (a [`Reason`] as `u8`; `0` = it
+/// was the only valid slot): `0x5330_xxyy`.
 pub const fn boot_info(slot: u8, reason: u8) -> u32 {
     BOOT_INFO_TAG | (slot as u32) << 8 | reason as u32
 }
@@ -293,6 +293,61 @@ pub fn encode_header_with(
     Ok(page)
 }
 
+/// Which slot stage-0 enters, and why ([`select`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Choice {
+    /// Enter `slot` (`0` = A) for `reason`.
+    Boot { slot: u8, reason: Reason },
+    /// Neither slot is valid.
+    NoSlot,
+}
+
+/// Why [`select`] chose a slot; its value is the boot-info word's low byte. Frozen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Reason {
+    /// The only valid slot, confirmed.
+    OnlyValid = 0,
+    /// The newer of two valid slots, confirmed.
+    Newest = 1,
+    /// The candidate is pending and gets a try (the watchdog didn't fire).
+    PendingTry = 2,
+    /// The candidate is pending and the watchdog killed its last boot: the other slot.
+    RolledBack = 3,
+    /// As `RolledBack`, but there is no other valid slot: the pending slot is tried again.
+    PendingRetry = 4,
+}
+
+/// Pick the slot to enter from both slots' checks (`a`, `b`: [`validate_with`]'s results) and
+/// whether the watchdog overflowed on the last boot (`wovf`).
+///
+/// The candidate is the valid slot with the higher sequence (A on a tie). A confirmed candidate
+/// boots (the watchdog flag is ignored: an app may use the watchdog itself). A pending candidate
+/// boots unless the watchdog killed its last boot; then the other valid slot boots, or, with none,
+/// the pending one again: it is the only image, and a one-off hang must not park the unit.
+pub fn select(
+    a: Result<SlotHeader, SlotError>,
+    b: Result<SlotHeader, SlotError>,
+    wovf: bool,
+) -> Choice {
+    let (cand, other) = match (a, b) {
+        (Err(_), Err(_)) => return Choice::NoSlot,
+        (Ok(h), Err(_)) => ((0, h), None),
+        (Err(_), Ok(h)) => ((1, h), None),
+        (Ok(ha), Ok(hb)) if hb.sequence > ha.sequence => ((1, hb), Some(0)),
+        (Ok(ha), Ok(_)) => ((0, ha), Some(1)),
+    };
+    let (slot, header) = cand;
+    let boot = |slot, reason| Choice::Boot { slot, reason };
+    match (header.confirmed, wovf, other) {
+        (true, _, None) => boot(slot, Reason::OnlyValid),
+        (true, _, Some(_)) => boot(slot, Reason::Newest),
+        (false, false, _) => boot(slot, Reason::PendingTry),
+        (false, true, Some(o)) => boot(o, Reason::RolledBack),
+        (false, true, None) => boot(slot, Reason::PendingRetry),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,6 +386,105 @@ mod tests {
                 confirmed: false,
             })
         );
+    }
+
+    fn hdr(sequence: u32, confirmed: bool) -> Result<SlotHeader, SlotError> {
+        Ok(SlotHeader {
+            variant: 0,
+            sequence,
+            body_len: 4,
+            body_crc: 0,
+            entry_offset: 0x100,
+            confirmed,
+        })
+    }
+
+    const BAD: Result<SlotHeader, SlotError> = Err(SlotError::BodyCrc);
+
+    fn boot(slot: u8, reason: Reason) -> Choice {
+        Choice::Boot { slot, reason }
+    }
+
+    #[test]
+    fn the_newer_confirmed_slot_boots() {
+        assert_eq!(
+            select(hdr(1, true), hdr(2, true), false),
+            boot(1, Reason::Newest)
+        );
+        assert_eq!(
+            select(hdr(3, true), hdr(2, true), true),
+            boot(0, Reason::Newest)
+        );
+        assert_eq!(select(hdr(1, true), BAD, false), boot(0, Reason::OnlyValid));
+    }
+
+    #[test]
+    fn a_corrupt_newer_slot_falls_back() {
+        // B would be newer, but it doesn't validate: A is all there is.
+        assert_eq!(select(hdr(1, true), BAD, false), boot(0, Reason::OnlyValid));
+        assert_eq!(select(BAD, hdr(4, true), false), boot(1, Reason::OnlyValid));
+    }
+
+    #[test]
+    fn a_pending_slot_is_tried() {
+        assert_eq!(
+            select(hdr(1, true), hdr(2, false), false),
+            boot(1, Reason::PendingTry)
+        );
+    }
+
+    #[test]
+    fn a_pending_slot_the_watchdog_killed_rolls_back() {
+        assert_eq!(
+            select(hdr(1, true), hdr(2, false), true),
+            boot(0, Reason::RolledBack)
+        );
+    }
+
+    #[test]
+    fn a_lone_pending_slot_is_retried() {
+        assert_eq!(
+            select(hdr(2, false), BAD, true),
+            boot(0, Reason::PendingRetry)
+        );
+        assert_eq!(
+            select(BAD, hdr(2, false), false),
+            boot(1, Reason::PendingTry)
+        );
+    }
+
+    #[test]
+    fn equal_sequences_prefer_a() {
+        assert_eq!(
+            select(hdr(5, true), hdr(5, true), false),
+            boot(0, Reason::Newest)
+        );
+    }
+
+    #[test]
+    fn both_pending_picks_the_newer() {
+        assert_eq!(
+            select(hdr(5, false), hdr(6, false), false),
+            boot(1, Reason::PendingTry)
+        );
+        // The newer one hung: the older, pending too, gets its try.
+        assert_eq!(
+            select(hdr(5, false), hdr(6, false), true),
+            boot(0, Reason::RolledBack)
+        );
+    }
+
+    #[test]
+    fn wovf_ignored_for_a_confirmed_candidate() {
+        assert_eq!(
+            select(hdr(1, false), hdr(2, true), true),
+            boot(1, Reason::Newest)
+        );
+    }
+
+    #[test]
+    fn no_valid_slot_is_no_slot() {
+        assert_eq!(select(BAD, Err(SlotError::BadMagic), true), Choice::NoSlot);
     }
 
     #[test]
