@@ -71,10 +71,10 @@ use embassy_usb::driver::{Driver, Endpoint, EndpointError, EndpointIn, EndpointO
 use embassy_usb::types::InterfaceNumber;
 use embassy_usb::{Builder, Handler};
 
-use crate::midi_packets::{self, PacketQueues, RxRoute};
+use crate::midi_packets::{self, RxRoute};
 pub use crate::midi_packets::{
-    Packet, packets_enabled, try_recv_packet_from_host, try_send_packet_to_host, tx_packet_free,
-    tx_packet_pending, use_packets,
+    Packet, PacketQueues, packets_enabled, try_recv_packet_from_host, try_send_packet_to_host,
+    tx_packet_free, tx_packet_pending, use_packets,
 };
 
 // ============================================================================
@@ -175,7 +175,7 @@ static GTB_DESCRIPTOR: [u8; 18] = [
 ];
 
 // ============================================================================
-// Static channels and mode flag
+// Per-device state
 // ============================================================================
 
 /// One USB-MIDI device's state: its message queues, its mode, whether a host has it configured,
@@ -208,6 +208,9 @@ pub static DEFAULT_STATE: MidiState = MidiState::new(&midi_packets::DEFAULT);
 
 impl MidiState {
     /// A device not configured, MIDI 1.0, empty queues, using `packets` for packet mode.
+    ///
+    /// `packets` must belong to this device alone: two states sharing one [`PacketQueues`] share
+    /// their packet traffic, and each one's [`end_session`](Self::end_session) empties both.
     pub const fn new(packets: &'static PacketQueues) -> Self {
         Self {
             rx: Channel::new(),
@@ -829,6 +832,38 @@ mod tests {
     }
 
     #[test]
+    fn the_rx_task_delivers_into_its_own_state() {
+        use crate::test_usb::{FakeDriver, FakeEp};
+        static PA: PacketQueues = PacketQueues::new();
+        static PB: PacketQueues = PacketQueues::new();
+        static A: MidiState = MidiState::new(&PA);
+        static B: MidiState = MidiState::new(&PB);
+        A.packets().use_packets();
+        B.packets().use_packets();
+        let note_on = [0x09, 0x90, 0x3C, 0x64];
+        let task = run_rx_midi1_with::<FakeDriver>(&A, FakeEp::reading(&note_on));
+        let mut task = core::pin::pin!(task);
+        // One poll reads the transfer, delivers it, and waits on the next read.
+        assert!(embassy_futures::poll_once(task.as_mut()).is_pending());
+        assert_eq!(A.packets().try_recv_packet_from_host(), Some(note_on));
+        assert_eq!(B.packets().try_recv_packet_from_host(), None);
+    }
+
+    #[test]
+    fn a_reset_leaves_the_other_state_alone() {
+        static PA: PacketQueues = PacketQueues::new();
+        static PB: PacketQueues = PacketQueues::new();
+        static A: MidiState = MidiState::new(&PA);
+        static B: MidiState = MidiState::new(&PB);
+        let (mut ha, mut hb) = (handler(&A), handler(&B));
+        ha.configured(true);
+        hb.configured(true);
+        ha.reset();
+        assert!(!A.connected());
+        assert!(B.connected());
+    }
+
+    #[test]
     fn end_session_disconnects_and_empties() {
         static P: PacketQueues = PacketQueues::new();
         static S: MidiState = MidiState::new(&P);
@@ -864,7 +899,7 @@ mod tests {
             &midi_packets::DEFAULT
         ));
         assert!(try_send_to_host_byte(0x90));
-        assert!(DEFAULT_STATE.tx_pending() >= 1);
+        assert_eq!(DEFAULT_STATE.tx_pending(), 1);
         assert_eq!(DEFAULT_STATE.tx.try_receive(), Ok(0x90));
         let mut h = handler(&DEFAULT_STATE);
         h.configured(true);

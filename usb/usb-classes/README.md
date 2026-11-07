@@ -43,7 +43,7 @@ futures drive the endpoints, and the app exchanges messages through non-blocking
 ```rust,ignore
 use usb_classes::midi;
 
-let (mut midi_handler, eps) = midi::build(&mut builder);
+let (mut midi_handler, eps) = midi::build(&mut builder, midi::BusSpeed::High);
 builder.handler(&mut midi_handler);
 let mut usb = builder.build();
 
@@ -65,6 +65,12 @@ if midi::midi2_active() {
 A consumer that already speaks USB-MIDI 1.0 event packets calls `midi::use_packets()` before
 starting the alt-0 futures, then uses `try_recv_packet_from_host` / `try_send_packet_to_host`,
 which pass packets through unchanged (SysEx and cable numbers included).
+
+More than one USB-MIDI device (a USB controller per port, say) gives each its own
+`midi::MidiState` and `PacketQueues` as `static`s, and uses `midi::build_with`, the
+`run_*_with` futures and the state's methods instead of the free functions, which work on
+`midi::DEFAULT_STATE`. When a device's futures are dropped without a bus reset (its controller
+torn down), `MidiState::end_session` marks it disconnected and empties its queues.
 
 ## License
 
