@@ -14,6 +14,10 @@ breaking changes.
   spec defines, instead of a class request no host sends, so Linux no longer gives up with
   "Failed to parse GTB"; and the block declares MIDI 2.0 (`bMIDIProtocol` 0x11), not MIDI 1.0
   with timestamps (0x02).
+- The black encoders (the four with detents) start counting from the detent's resting state
+  instead of the pins as read at boot. A boot read that caught contact bounce put every click
+  out of step until the next reboot, and the first click after each reversal did nothing. The
+  gold encoders still start at the pins as read.
 
 ### Added
 
