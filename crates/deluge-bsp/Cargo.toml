@@ -35,6 +35,9 @@ default = ["memory-x", "fault-blink"]
 memory-x = []
 ## SEGGER RTT: fault dumps to RTT channel 0 and the RTT memory layout.
 rtt = ["rza1-rt/rtt"]
+## rza1-rt's zero-init data below the image, so an image's `__sram_heap_base` can hand the end of
+## the image (a load copy it no longer needs, say) to the SRAM heap.
+zero-init-below-image = ["rza1-rt/zero-init-below-image"]
 ## The fault handler: a CPU fault blinks the SYNC LED (P6_7), one to five pulses by the fault's
 ## kind (`fault_blink`). An image defining its own `rza1_cpu_fault_report` turns this off.
 fault-blink = []

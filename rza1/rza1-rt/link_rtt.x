@@ -64,12 +64,16 @@ SECTIONS {
         __rtt_buffer_end = .;
     } > NCACHE_RTT_RAM
 
+    /* The zero-init data (zero_init.x), here when the `zero-init-below-image` feature puts it at
+     * the start of RAM; otherwise this is empty. */
+    INCLUDE zero_init_below_image.x
+
     /*
      * The vector table, the first loadable bytes of the image, then the board's boot header, if
      * it has one: a board crate emits the words and signature its first-stage loader checks into
      * `.boot_header`, which therefore lands at `_start + 0x20`. Optional; nothing requires it.
      */
-    .vector_table ORIGIN(RAM) : ALIGN(0x20) {
+    .vector_table : ALIGN(0x20) {
         KEEP(*(.vector_table))
         KEEP(*(.boot_header))
     } > RAM
@@ -111,33 +115,18 @@ SECTIONS {
      * (a first-stage loader's code_end, say) computes it from __image_end in its memory.x. */
     __image_end = .;
 
-    .bss (NOLOAD) : ALIGN(4) {
-        __bss_start__ = .;
-        *(.bss .bss.*)
-        *(COMMON)
-        . = ALIGN(4);
-        __bss_end__ = .;
-    } > RAM
-
-    /* The MMU translation table (rza1_hal::mmu::TTB, 16 KB, 16 KB-aligned), here rather than in
-     * .bss. KEEP, because nothing references the input section by name. The reservation stays
-     * TTB_SIZE whatever it holds; a table that outgrew it would move the location counter
-     * backwards, which is a link error. */
-    .ttb_mmu1 (NOLOAD) : ALIGN(0x4000) {
-        ttb_mmu1_base = .;
-        KEEP(*(.ttb_mmu1 .ttb_mmu1.*))
-        . = ttb_mmu1_base + TTB_SIZE;
-        . = ALIGN(4);
-        ttb_mmu1_end = .;
-    } > RAM
+    /* The zero-init data (zero_init.x), here unless the `zero-init-below-image` feature put it
+     * before the vector table; then this is empty. */
+    INCLUDE zero_init_after_image.x
 
     end = .;
     _end = .;
 
-    /* SRAM heap: the free space between the image's zero-init data and the RTT/stack
-     * reservation. A firmware with memory it no longer needs after boot (a load copy it has moved
-     * elsewhere, say) defines `__sram_heap_base` to start the heap lower. 16-byte aligned, as
-     * TLSF pools require. */
+    /* SRAM heap: the free space between `end` and the RTT/stack reservation. A firmware with
+     * memory it no longer needs after boot (a load copy at the end of its image, say) defines
+     * `__sram_heap_base` to start the heap lower; that needs the `zero-init-below-image` feature,
+     * since the heap runs up from the base and zero-init data above it would be inside the heap.
+     * 16-byte aligned, as TLSF pools require. */
     __sram_heap_start = DEFINED(__sram_heap_base) ? __sram_heap_base : ALIGN(end, 16);
     __sram_heap_end   = ORIGIN(RTT_RAM);
     /* The per-mode stacks sit above the RTT reserve. Without this check, stacks that grew into
@@ -147,6 +136,8 @@ SECTIONS {
            "the stacks overlap the RTT reserve: with RTT on, the per-mode stacks must fit between RTT_RAM's end and INTERNAL_RAM_END (is a --defsym'd PROGRAM_STACK_SIZE meant for a build without RTT?)")
     ASSERT(__sram_heap_start <= __sram_heap_end,
            "the image overruns the SRAM heap: it ends past __sram_heap_end")
+    ASSERT(!DEFINED(__sram_heap_base) || (__sram_heap_base >= __bss_end__ && __sram_heap_base >= ttb_mmu1_end),
+           "__sram_heap_base is below zero-init data, which would be inside the heap: build with rza1-rt's zero-init-below-image feature")
 
     /*
      * Exception-mode stacks — NOLOAD, placed just below the program stack.

@@ -25,3 +25,7 @@ rza1-rt-macros = { version = "0.2.0", path = "../rza1-rt-macros" }
 ## script reserves the RTT buffer (the board's memory.x must then define RTT_RAM and
 ## NCACHE_RTT_RAM). The image must also link `rtt-target`, which defines `_SEGGER_RTT`.
 rtt = []
+## The zero-init data (`.bss` and the MMU translation table) at the start of RAM, below the image,
+## instead of after it. For an image that hands part of itself to the heap after boot
+## (`__sram_heap_base`): the heap then runs from inside the image up, with no zero-init data in it.
+zero-init-below-image = []

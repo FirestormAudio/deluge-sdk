@@ -11,10 +11,13 @@ passes `-Tlink.x` (`cargo:rustc-link-arg-bins=-Tlink.x`).
 
 `link.x` lays the image out from the start of `RAM`: the vector table (with a board's boot
 header after it), code, read-only data, `.data` and the unwind tables, then `__image_end`, then
-the zero-init `.bss` and the 16 KB MMU translation table, then the SRAM heap
+the 16 KB MMU translation table and the zero-init `.bss`, then the SRAM heap
 (`__sram_heap_start..__sram_heap_end`) up to the per-mode stacks at the top. `__image_end` is the
 last byte a loader has to copy; a board whose first-stage loader wants a rounded copy length
-derives it from that symbol in its `memory.x`.
+derives it from that symbol in its `memory.x`. With the `zero-init-below-image` feature the
+translation table and `.bss` come first, at the start of `RAM`, and the image follows them, so an
+image that defines `__sram_heap_base` inside itself (to give a load copy it no longer needs to the
+heap) has no zero-init data in its heap.
 
 Builds on stable Rust 1.97 or later. (The workspace pins a nightly only for its own `-Zbuild-std` builds.)
 
@@ -55,5 +58,6 @@ A board with no boot header leaves both out.
 | Feature | Effect |
 |---|---|
 | `rtt` | Fault handlers dump their registers to SEGGER RTT channel 0 before the fault handler runs; the script reserves the RTT buffer (`RTT_RAM`, `NCACHE_RTT_RAM` regions) |
+| `zero-init-below-image` | The translation table and `.bss` at the start of `RAM`, below the image, for an image that gives part of itself to the heap (`__sram_heap_base`) |
 
 Licensed under either of Apache-2.0 or MIT at your option.

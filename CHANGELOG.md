@@ -21,6 +21,10 @@ breaking changes.
 
 ### Added
 
+- `rza1-rt`'s `zero-init-below-image` feature (passed through by `deluge-bsp`) places `.bss`
+  and the MMU translation table below the vector table instead of after the image, for an app
+  whose heap starts at the image's end and reclaims its boot-only tail. The default layout is
+  unchanged, and `link.x` now refuses a `__sram_heap_base` that lies below the zero-init data.
 - `usb_classes::midi` and `usb_classes::midi_packets` can run more than one USB-MIDI device:
   `MidiState` and `PacketQueues` hold a device's queues and flags (one `static` each per device),
   with `build_with`, the `run_*_with` endpoint tasks and `MidiState::end_session` for a session
