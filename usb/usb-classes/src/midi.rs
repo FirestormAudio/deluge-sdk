@@ -109,10 +109,14 @@ const MS_GENERAL_2_0: u8 = 0x02; // MIDI 2.0
 
 // Group Terminal Block descriptor type and subtypes (USB MIDI 2.0 spec §5.5)
 const CS_GR_TRM_BLOCK: u8 = 0x26;
+/// The MIDI Streaming interface's MIDI 2.0 (UMP) alternate setting.
+const MIDI2_ALT: u8 = 1;
 const GR_TRM_BLOCK_HEADER: u8 = 0x01;
 const GR_TRM_BLOCK: u8 = 0x02;
 const GTB_ID: u8 = 0x01; // single bidirectional GTB
-const GTB_MIDI2_PROTOCOL: u8 = 0x02; // bMIDIProtocol: MIDI 2.0 UMP
+/// bMIDIProtocol: MIDI 2.0 (Linux's `USB_MS_MIDI_PROTO_2_0`); 0x02 is MIDI 1.0 in 64-bit UMP
+/// with jitter-reduction timestamps.
+const GTB_MIDI2_PROTOCOL: u8 = 0x11;
 
 // Bulk endpoint max packet sizes
 const BULK_MPS_MIDI1: u16 = 64; // USB FS-compatible, used for alt 0
@@ -149,7 +153,7 @@ const MIDI2_MS_TOTAL: u16 = 7;
 const AC_TOTAL_LEN: u8 = 9;
 
 // GTB descriptor: header (5 bytes) + 1 block (13 bytes) = 18 bytes.
-// Returned by the Handler in response to class GET_DESCRIPTOR(0x26).
+// Returned by the Handler in response to the standard GET_DESCRIPTOR for CS_GR_TRM_BLOCK (0x26).
 const GTB_TOTAL_LEN: u8 = 18;
 static GTB_DESCRIPTOR: [u8; 18] = [
     // Group Terminal Block Header (USB MIDI 2.0 spec, Table 5-8)
@@ -167,7 +171,7 @@ static GTB_DESCRIPTOR: [u8; 18] = [
     0x00,               // nGroupTrm = 0 (first UMP group, 0-indexed)
     0x01,               // nNumGroupTrm = 1 (covers groups 0–0)
     0x00,               // iBlockItem = 0 (no string descriptor)
-    GTB_MIDI2_PROTOCOL, // bMIDIProtocol = 0x02 (MIDI 2.0 UMP)
+    GTB_MIDI2_PROTOCOL, // bMIDIProtocol = 0x11 (MIDI 2.0)
     0x00,
     0x00, // wMaxInputBandwidth (0 = use default)
     0x00,
@@ -389,16 +393,16 @@ impl Handler for MidiClassHandler {
         }
     }
 
-    /// Respond to class-specific `GET_DESCRIPTOR(0x26)` — the Group Terminal
-    /// Block descriptor required by the MIDI 2.0 spec.
-    ///
-    /// Request signature: `bmRequestType=0xA1`, `bRequest=0x01`,
-    /// `wValue=0x2600`, `wIndex=<MS interface number>`.
+    /// Answer the host's request for the MIDI 2.0 alternate's Group Terminal Block descriptors:
+    /// a standard `GET_DESCRIPTOR` to the MIDI Streaming interface (USB MIDI 2.0 §6.2):
+    /// `bmRequestType = 0x81`, `bRequest = 6`, `wValue = CS_GR_TRM_BLOCK (0x26) << 8 | alternate
+    /// setting`, `wIndex = <MS interface number>`. Linux asks for it before using the alternate
+    /// (`sound/usb/midi2.c`) and gives the MIDI 2.0 port up without it.
     fn control_in<'a>(&'a mut self, req: Request, _buf: &'a mut [u8]) -> Option<InResponse<'a>> {
-        if req.request_type == RequestType::Class
+        if req.request_type == RequestType::Standard
             && req.recipient == Recipient::Interface
-            && req.request == 0x01
-            && req.value == 0x2600
+            && req.request == Request::GET_DESCRIPTOR
+            && req.value == (CS_GR_TRM_BLOCK as u16) << 8 | MIDI2_ALT as u16
             && req.index == u8::from(self.ms_iface) as u16
         {
             return Some(InResponse::Accepted(&GTB_DESCRIPTOR));
@@ -513,7 +517,7 @@ pub fn build_with<'d, D: Driver<'d>>(
     let ep_in_midi1 = alt0.endpoint_bulk_in(None, BULK_MPS_MIDI1);
     alt0.descriptor(CS_ENDPOINT, &[MS_GENERAL, 1, JACK_EMB_IN_ID]);
 
-    // Alt 1: MIDI 2.0 — bulk sized for the bus speed, GTBs via class GET_DESCRIPTOR ─
+    // Alt 1: MIDI 2.0 — bulk sized for the bus speed, GTBs via GET_DESCRIPTOR (0x26) ─
     let mut alt1 = ms_ib.alt_setting(USB_CLASS_AUDIO, USB_SUBCLASS_MIDI_STREAMING, 0x00, None);
 
     // CS MS Interface Header: bcdMSC=2.00, wTotalLength=7 (no jack descriptors)
@@ -829,6 +833,52 @@ mod tests {
         assert!(!B.midi2_active());
         assert!(A.try_send_to_host_byte(0x90));
         assert_eq!(B.tx_pending(), 0);
+    }
+
+    /// The Group Terminal Block request as the USB MIDI 2.0 spec defines it and Linux sends it
+    /// (`sound/usb/midi2.c`, `get_group_terminal_block_descs`): a standard GET_DESCRIPTOR to the
+    /// MIDI Streaming interface, `wValue` = CS_GR_TRM_BLOCK (0x26) << 8 | the alternate setting.
+    fn gtb_request(alt: u8, iface: u16, length: u16) -> Request {
+        Request {
+            direction: embassy_usb::driver::Direction::In,
+            request_type: RequestType::Standard,
+            recipient: Recipient::Interface,
+            request: Request::GET_DESCRIPTOR,
+            value: 0x26 << 8 | alt as u16,
+            index: iface,
+            length,
+        }
+    }
+
+    #[test]
+    fn the_group_terminal_blocks_answer_the_standard_request() {
+        static P: PacketQueues = PacketQueues::new();
+        static S: MidiState = MidiState::new(&P);
+        let mut h = handler(&S);
+        let mut buf = [0u8; 64];
+        let Some(InResponse::Accepted(gtb)) = h.control_in(gtb_request(1, 1, 18), &mut buf) else {
+            panic!("the MIDI 2.0 alternate's Group Terminal Blocks are answered");
+        };
+        // Header: bLength 5, CS_GR_TRM_BLOCK, header subtype, wTotalLength 18.
+        assert_eq!(gtb[..5], [5, 0x26, 0x01, 18, 0]);
+        // One bidirectional block, ID 1, group 0, one group, protocol MIDI 2.0 (0x11).
+        assert_eq!(gtb[5..14], [13, 0x26, 0x02, 1, 0x00, 0, 1, 0, 0x11]);
+        assert_eq!(gtb.len(), 18);
+    }
+
+    #[test]
+    fn other_interfaces_and_descriptors_are_not_answered() {
+        static P: PacketQueues = PacketQueues::new();
+        static S: MidiState = MidiState::new(&P);
+        let mut h = handler(&S);
+        let mut buf = [0u8; 64];
+        assert!(
+            h.control_in(gtb_request(1, 0, 18), &mut buf).is_none(),
+            "another interface"
+        );
+        let mut other = gtb_request(1, 1, 18);
+        other.value = 0x2201; // a report descriptor, not ours
+        assert!(h.control_in(other, &mut buf).is_none());
     }
 
     #[test]
