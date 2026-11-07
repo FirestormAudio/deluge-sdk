@@ -41,7 +41,7 @@ pub mod overbridge;
 pub mod audio;
 #[cfg(all(target_os = "none", feature = "device-msc"))]
 pub mod bot;
-#[cfg(all(target_os = "none", feature = "device-midi"))]
+#[cfg(all(feature = "device-midi", any(target_os = "none", test)))]
 pub mod midi;
 #[cfg(all(target_os = "none", feature = "device-msc"))]
 pub mod msc;

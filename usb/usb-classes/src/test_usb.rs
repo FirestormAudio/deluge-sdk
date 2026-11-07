@@ -36,23 +36,43 @@ impl FakeDriver {
                 *n += 1;
                 EndpointAddress::from_parts((*n - 1) as usize, dir)
             });
-        FakeEp(EndpointInfo {
-            addr,
-            ep_type,
-            max_packet_size,
-            interval_ms,
-        })
+        FakeEp(
+            EndpointInfo {
+                addr,
+                ep_type,
+                max_packet_size,
+                interval_ms,
+            },
+            None,
+        )
     }
 }
 
-pub struct FakeEp(EndpointInfo);
+/// An endpoint for descriptor tests; or, made with [`FakeEp::reading`], an enabled OUT endpoint
+/// whose first read returns a scripted transfer and whose later reads never complete.
+pub struct FakeEp(EndpointInfo, Option<Vec<u8>>);
+
+impl FakeEp {
+    /// An enabled bulk OUT endpoint that reads `transfer` once.
+    pub fn reading(transfer: &[u8]) -> Self {
+        Self(
+            EndpointInfo {
+                addr: EndpointAddress::from_parts(1, Direction::Out),
+                ep_type: embassy_usb::driver::EndpointType::Bulk,
+                max_packet_size: 64,
+                interval_ms: 0,
+            },
+            Some(transfer.to_vec()),
+        )
+    }
+}
 
 impl Endpoint for FakeEp {
     fn info(&self) -> &EndpointInfo {
         &self.0
     }
     async fn wait_enabled(&mut self) {
-        unreachable!("descriptor tests never run the device")
+        assert!(self.1.is_some(), "descriptor tests never run the device");
     }
 }
 
@@ -63,8 +83,18 @@ impl EndpointIn for FakeEp {
 }
 
 impl EndpointOut for FakeEp {
-    async fn read(&mut self, _: &mut [u8]) -> Result<usize, EndpointError> {
-        unreachable!("descriptor tests never run the device")
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, EndpointError> {
+        let script = self
+            .1
+            .as_mut()
+            .expect("descriptor tests never run the device");
+        if script.is_empty() {
+            return core::future::pending().await;
+        }
+        let n = script.len().min(buf.len());
+        buf[..n].copy_from_slice(&script[..n]);
+        script.drain(..n);
+        Ok(n)
     }
 }
 

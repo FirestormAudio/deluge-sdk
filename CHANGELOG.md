@@ -9,6 +9,11 @@ breaking changes.
 
 ### Added
 
+- `usb_classes::midi` and `usb_classes::midi_packets` can run more than one USB-MIDI device:
+  `MidiState` and `PacketQueues` hold a device's queues and flags (one `static` each per device),
+  with `build_with`, the `run_*_with` endpoint tasks and `MidiState::end_session` for a session
+  dropped without a bus reset. The free functions, `build` and `run_*` keep working, on
+  `DEFAULT_STATE`.
 - `ClockOut::start`, `set_period`, `stop` and `is_running`. `set_period` and `set_pulse_width`
   take effect at the next period boundary, so a tempo change never gives a short or doubled
   pulse. Periods are clamped to 1 ms–2 s and the pulse width to under the period; the first
