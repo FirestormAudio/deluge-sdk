@@ -1237,6 +1237,7 @@ dependencies = [
  "block-device-driver",
  "cortex-ar",
  "critical-section",
+ "deluge-flash-protect",
  "deluge-usb-classes",
  "embassy-executor",
  "embassy-futures",
@@ -1291,6 +1292,10 @@ dependencies = [
  "arm-dsp",
  "proptest",
 ]
+
+[[package]]
+name = "deluge-flash-protect"
+version = "0.1.0"
 
 [[package]]
 name = "deluge-fonts"

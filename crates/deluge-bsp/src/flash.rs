@@ -185,6 +185,7 @@ pub const fn decode_jedec(id: [u8; 3]) -> (&'static str, u32) {
         [0xEF, _, _] => ("Winbond 25Qxx", 0),
         // Adesto / Renesas (manufacturer 0x1F)
         [0x1F, 0x87, 0x01] => ("AT25SF321B", 0x0040_0000),
+        [0x1F, 0x88, 0x01] => ("AT25QF641B", 0x0080_0000), // 8 MB: not a Deluge part
         [0x1F, _, _] => ("Adesto AT25xx", 0),
         // Blank bus / no response.
         [0x00, 0x00, 0x00] | [0xFF, 0xFF, 0xFF] => ("no flash", 0),

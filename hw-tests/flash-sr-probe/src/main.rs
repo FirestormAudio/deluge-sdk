@@ -459,11 +459,16 @@ impl SrBus for Volatile {
     fn read_regs(&mut self) -> (u8, u8) {
         spibsc::protection_regs()
     }
-    fn write(&mut self, method: WriteMethod, sr1: Option<u8>, sr2: Option<u8>) -> bool {
+    fn write(&mut self, method: protect::WriteMethod, sr1: Option<u8>, sr2: Option<u8>) -> bool {
         // SAFETY: the probe runs from SRAM.
-        unsafe { spibsc::write_protection_volatile(method, sr1, sr2) }
+        unsafe { spibsc::write_protection_volatile(protect::hal_method(method), sr1, sr2) }
     }
-    fn write_volatile(&mut self, method: WriteMethod, sr1: Option<u8>, sr2: Option<u8>) -> bool {
+    fn write_volatile(
+        &mut self,
+        method: protect::WriteMethod,
+        sr1: Option<u8>,
+        sr2: Option<u8>,
+    ) -> bool {
         self.write(method, sr1, sr2)
     }
     fn software_reset(&mut self) {

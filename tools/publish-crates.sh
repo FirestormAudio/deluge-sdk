@@ -132,6 +132,7 @@ if [ ${#mode[@]} -eq 0 ]; then
   publish deluge-sdk-macros crates/deluge-sdk-macros "${sdk[@]}"
   publish max5136 drivers/max5136 "${sdk[@]}"
   publish deluge-usb-classes usb/usb-classes "${sdk[@]}"
+  publish deluge-flash-protect crates/flash-protect --target "$host"
   publish deluge-bsp crates/deluge-bsp "${sdk[@]}"
   publish deluge-sdk crates/deluge-sdk "${sdk[@]}"
   publish cargo-deluge tools/cargo-deluge --target "$host"
@@ -163,7 +164,7 @@ step "Linux backend"
 step "SDK"
 cargo publish "${mode[@]}" "${config[@]}" -Zbuild-std=core,alloc \
   -p arm-dsp -p deluge-fixedpoint -p deluge-sdk-macros -p max5136 \
-  -p deluge-usb-classes -p deluge-bsp -p deluge-sdk
+  -p deluge-usb-classes -p deluge-flash-protect -p deluge-bsp -p deluge-sdk
 
 step "cargo deluge"
 (cd tools/cargo-deluge && cargo publish "${mode[@]}" --target "$host")
