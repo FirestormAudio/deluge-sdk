@@ -43,6 +43,24 @@
 //! [`try_send_packet_to_host`] instead of the byte API. Packets pass through
 //! unchanged in both directions — SysEx and cable numbers included — which the
 //! byte API cannot carry. See [`crate::midi_packets`].
+//!
+//! ## More than one device
+//!
+//! The free functions, [`build`] and the `run_*` tasks work on [`DEFAULT_STATE`], the single
+//! USB-MIDI device most firmware has. A firmware with more than one (a USB controller per port,
+//! say) gives each its own [`MidiState`] and [`PacketQueues`], as `static`s, and uses
+//! [`build_with`], the `run_*_with` tasks and the state's methods:
+//!
+//! ```rust,ignore
+//! static PACKETS_1: PacketQueues = PacketQueues::new();
+//! static MIDI_1: MidiState = MidiState::new(&PACKETS_1);
+//! let (handler, eps) = midi::build_with(&mut builder, midi::BusSpeed::High, &MIDI_1);
+//! // run_rx_midi1_with::<D>(&MIDI_1, eps.ep_out_midi1), …
+//! if MIDI_1.connected() { MIDI_1.packets().try_send_packet_to_host(packet); }
+//! ```
+//!
+//! When a device's endpoint tasks are dropped without the bus resetting (its controller is torn
+//! down), call [`MidiState::end_session`] so it reads as disconnected and its queues start empty.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -53,7 +71,7 @@ use embassy_usb::driver::{Driver, Endpoint, EndpointError, EndpointIn, EndpointO
 use embassy_usb::types::InterfaceNumber;
 use embassy_usb::{Builder, Handler};
 
-use crate::midi_packets::{self, RxRoute};
+use crate::midi_packets::{self, PacketQueues, RxRoute};
 pub use crate::midi_packets::{
     Packet, packets_enabled, try_recv_packet_from_host, try_send_packet_to_host, tx_packet_free,
     tx_packet_pending, use_packets,
@@ -160,28 +178,114 @@ static GTB_DESCRIPTOR: [u8; 18] = [
 // Static channels and mode flag
 // ============================================================================
 
-/// MIDI 1.0 messages received from the host (alt 0, OUT endpoint).
-static MIDI_RX: Channel<CriticalSectionRawMutex, [u8; 3], 16> = Channel::new();
+/// One USB-MIDI device's state: its message queues, its mode, whether a host has it configured,
+/// and its packet queues. A firmware with more than one USB-MIDI device keeps one per device (a
+/// `static`, with its own [`PacketQueues`]), passes it to [`build_with`] and the `run_*_with`
+/// endpoint tasks, and reads and writes through its methods. The free functions in this module
+/// work on [`DEFAULT_STATE`].
+pub struct MidiState {
+    /// MIDI 1.0 messages received from the host (alt 0, OUT endpoint).
+    rx: Channel<CriticalSectionRawMutex, [u8; 3], 16>,
+    /// Raw MIDI 1.0 bytes queued for transmission to the host (alt 0, IN endpoint).
+    tx: Channel<CriticalSectionRawMutex, u8, 64>,
+    /// UMP messages received from the host (alt 1, OUT endpoint), each zero-padded to `[u32; 4]`
+    /// ([`ump_word_count`] gives the valid words).
+    rx2: Channel<CriticalSectionRawMutex, [u32; 4], 16>,
+    /// UMP messages queued for transmission to the host (alt 1, IN endpoint).
+    tx2: Channel<CriticalSectionRawMutex, [u32; 4], 16>,
+    /// `true` when the host has selected alt setting 1 (MIDI 2.0 UMP transport).
+    midi2: AtomicBool,
+    /// `true` while the host has the device configured (SET_CONFIGURATION): a USB-MIDI peer is
+    /// present. Cleared on bus reset or deconfigure, and by [`MidiState::end_session`].
+    configured: AtomicBool,
+    /// The packet-mode queues.
+    packets: &'static PacketQueues,
+}
 
-/// Raw MIDI 1.0 bytes queued for transmission to the host (alt 0, IN endpoint).
-static MIDI_TX: Channel<CriticalSectionRawMutex, u8, 64> = Channel::new();
+/// The state the module's free functions use: the single USB-MIDI device's, with
+/// [`midi_packets::DEFAULT`] as its packet queues.
+pub static DEFAULT_STATE: MidiState = MidiState::new(&midi_packets::DEFAULT);
 
-/// UMP messages received from the host (alt 1, OUT endpoint).
-///
-/// Each entry is zero-padded to `[u32; 4]`; use [`ump_word_count`] to
-/// determine the number of valid words.
-static MIDI2_RX: Channel<CriticalSectionRawMutex, [u32; 4], 16> = Channel::new();
+impl MidiState {
+    /// A device not configured, MIDI 1.0, empty queues, using `packets` for packet mode.
+    pub const fn new(packets: &'static PacketQueues) -> Self {
+        Self {
+            rx: Channel::new(),
+            tx: Channel::new(),
+            rx2: Channel::new(),
+            tx2: Channel::new(),
+            midi2: AtomicBool::new(false),
+            configured: AtomicBool::new(false),
+            packets,
+        }
+    }
 
-/// UMP messages queued for transmission to the host (alt 1, IN endpoint).
-static MIDI2_TX: Channel<CriticalSectionRawMutex, [u32; 4], 16> = Channel::new();
+    /// The packet-mode queues ([`crate::midi_packets`]).
+    pub fn packets(&self) -> &'static PacketQueues {
+        self.packets
+    }
 
-/// `true` when the host has selected alt setting 1 (MIDI 2.0 UMP transport).
-static MIDI2_ACTIVE: AtomicBool = AtomicBool::new(false);
+    /// As [`midi2_active`].
+    #[inline]
+    pub fn midi2_active(&self) -> bool {
+        self.midi2.load(Ordering::Acquire)
+    }
 
-/// `true` while the host has the device configured (SET_CONFIGURATION). Tracks
-/// whether a USB-MIDI peer is actually present, so consumers can report port
-/// connectivity. Cleared on bus reset / deconfigure.
-static CONFIGURED: AtomicBool = AtomicBool::new(false);
+    /// As [`connected`].
+    #[inline]
+    pub fn connected(&self) -> bool {
+        self.configured.load(Ordering::Acquire)
+    }
+
+    /// As [`tx_free`].
+    #[inline]
+    pub fn tx_free(&self) -> usize {
+        self.tx.free_capacity()
+    }
+
+    /// As [`tx_pending`].
+    #[inline]
+    pub fn tx_pending(&self) -> usize {
+        self.tx.len()
+    }
+
+    /// As [`try_recv_from_host`].
+    #[inline]
+    pub fn try_recv_from_host(&self) -> Option<[u8; 3]> {
+        self.rx.try_receive().ok()
+    }
+
+    /// As [`try_send_to_host_byte`].
+    #[inline]
+    pub fn try_send_to_host_byte(&self, byte: u8) -> bool {
+        self.tx.try_send(byte).is_ok()
+    }
+
+    /// As [`try_recv_ump_from_host`].
+    #[inline]
+    pub fn try_recv_ump_from_host(&self) -> Option<[u32; 4]> {
+        self.rx2.try_receive().ok()
+    }
+
+    /// As [`try_send_ump_to_host`].
+    #[inline]
+    pub fn try_send_ump_to_host(&self, words: [u32; 4]) -> bool {
+        self.tx2.try_send(words).is_ok()
+    }
+
+    /// A session ended without the bus telling the class: its endpoint tasks were dropped (the
+    /// port went away, or changed role). Not connected, MIDI 1.0, every queue empty, so nothing
+    /// queued for one host reaches the next. Packet mode is kept.
+    pub fn end_session(&self) {
+        self.configured.store(false, Ordering::Release);
+        self.midi2.store(false, Ordering::Release);
+        self.rx.clear();
+        self.tx.clear();
+        self.rx2.clear();
+        self.tx2.clear();
+        self.packets.clear();
+    }
+}
 
 // ============================================================================
 // Public non-async API
@@ -190,33 +294,33 @@ static CONFIGURED: AtomicBool = AtomicBool::new(false);
 /// Returns `true` if the host has negotiated MIDI 2.0 (alt setting 1).
 #[inline]
 pub fn midi2_active() -> bool {
-    MIDI2_ACTIVE.load(Ordering::Acquire)
+    DEFAULT_STATE.midi2_active()
 }
 
 /// Returns `true` while the device is configured by a USB host (i.e. a USB-MIDI
 /// peer is present). Use to report port connectivity.
 #[inline]
 pub fn connected() -> bool {
-    CONFIGURED.load(Ordering::Acquire)
+    DEFAULT_STATE.connected()
 }
 
 /// Free space (in bytes) in the MIDI 1.0 host-bound TX queue.
 #[inline]
 pub fn tx_free() -> usize {
-    MIDI_TX.free_capacity()
+    DEFAULT_STATE.tx_free()
 }
 
 /// Bytes queued for transmission to the host but not yet packetised on the wire.
 #[inline]
 pub fn tx_pending() -> usize {
-    MIDI_TX.len()
+    DEFAULT_STATE.tx_pending()
 }
 
 /// Try to receive the next 3-byte MIDI 1.0 message from the host.
 /// Only meaningful when `!midi2_active()`.
 #[inline]
 pub fn try_recv_from_host() -> Option<[u8; 3]> {
-    MIDI_RX.try_receive().ok()
+    DEFAULT_STATE.try_recv_from_host()
 }
 
 /// Queue one raw MIDI 1.0 byte for transmission to the host.
@@ -224,14 +328,14 @@ pub fn try_recv_from_host() -> Option<[u8; 3]> {
 /// Only meaningful when `!midi2_active()`.
 #[inline]
 pub fn try_send_to_host_byte(byte: u8) -> bool {
-    MIDI_TX.try_send(byte).is_ok()
+    DEFAULT_STATE.try_send_to_host_byte(byte)
 }
 
 /// Try to receive the next UMP message from the host.
 /// Only meaningful when `midi2_active()`.
 #[inline]
 pub fn try_recv_ump_from_host() -> Option<[u32; 4]> {
-    MIDI2_RX.try_receive().ok()
+    DEFAULT_STATE.try_recv_ump_from_host()
 }
 
 /// Queue a UMP message for transmission to the host.
@@ -239,7 +343,7 @@ pub fn try_recv_ump_from_host() -> Option<[u32; 4]> {
 /// Only meaningful when `midi2_active()`.
 #[inline]
 pub fn try_send_ump_to_host(words: [u32; 4]) -> bool {
-    MIDI2_TX.try_send(words).is_ok()
+    DEFAULT_STATE.try_send_ump_to_host(words)
 }
 
 // ============================================================================
@@ -252,21 +356,24 @@ pub fn try_send_ump_to_host(words: [u32; 4]) -> bool {
 /// [`build`] and before `builder.build()`.
 pub struct MidiClassHandler {
     ms_iface: InterfaceNumber,
+    state: &'static MidiState,
 }
 
 impl Handler for MidiClassHandler {
     fn configured(&mut self, configured: bool) {
-        CONFIGURED.store(configured, Ordering::Release);
+        self.state.configured.store(configured, Ordering::Release);
     }
 
     fn reset(&mut self) {
-        CONFIGURED.store(false, Ordering::Release);
-        MIDI2_ACTIVE.store(false, Ordering::Release);
+        self.state.configured.store(false, Ordering::Release);
+        self.state.midi2.store(false, Ordering::Release);
     }
 
     fn set_alternate_setting(&mut self, iface: InterfaceNumber, alternate_setting: u8) {
         if iface == self.ms_iface {
-            MIDI2_ACTIVE.store(alternate_setting == 1, Ordering::Release);
+            self.state
+                .midi2
+                .store(alternate_setting == 1, Ordering::Release);
             log::info!(
                 "usb-midi: alt={} ({})",
                 alternate_setting,
@@ -320,6 +427,15 @@ pub struct MidiEndpoints<'d, D: Driver<'d>> {
 pub fn build<'d, D: Driver<'d>>(
     builder: &mut Builder<'d, D>,
     speed: BusSpeed,
+) -> (MidiClassHandler, MidiEndpoints<'d, D>) {
+    build_with(builder, speed, &DEFAULT_STATE)
+}
+
+/// As [`build`], for the device whose state is `state`.
+pub fn build_with<'d, D: Driver<'d>>(
+    builder: &mut Builder<'d, D>,
+    speed: BusSpeed,
+    state: &'static MidiState,
 ) -> (MidiClassHandler, MidiEndpoints<'d, D>) {
     let mut func = builder.function(USB_CLASS_AUDIO, 0x00, 0x00);
 
@@ -416,7 +532,7 @@ pub fn build<'d, D: Driver<'d>>(
     alt1.descriptor(CS_ENDPOINT, &[MS_GENERAL_2_0, 1, GTB_ID]);
 
     (
-        MidiClassHandler { ms_iface },
+        MidiClassHandler { ms_iface, state },
         MidiEndpoints {
             ep_out_midi1,
             ep_in_midi1,
@@ -464,8 +580,18 @@ fn build_usb_midi_packet(msg: &[u8; 3]) -> [u8; 4] {
 /// every packet is queued unchanged for [`try_recv_packet_from_host`], waiting
 /// for room so the host is held off rather than a packet lost; otherwise the
 /// decoded 3-byte messages are queued for [`try_recv_from_host`].
-pub async fn run_rx_midi1<'d, D: Driver<'d>>(mut ep_out: D::EndpointOut)
+pub async fn run_rx_midi1<'d, D: Driver<'d>>(ep_out: D::EndpointOut)
 where
+    D::EndpointOut: EndpointOut,
+{
+    run_rx_midi1_with::<D>(&DEFAULT_STATE, ep_out).await
+}
+
+/// As [`run_rx_midi1`], for the device whose state is `state`.
+pub async fn run_rx_midi1_with<'d, D: Driver<'d>>(
+    state: &'static MidiState,
+    mut ep_out: D::EndpointOut,
+) where
     D::EndpointOut: EndpointOut,
 {
     let mut buf = [0u8; 64];
@@ -474,12 +600,12 @@ where
         loop {
             match ep_out.read(&mut buf).await {
                 Ok(n) => {
-                    let packet_mode = packets_enabled();
+                    let packet_mode = state.packets.packets_enabled();
                     for packet in midi_packets::packets_in(&buf[..n]) {
                         match midi_packets::route_rx_packet(packet, packet_mode) {
-                            RxRoute::Packet(p) => midi_packets::deliver_packet_from_host(p).await,
+                            RxRoute::Packet(p) => state.packets.deliver_packet_from_host(p).await,
                             RxRoute::Message(msg) => {
-                                let _ = MIDI_RX.try_send(msg);
+                                let _ = state.rx.try_send(msg);
                             }
                             RxRoute::Drop => {}
                         }
@@ -501,8 +627,18 @@ where
 /// Otherwise reads raw MIDI 1.0 bytes queued by [`try_send_to_host_byte`],
 /// assembles them into 3-byte messages (with running-status and realtime
 /// handling), and writes 4-byte USB MIDI event packets to the host.
-pub async fn run_tx_midi1<'d, D: Driver<'d>>(mut ep_in: D::EndpointIn)
+pub async fn run_tx_midi1<'d, D: Driver<'d>>(ep_in: D::EndpointIn)
 where
+    D::EndpointIn: EndpointIn,
+{
+    run_tx_midi1_with::<D>(&DEFAULT_STATE, ep_in).await
+}
+
+/// As [`run_tx_midi1`], for the device whose state is `state`.
+pub async fn run_tx_midi1_with<'d, D: Driver<'d>>(
+    state: &'static MidiState,
+    mut ep_in: D::EndpointIn,
+) where
     D::EndpointIn: EndpointIn,
 {
     let mut pending = [0u8; 3];
@@ -512,11 +648,11 @@ where
 
     loop {
         ep_in.wait_enabled().await;
-        if packets_enabled() {
+        if state.packets.packets_enabled() {
             loop {
-                let first = midi_packets::next_packet_to_host().await;
+                let first = state.packets.next_packet_to_host().await;
                 transfer[..4].copy_from_slice(&first);
-                let n = 4 + midi_packets::drain_packets_to_host(&mut transfer[4..]);
+                let n = 4 + state.packets.drain_packets_to_host(&mut transfer[4..]);
                 if ep_in.write(&transfer[..n]).await.is_err() {
                     break;
                 }
@@ -524,7 +660,7 @@ where
             continue;
         }
         loop {
-            let byte = MIDI_TX.receive().await;
+            let byte = state.tx.receive().await;
 
             if byte >= 0xF8 {
                 // Single-byte realtime — send immediately.
@@ -573,8 +709,18 @@ where
 ///
 /// Reads raw 32-bit UMP words from the host and queues complete messages
 /// (zero-padded to `[u32; 4]`) for [`try_recv_ump_from_host`].
-pub async fn run_rx_midi2<'d, D: Driver<'d>>(mut ep_out: D::EndpointOut)
+pub async fn run_rx_midi2<'d, D: Driver<'d>>(ep_out: D::EndpointOut)
 where
+    D::EndpointOut: EndpointOut,
+{
+    run_rx_midi2_with::<D>(&DEFAULT_STATE, ep_out).await
+}
+
+/// As [`run_rx_midi2`], for the device whose state is `state`.
+pub async fn run_rx_midi2_with<'d, D: Driver<'d>>(
+    state: &'static MidiState,
+    mut ep_out: D::EndpointOut,
+) where
     D::EndpointOut: EndpointOut,
 {
     let mut buf = [0u8; 512];
@@ -597,7 +743,7 @@ where
                             *word =
                                 u32::from_le_bytes(buf[off..off + 4].try_into().unwrap_or([0; 4]));
                         }
-                        let _ = MIDI2_RX.try_send(words);
+                        let _ = state.rx2.try_send(words);
                         i = end;
                     }
                 }
@@ -614,15 +760,25 @@ where
 ///
 /// Pops UMP messages queued by [`try_send_ump_to_host`] and writes the
 /// appropriate number of 32-bit words (1, 2, or 4) as little-endian bytes.
-pub async fn run_tx_midi2<'d, D: Driver<'d>>(mut ep_in: D::EndpointIn)
+pub async fn run_tx_midi2<'d, D: Driver<'d>>(ep_in: D::EndpointIn)
 where
+    D::EndpointIn: EndpointIn,
+{
+    run_tx_midi2_with::<D>(&DEFAULT_STATE, ep_in).await
+}
+
+/// As [`run_tx_midi2`], for the device whose state is `state`.
+pub async fn run_tx_midi2_with<'d, D: Driver<'d>>(
+    state: &'static MidiState,
+    mut ep_in: D::EndpointIn,
+) where
     D::EndpointIn: EndpointIn,
 {
     let mut buf = [0u8; 16]; // max 4 words × 4 bytes
     loop {
         ep_in.wait_enabled().await;
         loop {
-            let words = MIDI2_TX.receive().await;
+            let words = state.tx2.receive().await;
             let wc = ump_word_count(words[0]);
             for k in 0..wc {
                 buf[k * 4..k * 4 + 4].copy_from_slice(&words[k].to_le_bytes());
@@ -642,3 +798,78 @@ where
 pub use run_rx_midi1 as run_rx;
 /// Alias for [`run_tx_midi1`] — for callers that only use MIDI 1.0.
 pub use run_tx_midi1 as run_tx;
+
+#[cfg(all(test, not(target_os = "none")))]
+mod tests {
+    extern crate std;
+    use super::*;
+
+    fn handler(state: &'static MidiState) -> MidiClassHandler {
+        MidiClassHandler {
+            ms_iface: InterfaceNumber(1),
+            state,
+        }
+    }
+
+    #[test]
+    fn two_states_track_configuration_apart() {
+        static PA: PacketQueues = PacketQueues::new();
+        static PB: PacketQueues = PacketQueues::new();
+        static A: MidiState = MidiState::new(&PA);
+        static B: MidiState = MidiState::new(&PB);
+        let mut ha = handler(&A);
+        ha.configured(true);
+        assert!(A.connected());
+        assert!(!B.connected());
+        ha.set_alternate_setting(InterfaceNumber(1), 1);
+        assert!(A.midi2_active());
+        assert!(!B.midi2_active());
+        assert!(A.try_send_to_host_byte(0x90));
+        assert_eq!(B.tx_pending(), 0);
+    }
+
+    #[test]
+    fn end_session_disconnects_and_empties() {
+        static P: PacketQueues = PacketQueues::new();
+        static S: MidiState = MidiState::new(&P);
+        let mut h = handler(&S);
+        h.configured(true);
+        h.set_alternate_setting(InterfaceNumber(1), 1);
+        S.packets().use_packets();
+        assert!(S.try_send_to_host_byte(0xF8));
+        assert!(S.try_send_ump_to_host([0x1000_00F8, 0, 0, 0]));
+        assert!(
+            S.packets()
+                .try_send_packet_to_host([0x09, 0x90, 0x3C, 0x64])
+        );
+        assert!(S.rx.try_send([0x90, 0x3C, 0x64]).is_ok());
+        assert!(S.rx2.try_send([1, 0, 0, 0]).is_ok());
+        embassy_futures::block_on(S.packets().deliver_packet_from_host([0x08, 0x80, 0x3C, 0]));
+        S.end_session();
+        assert!(!S.connected());
+        assert!(!S.midi2_active());
+        assert_eq!(S.tx_pending(), 0);
+        assert_eq!(S.try_recv_from_host(), None);
+        assert_eq!(S.try_recv_ump_from_host(), None);
+        assert_eq!(S.tx2.len(), 0);
+        assert_eq!(S.packets().tx_packet_pending(), 0);
+        assert_eq!(S.packets().try_recv_packet_from_host(), None);
+        assert!(S.packets().packets_enabled(), "packet mode is kept");
+    }
+
+    #[test]
+    fn the_default_state_is_the_free_functions() {
+        assert!(core::ptr::eq(
+            DEFAULT_STATE.packets(),
+            &midi_packets::DEFAULT
+        ));
+        assert!(try_send_to_host_byte(0x90));
+        assert!(DEFAULT_STATE.tx_pending() >= 1);
+        assert_eq!(DEFAULT_STATE.tx.try_receive(), Ok(0x90));
+        let mut h = handler(&DEFAULT_STATE);
+        h.configured(true);
+        assert!(connected());
+        h.reset();
+        assert!(!connected());
+    }
+}
