@@ -181,6 +181,13 @@ pub const fn recipe(id: [u8; 3]) -> Option<ProtectionRecipe> {
             method: WriteMethod::Combined,
             factory_sr2: 1 << 2,
         }),
+        // AT25QF641B (8 MB): CMP=0, SEC=0, TB=1, BP2:BP0=100 ("lower 1/8", datasheet Table 6).
+        // Separate writes (01h SR1, 31h SR2). Keyed on the datasheet's 9Fh bytes (Table 16).
+        [0x1F, 0x88, 0x01] => Some(ProtectionRecipe {
+            sr1_region: SR1_TB | SR1_BP2,
+            method: WriteMethod::Separate,
+            factory_sr2: 0,
+        }),
         _ => None,
     }
 }
@@ -423,6 +430,72 @@ pub fn apply<B: SrBus>(
     }
 }
 
+/// A protected region opened for a program, volatile: what [`restore_volatile`] puts back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Lifted {
+    region: u8,
+    method: WriteMethod,
+    qe: u8,
+}
+
+/// The volatile write that sets SR1's region field to `region`, composed from scratch: SR1 carries
+/// only region bits, and SR2 (sent only where the part writes both bytes at once) only `QE`.
+fn volatile_region<B: SrBus>(bus: &mut B, method: WriteMethod, region: u8, qe: u8) -> bool {
+    let sr2 = match method {
+        WriteMethod::Combined => Some(qe & SR2_QE),
+        WriteMethod::Separate => None,
+    };
+    bus.write_volatile(method, Some(region & SR1_REGION_MASK), sr2)
+}
+
+/// Open the protected region for a program without touching the non-volatile protection: clear
+/// the block-protect bits through the volatile path (`50h`), which a power cycle or software
+/// reset undoes. Refused, with nothing sent, while the lock-down is armed or a bit this crate
+/// doesn't expect is set (the arming rules). Pair with [`restore_volatile`].
+pub fn lift_volatile<B: SrBus>(bus: &mut B, r: ProtectionRecipe) -> Result<Lifted, Refusal> {
+    let (sr1, sr2) = read_stable(bus)?;
+    if sr1 & SR1_BUSY != 0 {
+        return Err(Refusal::Busy);
+    }
+    if sr2 & SR2_LOCK != 0 {
+        return Err(Refusal::Locked);
+    }
+    if sr1 & SR1_SRP0 != 0 || sr2 & !SR2_OWNED & !r.factory_sr2 != 0 {
+        return Err(Refusal::UnexpectedBits { sr1, sr2 });
+    }
+    let lifted = Lifted {
+        region: sr1 & SR1_REGION_MASK,
+        method: r.method,
+        qe: sr2 & SR2_QE,
+    };
+    if lifted.region == 0 {
+        return Ok(lifted);
+    }
+    let sent = volatile_region(bus, r.method, 0, lifted.qe);
+    match read_stable(bus)? {
+        (got1, _) if sent && got1 & SR1_REGION_MASK == 0 => Ok(lifted),
+        (got1, got2) => Err(Refusal::VerifyFailed {
+            sr1: got1,
+            sr2: got2,
+        }),
+    }
+}
+
+/// Put back the block-protect bits [`lift_volatile`] cleared, volatile.
+pub fn restore_volatile<B: SrBus>(bus: &mut B, lifted: Lifted) -> Result<(), Refusal> {
+    if lifted.region == 0 {
+        return Ok(());
+    }
+    let sent = volatile_region(bus, lifted.method, lifted.region, lifted.qe);
+    match read_stable(bus)? {
+        (got1, _) if sent && got1 & SR1_REGION_MASK == lifted.region => Ok(()),
+        (got1, got2) => Err(Refusal::VerifyFailed {
+            sr1: got1,
+            sr2: got2,
+        }),
+    }
+}
+
 /// Rehearse a combined write on the volatile copy, check it read back as
 /// planned, then software-reset back to the non-volatile bits (so the real
 /// write's verify sees the real write). A swapped or mangled two-byte transfer
@@ -468,7 +541,8 @@ mod tests {
     const AT25: [u8; 3] = [0x1F, 0x87, 0x01];
     const W25: [u8; 3] = [0xEF, 0x40, 0x16];
     const S25: [u8; 3] = [0x01, 0x40, 0x16];
-    const PARTS: [[u8; 3]; 3] = [AT25, W25, S25];
+    const AT25QF641B: [u8; 3] = [0x1F, 0x88, 0x01];
+    const PARTS: [[u8; 3]; 4] = [AT25, W25, S25, AT25QF641B];
 
     fn id(raw: [u8; 3]) -> [u8; 3] {
         raw
@@ -709,8 +783,9 @@ mod tests {
     #[test]
     fn each_recipe_protects_exactly_the_bootloaders() {
         for raw in PARTS {
+            let capacity = if raw == AT25QF641B { 8 << 20 } else { 4 << 20 };
             assert_eq!(
-                protected_range_4m(rcp(raw).sr1_region),
+                protected_range_for(rcp(raw).sr1_region, capacity),
                 Some(0..0x10_0000),
                 "{raw:02x?}"
             );
@@ -872,6 +947,106 @@ mod tests {
             self.resets += 1;
             self.sr1 = (self.sr1 & 0x03) | self.nv1;
             self.sr2 = (self.sr2 & 0x80) | self.nv2;
+        }
+    }
+
+    #[test]
+    fn at25qf641b_recipe_by_id() {
+        let r = recipe(AT25QF641B).unwrap();
+        assert_eq!(r.sr1_region, 0x30, "TB=1, BP2:0=100");
+        assert_eq!(r.method, WriteMethod::Separate);
+        assert_eq!(r.factory_sr2, 0);
+        // The datasheet's 9Fh order; the bytes swapped are another part.
+        assert_eq!(recipe([0x1F, 0x01, 0x88]), None);
+    }
+
+    #[test]
+    fn the_bottom_1mb_of_8mb_is_lower_eighth() {
+        let eight = 8 << 20;
+        assert_eq!(protected_range_for(0x30, eight), Some(0..0x10_0000));
+        // Table 6's "lower 1/64" (TB | BP0): 128 KB, not the table's 000000h-1FFFFFh.
+        assert_eq!(protected_range_for(0x24, eight), Some(0..0x2_0000));
+        assert_eq!(protected_range_for(0x04, eight), Some(0x7E_0000..0x80_0000));
+    }
+
+    fn at25qf_protected() -> Chip {
+        let mut c = Chip::new(AT25QF641B, 0x02);
+        c.nv1 = 0x30;
+        c.sr1 = 0x30;
+        c
+    }
+
+    #[test]
+    fn lift_clears_bp_volatile_and_restore_puts_it_back() {
+        let r = recipe(AT25QF641B).unwrap();
+        let mut chip = at25qf_protected();
+        let lifted = lift_volatile(&mut chip, r).unwrap();
+        assert_eq!(
+            chip.sr1 & SR1_REGION_MASK,
+            0,
+            "the region is open, volatile"
+        );
+        assert_eq!(chip.nv1, 0x30, "the non-volatile protection is untouched");
+        assert_eq!((chip.writes, chip.volatile_writes), (0, 1));
+        restore_volatile(&mut chip, lifted).unwrap();
+        assert_eq!(chip.sr1 & SR1_REGION_MASK, 0x30);
+        assert_eq!((chip.writes, chip.volatile_writes), (0, 2));
+        assert_eq!(chip.sr2 & SR2_QE, SR2_QE, "QE as found");
+    }
+
+    #[test]
+    fn lift_refused_while_locked() {
+        let r = recipe(AT25QF641B).unwrap();
+        let mut chip = at25qf_protected();
+        chip.sr2 |= SR2_LOCK;
+        chip.nv2 |= SR2_LOCK;
+        assert_eq!(lift_volatile(&mut chip, r), Err(Refusal::Locked));
+        assert_eq!((chip.writes, chip.volatile_writes), (0, 0));
+    }
+
+    /// Records what is sent, for every register state.
+    struct Recorder {
+        regs: (u8, u8),
+        sent: std::vec::Vec<(Option<u8>, Option<u8>, bool)>,
+    }
+
+    impl SrBus for Recorder {
+        fn read_id(&mut self) -> [u8; 3] {
+            S25
+        }
+        fn read_regs(&mut self) -> (u8, u8) {
+            self.regs
+        }
+        fn write(&mut self, _: WriteMethod, sr1: Option<u8>, sr2: Option<u8>) -> bool {
+            self.sent.push((sr1, sr2, false));
+            true
+        }
+        fn write_volatile(&mut self, _: WriteMethod, sr1: Option<u8>, sr2: Option<u8>) -> bool {
+            self.sent.push((sr1, sr2, true));
+            true
+        }
+        fn software_reset(&mut self) {}
+    }
+
+    #[test]
+    fn lift_never_sends_srp_or_lb() {
+        // The S25's combined write sends SR2 too: the widest case.
+        let r = recipe(S25).unwrap();
+        for sr1 in 0..=255u8 {
+            for sr2 in 0..=255u8 {
+                let mut bus = Recorder {
+                    regs: (sr1, sr2),
+                    sent: std::vec::Vec::new(),
+                };
+                if let Ok(lifted) = lift_volatile(&mut bus, r) {
+                    let _ = restore_volatile(&mut bus, lifted);
+                }
+                for &(a, b, volatile) in &bus.sent {
+                    assert!(volatile, "only volatile writes");
+                    assert_eq!(a.unwrap_or(0) & 0x83, 0, "no SRP0 or read-only bits in SR1");
+                    assert_eq!(b.unwrap_or(0) & !SR2_QE, 0, "SR2 carries only QE");
+                }
+            }
         }
     }
 

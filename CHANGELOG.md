@@ -21,6 +21,17 @@ breaking changes.
 
 ### Added
 
+- `deluge-image::slot`: the boot-slot layout (`SlotLayout`, the Deluge's `CLASSIC`) and the variant
+  codes a stage-0 accepts are parameters (`parse_with`, `validate_with`, `encode_header_with`), so
+  another board can use the same header format; the Deluge's are unchanged. `select` picks the
+  slot to boot from both slots and the watchdog flag: the newest valid, a pending one tried, rolled
+  back to the other if the watchdog killed its last boot, or tried again when it is the only one.
+  `mkslot` takes `--variant-code`, `--slot-len`, `--slot-b`, the slot offsets and `--corrupt-body-b`.
+- `deluge-flash-protect`: the status-register protection core (`recipe`, `plan`, `apply`, `SrBus`)
+  moved out of `deluge-bsp` into a chip-neutral crate, which `deluge_bsp::flash::protect`
+  re-exports. It adds the AT25QF641B (8 MB, bottom 1 MB), `protected_range_for` any capacity, and
+  `lift_volatile`/`restore_volatile`: open a protected region for one program through the
+  volatile status register, leaving the non-volatile protection alone.
 - `rza1-rt`'s `zero-init-below-image` feature (passed through by `deluge-bsp`) places `.bss`
   and the MMU translation table below the vector table instead of after the image, for an app
   whose heap starts at the image's end and reclaims its boot-only tail. The default layout is
