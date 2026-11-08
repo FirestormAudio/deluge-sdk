@@ -24,6 +24,8 @@
 //!   the bundle's deluge-mkimage. Needs DELUGE_BASE set to an unpacked bundle.
 //!   `--run` then dev-uploads + launches the packed appliance image from RAM
 //!   (needs the Deluge in dev mode on the boot menu).
+//! - `cargo deluge loader [--dest <sd-mount>]` — build the app-loader's
+//!   flashable `app-loader.bin` (inside an SDK checkout only).
 //! - `cargo deluge debug [--release] [-- <args>]` — build, then `probe-rs run`
 //!   (J-Link).
 //! - `cargo deluge trace [--release] [--flow] [--duration-ms N] [-- <args>]` —
@@ -39,6 +41,7 @@ mod build;
 mod deploy;
 mod frame;
 mod linux;
+mod loader;
 mod log;
 mod new;
 mod probe;
@@ -84,6 +87,7 @@ fn main() -> ExitCode {
         "log" => log::cmd_log(rest),
         "sim" => sim::cmd_sim(rest),
         "linux" => linux::cmd_linux(rest),
+        "loader" => loader::cmd_loader(rest),
         "debug" => probe::cmd_debug(rest),
         "trace" => probe::cmd_trace(rest),
         "" | "help" | "-h" | "--help" => {
@@ -153,6 +157,9 @@ Commands:
                                --run            dev-upload + launch the packed
                                                 image from RAM (needs DEV MODE
                                                 on the boot menu; not with --bare)
+  loader [opts]              Build the app-loader's flashable app-loader.bin (run
+                             inside a deluge-sdk checkout; no cargo-binutils needed).
+                               --dest <dir>   copy it to <dir>/ on the SD card
   debug [--release] [-- ...] Build, then `probe-rs run` over J-Link (--chip set)
   trace [--release] [opts]   Build, then `probe-rs read-trace` (trace-a9 fork):
                                --flow         compact execution-flow view

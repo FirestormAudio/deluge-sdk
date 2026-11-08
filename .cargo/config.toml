@@ -20,6 +20,10 @@ rustflags = [
 ]
 
 [alias]
+# Install `cargo deluge` from this checkout. `--target host-tuple` builds it for
+# this machine: a plain `cargo install` here would pick up `build.target` above
+# and build the host tool for the Deluge.
+install-deluge = "install --path tools/cargo-deluge --target host-tuple"
 # Firmware builds. build-std is set per alias rather than under [unstable],
 # which would apply it to host builds too and break `cargo test`. It builds
 # `core,alloc`, as `cargo deluge build` does: with `core` alone, crates that
