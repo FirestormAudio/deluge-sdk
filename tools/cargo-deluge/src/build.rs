@@ -2,7 +2,7 @@
 //! metadata / manifest parsing needed to locate the produced artifact.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::TARGET;
@@ -54,8 +54,14 @@ pub(crate) fn cmd_build(args: &[String]) -> Result<PathBuf, String> {
 /// Parsed without a JSON dependency — the tool deliberately keeps `serialport`
 /// as its only dep — by pulling the single `"target_directory"` string field.
 pub(crate) fn target_dir() -> Result<PathBuf, String> {
+    target_dir_in(Path::new("."))
+}
+
+/// [`target_dir`] for the workspace containing `dir`.
+pub(crate) fn target_dir_in(dir: &Path) -> Result<PathBuf, String> {
     let out = Command::new("cargo")
         .args(["metadata", "--format-version", "1", "--no-deps"])
+        .current_dir(dir)
         .output()
         .map_err(|e| format!("failed to run cargo metadata: {e}"))?;
     if !out.status.success() {

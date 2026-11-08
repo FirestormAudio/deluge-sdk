@@ -40,9 +40,10 @@ occupied by the Deluge firmware, making the loader the new default firmware.
 
 1. Get `app-loader.bin`: download it from the latest
    [release](https://github.com/FirestormAudio/deluge-sdk/releases) (check it against the
-   release's `SHA256SUMS`), or build it from the workspace root with
-   `cargo build-app-loader-bin` (it lands in `target/armv7a-none-eabihf/release/`).
-2. Copy `app-loader.bin` to the top level of your SD card.
+   release's `SHA256SUMS`), or build it inside an SDK checkout with
+   `cargo deluge loader` (it lands in `target/armv7a-none-eabihf/release/`).
+2. Copy `app-loader.bin` to the top level of your SD card, or let
+   `cargo deluge loader --dest <sd-mount>` copy it there.
 3. Insert the card and **hold SHIFT while powering on**. The first-stage
    bootloader flashes the image to internal memory.
 4. Power-cycle. You should land on the app-loader's **boot menu**.
