@@ -56,7 +56,7 @@ That means:
 The community firmware can be launched as an app, but a binary in .elf format
 is needed. These are available starting with
 [version v1.3.0](https://github.com/SynthstromAudible/DelugeFirmware/releases/tag/v1.3.0).
-Note the file is larger due to containing debug info, but is is functionally the
+Note the file is larger due to containing debug info, but is functionally the
 same. When building the firmware from source, a `deluge.elf` binary is also generated.
 This way, the second-stage bootloader can work as a bootmenu also for multiple versions
 of the firmware.
