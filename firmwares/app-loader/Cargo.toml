@@ -14,7 +14,10 @@ usb-classes = { workspace = true, features = ["device-msc"] }
 rza1-hal = { path = "../../rza1/rza1-hal", features = ["rza1l"] }
 # `fat`: the app-loader's ELF loader and file browser read apps off the card
 # through `deluge_bsp::fat`, so the sync embedded-sdmmc stack is not optional here.
-deluge-bsp = { path = "../../crates/deluge-bsp", features = ["flash", "fat", "usb-msc"] }
+# `zero-init-below-image`: the stock first-stage bootloader runs from 0x20020000 while it
+# copies this image into SRAM, so the image must start above it; the zero-init data below
+# the image lifts `_start` clear. build.rs links `stock_fsb.x`, which checks it did.
+deluge-bsp = { path = "../../crates/deluge-bsp", features = ["flash", "fat", "usb-msc", "zero-init-below-image"] }
 deluge-image = { path = "../../crates/deluge-image" }
 cortex-ar = { workspace = true }
 embassy-executor = { workspace = true, features = ["nightly", "platform-cortex-ar", "executor-thread"] }

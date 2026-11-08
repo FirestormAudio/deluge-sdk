@@ -13,7 +13,7 @@ means, and the day-to-day controls.
 ## What it is
 
 The Deluge's *first-stage* bootloader (in SPI flash, untouched by the SDK) loads
-the app loader from flash into SRAM at `0x20020000` and jumps to it. From there
+the app loader from flash into SRAM, above the bootloader's own code, and jumps to it. From there
 the app loader is in charge: it brings the platform up, finds the firmware images
 available to it, and hands control to the one you choose.
 
@@ -26,7 +26,7 @@ menu.
 | | |
 |---|---|
 | Role | Second-stage bootloader / application launcher |
-| Loaded at | SRAM `0x20020000` (by the first-stage bootloader) |
+| Loaded at | SRAM, at or above `0x20040000` (by the first-stage bootloader) |
 | Display | 128 × 48 OLED, encoder-driven menu |
 | Boots from | SD card `/APPS/`, on-board flash slot, or USB (dev mode) |
 
