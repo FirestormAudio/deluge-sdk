@@ -53,6 +53,14 @@ That means:
   <img src="docs/dev-loop.svg" alt="Push-to-run dev loop: edit code → cargo deluge run → ELF over USB upload → loader → RAM → app runs → back to edit code." width="440">
 </p>
 
+The community firmware can be launched as an app, but a binary in .elf format
+is needed. These are available starting with
+[version v1.3.0](https://github.com/SynthstromAudible/DelugeFirmware/releases/tag/v1.3.0).
+Note the file is larger due to containing debug info, but is is functionally the
+same. When building the firmware from source, a `deluge.elf` binary is also generated.
+This way, the second-stage bootloader can work as a bootmenu also for multiple versions
+of the firmware.
+
 ---
 
 ## Quick start
