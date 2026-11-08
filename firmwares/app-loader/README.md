@@ -1,8 +1,8 @@
 # app-loader
 
 Second-stage bootloader / **app loader** for the [Synthstrom Deluge] (RZ/A1L).
-The Deluge first-stage bootloader loads this image from SPI flash into SRAM at
-`0x20020000`; the app loader then picks and launches an application firmware
+The Deluge first-stage bootloader loads this image from SPI flash into SRAM, at
+`_start` (about `0x2004A000`: above the bootloader's own code, see below); the app loader then picks and launches an application firmware
 image from the SD card or on-board flash, can store an SD app into the on-board
 flash slot, accepts a direct USB upload in **dev mode**, and provides a USB
 data-transfer mode.
@@ -12,7 +12,16 @@ data-transfer mode.
 | Package | `app-loader` |
 | Binary | `app-loader` |
 | Target | `armv7a-none-eabihf` (RZ/A1L, Cortex-A9) |
-| Loaded at | SRAM `0x20020000` (by the first-stage bootloader) |
+| Loaded at | SRAM, at or above `0x20040000` (by the first-stage bootloader) |
+
+## Load address
+
+The stock first-stage bootloader runs from SRAM at `0x20020000` while it copies this image into
+SRAM, its code reaching about `0x20033000`, so the image has to start above it: an image linked
+at `0x20020000` overwrites the bootloader's copy loop and stops copying itself about 11 KB in.
+The app-loader builds with deluge-bsp's `zero-init-below-image`, which puts `.bss` and the MMU
+table below the image and so starts it about `0x2004A000`, and `stock_fsb.x` fails the link if
+`_start` is ever below `0x20040000`.
 
 ## Boot sequence
 

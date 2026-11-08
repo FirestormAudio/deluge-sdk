@@ -44,7 +44,18 @@ for line in sys.stdin:
 }
 
 print_layout() { # label elf
-  arm-none-eabi-nm "$2" | awk -v label="$1" -v re="^($SYMS)\$" '$3 ~ re { print label, $3, $1 }' | sort -k2
+  # An image linked with its zero-init data below it (rza1-rt's zero-init-below-image) has a
+  # `_start` that moves with its .bss size, so that is recorded as the layout, not the address.
+  arm-none-eabi-nm "$2" | awk -v label="$1" -v re="^($SYMS)\$" '
+    $3 == "__bss_start__" { bss = $1 }
+    $3 ~ re { val[$3] = $1 }
+    END {
+      for (s in val) {
+        v = val[s]
+        if (s == "_start" && bss != "" && bss < v) v = "after-zero-init"
+        print label, s, v
+      }
+    }' | sort -k2
 }
 
 collect() {

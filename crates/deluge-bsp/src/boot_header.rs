@@ -4,7 +4,7 @@
 //!
 //! | Offset | Word | |
 //! |---|---|---|
-//! | +0x20 | `_start` | code_start: where the copy goes (at least 0x2002_0000; below that is retention RAM the bootloader will not write) |
+//! | +0x20 | `_start` | code_start: where the copy goes (at least 0x2002_0000; below that is retention RAM the bootloader will not write. The stock bootloader also runs from 0x2002_0000 up to about 0x2003_3000 while it copies, so an image it copies must start above that: see the app-loader's `stock_fsb.x`) |
 //! | +0x24 | `__metadata_code_end` | code_end: the copy runs `_start..code_end`; this crate's `memory.x` rounds the image end up to 64 KB |
 //! | +0x28 | `_start` | code_execute: the jump target |
 //! | +0x2C | `".BootLoad_ValidProgramTest."` | the signature the bootloader validates |

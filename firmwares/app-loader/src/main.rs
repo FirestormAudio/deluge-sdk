@@ -1,7 +1,7 @@
 //! App loader (second-stage bootloader) for the Synthstrom Deluge (RZ/A1L).
 //!
-//! Loaded by the Deluge first-stage bootloader from SPI flash into SRAM at
-//! `0x20020000`.  On boot it:
+//! Loaded by the Deluge first-stage bootloader from SPI flash into SRAM, above
+//! the bootloader's own code (see `stock_fsb.x`).  On boot it:
 //!   1. Initialises the platform (MMU, caches, SDRAM, GIC, OSTM).
 //!   2. Probes the SPI-flash app slot and mounts the SD card FAT filesystem.
 //!   3. Builds a boot menu from the flash image (the default entry), the ELF

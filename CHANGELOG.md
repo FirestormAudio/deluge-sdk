@@ -9,6 +9,13 @@ breaking changes.
 
 ### Fixed
 
+- The app-loader boots from the stock Deluge bootloader again. In 0.1.0 it was linked at
+  `0x20020000`, where the stock bootloader runs while it copies the image into SRAM: the copy
+  overwrote its own loop about 11 KB in, and the half-copied app-loader died with a data abort
+  at every power-on. It now builds with deluge-bsp's `zero-init-below-image`, which starts the
+  image above the bootloader (about `0x2004A000`, as before 0.1.0), and its link fails if
+  `_start` is ever below `0x20040000`.
+
 - `usb_classes::midi`: the MIDI 2.0 alternate setting works on Linux. The Group Terminal Block
   descriptors now answer the standard `GET_DESCRIPTOR` (0x26 << 8 | alternate) the USB MIDI 2.0
   spec defines, instead of a class request no host sends, so Linux no longer gives up with
