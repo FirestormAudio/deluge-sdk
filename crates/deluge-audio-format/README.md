@@ -5,6 +5,7 @@ small window of bytes at a time (at most `MAX_WINDOW_BYTES`, at an offset it cho
 an `AudioHeader`:
 
 - container, channel count (1 or 2), byte depth (8/16/24/32-bit integer, 32-bit float), sample rate
+  (plain `fmt ` chunks and `WAVE_FORMAT_EXTENSIBLE` ones with a PCM or float sub-format)
 - where the audio data starts and how long it is
 - loop points (`smpl`; AIFF `MARK` + `INST` sustain loop) and root note (`smpl`/`inst`/`INST`)
 - wavetable hints (the Serum `clm ` tag), with the acceptance policy in `wavetable`

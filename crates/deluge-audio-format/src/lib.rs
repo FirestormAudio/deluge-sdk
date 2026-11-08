@@ -246,6 +246,16 @@ fn decode_aiff_extended_rate(bytes: &[u8; 10]) -> u32 {
 pub const MAX_WINDOW_BYTES: u32 = 52;
 
 const TOP_HEADER_LEN: u32 = 12;
+/// `wFormatTag` of a `WAVE_FORMAT_EXTENSIBLE` `fmt ` chunk.
+const WAVE_FORMAT_EXTENSIBLE: u16 = 0xFFFE;
+/// Bytes of a `WAVE_FORMAT_EXTENSIBLE` `fmt ` after its 16 plain fields: cbSize, valid bits,
+/// channel mask, sub-format GUID.
+const FMT_EXTENSIBLE_TAIL_LEN: u32 = 24;
+/// The 14 bytes after the format tag in every `KSDATAFORMAT_SUBTYPE_*` GUID that wraps one
+/// (`xxxx0000-0000-0010-8000-00aa00389b71`).
+const KSDATAFORMAT_SUBTYPE_TAIL: [u8; 14] = [
+    0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71,
+];
 const CHUNK_HEADER_LEN: u32 = 8;
 
 /// Capacity of the AIFF `MARK` marker table. The declared count is clamped to this before any
@@ -274,6 +284,8 @@ pub enum FeedResult {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PayloadKind {
     Fmt,
+    /// The `WAVE_FORMAT_EXTENSIBLE` tail of a `fmt ` chunk, from its byte 16.
+    FmtExtensible,
     Smpl,
     Inst,
     Clm,
@@ -291,6 +303,8 @@ impl PayloadKind {
     const fn window_len(self) -> u32 {
         match self {
             PayloadKind::Fmt => 16,
+            // cbSize:u16, wValidBitsPerSample:u16, dwChannelMask:u32, SubFormat GUID (16 bytes).
+            PayloadKind::FmtExtensible => FMT_EXTENSIBLE_TAIL_LEN,
             PayloadKind::Smpl => 52,
             PayloadKind::Inst => 2,
             PayloadKind::Clm => 7,
@@ -862,6 +876,24 @@ impl HeaderParser {
         Ok(())
     }
 
+    /// Applies a WAV format tag (plain, or the one an extensible sub-format wraps): 1 is PCM,
+    /// 3 is float, which needs 32-bit samples.
+    fn apply_wave_format_tag(
+        &mut self,
+        format_tag: u16,
+        byte_depth: u8,
+    ) -> Result<(), HeaderError> {
+        match format_tag {
+            // PCM: keep the format the bit depth set (Native, or Unsigned8 for 8-bit).
+            1 => Ok(()),
+            3 if byte_depth == 4 => {
+                self.raw_data_format = RawDataFormat::Float;
+                Ok(())
+            }
+            _ => Err(HeaderError::Unsupported(Reason::UnsupportedFormatTag)),
+        }
+    }
+
     fn step_payload(
         &mut self,
         win: &[u8],
@@ -897,12 +929,9 @@ impl HeaderParser {
                     _ => return Err(HeaderError::Unsupported(Reason::UnsupportedBitDepth)),
                 };
 
-                if format_tag == 1 {
-                    // PCM: keep the format set above (Native, or Unsigned8 for 8-bit).
-                } else if format_tag == 3 && byte_depth == 4 {
-                    self.raw_data_format = RawDataFormat::Float;
-                } else {
-                    return Err(HeaderError::Unsupported(Reason::UnsupportedFormatTag));
+                // The extensible format tag is checked once its sub-format is read.
+                if format_tag != WAVE_FORMAT_EXTENSIBLE {
+                    self.apply_wave_format_tag(format_tag, byte_depth)?;
                 }
 
                 if channels != 1 && channels != 2 {
@@ -917,6 +946,39 @@ impl HeaderParser {
                 self.num_channels = Some(channels as u8);
                 // Recorded on every walk, so the field never depends on the goal.
                 self.sample_rate = sample_rate;
+
+                if format_tag == WAVE_FORMAT_EXTENSIBLE {
+                    // The real format is in the sub-format GUID after the 16 fields above. Read
+                    // it as a payload of its own, so plain `fmt ` chunks keep their 16-byte
+                    // window; the rest of the chunk is then stepped over as before.
+                    if chunk.raw_size < 16 + FMT_EXTENSIBLE_TAIL_LEN {
+                        return Err(HeaderError::Unsupported(Reason::UnsupportedFormatTag));
+                    }
+                    let tail = Chunk {
+                        data_start: chunk.data_start + 16,
+                        raw_size: chunk.raw_size - 16,
+                    };
+                    return self.wait_for(PayloadKind::FmtExtensible, tail);
+                }
+            }
+            PayloadKind::FmtExtensible => {
+                let fields = win
+                    .first_chunk::<{ FMT_EXTENSIBLE_TAIL_LEN as usize }>()
+                    .ok_or_else(|| short(FMT_EXTENSIBLE_TAIL_LEN))?;
+                let cb_size = u16::from_le_bytes([fields[0], fields[1]]);
+                // The GUID's first two bytes are the format tag it wraps; the remaining 14 are
+                // the same for every `KSDATAFORMAT_SUBTYPE_*` that does.
+                let sub_format_tag = u16::from_le_bytes([fields[8], fields[9]]);
+                if u32::from(cb_size) < FMT_EXTENSIBLE_TAIL_LEN - 2
+                    || fields[10..] != KSDATAFORMAT_SUBTYPE_TAIL
+                {
+                    return Err(HeaderError::Unsupported(Reason::UnsupportedFormatTag));
+                }
+                // Set by the `fmt ` arm that queued this payload; an error rather than a panic all the same.
+                let Some(byte_depth) = self.byte_depth else {
+                    return Err(HeaderError::Unsupported(Reason::UnsupportedFormatTag));
+                };
+                self.apply_wave_format_tag(sub_format_tag, byte_depth)?;
             }
             PayloadKind::Smpl => {
                 // `smpl`: manufacturer, product, samplePeriod, midiUnityNote, midiPitchFraction,
@@ -1982,5 +2044,128 @@ mod tests {
             v.extend_from_slice(&size.to_le_bytes());
             assert!(parse(&v).is_err(), "size {size:#x} should error, not panic");
         }
+    }
+
+    /// The 14 bytes after the format tag in every `KSDATAFORMAT_SUBTYPE_*` GUID
+    /// (`xxxx0000-0000-0010-8000-00aa00389b71`).
+    const KS_GUID_TAIL: [u8; 14] = [
+        0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71,
+    ];
+
+    /// RIFF/WAVE with a 40-byte `WAVE_FORMAT_EXTENSIBLE` `fmt ` whose sub-format GUID is
+    /// `sub_tag` + `guid_tail`, then a `data` chunk of `len` zero bytes.
+    fn riff_extensible(
+        channels: u16,
+        bits: u16,
+        sub_tag: u16,
+        guid_tail: [u8; 14],
+        len: usize,
+    ) -> std::vec::Vec<u8> {
+        let mut v = std::vec::Vec::new();
+        v.extend_from_slice(b"RIFF");
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v.extend_from_slice(b"WAVE");
+        v.extend_from_slice(b"fmt ");
+        v.extend_from_slice(&40u32.to_le_bytes());
+        v.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        v.extend_from_slice(&channels.to_le_bytes());
+        v.extend_from_slice(&48000u32.to_le_bytes());
+        v.extend_from_slice(&0u32.to_le_bytes()); // byte rate (unused)
+        v.extend_from_slice(&0u16.to_le_bytes()); // block align (unused)
+        v.extend_from_slice(&bits.to_le_bytes());
+        v.extend_from_slice(&22u16.to_le_bytes()); // cbSize
+        v.extend_from_slice(&bits.to_le_bytes()); // wValidBitsPerSample
+        v.extend_from_slice(&3u32.to_le_bytes()); // dwChannelMask: FL | FR
+        v.extend_from_slice(&sub_tag.to_le_bytes());
+        v.extend_from_slice(&guid_tail);
+        v.extend_from_slice(b"data");
+        v.extend_from_slice(&(len as u32).to_le_bytes());
+        v.resize(v.len() + len, 0);
+        v
+    }
+
+    #[test]
+    fn extensible_pcm_decodes_like_plain_pcm() {
+        let file = riff_extensible(2, 24, 1, KS_GUID_TAIL, 12);
+        for h in [
+            parse(&file).expect("parse"),
+            decode_streamed(&file).expect("streamed"),
+        ] {
+            assert_eq!(h.container, Container::Wav);
+            assert_eq!(h.num_channels, 2);
+            assert_eq!(h.byte_depth, 3);
+            assert_eq!(h.raw_data_format, RawDataFormat::Native);
+            assert_eq!(h.sample_rate, 48000);
+            // 12 container + 8 fmt header + 40 fmt payload + 8 data header.
+            assert_eq!(h.audio_data_start_pos_bytes, 68);
+            assert_eq!(h.audio_data_length_bytes, 12);
+        }
+    }
+
+    #[test]
+    fn extensible_float_is_float() {
+        let file = riff_extensible(1, 32, 3, KS_GUID_TAIL, 8);
+        for h in [
+            parse(&file).expect("parse"),
+            decode_streamed(&file).expect("streamed"),
+        ] {
+            assert_eq!(h.byte_depth, 4);
+            assert_eq!(h.raw_data_format, RawDataFormat::Float);
+        }
+    }
+
+    #[test]
+    fn extensible_float_only_at_32_bit() {
+        let file = riff_extensible(1, 16, 3, KS_GUID_TAIL, 8);
+        assert_eq!(
+            parse(&file),
+            Err(ParseError::Unsupported(Reason::UnsupportedFormatTag))
+        );
+    }
+
+    #[test]
+    fn extensible_sub_format_other_than_pcm_or_float_is_unsupported() {
+        // 2 = MS ADPCM.
+        let file = riff_extensible(2, 16, 2, KS_GUID_TAIL, 8);
+        assert_eq!(
+            parse(&file),
+            Err(ParseError::Unsupported(Reason::UnsupportedFormatTag))
+        );
+    }
+
+    #[test]
+    fn extensible_with_a_non_ks_guid_is_unsupported() {
+        // PCM's tag with another GUID family's tail (the ambisonic B-format sub-types differ here).
+        let mut tail = KS_GUID_TAIL;
+        tail[13] = 0x00;
+        let file = riff_extensible(2, 16, 1, tail, 8);
+        assert_eq!(
+            parse(&file),
+            Err(ParseError::Unsupported(Reason::UnsupportedFormatTag))
+        );
+        assert_eq!(
+            decode_streamed(&file),
+            Err(HeaderError::Unsupported(Reason::UnsupportedFormatTag))
+        );
+    }
+
+    #[test]
+    fn extensible_fmt_too_short_for_the_extension_is_unsupported() {
+        // A `fmt ` declaring tag 0xFFFE in 18 bytes (cbSize 0): no sub-format to read, and the
+        // bytes after the chunk belong to the next one.
+        let mut v = riff_fmt(2, 44100, 16, 0xFFFE);
+        v[16..20].copy_from_slice(&18u32.to_le_bytes());
+        v.extend_from_slice(&0u16.to_le_bytes());
+        v.extend_from_slice(b"data");
+        v.extend_from_slice(&64u32.to_le_bytes());
+        v.resize(v.len() + 64, 0);
+        assert_eq!(
+            parse(&v),
+            Err(ParseError::Unsupported(Reason::UnsupportedFormatTag))
+        );
+        assert_eq!(
+            decode_streamed(&v),
+            Err(HeaderError::Unsupported(Reason::UnsupportedFormatTag))
+        );
     }
 }
