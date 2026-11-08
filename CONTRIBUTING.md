@@ -16,7 +16,9 @@ new nightly before committing.
 
 ```sh
 rustup show
-cargo install --path tools/cargo-deluge   # the `cargo deluge` host subcommand
+cargo install cargo-binutils
+cargo install --target x86_64-unknown-linux-gnu --path tools/cargo-deluge   # the `cargo deluge` host subcommand
+cargo build-app-loader-bin
 ```
 
 To build firmware images and examples, use the build aliases defined in
