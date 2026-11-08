@@ -1,0 +1,29 @@
+[package]
+# WAV/AIFF header decoding: bytes in, `AudioHeader` out. Reads no files,
+# allocates nothing, decodes no audio. Migrated from DelugeFirmware's
+# `crates/deluge_audio_format`; the import name stays `deluge_audio_format`.
+name = "deluge-audio-format"
+version.workspace = true
+# 2021, not the workspace's 2024: the C ABI's `#[no_mangle]` exports need
+# `#[unsafe(no_mangle)]` under 2024, and this crate moves over unchanged.
+edition = "2021"
+rust-version = "1.87"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "WAV/RIFF and AIFF header decoding for no_std: a windowed, allocation-free, panic-free parser that reports the audio extent, loop points, root note and wavetable hints."
+categories = ["embedded", "no-std", "multimedia::audio", "parser-implementations"]
+keywords = ["wav", "aiff", "audio", "no-std", "deluge"]
+
+[lib]
+name = "deluge_audio_format"
+
+[features]
+## The C ABI over the parser (DelugeFirmware's `libdeluge/audio_format.h`).
+c-abi = []
+
+[dependencies]
+
+[package.metadata.docs.rs]
+all-features = true

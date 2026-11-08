@@ -23,6 +23,7 @@ members = [
   "crates/deluge-sdk-macros",
   "crates/arm-dsp",
   "crates/deluge-fixedpoint",
+  "crates/deluge-audio-format",
   "crates/deluge-fonts",
   "crates/deluge-ui-toolkit",
   "crates/deluge-grid-toolkit",

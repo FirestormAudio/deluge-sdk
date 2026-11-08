@@ -87,6 +87,10 @@ echo "==> Host bucket ($HOST)"
 cargo test --target "$HOST" -p arm-dsp
 cargo test --target "$HOST" -p deluge-fixedpoint
 cargo test --target "$HOST" -p deluge-image
+# WAV/AIFF header decoding, with and without the C ABI; then the no_std device build.
+cargo test --target "$HOST" -p deluge-audio-format
+cargo test --target "$HOST" -p deluge-audio-format --features c-abi
+cargo check --target armv7a-none-eabihf -p deluge-audio-format --features c-abi
 echo "==> the flash protection core (QEMU)"
 cargo test --target "$QEMU" -p deluge-flash-protect
 cargo test --target "$HOST" -p deluge-ui-toolkit
