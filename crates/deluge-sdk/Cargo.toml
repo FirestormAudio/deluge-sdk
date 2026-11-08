@@ -25,7 +25,7 @@ path = "src/lib.rs"
 [dependencies]
 # Pinned exactly: the macro expands to this crate's hidden `__rt` items, which only the matching
 # release of each provides.
-deluge-macros = { path = "../deluge-sdk-macros", version = "=0.1.0", package = "deluge-sdk-macros" }
+deluge-macros = { path = "../deluge-sdk-macros", version = "=0.1.1", package = "deluge-sdk-macros" }
 # Default features off so `fault-blink` follows this crate's own feature of that name: an app
 # with its own fault handler turns `deluge`'s defaults off.
 deluge-bsp = { path = "../deluge-bsp", version = "0.1.0", default-features = false, features = ["memory-x"] }

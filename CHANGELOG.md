@@ -7,6 +7,8 @@ breaking changes.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-08
+
 ### Fixed
 
 - The app-loader boots from the stock Deluge bootloader again. In 0.1.0 it was linked at
@@ -120,5 +122,6 @@ had a different API and were yanked.
 - **Examples** under `examples/` covering every capability, and hardware validation firmwares
   under `hw-tests/`.
 
-[Unreleased]: https://github.com/FirestormAudio/deluge-sdk/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/FirestormAudio/deluge-sdk/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/FirestormAudio/deluge-sdk/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/FirestormAudio/deluge-sdk/releases/tag/v0.1.0
