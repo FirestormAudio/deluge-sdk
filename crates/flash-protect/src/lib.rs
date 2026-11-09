@@ -352,9 +352,15 @@ pub const fn plan(
             sr1: Some(want1),
             sr2: Some(want2),
         },
+        // SR2 goes with any SR1 write: some parts clear SR2, QE included, on a one-byte `01h`, so
+        // SR2 is re-sent with the QE that was read.
         WriteMethod::Separate => SrWrite {
             sr1: if have1 == want1 { None } else { Some(want1) },
-            sr2: if have2 == want2 { None } else { Some(want2) },
+            sr2: if have2 == want2 && have1 == want1 {
+                None
+            } else {
+                Some(want2)
+            },
         },
     };
     Ok(Some(w))
@@ -374,6 +380,12 @@ pub trait SrBus {
     fn write_volatile(&mut self, method: WriteMethod, sr1: Option<u8>, sr2: Option<u8>) -> bool;
     /// Software reset (`66h 99h`): reload the volatile copy from the non-volatile bits.
     fn software_reset(&mut self);
+}
+
+/// Whether the registers read back as `got` hold the planned protection `want` and the QE that
+/// was read before the write (`sr2_before`): a write that loses QE isn't the one planned.
+fn verified(got: (u8, u8), want: (u8, u8), sr2_before: u8) -> bool {
+    protection_bits(got.0, got.1) == want && got.1 & SR2_QE == sr2_before & SR2_QE
 }
 
 /// Read both registers twice; they must agree.
@@ -415,9 +427,7 @@ pub fn apply<B: SrBus>(
     }
     let sent = bus.write(r.method, w.sr1, w.sr2);
     match read_stable(bus) {
-        Ok((got1, got2)) if sent && protection_bits(got1, got2) == (want1, want2) => {
-            Ok(Applied::Written)
-        }
+        Ok(got) if sent && verified(got, (want1, want2), sr2) => Ok(Applied::Written),
         Ok((got1, got2)) => {
             faulted.store(true, Ordering::Release);
             Err(Refusal::VerifyFailed {
@@ -897,6 +907,8 @@ mod tests {
         deaf: bool,
         /// A combined write's two data bytes arrive in the opposite order.
         swap: bool,
+        /// A one-byte SR1 write (`01h` alone) clears SR2, QE included, as some parts do.
+        sr1_alone_clears_sr2: bool,
         reads: u32,
         writes: u32,
         volatile_writes: u32,
@@ -914,6 +926,7 @@ mod tests {
                 flaky: false,
                 deaf: false,
                 swap: false,
+                sr1_alone_clears_sr2: false,
                 reads: 0,
                 writes: 0,
                 volatile_writes: 0,
@@ -958,6 +971,11 @@ mod tests {
             if let Some(b) = sr1 {
                 self.nv1 = b & 0xFC;
                 self.sr1 = (self.sr1 & 0x03) | (b & 0xFC);
+                if self.sr1_alone_clears_sr2 && sr2.is_none() {
+                    let otp = self.nv2 & 0x3C;
+                    self.nv2 = otp;
+                    self.sr2 = (self.sr2 & 0x80) | self.nv2;
+                }
             }
             if let Some(b) = sr2 {
                 let otp = self.nv2 & 0x3C; // LB bits only ever go 0 -> 1
@@ -1301,5 +1319,41 @@ mod tests {
             Ok(Applied::Written)
         );
         assert_eq!(chip.sr2, 0x04 | SR2_LOCK);
+    }
+
+    /// A part whose one-byte SR1 write clears SR2: provisioning keeps the QE it found, rather
+    /// than losing it to the SR1 write.
+    #[test]
+    fn provisioning_keeps_qe_on_a_part_whose_sr1_write_clears_sr2() {
+        let mut chip = Chip::new(AT25QF641B, SR2_QE);
+        chip.sr1_alone_clears_sr2 = true;
+        let r = recipe(AT25QF641B).unwrap();
+        let faulted = AtomicBool::new(false);
+        assert_eq!(
+            apply(&mut chip, &faulted, AT25QF641B, Goal::provision(r)),
+            Ok(Applied::Written)
+        );
+        assert_eq!(chip.nv2 & SR2_QE, SR2_QE, "QE kept");
+        assert_eq!(chip.nv1 & SR1_REGION_MASK, r.sr1_region, "region written");
+    }
+
+    /// A write that loses QE all the same is caught by the read-back, not reported written.
+    #[test]
+    fn a_lost_qe_fails_the_verify() {
+        let mut chip = Chip::new(AT25QF641B, SR2_QE);
+        chip.sr1_alone_clears_sr2 = true;
+        let r = recipe(AT25QF641B).unwrap();
+        // The plan as it was before the fix: SR1 alone.
+        let w = SrWrite {
+            sr1: Some(r.sr1_region),
+            sr2: None,
+        };
+        assert!(chip.write(r.method, w.sr1, w.sr2));
+        let (got1, got2) = (chip.sr1, chip.sr2);
+        assert!(!verified(
+            (got1, got2),
+            protection_bits(r.sr1_region, SR2_QE),
+            SR2_QE
+        ));
     }
 }
