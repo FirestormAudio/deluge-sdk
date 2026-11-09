@@ -37,6 +37,14 @@ HOST=$(rustc -vV | sed -n 's/^host: //p')
 # deluge_loader::update::PAYLOAD.
 PAYLOAD=0x1000
 
+# llvm-objcopy, from the toolchain's llvm-tools-preview (rust-toolchain.toml), as
+# tools/cargo-deluge finds it: on PATH first (cargo-binutils' rust-objcopy too), else the sysroot's.
+OBJCOPY=$(command -v llvm-objcopy || command -v rust-objcopy || true)
+if [ -z "$OBJCOPY" ]; then
+  OBJCOPY="$(rustc --print sysroot)/lib/rustlib/$HOST/bin/llvm-objcopy"
+  [ -x "$OBJCOPY" ] || { echo "error: llvm-objcopy not found (rustup component add llvm-tools-preview)" >&2; exit 1; }
+fi
+
 mkdir -p "$OUT"
 
 mkslot() {
@@ -56,7 +64,7 @@ build() {
 
 echo "==> building"
 build stage0
-arm-none-eabi-objcopy -O binary "$BIN/stage0" "$OUT/stage0.bin"
+"$OBJCOPY" -O binary "$BIN/stage0" "$OUT/stage0.bin"
 tools/check-xip-image.py --flash 0x18000000:0x10000 --ram 0x20020000:0x10000 \
   --require-symbol STAGE0_HEARTBEAT --require-symbol STAGE0_STATUS "$BIN/stage0"
 build app-loader
@@ -83,7 +91,7 @@ for slot in a b; do
   shim_elf="$SHIM_TARGET/armv7a-none-eabihf/release/loader-shim"
   tools/check-xip-image.py --flash "$base:0xf00" --ram 0x20010000:0x10000 \
     --require-symbol SHIM_STATUS "$shim_elf"
-  arm-none-eabi-objcopy -O binary "$shim_elf" "$OUT/shim-$slot.bin"
+  "$OBJCOPY" -O binary "$shim_elf" "$OUT/shim-$slot.bin"
 done
 if ! cmp -s "$OUT/shim-a.bin" "$OUT/shim-b.bin"; then
   cmp -l "$OUT/shim-a.bin" "$OUT/shim-b.bin" | head -5 >&2
