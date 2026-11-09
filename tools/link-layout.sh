@@ -52,7 +52,8 @@ print_layout() { # label elf
     END {
       for (s in val) {
         v = val[s]
-        if (s == "_start" && bss != "" && bss < v) v = "after-zero-init"
+        # Compared as strings: awk would read an address like 200550e0 as the number 200550.
+        if (s == "_start" && bss != "" && (bss "") < (v "")) v = "after-zero-init"
         print label, s, v
       }
     }' | sort -k2
