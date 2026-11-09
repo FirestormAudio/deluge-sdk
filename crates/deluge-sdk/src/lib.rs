@@ -483,14 +483,11 @@ impl Deluge {
     /// ```
     ///
     /// `async` (the card init does I/O); returns `Err` if no card is present, it
-    /// doesn't come up, or it holds no FAT volume. Takeable once: a second call panics.
+    /// doesn't come up, or it holds no FAT volume, and the card can be asked for again. One `Sd`
+    /// at a time: a call while one is alive panics; once it is dropped (to let a USB mass-storage
+    /// host at the card, say), the card can be taken again.
     pub async fn sd(&self) -> Result<Sd, SdError> {
-        use core::sync::atomic::{AtomicBool, Ordering};
-        static TAKEN: AtomicBool = AtomicBool::new(false);
-        if TAKEN.swap(true, Ordering::Relaxed) {
-            panic!("Deluge::sd() called more than once");
-        }
-        Sd::mount().await
+        Sd::take().await
     }
 
     /// Take the codec audio path for per-block DSP. Takeable once.

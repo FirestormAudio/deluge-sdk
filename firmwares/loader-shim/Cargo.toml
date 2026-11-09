@@ -1,0 +1,22 @@
+[package]
+publish = false  # binary crate — not for crates.io
+name = "loader-shim"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[[bin]]
+name = "loader-shim"
+test = false
+
+[dependencies]
+# As stage-0: the runtime, the register addresses and the image formats, no HAL.
+rza1-rt = { path = "../../rza1/rza1-rt" }
+rza1-pac = { path = "../../rza1/rza1-pac", features = ["rza1l"] }
+deluge-image = { path = "../../crates/deluge-image" }
+
+[features]
+## Link for boot slot B (flash `0x080000`) instead of slot A (`0x010000`). Built
+## position-independent (`-C relocation-model=ropi`, as tools/loader-image.sh does) the two are
+## the same bytes, which is how the script proves the shim runs from either slot.
+slot-b = []

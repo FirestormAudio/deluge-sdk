@@ -87,6 +87,9 @@ echo "==> Host bucket ($HOST)"
 cargo test --target "$HOST" -p arm-dsp
 cargo test --target "$HOST" -p deluge-fixedpoint
 cargo test --target "$HOST" -p deluge-image
+# mkslot's own tests (examples aren't tested by default).
+cargo test --target "$HOST" -p deluge-image --example mkslot
+cargo test --target "$HOST" -p deluge-loader
 # WAV/AIFF header decoding, with and without the C ABI; then the no_std device build.
 cargo test --target "$HOST" -p deluge-audio-format
 cargo test --target "$HOST" -p deluge-audio-format --features c-abi
@@ -115,5 +118,10 @@ cargo test --target "$HOST" --manifest-path tools/cargo-deluge/Cargo.toml
 DOCS_RS=1 cargo doc --no-deps --target "$HOST" \
   --manifest-path linux/libdeluge-sys/Cargo.toml --target-dir target/libdeluge-docs
 tools/test-libdeluge-sys-root.sh
+
+echo "==> the boot chain's images: stage-0, the loader shims and the loader's slot images"
+# Builds stage-0, the app-loader and both shims, checks each executes in place where its slot
+# puts it, and checks the slot images and the install image (tools/check-loader-image.py).
+tools/loader-image.sh
 
 echo "==> All tests passed."

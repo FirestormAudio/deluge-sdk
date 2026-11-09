@@ -1,0 +1,14 @@
+[package]
+name = "deluge-loader"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false # the app-loader's own logic; not a library for apps
+description = "The Deluge app-loader's logic: the boot and protection sequence, the menu and auto-boot decision, app staging and self-update."
+
+[dependencies]
+deluge-image = { path = "../deluge-image" }
+deluge-flash-protect = { workspace = true }
+heapless = "0.9"

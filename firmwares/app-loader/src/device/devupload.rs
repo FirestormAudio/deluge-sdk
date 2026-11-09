@@ -3,7 +3,7 @@
 //! launches it to RAM — the same hand-off the SD `/APPS/` boot path uses, but
 //! sourced from USB and with no SD shuffling.
 //!
-//! Unlike [`crate::usbmsc`], this is **not a mode the user enters**: when dev
+//! Unlike [`super::usbmsc`], this is **not a mode the user enters**: when dev
 //! mode is on, `boot_task` races [`Listener::run`] against the menu selector
 //! while the boot menu is shown.  The listener draws nothing until a valid
 //! upload header arrives; the moment a complete, CRC-checked image
@@ -31,7 +31,8 @@ use rza1_hal::usb::{Rusb1Driver, disconnect, init_device_mode};
 use deluge_image::Crc32;
 use deluge_image::elf::{MAX_PHDRS, SDRAM_HI, SDRAM_LO, StreamRouter};
 
-use crate::{elf, launcher, ui};
+use super::{elf, launcher};
+use crate::ui;
 
 // ── Wire-protocol constants ───────────────────────────────────────────────────
 
@@ -76,7 +77,7 @@ rza1_hal::bind_interrupts!(struct UsbIrqs {
 /// Created by [`prepare`] **before** the boot menu starts drawing: USB bring-up
 /// reconfigures interrupts/clocks, and doing it while an OLED frame DMA (and its
 /// PIC chip-select handshake) is in flight can wedge the display so the menu
-/// never redraws ([`crate::usbmsc`] likewise builds USB before starting its OLED
+/// never redraws ([`super::usbmsc`] likewise builds USB before starting its OLED
 /// loop). [`run`](Listener::run) then drives it concurrently
 /// with the menu selector.
 pub struct Listener {
@@ -183,7 +184,7 @@ async fn receive(rx: Receiver<'static, Rusb1Driver<'static>>) -> ! {
         let len = u32::from_le_bytes([tail[2], tail[3], tail[4], tail[5]]);
         let expect_crc = u32::from_le_bytes([tail[6], tail[7], tail[8], tail[9]]);
 
-        if version != VERSION || len < 52 || len > MAX_UPLOAD {
+        if version != VERSION || !(52..=MAX_UPLOAD).contains(&len) {
             warn!("devupload: bad header (version={version}, len={len}); resyncing");
             continue;
         }
@@ -318,8 +319,8 @@ async fn handoff(result: elf::LoadResult) -> ! {
     ui::show_message(b"LAUNCHING", b"FROM USB").await;
 
     // Draw the boot droplet before interrupts/DMA are quiesced (must run while
-    // the executor + pic_rx_task are still live — see `crate::show_boot_logo`).
-    crate::show_boot_logo().await;
+    // the executor and the PIC service are still live — see `super::show_boot_logo`).
+    super::show_boot_logo().await;
 
     // Unplug from the host: it sees a clean disconnect and re-enumerates the
     // launched app's own USB stack (e.g. the usb-log CDC for `cargo deluge run
@@ -328,7 +329,7 @@ async fn handoff(result: elf::LoadResult) -> ! {
     disconnect(unsafe { rza1_hal::peripherals::USB0::steal() });
 
     cortex_ar::interrupt::disable();
-    unsafe { crate::quiesce_for_handoff() };
+    unsafe { super::quiesce_for_handoff() };
 
     if result.n_sram > 0 {
         unsafe {

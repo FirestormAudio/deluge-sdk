@@ -20,13 +20,13 @@
 //!
 //! The image lives at the flash slot ([`flash::SLOT_ADDR`]); we read these
 //! words through the memory-mapped window, validate them, and reuse the
-//! existing trampoline ([`crate::launcher::launch_via_trampoline`]) to copy
+//! existing trampoline ([`super::launcher::launch_via_trampoline`]) to copy
 //! `code_start..code_end` from flash into SRAM and jump to `code_execute`.
 
 use deluge_bsp::flash;
 use deluge_image::elf::{FsbError, validate_fsb_metadata};
 
-use crate::elf::{FlashStage, SramSegDesc};
+use super::elf::{FlashStage, SramSegDesc};
 
 /// Offsets of the FSB metadata words from the image base.
 const META_CODE_START: u32 = 0x20;
@@ -118,7 +118,7 @@ impl FlashImage {
 }
 
 /// Program a flattened firmware image (staged in SDRAM by
-/// [`crate::elf::flatten_to_flash_staging`]) into the flash app slot.
+/// [`super::elf::flatten_to_flash_staging`]) into the flash app slot.
 ///
 /// The image's FSB metadata is validated **before** any erase, so an image the
 /// boot path would reject is refused without touching the slot — it can never

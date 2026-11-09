@@ -1,8 +1,11 @@
 //! App loader (second-stage bootloader) for the Synthstrom Deluge (RZ/A1L).
 //!
 //! Loaded by the Deluge first-stage bootloader from SPI flash into SRAM, above
-//! the bootloader's own code (see `stock_fsb.x`).  On boot it:
-//!   1. Initialises the platform (MMU, caches, SDRAM, GIC, OSTM).
+//! the bootloader's own code (see `stock_fsb.x`), or copied there from a boot slot
+//! by `firmwares/loader-shim`.  On boot it:
+//!   1. Initialises the platform (MMU, caches, SDRAM, GIC, OSTM): `deluge-sdk`'s
+//!      `#[deluge::app]` does, as for any app; the display, the controls and the card are the
+//!      SDK's `Oled`, `Input` and `Sd`.
 //!   2. Probes the SPI-flash app slot and mounts the SD card FAT filesystem.
 //!   3. Builds a boot menu from the flash image (the default entry), the ELF
 //!      images in `/APPS/` on the card, and the `DATA TRANSFER` and `SETTINGS`
@@ -16,220 +19,24 @@
 #![no_std]
 #![no_main]
 #![feature(impl_trait_in_assoc_type)]
-#![allow(incomplete_features)]
-#![feature(generic_const_exprs)]
 
-mod deluge_settings;
-mod devupload;
-mod elf;
+mod controls;
+mod device;
 mod file_browser;
-mod flashboot;
-mod launcher;
-mod settings;
+mod screen;
 mod ui;
-mod usbmsc;
 
-/// Label for the synthetic menu entry that enters SD-card USB mass-storage mode.
-const DATA_MENU_LABEL: &[u8] = b"DATA TRANSFER";
-
-/// Label for the synthetic entry that opens the settings screen.
-const SETTINGS_MENU_LABEL: &[u8] = b"SETTINGS";
-
-use core::mem::MaybeUninit;
-use core::sync::atomic::AtomicBool;
-
-/// Set by `pic_rx_task` when the BACK button is pressed.  USB modes poll this to
-/// exit back to the boot menu (see [`usbmsc`]).
-pub(crate) static BACK_PRESSED: AtomicBool = AtomicBool::new(false);
-
-/// Latched by `pic_rx_task` on the first LOAD press — including a LOAD held
-/// down at power-on, which the PIC reports in response to the
-/// `CMD_RESEND_BUTTON_STATES` that `pic::init` sends.
-///
-/// `boot_task` samples this once, at the boot decision, as the **recovery
-/// gesture**: it forces the boot menu no matter what the persisted auto-boot
-/// setting says.  A latch rather than a level check, so the gesture is forgiving
-/// — any LOAD press between reset and the decision counts, and the user does
-/// not have to guess when the loader looks.  LOAD rather than SELECT, so the
-/// gesture cannot be confused with the SELECT presses that drive the menu
-/// itself.  Without it, a unit set to `AUTO-BOOT: INSTANT` with broken firmware
-/// in its flash slot would be unrecoverable.
-pub(crate) static LOAD_SEEN: AtomicBool = AtomicBool::new(false);
-use core::panic::PanicInfo;
-
-use deluge_bsp::heap as allocator;
-use embassy_executor::{Executor, Spawner};
+use deluge::prelude::*;
+use deluge_image::settings;
 use log::{error, info, warn};
 
-use deluge_bsp::{oled, sd};
+use core::sync::atomic::{AtomicBool, Ordering};
 
-unsafe extern "C" {
-    static __sram_heap_start: u8;
-    static __sram_heap_end: u8;
-}
-
-#[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
-    error!("PANIC: {}", info);
-    loop {
-        core::hint::spin_loop();
-    }
-}
-
-static mut EXECUTOR: MaybeUninit<Executor> = MaybeUninit::uninit();
-
-#[deluge_bsp::entry]
-fn main() -> ! {
-    #[cfg(feature = "rtt")]
-    {
-        let channels = rtt_target::rtt_init! {
-            up: {
-                0: {
-                    size: 16384,
-                    name: "Terminal",
-                    section: ".rtt_buffer"
-                }
-            }
-            section_cb: ".rtt_buffer"
-        };
-        rtt_target::set_print_channel(channels.up.0);
-        rtt_target::init_logger_with_level(log::LevelFilter::Debug);
-    }
-    info!("app-loader: starting");
-
-    unsafe {
-        let start = core::ptr::addr_of!(__sram_heap_start) as *mut u8;
-        let size = core::ptr::addr_of!(__sram_heap_end) as usize - start as usize;
-        allocator::SRAM.init(start, size);
-    }
-
-    let board = deluge_bsp::Board::new(rza1_hal::init(deluge_bsp::system::BOARD_CONFIG));
-    info!("platform: clocks, MMU, cache, SDRAM, GIC ready");
-
-    // SDRAM heap initialised but not used by the bootloader itself;
-    // kept for consistency with the BSP init pattern.
-    unsafe { allocator::SDRAM.init(0x0C00_0000 as *mut u8, 64 * 1024 * 1024) };
-
-    // SCIF1 (PIC32 link): configures pins, baud, TX, and — crucially — the
-    // DMA-RX ring that `pic::read_byte` reads from.  Must run before the
-    // executor starts (global IRQs still masked).  Without it the OLED
-    // chip-select echo handshake can never be received and `oled::init` hangs.
-    deluge_bsp::uart::init_pic(
-        board.pic_uart,
-        board.pins.pic,
-        board.dma.pic_rx,
-        board.dma.pic_tx,
-        31_250,
-    );
-    // The SD slot's controller, once; `sd::init` identifies the card when it is needed.
-    deluge_bsp::sd::init_hw(
-        board.sd_card,
-        board.pins.sd,
-        board.dma.sd_tx,
-        board.dma.sd_rx,
-    );
-
-    // The bus brings RSPI0 up; cv_gate::init runs the DAC's linearity sequence on it.
-    deluge_bsp::bus::init(board.shared_spi, board.pins.spi, board.dma.oled);
-    deluge_bsp::cv_gate::init(board.pins.cv_gate);
-    // Encoder GPIO interrupts and the MTU2 pin poll, while interrupts are still masked.
-    unsafe { deluge_bsp::encoder::irq_init(board.encoder_poll_timer, board.pins.encoders) };
-
-    #[allow(static_mut_refs)]
-    let executor = unsafe {
-        EXECUTOR.write(Executor::new());
-        EXECUTOR.assume_init_mut()
-    };
-    executor.run(|spawner| {
-        spawner.spawn(boot_task(spawner).unwrap());
-    });
-}
-
-/// PIC32 receive pump.
-///
-/// Owns the PIC init handshake (`pic::init`, including the 31 250 → 200 000 bps
-/// baud switch) and then continuously parses incoming PIC bytes.  It must be
-/// live before `oled::init()` runs: the OLED chip-select handshake
-/// (`pic::wait_oled_selected`) only unblocks when the PIC's echoed SELECT /
-/// DESELECT bytes (248 / 249) are decoded here and forwarded to the matching
-/// `notify_*` signal.  Button presses confirm the file selector.
-///
-/// Runs until the bootloader hands off to the app (interrupts are disabled at
-/// that point, so the underlying DMA-RX waker never fires again).
-#[embassy_executor::task]
-async fn pic_rx_task() {
-    use core::sync::atomic::Ordering;
-    use deluge_bsp::{
-        controls,
-        pic::{self, Event},
-    };
-
-    // Run the PIC init sequence here (mirrors the firmware's `pic_task`), then
-    // parse RX.  `boot_task` waits on `pic::wait_ready()` for this to finish.
-    pic::init().await;
-
-    let mut parser = pic::Parser::new();
-    loop {
-        let byte = pic::read_byte().await;
-        match parser.push(byte) {
-            Some(Event::OledSelected) => pic::notify_oled_selected(),
-            Some(Event::OledDeselected) => pic::notify_oled_deselected(),
-            // Track the SELECT button held-state so the selector can tell a
-            // short tap (confirm) from a long-press (write-to-flash).
-            Some(Event::ButtonPress { id }) if id == controls::encoder_button::SELECT => {
-                ui::SELECT_DOWN.store(true, Ordering::Release)
-            }
-            Some(Event::ButtonRelease { id }) if id == controls::encoder_button::SELECT => {
-                ui::SELECT_DOWN.store(false, Ordering::Release)
-            }
-            // Latch the first LOAD press as the recovery gesture (see LOAD_SEEN).
-            Some(Event::ButtonPress { id }) if id == controls::button::LOAD => {
-                crate::LOAD_SEEN.store(true, Ordering::Release)
-            }
-            // BACK exits an active USB mode back to the boot menu.
-            Some(Event::ButtonPress { id }) if id == controls::button::BACK => {
-                crate::BACK_PRESSED.store(true, Ordering::Release)
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Stop all autonomous peripheral activity before branching to the app.
-///
-/// Must run after `cortex_ar::interrupt::disable()` and before the launch.
-/// The app re-initialises every controller from scratch, so it only needs the
-/// hardware to be *quiet*: no DMA channel still transferring into RAM, no timer
-/// or GIC source able to fire.  The critical one is the SCIF1/PIC circular
-/// receive DMA — see the call site.
-pub(crate) unsafe fn quiesce_for_handoff() {
-    // Every launch passes through here, so this is where the bootloaders get
-    // locked: the loader itself runs with the status register writable, which is
-    // what lets a J-Link clear `BP` on a unit whose loader can't hand off.
-    #[cfg(feature = "flash-protect")]
-    lock_for_handoff();
-    unsafe {
-        // Stop + software-reset every DMA channel and clear its DMARS request
-        // route (covers PIC RX/TX, SD, and OLED channels). Clearing DMARS lets
-        // Linux's rz-dmac claim SCIF1-RX cleanly.
-        rza1_hal::dmac::stop_all();
-        // Stop the Embassy time-driver timers (OSTM0 free-run + OSTM1 alarm).
-        rza1_hal::time_driver::stop();
-        // Turn the interrupt controller off entirely.
-        rza1_hal::gic::shutdown();
-    }
-}
-
-/// Draw the Deluge droplet right before handing off to a launched image, so the
-/// panel holds the boot logo (not the loader's menu) all the way through U-Boot
-/// and early kernel until the image's own display code takes over.
-///
-/// Must be called while interrupts, the executor, and `pic_rx_task` are still
-/// live: `send_frame` awaits the OLED DMA-completion IRQ and the PIC chip-select
-/// echo, so it cannot complete once the machine has been quiesced for handoff.
-pub(crate) async fn show_boot_logo() {
-    oled::send_frame(&oled::boot_logo()).await;
-}
+use controls::LOAD_SEEN;
+use deluge_image::slot;
+use deluge_loader::boot::{self, BootPolicy, Form, Unlock};
+use deluge_loader::update::SlotWriter;
+use deluge_loader::{menu, update};
 
 /// Write `byte` as two uppercase hex digits into `out[..2]` (for on-OLED
 /// diagnostics, since the loader has no other display channel by default).
@@ -239,162 +46,101 @@ pub(crate) fn hex2(out: &mut [u8], byte: u8) {
     out[1] = HEX[(byte & 0xF) as usize];
 }
 
-/// Provision the bottom-1 MB bootloader write-protection and arm the lock-down,
-/// right before a launch, so the image runs unable to clear it until the next
-/// power cycle. An unrecognized part, or any refusal, launches unlocked (logged):
-/// the lock is a backstop, and nothing here writes a bit it isn't sure of.
-#[cfg(feature = "flash-protect")]
-fn lock_for_handoff() {
-    use deluge_bsp::flash::{self, protect};
+/// The protection policy: provision the boot region and lock it down before apps.
+const POLICY: BootPolicy = BootPolicy {
+    protect: cfg!(feature = "flash-protect"),
+};
 
-    let id = flash::identify();
-    // SAFETY: the loader runs from SRAM, so leaving memory-mapped mode is safe.
-    match unsafe { protect::lockdown(id) } {
-        Ok(done) => info!("Flash protect: locked for hand-off ({:?})", done),
-        Err(why) => warn!(
-            "Flash protect: launching unlocked, {:?} (part {:02x} {:02x} {:02x})",
-            why, id.raw[0], id.raw[1], id.raw[2]
-        ),
-    }
-}
+/// Whether [`feed_watchdog`] keeps kicking.
+static FEED_WATCHDOG: AtomicBool = AtomicBool::new(false);
 
-/// The one-shot SSB update: if the `SSB UPDATE: ARM` toggle is set, unlock the
-/// bootloader region, consume the toggle, and park with no app launched, so the
-/// FSB's power-on update can reflash the SSB. Runs once at boot. Arming is not
-/// done here but at hand-off ([`lock_for_handoff`]).
-#[cfg(feature = "flash-protect")]
-async fn ssb_update_pass() {
-    use deluge_bsp::flash::{self, protect};
-
-    let cfg = settings::read();
-    if !cfg.ssb_write_enable {
-        return;
-    }
-    let id = flash::identify();
-    // SAFETY: the loader runs from SRAM; nothing is launched after this.
-    let unlocked = unsafe { protect::unprotect(id) };
-    let cleared = unsafe {
-        settings::write(&settings::Settings {
-            ssb_write_enable: false,
-            ..cfg
-        })
-        .await
-    };
-    info!(
-        "Flash protect: SSB write-enable consumed (unlocked={:?}, toggle_cleared={})",
-        unlocked, cleared
-    );
-    match unlocked {
-        Ok(_) => ui::show_message(b"SSB UPDATE READY", b"POWER-CYCLE NOW").await,
-        Err(_) => ui::show_message(b"SSB UNLOCK FAILED", b"POWER-CYCLE").await,
-    }
-    loop {
-        embassy_time::Timer::after(embassy_time::Duration::from_secs(60)).await;
-    }
-}
-
-/// Store a selected SD `/APPS` ELF into the flash app slot.
-///
-/// Opens the file, flattens its `PT_LOAD` segments into the SDRAM staging window
-/// ([`elf::flatten_to_flash_staging`]), then validates + programs it into the
-/// slot ([`flashboot::store_image_to_slot`]).  Progress and the final result are
-/// shown on the OLED.  On success the next boot-menu pass re-probes the slot and
-/// the image appears as the default `BOOT FLASH` entry — no extra wiring needed.
-///
-/// Returns to the menu on any error; the slot is only ever touched after the
-/// image passes FSB validation, so a bad ELF cannot brick an existing image.
-async fn write_app_to_flash(
-    vm: &mut deluge_bsp::fat::DelugeVolumeManager,
-    root: deluge_bsp::fat::RawDirectory,
-    entry: &deluge_bsp::fat::DirEntry,
-    label: &[u8],
-) {
-    use embassy_time::{Duration, Timer};
-
-    ui::show_progress(label, 0).await;
-
-    let file = match file_browser::open_app(vm, root, entry) {
-        Ok(f) => f,
-        Err(e) => {
-            error!("Flash store: open failed: {:?}", e);
-            ui::show_message(b"FLASH ERROR", b"OPEN FAILED").await;
-            Timer::after(Duration::from_secs(2)).await;
-            return;
-        }
-    };
-
-    // Flatten the ELF into SDRAM staging — first half of the progress bar.
-    let stage = match unsafe {
-        elf::flatten_to_flash_staging(vm, file, |done, total| async move {
-            let pct = done.saturating_mul(50).checked_div(total).unwrap_or(50) as u8;
-            ui::show_progress(label, pct).await;
-        })
-        .await
-    } {
-        Ok(s) => s,
-        Err(e) => {
-            let line2: &[u8] = match e {
-                elf::ElfError::BadMagic => b"BAD MAGIC",
-                elf::ElfError::WrongFormat => b"WRONG FORMAT",
-                elf::ElfError::NotFlashable => b"NOT FLASHABLE",
-                elf::ElfError::TooLarge => b"TOO LARGE",
-                _ => b"SEE LOG",
-            };
-            error!("Flash store: flatten failed: {:?}", e);
-            let _ = vm.close_file(file);
-            ui::show_message(b"FLASH ERROR", line2).await;
-            Timer::after(Duration::from_secs(2)).await;
-            return;
-        }
-    };
-
-    let _ = vm.close_file(file);
-
-    // Validate + program into the flash slot — second half of the progress bar.
-    match unsafe {
-        flashboot::store_image_to_slot(&stage, |done, total| async move {
-            let pct = 50 + done.saturating_mul(50).checked_div(total).unwrap_or(50) as u8;
-            ui::show_progress(label, pct.min(100)).await;
-        })
-        .await
-    } {
-        Ok(()) => {
-            info!("Flash store: programmed {} bytes into the slot", stage.len);
-            ui::show_message(b"FLASHED OK", b"NOW DEFAULT").await;
-            Timer::after(Duration::from_secs(2)).await;
-        }
-        Err(e) => {
-            error!("Flash store: image rejected: {:?}", e);
-            let line2: &[u8] = match e {
-                deluge_image::elf::FsbError::VerifyFailed(_) => b"VERIFY FAILED",
-                deluge_image::elf::FsbError::TooLargeForSlot => b"TOO LARGE",
-                _ => b"BAD IMAGE",
-            };
-            ui::show_message(b"FLASH ERROR", line2).await;
-            Timer::after(Duration::from_secs(2)).await;
-        }
-    }
-}
-
+/// Kick the watchdog a pending slot's shim started, well inside its shortest timeout, until told
+/// to stop.
 #[embassy_executor::task]
-async fn boot_task(spawner: Spawner) {
-    // Global IRQs must be unmasked *before* the first interrupt-driven await.
-    // pic::init() and oled::init() use embassy_time `Timer`s, which are woken
-    // only by the OSTM1 GIC interrupt (see rza1_hal::time_driver); with
-    // CPSR.I still masked that interrupt can never be taken and the executor
-    // parks in wfe() forever.  main() has already registered every GIC source the
-    // boot tasks need.
-    unsafe { cortex_ar::interrupt::enable() };
+async fn feed_watchdog() {
+    while FEED_WATCHDOG.load(Ordering::Acquire) {
+        device::kick_watchdog();
+        embassy_time::Timer::after(embassy_time::Duration::from_millis(40)).await;
+    }
+}
 
-    // Start the PIC receive pump *before* driving the OLED.  It owns
-    // `pic::init()` and keeps parsing RX, so the OLED chip-select echo
-    // handshake inside `oled::init()` / `send_frame()` has a live parser to
-    // unblock it.  Wait for PIC init to finish before issuing OLED commands.
-    spawner.spawn(pic_rx_task().unwrap());
-    deluge_bsp::pic::wait_ready().await;
+/// The loader update on the card, `/BOOT/LOADER.SLT` (one image for either slot: its shim is
+/// position-independent), read into `buf`: its length, or `None` when there's none (or it doesn't
+/// fit a slot).
+async fn read_update(sd: &mut deluge::Sd, buf: &mut [u8]) -> Option<usize> {
+    let mut file = sd.open_in("BOOT", "LOADER.SLT").await.ok()?;
+    let len = file.len() as usize;
+    let ok = len <= buf.len() && {
+        let mut at = 0;
+        while at < len {
+            match file.read(&mut buf[at..len]).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => at += n,
+            }
+        }
+        at == len
+    };
+    let _ = file.close().await;
+    ok.then_some(len)
+}
 
-    oled::init().await;
+#[deluge::app]
+async fn main(dlg: Deluge) {
+    info!("app-loader: starting");
+
+    // Who started us: stage-0, from a boot slot (the word it left), or the stock bootloader.
+    let form = boot::form(device::take_boot_info());
+    let pending = match form {
+        Form::Slot { slot, .. } => device::slot_pending(slot),
+        Form::Stock => false,
+    };
+    // A pending slot's shim started the watchdog (at most 125 ms on the Deluge): kick it now and
+    // between the steps below, which run without yielding; the feeding task takes over at the
+    // first await, until the slot is confirmed.
+    if pending {
+        device::kick_watchdog();
+        FEED_WATCHDOG.store(true, Ordering::Release);
+        dlg.spawner().spawn(feed_watchdog().unwrap());
+    }
+    info!("Boot: {:?}, pending={}", form, pending);
+    // Stage-0 leaves the boot ROM's slow reads; the stock bootloader left these already.
+    device::fast_read();
+    if pending {
+        device::kick_watchdog();
+    }
+    // Reload the protection, provision it, and confirm this slot: before the display, whose
+    // bring-up is the slowest part of the boot.
+    let early = boot::early_boot(&mut device::boot_flash(), form, !pending, POLICY);
+    info!("Boot: {:?}", early);
+    if pending && early.confirmed {
+        FEED_WATCHDOG.store(false, Ordering::Release);
+        device::stop_watchdog();
+    } else if pending && early.unlock == Unlock::None {
+        // The confirm failed: stop feeding the watchdog, so the slot rolls back.
+        FEED_WATCHDOG.store(false, Ordering::Release);
+    }
+
+    // The controls first, so a LOAD held from power-on is latched before the boot decision
+    // (the PIC reports it in answer to the button-state resend its bring-up sends).
+    dlg.spawner().spawn(controls::run(dlg.input()).unwrap());
+    screen::init(dlg.oled().await);
     info!("OLED: ready");
+    if early.unlock == Unlock::NeedsPowerOff {
+        // Pending, but the protection is locked down (an app launched since the flash last lost
+        // power): the confirm can't be written until the flash powers off. Still fed.
+        device::power_off_for_unlock(b"TO FINISH UPDATE").await;
+    }
+    if let Form::Slot {
+        reason: slot::Reason::RolledBack,
+        ..
+    } = form
+    {
+        // The newer slot didn't confirm before the watchdog fired: say so once, so a failed
+        // update doesn't look like one that never happened.
+        warn!("Boot: rolled back from a newer slot that didn't start");
+        ui::show_message(b"LOADER UPDATE", b"ROLLED BACK").await;
+        embassy_time::Timer::after(embassy_time::Duration::from_secs(2)).await;
+    }
 
     // Recovery gesture: LOAD pressed or held at any point between reset and
     // here (see LOAD_SEEN).  Sampled once — later menu passes are user-driven
@@ -412,32 +158,7 @@ async fn boot_task(spawner: Spawner) {
     // loop below.  See `settings::boot_mode`.
     let mut auto_boot_allowed = true;
 
-    // Prime the flash write-bounds guard from the JEDEC ID before any flash write.
-    // The AT25's density byte isn't a log2-size, so the SPIBSC `1<<density`
-    // fallback would otherwise read capacity 0 and refuse every write. Read-only.
-    deluge_bsp::flash::prime_capacity();
-
-    // Bring the Deluge app's settings forward if they are still at the pre-
-    // relocation offset. Unconditional (like the relocation itself) and ahead of
-    // `ssb_update_pass`, which parks forever when it runs and would
-    // otherwise skip the migration on that boot. See `deluge_settings`.
-    match unsafe { deluge_settings::migrate() } {
-        deluge_settings::Outcome::NotNeeded => {}
-        deluge_settings::Outcome::Migrated => {
-            info!("Deluge settings: migrated 0x07F000 -> 0x3D0000")
-        }
-        deluge_settings::Outcome::Failed => {
-            warn!("Deluge settings: migration failed; the app will factory-reset")
-        }
-    }
-
-    // If the one-shot SSB write-enable toggle is set, unlock the bootloader
-    // region and park with no app. Protection itself is armed at hand-off
-    // (`quiesce_for_handoff`), so the menu runs with the status register
-    // writable. Compiled out (no status-register writes) unless the
-    // `flash-protect` feature is on (see `deluge_bsp::flash::protect`).
-    #[cfg(feature = "flash-protect")]
-    ssb_update_pass().await;
+    device::early(form).await;
 
     // Boot menu loop.  A bootable selection launches and never returns; the
     // DATA TRANSFER USB mode returns here when BACK is pressed, and a
@@ -452,11 +173,11 @@ async fn boot_task(spawner: Spawner) {
         // Read persisted settings each pass so a DEV MODE toggle takes effect on
         // the very next menu rebuild (dev mode adds a background USB listener and
         // disables the auto-boot countdown).
-        let cfg = settings::read();
+        let cfg = device::read_settings();
 
         // Probe the on-flash firmware slot.  Independent of the SD card, so a
         // unit with valid flash firmware can boot with no card inserted.
-        let flash_img = flashboot::probe();
+        let flash_img = device::flash_app();
         if flash_img.is_some() {
             info!("Flash: valid firmware image present in slot");
         }
@@ -466,73 +187,85 @@ async fn boot_task(spawner: Spawner) {
         }
         first_pass = false;
 
-        // Try the SD card.  A missing/failed card is not fatal.
-        let sd_ok = match sd::init().await {
-            Ok(()) => {
-                info!("SD: card ready (HC={})", sd::is_hc());
-                true
-            }
+        // Take the card for this pass.  A missing/failed card is not fatal; every exit
+        // from the pass drops it, so the next pass (or DATA TRANSFER) can take it again.
+        let mut sd = match dlg.sd().await {
+            Ok(sd) => Some(sd),
             Err(e) => {
-                warn!("SD: init failed: {:?}", e);
-                false
+                warn!("SD: not mounted: {:?}", e);
+                None
             }
         };
-
-        let mut vm = deluge_bsp::fat::new_volume_manager();
-        let sd_listing = if sd_ok {
-            match file_browser::list_apps(&mut vm) {
-                Ok(result) => Some(result),
+        let sd_listing = match sd.as_mut() {
+            Some(sd) => match file_browser::list_apps(sd).await {
+                Ok(list) => Some(list),
                 Err(e) => {
                     error!("FAT: failed to list /APPS: {:?}", e);
                     None
                 }
-            }
-        } else {
-            None
+            },
+            None => None,
         };
 
-        // Build the menu: on-flash firmware (default) + SD `/APPS/` images, then
-        // trailing "DATA TRANSFER" and "DEV MODE" entries.
+        // The menu: the flash app (the default), the SD apps, DATA TRANSFER, UPDATE LOADER
+        // (when offered) and SETTINGS (`deluge_loader::menu`). DATA TRANSFER only needs a *card*,
+        // not a working filesystem, and the Deluge's card-detect pin is unreliable, so it is
+        // always offered: the host can still reach (or reformat) a card that won't mount, and
+        // the menu always has an entry.
         let has_flash = flash_img.is_some();
-        let flash_offset = has_flash as usize;
-        let sd_count = sd_listing.as_ref().map_or(0, |(_, _, e)| e.len());
-        let boot_total = flash_offset + sd_count; // real boot targets
-        // DATA TRANSFER only needs a *card*, not a working filesystem, and the
-        // Deluge's card-detect pin is unreliable (it can read "no card" with one
-        // inserted), so gating on detection would hide the recovery path exactly
-        // when it's needed.  Offer it unconditionally: the
-        // SdBlock backend retries `sd::init` on demand when the host probes it,
-        // so an unformatted/corrupt/initially-unresponsive card can still be
-        // accessed or reformatted from the host; with no card the host simply
-        // sees an empty drive.  This also guarantees the menu always has ≥1
-        // entry.
-        let data_idx = boot_total; // DATA TRANSFER follows the boot targets
-        let settings_idx = boot_total + 1; // SETTINGS follows DATA TRANSFER
-        let menu_total = boot_total + 2;
-
-        let mut name_refs = [b"".as_slice(); file_browser::MAX_APPS + 5];
-        if has_flash {
-            name_refs[0] = b"BOOT FLASH";
-        }
-        if let Some((_, _, entries)) = sd_listing.as_ref() {
-            for i in 0..sd_count {
-                name_refs[flash_offset + i] = entries.display_name(i);
-            }
-        }
-        name_refs[data_idx] = DATA_MENU_LABEL;
-        name_refs[settings_idx] = SETTINGS_MENU_LABEL;
-
-        info!(
-            "Boot menu: {} boot entry(ies) (flash={}, dev_mode={})",
-            boot_total, has_flash, cfg.dev_mode
-        );
+        let sd_count = sd_listing.as_ref().map_or(0, |e| e.len());
+        let boot_total = menu::boot_targets(&menu::entries(has_flash, sd_count, false));
 
         // How to boot: skip the menu entirely (INSTANT), run it with a countdown,
         // or sit on it.  All the precedence lives in the host-tested decision fn.
         let mode = settings::boot_mode(&cfg, boot_total, recovery, auto_boot_allowed);
         // Every pass after this one is user-driven — never auto-boot again.
         auto_boot_allowed = false;
-        info!("Boot mode: {:?}", mode);
+
+        // A loader update on the card (slot form only), read whole only when a menu will show,
+        // and offered if it validates and no slot already holds it.
+        let update_len = match (form, sd.as_mut(), mode) {
+            (_, _, settings::BootMode::Instant) => None,
+            (Form::Slot { .. }, Some(sd), _) => read_update(sd, device::update_buffer()).await,
+            _ => None,
+        };
+        let offer_update = match (form, update_len) {
+            (Form::Slot { slot, .. }, Some(n)) => {
+                let mut held = device::slot_writer(slot);
+                let slots = [held.read_slot(0), held.read_slot(1)];
+                update::update_offered(
+                    form,
+                    Some(&device::update_buffer()[..n]),
+                    &[device::VARIANT],
+                    slot::DELUGE,
+                    slots,
+                )
+            }
+            _ => false,
+        };
+
+        let entries = menu::entries(has_flash, sd_count, offer_update);
+        let mut sd_names = [b"".as_slice(); file_browser::MAX_APPS];
+        if let Some(list) = sd_listing.as_ref() {
+            for (i, name) in sd_names.iter_mut().enumerate().take(sd_count) {
+                *name = list.display_name(i);
+            }
+        }
+        let mut name_refs = [b"".as_slice(); menu::MAX_ENTRIES];
+        for (label, &entry) in name_refs.iter_mut().zip(entries.iter()) {
+            *label = menu::label(entry, &sd_names);
+        }
+        let menu_total = entries.len();
+
+        info!(
+            "Boot menu: {} boot entry(ies) (flash={}, dev_mode={}, update={})",
+            boot_total, has_flash, cfg.dev_mode, offer_update
+        );
+        info!(
+            "Boot mode: {:?} at {} ms",
+            mode,
+            embassy_time::Instant::now().as_millis()
+        );
 
         let selection = if mode == settings::BootMode::Instant {
             // The menu is never drawn: launch the default entry (index 0 — the
@@ -563,10 +296,10 @@ async fn boot_task(spawner: Spawner) {
             // starting its OLED loop for the same reason).
             if cfg.dev_mode {
                 use embassy_futures::select::{Either, select};
-                let listener = devupload::prepare();
+                let upload = device::start_dev_upload();
                 match select(
                     ui::run_selector(&name_refs[..menu_total], 0, countdown),
-                    listener.run(),
+                    device::run_dev_upload(upload),
                 )
                 .await
                 {
@@ -585,215 +318,110 @@ async fn boot_task(spawner: Spawner) {
         // The menu branch won (or dev mode is off): if a CDC listener was brought
         // up, tear it down so the port is free for a later DATA TRANSFER MSC init.
         if cfg.dev_mode {
-            // SAFETY: the listener's session is over.
-            rza1_hal::usb::disconnect(unsafe { rza1_hal::peripherals::USB0::steal() });
+            device::stop_dev_upload();
         }
 
-        // ---- Long-press on an SD `/APPS` ELF: store it to the flash slot ----
-        // Only SD ELF entries are stored to flash; long-pressing the existing
-        // FLASH entry or DATA TRANSFER does nothing special (falls through to
-        // the normal short-press handling below).
-        let is_sd_entry = selected < data_idx && !(has_flash && selected == 0);
-        if long_press && is_sd_entry {
-            let (root, selected_entry, label) = {
-                let (_, root, entries) = sd_listing
+        match entries[selected] {
+            // ---- Long-press on an SD `/APPS` ELF: store it to the flash slot ----
+            // Whether confirmed, cancelled, or failed, the menu is rebuilt, so a
+            // freshly-stored image shows up as the default FLASH entry.
+            menu::Entry::SdApp(i) if long_press => {
+                let list = sd_listing
                     .as_ref()
                     .expect("sd listing present for SD entry");
-                let sd_idx = selected - flash_offset;
-                (
-                    *root,
-                    entries.get(sd_idx).clone(),
-                    entries.display_name(sd_idx),
-                )
-            };
-            if ui::confirm_write_to_flash(label).await {
-                write_app_to_flash(&mut vm, root, &selected_entry, label).await;
+                let label = list.display_name(i);
+                if ui::confirm_write_to_flash(label).await {
+                    let sd = sd.as_mut().expect("the card is mounted for an SD entry");
+                    device::store_flash_app(sd, list, i, label).await;
+                }
             }
-            // Whether confirmed, cancelled, or failed, rebuild the menu so a
-            // freshly-stored image shows up as the default FLASH entry.
-            if let Some((volume, _, entries)) = sd_listing {
-                let _ = vm.close_volume(volume);
-                drop(entries);
+
+            // ---- SETTINGS screen (persists on exit, rebuilds the menu) ----
+            // The screen edits a copy; we write flash once, only if something
+            // actually changed, so the next pass re-reads it (updating the
+            // auto-boot mode and whether the USB listener runs).
+            menu::Entry::Settings => {
+                // Let go of the card before touching the flash bus (the settings write
+                // leaves memory-mapped read mode, like the app-slot store).
+                drop(sd);
+                let mut new_cfg = cfg;
+                ui::run_settings(&mut new_cfg, form == Form::Stock).await;
+                if new_cfg != cfg {
+                    info!("Settings: {:?} -> {:?}", cfg, new_cfg);
+                    if device::write_settings(&new_cfg).await {
+                        ui::show_message(b"SETTINGS", b"SAVED").await;
+                        embassy_time::Timer::after(embassy_time::Duration::from_millis(700)).await;
+                    } else {
+                        device::show_settings_write_failure().await;
+                    }
+                }
             }
-            drop(vm);
-            continue;
-        }
 
-        // ---- SETTINGS screen (persists on exit, rebuilds the menu) ----
-        // The screen edits a copy; we write flash once, only if something
-        // actually changed, then `continue` so the next pass re-reads it (updating
-        // the auto-boot mode and whether the USB listener runs).  Nothing is
-        // launched.
-        if selected == settings_idx {
-            // Close FAT handles before touching the flash bus (the settings write
-            // leaves memory-mapped read mode, like the app-slot store).
-            if let Some((volume, _, entries)) = sd_listing {
-                let _ = vm.close_volume(volume);
-                drop(entries);
-            }
-            drop(vm);
-
-            let mut new_cfg = cfg;
-            ui::run_settings(&mut new_cfg).await;
-            if new_cfg == cfg {
-                continue;
-            }
-            info!("Settings: {:?} -> {:?}", cfg, new_cfg);
-
-            let ok = unsafe { settings::write(&new_cfg).await };
-            if ok {
-                ui::show_message(b"SETTINGS", b"SAVED").await;
-                embassy_time::Timer::after(embassy_time::Duration::from_millis(700)).await;
-            } else {
-                // The flash write didn't stick. Show the JEDEC ID and status
-                // register so the failure can be diagnosed: a plausible
-                // non-`00`/`FF` ID (e.g. `EF 40 16` for the W25Q32JV) confirms
-                // manual-mode works; status `BP[2:0]` (bits 2-4) set means the
-                // settings sector is write-protected.
-                let id = rza1_hal::spibsc::read_id();
-                let sr = rza1_hal::spibsc::read_status_reg();
-                error!(
-                    "Settings flash write failed: JEDEC={:02x} {:02x} {:02x}, SR={:#04x}",
-                    id[0], id[1], id[2], sr
-                );
-                let mut line = *b"ID...... SR..";
-                hex2(&mut line[2..4], id[0]);
-                hex2(&mut line[4..6], id[1]);
-                hex2(&mut line[6..8], id[2]);
-                hex2(&mut line[11..13], sr);
-                ui::show_message(b"FLASH WRITE FAIL", &line).await;
-                embassy_time::Timer::after(embassy_time::Duration::from_secs(4)).await;
-            }
-            continue;
-        }
-
-        // ---- DATA TRANSFER mode (returns on BACK) ----
-        if selected == data_idx {
-            if let Some((volume, _, entries)) = sd_listing {
-                let _ = vm.close_volume(volume);
-                drop(entries);
-            }
-            drop(vm);
-            usbmsc::run_data_transfer_mode().await;
-            continue;
-        }
-
-        // ---- Flash boot path (never returns) ----
-        if has_flash && selected == 0 {
-            let img = flash_img.unwrap();
-            info!(
-                "Booting flash image: start={:#010x} end={:#010x} entry={:#010x}",
-                img.code_start, img.code_end, img.entry
-            );
-            ui::show_message(b"BOOTING", b"FLASH FW").await;
-
-            // Draw the boot droplet so the panel shows it through handoff.
-            // Must run before interrupts/DMA are quiesced (see show_boot_logo).
-            show_boot_logo().await;
-
-            // Close FAT handles and quiesce, then copy from flash into SRAM via
-            // the trampoline (single descriptor) like the SD ELF path.
-            cortex_ar::interrupt::disable();
-            if let Some((volume, _, entries)) = sd_listing {
-                let _ = vm.close_volume(volume);
-                drop(entries);
-            }
-            drop(vm);
-            unsafe { quiesce_for_handoff() };
-
-            let desc = img.desc();
-            unsafe { launcher::launch_via_trampoline(&[desc], img.entry) }
-        }
-
-        // ---- SD ELF path ----
-        let (volume, root, entries) =
-            sd_listing.expect("sd listing must be present for an SD menu selection");
-        let sd_idx = selected - flash_offset;
-        let selected_entry = entries.get(sd_idx);
-        let label = entries.display_name(sd_idx);
-        info!("Loading: {:?}", selected_entry.name);
-        ui::show_progress(label, 0).await;
-
-        // Open the selected file from /APPS/.
-        let file = match file_browser::open_app(&mut vm, root, selected_entry) {
-            Ok(f) => f,
-            Err(e) => {
-                error!("Failed to open app: {:?}", e);
-                ui::show_message(b"OPEN ERROR", b"BACK TO MENU").await;
-                embassy_time::Timer::after(embassy_time::Duration::from_secs(2)).await;
-                let _ = vm.close_volume(volume);
-                drop(vm);
-                drop(entries);
-                continue;
-            }
-        };
-
-        // Stream-load ELF segments.  SRAM-targeting segments are staged in SDRAM;
-        // SDRAM-targeting segments are written to their final addresses directly.
-        let load_result = match unsafe {
-            elf::load_from_sd_with_progress(&mut vm, file, |done, total| async move {
-                let raw = done.saturating_mul(100).checked_div(total).unwrap_or(100) as u8;
-                ui::show_progress(label, raw).await;
-            })
-            .await
-        } {
-            Ok(r) => r,
-            Err(e) => {
-                let line2: &[u8] = match e {
-                    elf::ElfError::BadMagic => b"BAD MAGIC",
-                    elf::ElfError::WrongFormat => b"WRONG FORMAT",
-                    elf::ElfError::BadLoadAddress => b"BAD LOAD ADDR",
-                    elf::ElfError::Unstreamable => b"BAD LAYOUT",
-                    _ => b"SEE LOG",
+            // ---- UPDATE LOADER: the card's image into the other boot slot ----
+            menu::Entry::UpdateLoader => {
+                drop(sd);
+                let (Form::Slot { slot, .. }, Some(n)) = (form, update_len) else {
+                    continue; // only offered in the slot form, with an image read
                 };
-                error!("ELF load error: {:?}", e);
-                ui::show_message(b"LOAD ERROR", line2).await;
-                embassy_time::Timer::after(embassy_time::Duration::from_secs(2)).await;
-                let _ = vm.close_file(file);
-                let _ = vm.close_volume(volume);
-                drop(vm);
-                drop(entries);
-                continue;
+                ui::show_message(b"UPDATING LOADER", b"DO NOT POWER OFF").await;
+                let image = &mut device::update_buffer()[..n];
+                match update::self_update(
+                    &mut device::slot_writer(slot),
+                    image,
+                    &[device::VARIANT],
+                    slot::DELUGE,
+                ) {
+                    Ok(plan) => {
+                        info!(
+                            "Loader update: written to slot {} as sequence {}",
+                            plan.slot, plan.sequence
+                        );
+                        // Not a watchdog reset: stage-0 would take it for the new slot's
+                        // failure and roll it back. A power cycle also releases any lock-down.
+                        ui::show_message(b"LOADER UPDATED", b"POWER-CYCLE NOW").await;
+                        loop {
+                            embassy_time::Timer::after(embassy_time::Duration::from_secs(60)).await;
+                        }
+                    }
+                    Err(update::UpdateError::Locked) => {
+                        // The lock-down is armed: no write lifts it until the flash loses power.
+                        device::power_off_for_unlock(b"TO UPDATE").await;
+                    }
+                    Err(e) => {
+                        error!("Loader update failed: {:?}", e);
+                        let line2: &[u8] = match e {
+                            update::UpdateError::Foreign => b"WRONG VARIANT",
+                            update::UpdateError::Invalid(_) => b"BAD IMAGE",
+                            update::UpdateError::NoSequence => b"NO SEQUENCE",
+                            update::UpdateError::Locked => b"LOCKED",
+                            update::UpdateError::Write(_) => b"WRITE FAILED",
+                        };
+                        ui::show_message(b"UPDATE FAILED", line2).await;
+                        embassy_time::Timer::after(embassy_time::Duration::from_secs(2)).await;
+                    }
+                }
             }
-        };
 
-        info!(
-            "ELF loaded, entry = {:#010x}, {} SRAM segment(s) staged",
-            load_result.entry, load_result.n_sram
-        );
-
-        // Draw the boot droplet so the panel shows it through handoff — even if
-        // the launched app never uses the display. Must run before interrupts/DMA
-        // are quiesced (see show_boot_logo).
-        show_boot_logo().await;
-
-        // Disable interrupts and close FAT handles before we hand off.
-        cortex_ar::interrupt::disable();
-        let _ = vm.close_volume(volume);
-        drop(vm);
-        drop(entries);
-
-        // Quiesce every peripheral that keeps running on its own.  Masking CPU
-        // interrupts is not enough: the SCIF1/PIC receive DMA is a *circular*
-        // channel that keeps writing incoming bytes into its ring buffer
-        // independently of the CPU, and after the trampoline overwrites SRAM with
-        // the app that buffer is the app's memory — corrupting its TTB/stack/data
-        // and crashing early init.  Stop all DMA, the OSTM timers, and the GIC so
-        // the app boots into a quiet machine like a cold start.
-        unsafe { quiesce_for_handoff() };
-
-        if load_result.n_sram > 0 {
-            // One or more segments target SRAM.  Use the trampoline in retention
-            // RAM to move them after the bootloader's SRAM is no longer needed.
-            unsafe {
-                launcher::launch_via_trampoline(
-                    &load_result.sram_descs[..load_result.n_sram],
-                    load_result.entry,
-                )
+            // ---- DATA TRANSFER mode (returns on BACK) ----
+            menu::Entry::DataTransfer => {
+                // The host gets the raw card: let go of the mounted volume first.
+                drop(sd);
+                device::data_transfer().await;
             }
-        } else {
-            // Pure SDRAM app — all segments already at their final addresses.
-            unsafe { launcher::launch(load_result.entry) }
+
+            // ---- Flash boot path (never returns) ----
+            menu::Entry::FlashApp => {
+                drop(sd);
+                device::boot_flash_app(flash_img.expect("offered only with a flash app")).await;
+            }
+
+            // ---- SD ELF path (returns only if it can't be loaded) ----
+            menu::Entry::SdApp(i) => {
+                let list = sd_listing.expect("sd listing present for SD entry");
+                let label = list.display_name(i);
+                let sd = sd.expect("the card is mounted for an SD entry");
+                device::launch_elf(sd, &list, i, label).await;
+            }
         }
     }
 }

@@ -8,8 +8,7 @@
 //! ## Slot layout
 //!
 //! On the Deluge, slot A is flash `0x010000`, slot B `0x080000`, each [`SLOT_LEN`]
-//! long ([`CLASSIC`]); another board passes its own [`SlotLayout`] to the `_with`
-//! functions. The first [`HEADER_LEN`] bytes are the header page; the body (an XIP
+//! long ([`DELUGE`]); the `_with` functions take the [`SlotLayout`] as a parameter. The first [`HEADER_LEN`] bytes are the header page; the body (an XIP
 //! image linked to run at slot + `0x100`) follows it.
 //!
 //! ## Header page (all fields little-endian; every other byte is `0xFF`)
@@ -55,8 +54,8 @@ pub const SLOT_LEN: u32 = 0x7_0000;
 /// The longest body that fits in a slot after its header page.
 pub const MAX_BODY_LEN: u32 = SLOT_LEN - HEADER_LEN as u32;
 
-/// Where a board's two boot slots lie in its flash. The header format is the same on every
-/// board; the geometry is the board's, frozen with its stage-0.
+/// Where the two boot slots lie in flash. The geometry is frozen with the stage-0 that reads
+/// it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SlotLayout {
     /// Flash offsets of slots A and B.
@@ -73,18 +72,18 @@ impl SlotLayout {
 }
 
 /// The Deluge's slots: A at [`SLOT_A_OFFSET`], B at [`SLOT_B_OFFSET`], [`SLOT_LEN`] each.
-pub const CLASSIC: SlotLayout = SlotLayout {
+pub const DELUGE: SlotLayout = SlotLayout {
     slot_offsets: [SLOT_A_OFFSET, SLOT_B_OFFSET],
     slot_len: SLOT_LEN,
 };
 
-/// Variant codes: which build a slot carries. `0` and `1` are the Deluge's front panels; another
-/// board documents its code where its own stage-0 lives. A stage-0 accepts only its own codes.
+/// Variant codes: which build a slot carries. `0` and `1` are the Deluge's front panels. A stage-0
+/// accepts only its own codes.
 pub const VARIANT_OLED: u16 = 0;
 /// The seven-segment Deluge.
 pub const VARIANT_SEVEN_SEG: u16 = 1;
 /// The codes the Deluge's stage-0 accepts.
-const CLASSIC_VARIANTS: &[u16] = &[VARIANT_OLED, VARIANT_SEVEN_SEG];
+const DELUGE_VARIANTS: &[u16] = &[VARIANT_OLED, VARIANT_SEVEN_SEG];
 /// The confirm word of a slot that has not yet confirmed a good boot (erased flash).
 pub const CONFIRM_PENDING: u32 = 0xFFFF_FFFF;
 /// The confirm word of a slot that has booted and confirmed itself (`b"MFNC"` LE).
@@ -164,6 +163,45 @@ pub const fn boot_info(slot: u8, reason: u8) -> u32 {
     BOOT_INFO_TAG | (slot as u32) << 8 | reason as u32
 }
 
+/// The slot and [`Reason`] in a boot-info word, or `None` for anything [`boot_info`] doesn't
+/// write: a wrong tag, a slot past B, an unknown reason. Whatever the RAM held before (a cold
+/// boot, a loader that isn't behind stage-0) reads as `None` but for a 1-in-2³⁰ coincidence.
+pub fn decode_boot_info(word: u32) -> Option<(u8, Reason)> {
+    if word & 0xFFFF_0000 != BOOT_INFO_TAG {
+        return None;
+    }
+    let slot = (word >> 8) as u8;
+    let reason = Reason::try_from(word as u8).ok()?;
+    (slot <= 1).then_some((slot, reason))
+}
+
+/// Where a self-update writes: the slot that isn't running, with a sequence above both slots'.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpdatePlan {
+    /// The slot to write (`0` = A); never the running one.
+    pub slot: u8,
+    /// The new image's sequence: one past the highest valid slot's (`1` with none valid).
+    pub sequence: u32,
+}
+
+/// Plan a self-update by the image running from slot `running`, given both slots' checks. `None`
+/// when no higher sequence exists (the highest is `u32::MAX`).
+pub fn plan_update(
+    running: u8,
+    a: Result<SlotHeader, SlotError>,
+    b: Result<SlotHeader, SlotError>,
+) -> Option<UpdatePlan> {
+    let highest = [a, b]
+        .iter()
+        .filter_map(|r| r.as_ref().ok().map(|h| h.sequence))
+        .max()
+        .unwrap_or(0);
+    Some(UpdatePlan {
+        slot: 1 - running.min(1),
+        sequence: highest.checked_add(1)?,
+    })
+}
+
 fn word(page: &[u8], at: usize) -> u32 {
     u32::from_le_bytes([page[at], page[at + 1], page[at + 2], page[at + 3]])
 }
@@ -194,10 +232,10 @@ fn check_entry(entry_offset: u32, body_len: u32) -> Result<(), SlotError> {
 /// `page` must be at least [`HEADER_LEN`] bytes; a longer slice (a whole slot)
 /// is fine and only its first page is read.
 pub fn parse(page: &[u8]) -> Result<SlotHeader, SlotError> {
-    parse_with(page, CLASSIC, CLASSIC_VARIANTS)
+    parse_with(page, DELUGE, DELUGE_VARIANTS)
 }
 
-/// [`parse`] for a board with its own slot `layout`, accepting only the variant codes in
+/// [`parse`] for a given slot `layout`, accepting only the variant codes in
 /// `accepts`.
 pub fn parse_with(
     page: &[u8],
@@ -239,10 +277,10 @@ pub fn parse_with(
 /// `slot` starts at the header page and may run past the body (a whole slot
 /// read through the XIP window); only `HEADER_LEN + body_len` bytes are read.
 pub fn validate(slot: &[u8]) -> Result<SlotHeader, SlotError> {
-    validate_with(slot, CLASSIC, CLASSIC_VARIANTS)
+    validate_with(slot, DELUGE, DELUGE_VARIANTS)
 }
 
-/// [`validate`] for a board with its own slot `layout` and variant codes (see [`parse_with`]).
+/// [`validate`] for a given slot `layout` and variant codes (see [`parse_with`]).
 pub fn validate_with(
     slot: &[u8],
     layout: SlotLayout,
@@ -266,10 +304,10 @@ pub fn encode_header(
     sequence: u32,
     entry_offset: u32,
 ) -> Result<[u8; HEADER_LEN], SlotError> {
-    encode_header_with(body, variant.code(), sequence, entry_offset, CLASSIC)
+    encode_header_with(body, variant.code(), sequence, entry_offset, DELUGE)
 }
 
-/// [`encode_header`] for a board with its own slot `layout` and variant code.
+/// [`encode_header`] for a given slot `layout` and variant code.
 pub fn encode_header_with(
     body: &[u8],
     variant: u16,
@@ -306,8 +344,8 @@ pub enum Choice {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Reason {
-    /// The only valid slot, confirmed. (A stage-0 that checks only slot A, as the Deluge's first
-    /// one does, reports `0` for a valid slot A confirmed or not.)
+    /// The only valid slot, confirmed. (The Deluge's first stage-0 checked only slot A and
+    /// reported `0` for a valid slot A, confirmed or not.)
     OnlyValid = 0,
     /// The newer of two valid slots, confirmed.
     Newest = 1,
@@ -532,14 +570,14 @@ mod tests {
     }
 
     #[test]
-    fn classic_images_parse_as_before() {
+    fn deluge_images_parse_as_before() {
         let img = image(BODY);
-        let classic = parse_with(&img, CLASSIC, &[VARIANT_OLED, VARIANT_SEVEN_SEG]);
-        assert_eq!(parse(&img), classic);
-        assert_eq!(validate(&img), validate_with(&img, CLASSIC, &[0, 1]));
-        assert_eq!(CLASSIC.slot_offsets, [SLOT_A_OFFSET, SLOT_B_OFFSET]);
-        assert_eq!(CLASSIC.slot_len, SLOT_LEN);
-        assert_eq!(CLASSIC.max_body_len(), MAX_BODY_LEN);
+        let deluge = parse_with(&img, DELUGE, &[VARIANT_OLED, VARIANT_SEVEN_SEG]);
+        assert_eq!(parse(&img), deluge);
+        assert_eq!(validate(&img), validate_with(&img, DELUGE, &[0, 1]));
+        assert_eq!(DELUGE.slot_offsets, [SLOT_A_OFFSET, SLOT_B_OFFSET]);
+        assert_eq!(DELUGE.slot_len, SLOT_LEN);
+        assert_eq!(DELUGE.max_body_len(), MAX_BODY_LEN);
     }
 
     #[test]
@@ -565,14 +603,14 @@ mod tests {
         img[6..8].copy_from_slice(&7u16.to_le_bytes());
         recrc(&mut img);
         assert_eq!(
-            parse_with(&img, CLASSIC, &[0, 1]),
+            parse_with(&img, DELUGE, &[0, 1]),
             Err(SlotError::BadVariant)
         );
         let mut img = image(BODY);
         img[6..8].copy_from_slice(&1u16.to_le_bytes());
         recrc(&mut img);
         assert_eq!(
-            parse_with(&img, CLASSIC, &[0x100]),
+            parse_with(&img, DELUGE, &[0x100]),
             Err(SlotError::BadVariant)
         );
     }
@@ -728,5 +766,63 @@ mod tests {
     #[test]
     fn boot_info_packs() {
         assert_eq!(boot_info(1, 2), 0x5330_0102);
+    }
+
+    const REASONS: [Reason; 5] = [
+        Reason::OnlyValid,
+        Reason::Newest,
+        Reason::PendingTry,
+        Reason::RolledBack,
+        Reason::PendingRetry,
+    ];
+
+    #[test]
+    fn boot_info_round_trips() {
+        for slot in 0..2 {
+            for reason in REASONS {
+                assert_eq!(
+                    decode_boot_info(boot_info(slot, reason as u8)),
+                    Some((slot, reason))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn boot_info_rejects_noise() {
+        for w in [
+            0,
+            0xFFFF_FFFF,
+            0x5330_0205,
+            0x5330_0007,
+            0xDEAD_BEEF,
+            0x5331_0000,
+        ] {
+            assert_eq!(decode_boot_info(w), None, "{w:#010x}");
+        }
+    }
+
+    #[test]
+    fn update_targets_the_other_slot() {
+        assert_eq!(plan_update(0, hdr(1, true), BAD).unwrap().slot, 1);
+        assert_eq!(plan_update(1, BAD, hdr(1, true)).unwrap().slot, 0);
+    }
+
+    #[test]
+    fn update_sequence_is_above_both() {
+        assert_eq!(
+            plan_update(0, hdr(5, true), hdr(9, true)),
+            Some(UpdatePlan {
+                slot: 1,
+                sequence: 10
+            })
+        );
+        assert_eq!(plan_update(0, hdr(5, true), BAD).unwrap().sequence, 6);
+        assert_eq!(plan_update(1, BAD, BAD).unwrap().sequence, 1);
+    }
+
+    #[test]
+    fn update_refuses_at_max() {
+        assert_eq!(plan_update(0, hdr(u32::MAX, true), BAD), None);
     }
 }

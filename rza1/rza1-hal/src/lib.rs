@@ -93,7 +93,7 @@ embassy_hal_internal::peripherals! {
     DMA_CH0, DMA_CH1, DMA_CH2, DMA_CH3, DMA_CH4, DMA_CH5, DMA_CH6, DMA_CH7,
     DMA_CH8, DMA_CH9, DMA_CH10, DMA_CH11, DMA_CH12, DMA_CH13, DMA_CH14, DMA_CH15,
     MTU2_0, MTU2_1, MTU2_2, MTU2_3, MTU2_4,
-    SPIBSC0, SCUX, ADC,
+    SPIBSC0, SCUX, ADC, WDT,
     // External pin interrupts IRQ0–IRQ7 (`exti`).
     EXTI0, EXTI1, EXTI2, EXTI3, EXTI4, EXTI5, EXTI6, EXTI7,
     // The pins (Table 41.8); P8 and P9 exist only on the 208- and 233-pin packages.
@@ -213,6 +213,7 @@ pub mod time_math;
 pub mod uart;
 pub mod usb;
 mod warm_start;
+pub mod wdt;
 
 pub mod gpio;
 

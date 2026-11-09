@@ -5,7 +5,7 @@
 //! Two settings are stored:
 //!
 //! * **Dev mode**: when on, `boot_task` brings up a USB CDC upload listener in
-//!   the background (see [`crate::devupload`]) and disables auto-boot so an
+//!   the background (see [`super::devupload`]) and disables auto-boot so an
 //!   upload can arrive at any time.  The loader never accepts firmware over USB
 //!   unless the user has explicitly turned dev mode on.
 //! * **Auto-boot**: how long the boot menu waits before launching the default
@@ -18,9 +18,7 @@
 
 use deluge_bsp::flash;
 
-pub use deluge_image::settings::{
-    AUTO_BOOT_LABEL_MAX, AutoBoot, BootMode, RECORD_LEN, Settings, boot_mode, decode, encode,
-};
+use deluge_image::settings::{RECORD_LEN, Settings, decode, encode};
 
 /// Address of the settings sector in the **uncached** memory-mapped flash mirror
 /// (`0x5840_0000`).  We read settings through this mirror, not the cached
@@ -58,8 +56,8 @@ pub fn read() -> Settings {
 pub async unsafe fn write(s: &Settings) -> bool {
     let record = encode(s);
     // `FlashMap::erase_range`/`program` each run their manual-mode window with
-    // interrupts masked and a bounded WIP-wait internally — required on this
-    // board, where taking the OLED SPI-DMA interrupt mid-erase freezes the
+    // interrupts masked and a bounded WIP-wait internally — required on the
+    // Deluge, where taking the OLED SPI-DMA interrupt mid-erase freezes the
     // machine, and where a rejected erase would otherwise spin forever (see the
     // SPIBSC module docs and `DelugeBootloader/src/spibsc_init2.c`).
     unsafe {

@@ -18,7 +18,7 @@ use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Timer};
 use log::info;
 
-use deluge_bsp::oled::{self, text};
+use deluge::oled::{FrameBuffer, draw_str};
 use deluge_bsp::usb::sd_block::SdBlock;
 use rza1_hal::usb::{Rusb1Driver, Rusb1EndpointIn, Rusb1EndpointOut, disconnect, init_device_mode};
 use usb_classes::bot::{self, BlockDevice, BotBuffer};
@@ -56,7 +56,13 @@ async fn run_session<B: BlockDevice>(dev: B, product: &'static str) {
     // `run_until` watches BACK itself and returns only *between* SCSI commands,
     // so the SD card is never left mid-transfer (no torn writes / stuck card).
     let mut buffer = BOT_BUFFER.lock().await;
-    let proto = bot::run_until(dev, ep_in, ep_out, &mut buffer, &crate::BACK_PRESSED);
+    let proto = bot::run_until(
+        dev,
+        ep_in,
+        ep_out,
+        &mut buffer,
+        &crate::controls::BACK_PRESSED,
+    );
     let oled = status_loop();
 
     // USB + status run forever; the session ends exactly when `proto` returns
@@ -137,15 +143,15 @@ async fn status_loop() -> ! {
         let tx_tenths = dtx / (STATUS_INTERVAL_MS * 100);
         let rx_tenths = drx / (STATUS_INTERVAL_MS * 100);
 
-        let mut fb = oled::FrameBuffer::new();
+        let mut fb = FrameBuffer::new();
         fb.fill(0x00);
-        text::draw_str(&mut fb, 0, STATUS_TOP, b"USB MASS STORAGE");
+        draw_str(&mut fb, 0, STATUS_TOP, b"USB MASS STORAGE");
         let mut line = [0u8; 24];
         let len = build_line(&mut line, b"TX ", tx_tenths, tx / 1_000_000);
-        text::draw_str(&mut fb, 0, STATUS_TOP + 14, &line[..len]);
+        draw_str(&mut fb, 0, STATUS_TOP + 14, &line[..len]);
         let len = build_line(&mut line, b"RX ", rx_tenths, rx / 1_000_000);
-        text::draw_str(&mut fb, 0, STATUS_TOP + 26, &line[..len]);
-        oled::send_frame(&fb).await;
+        draw_str(&mut fb, 0, STATUS_TOP + 26, &line[..len]);
+        crate::screen::show(&fb).await;
 
         Timer::after(Duration::from_millis(STATUS_INTERVAL_MS)).await;
     }

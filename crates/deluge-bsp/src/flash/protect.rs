@@ -40,8 +40,9 @@ use core::ops::Range;
 use core::sync::atomic::AtomicBool;
 
 pub use deluge_flash_protect::{
-    Applied, Goal, ProtectionRecipe, ProtectionState, Refusal, SrBus, SrWrite, TEST_MARK_LEN,
-    TOP_64K, TestBlock, WriteMethod, decode_state, plan, protection_bits, test_block_state,
+    Applied, Goal, Lifted, ProtectionRecipe, ProtectionState, Refusal, SrBus, SrWrite,
+    TEST_MARK_LEN, TOP_64K, TestBlock, WriteMethod, decode_state, plan, protection_bits,
+    test_block_state,
 };
 use rza1_hal::spibsc;
 
@@ -53,7 +54,7 @@ use super::FlashId;
 /// display/capacity mapping).
 ///
 /// Only the Deluge's 4 MB parts ([`super::decode_jedec`] at [`super::FLASH_SIZE`]): a part the
-/// shared table knows for another board stays unknown here, so nothing is written to it.
+/// crate's table knows at another capacity stays unknown here, so nothing is written to it.
 pub const fn recipe(id: FlashId) -> Option<ProtectionRecipe> {
     if super::decode_jedec(id.raw).1 != super::FLASH_SIZE {
         return None;
@@ -176,6 +177,42 @@ pub unsafe fn unprotect(id: FlashId) -> Result<Applied, Refusal> {
     apply(&mut bus, &FAULTED, id, Goal::unprotect())
 }
 
+/// Reload the status registers from their non-volatile copy (`66h`/`99h`): undoes any volatile
+/// write, such as a lift an earlier boot left open. The boot sends it every time.
+///
+/// # Safety
+/// As [`Spibsc::new`].
+pub unsafe fn reload() {
+    // SAFETY: the caller's contract.
+    unsafe { Spibsc::new() }.software_reset();
+}
+
+/// Open the boot region for one program through the volatile status register
+/// (`deluge_flash_protect::lift_volatile`), after reloading the registers ([`reload`]) so the
+/// lift starts from the non-volatile protection. [`restore_volatile`] closes it. Refused with
+/// nothing sent for a part [`recipe`] doesn't describe.
+///
+/// # Safety
+/// As [`Spibsc::new`]; and the boot region is writable until [`restore_volatile`] (or a power
+/// cycle, or `66h`/`99h`): run nothing untrusted in between.
+pub unsafe fn lift_volatile(id: FlashId) -> Result<Lifted, Refusal> {
+    recipe(id).ok_or(Refusal::UnknownPart)?;
+    // SAFETY: the caller's contract.
+    let mut bus = unsafe { Spibsc::new() };
+    bus.software_reset();
+    deluge_flash_protect::lift_volatile(&mut bus, &FAULTED, id.raw)
+}
+
+/// Close what [`lift_volatile`] opened.
+///
+/// # Safety
+/// As [`Spibsc::new`].
+pub unsafe fn restore_volatile(lifted: Lifted) -> Result<(), Refusal> {
+    // SAFETY: the caller's contract.
+    let mut bus = unsafe { Spibsc::new() };
+    deluge_flash_protect::restore_volatile(&mut bus, &FAULTED, lifted)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,6 +241,39 @@ mod tests {
         // unknown here: nothing is written, as before the table was shared.
         assert_eq!(recipe(id([0x1F, 0x88, 0x01])), None);
         assert_eq!(protected_range(TOP_64K), Some(0x3F_0000..0x40_0000));
+    }
+
+    /// The commands sent through SMCMR, status polls left out.
+    fn commands() -> std::vec::Vec<u8> {
+        rza1_hal::mmio::test::writes()
+            .iter()
+            .filter(|&&(a, _)| a == 0x3FEF_A024)
+            .map(|&(_, v)| (v >> 16) as u8)
+            .filter(|&c| c != 0x05 && c != 0x35 && c != 0x9F)
+            .collect()
+    }
+
+    /// A lift starts from the non-volatile protection: a lift an earlier boot left open (it hung
+    /// between lift and restore, and a watchdog reset doesn't reset the flash) is reloaded away
+    /// by `66h`/`99h` before anything is read.
+    #[test]
+    fn lift_first_reloads() {
+        rza1_hal::mmio::test::reset();
+        rza1_hal::mmio::test::poke32(0x3FEF_A048, 1); // CMNSR.TEND: transfers complete
+        let _ = unsafe { lift_volatile(id([0x1F, 0x87, 0x01])) };
+        let c = commands();
+        assert_eq!(c.get(..2), Some(&[0x66, 0x99][..]), "commands {c:02x?}");
+    }
+
+    #[test]
+    fn lift_refuses_a_part_outside_the_geometry() {
+        rza1_hal::mmio::test::reset();
+        rza1_hal::mmio::test::poke32(0x3FEF_A048, 1);
+        assert_eq!(
+            unsafe { lift_volatile(id([0x1F, 0x88, 0x01])) },
+            Err(Refusal::UnknownPart)
+        );
+        assert!(commands().is_empty(), "nothing sent");
     }
 
     #[test]

@@ -18,14 +18,20 @@
 
 use core::sync::atomic::Ordering;
 
-use deluge_bsp::oled::text::draw_str;
-use deluge_bsp::oled::{self, FrameBuffer, WIDTH};
+use deluge::Oled;
+use deluge::oled::{FrameBuffer, draw_str};
+
+use crate::controls::{BACK_PRESSED, SELECT_DOWN, take_detents};
+use crate::screen;
+
+/// The panel's width in pixels (the OLED is 128 wide).
+const WIDTH: usize = 128;
 
 const VISIBLE_ROWS: usize = 4;
 /// Top padding in pixels.  The Deluge OLED panel's top 5 rows sit off the
 /// visible area, so all content is shifted down to start at row 5 (matches the
 /// demo/controller firmware's `TOPMOST = 5`).
-const TOP_PAD: usize = 5;
+const TOP_PAD: usize = Oled::VISIBLE_TOP;
 /// Pixel row of the title bar.
 const TITLE_ROW: usize = TOP_PAD;
 /// Pixel row of the separator line.
@@ -71,7 +77,7 @@ fn countdown_title(buf: &mut [u8; 12], secs: u8) -> &[u8] {
 /// * `scroll`   — index of the first visible entry
 /// * `cursor`   — index of the highlighted entry (absolute, not relative)
 /// * `countdown`— `Some(secs_remaining)` shows a boot countdown in the title bar,
-///                replacing `title`.
+///   replacing `title`.
 fn render(
     fb: &mut FrameBuffer,
     title: &[u8],
@@ -197,15 +203,13 @@ pub struct Selection {
 /// `long_press = true` as soon as the threshold elapses (fire-on-hold), so the
 /// user gets feedback without waiting for release.
 ///
-/// Must be called from an Embassy task after `oled::init()` has completed.
+/// Must be called from an Embassy task after `screen::init` has run.
 pub async fn run_selector(entries: &[&[u8]], default_idx: usize, countdown_secs: u8) -> Selection {
     use embassy_time::{Duration, Instant, Timer};
 
     let mut cursor: usize = default_idx.min(entries.len().saturating_sub(1));
     // Keep the default entry visible at startup.
     let mut scroll: usize = cursor.saturating_sub(VISIBLE_ROWS - 1);
-    let mut edge_acc: i8 = 0;
-
     let mut countdown_active = countdown_secs > 0;
     let start = Instant::now();
     let countdown = Duration::from_secs(countdown_secs as u64);
@@ -220,9 +224,6 @@ pub async fn run_selector(entries: &[&[u8]], default_idx: usize, countdown_secs:
     // for the release before acting on the button at all; otherwise the hold
     // crosses the long-press threshold below and fires a write-to-flash prompt.
     let mut armed = !SELECT_DOWN.load(Ordering::Acquire);
-
-    // Use the SELECT encoder for scrolling in the bootloader selector.
-    const ENC: usize = deluge_bsp::controls::encoder::SELECT as usize;
 
     loop {
         // While a USB upload owns the OLED (dev mode), stand down: don't draw and
@@ -245,12 +246,12 @@ pub async fn run_selector(entries: &[&[u8]], default_idx: usize, countdown_secs:
         // Build and send frame.
         let mut fb = FrameBuffer::new();
         render(&mut fb, b"SELECT APP", entries, scroll, cursor, remaining);
-        oled::send_frame(&fb).await;
+        screen::show(&fb).await;
 
         // Poll for encoder input at ~60 Hz.
         Timer::after(Duration::from_millis(16)).await;
 
-        let detents = deluge_bsp::encoder::take_detents(ENC, &mut edge_acc);
+        let detents = take_detents();
 
         if detents != 0 {
             // User took control — stop the auto-boot countdown.
@@ -273,7 +274,7 @@ pub async fn run_selector(entries: &[&[u8]], default_idx: usize, countdown_secs:
             }
         }
 
-        // SELECT button edge handling (state pumped by pic_rx_task in main.rs).
+        // SELECT button edge handling (state pumped by `controls::run`).
         let down = SELECT_DOWN.load(Ordering::Acquire);
         if !armed {
             // Still letting go of a press that predates this screen.
@@ -315,13 +316,7 @@ pub async fn run_selector(entries: &[&[u8]], default_idx: usize, countdown_secs:
     }
 }
 
-/// Tracks whether the SELECT encoder button is currently held.
-///
-/// Pumped by `pic_rx_task` in `main.rs` (set on `ButtonPress`, cleared on
-/// `ButtonRelease`); the selector and prompts derive press/hold edges from it.
-pub static SELECT_DOWN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-
-/// Set by [`crate::devupload`] once an upload header has arrived, to claim the
+/// Set by the dev-mode upload once an upload header has arrived, to claim the
 /// OLED. While set, [`run_selector`] stops drawing *and* stops acting on input,
 /// so the upload progress bar isn't fought over and an accidental encoder bump
 /// can't abort an in-flight upload. Cleared again only if the upload is rejected
@@ -343,8 +338,6 @@ pub static UPLOAD_ACTIVE: core::sync::atomic::AtomicBool =
 pub async fn confirm_write_to_flash(label: &[u8]) -> bool {
     use embassy_time::{Duration, Timer};
 
-    const ENC: usize = deluge_bsp::controls::encoder::SELECT as usize;
-    let mut edge_acc: i8 = 0;
     let mut yes = false; // false = NO (default), true = YES
 
     // YES / NO label positions; the active one gets a triangle marker just to its
@@ -371,14 +364,14 @@ pub async fn confirm_write_to_flash(label: &[u8]) -> bool {
         draw_str(&mut fb, YES_X, row, b"YES");
         draw_str(&mut fb, NO_X, row, b"NO");
         draw_solid_triangle(&mut fb, if yes { YES_X } else { NO_X } - 6, row);
-        oled::send_frame(&fb).await;
+        screen::show(&fb).await;
 
         Timer::after(Duration::from_millis(16)).await;
 
         // Direction-aware selection: scroll either way to land on a fixed option
         // (YES when scrolling back, NO when scrolling forward) rather than blindly
         // toggling, so holding a direction settles instead of flip-flopping.
-        let detents = deluge_bsp::encoder::take_detents(ENC, &mut edge_acc);
+        let detents = take_detents();
         if detents < 0 {
             yes = true;
         } else if detents > 0 {
@@ -405,43 +398,7 @@ pub async fn show_message(line1: &[u8], line2: &[u8]) {
     draw_str(&mut fb, x1, TOP_PAD + 16, line1);
     let x2 = (WIDTH.saturating_sub(line2.len() * 6)) / 2;
     draw_str(&mut fb, x2, TOP_PAD + 28, line2);
-    oled::send_frame(&fb).await;
-}
-
-/// Identify the SPI-NOR part at runtime and hold the result on screen until BACK.
-///
-/// The JEDEC bytes disambiguate the three second-sourced chips (AT25SF321B /
-/// S25FL132K / W25Q32JV) and hence which write-protection recipe applies (see
-/// `deluge_bsp::flash::protect`). Read-only: no status-register writes.
-///
-/// Reading the ID leaves memory-mapped read mode briefly, so every caller must
-/// have closed its FAT handles first — the `SETTINGS` menu branch does this
-/// before it opens this screen.
-async fn show_flash_info() {
-    let id = deluge_bsp::flash::identify();
-    let sr = rza1_hal::spibsc::read_status_reg();
-    log::info!(
-        "Flash: {} JEDEC={:02x} {:02x} {:02x} cap={:#x} SR={:#04x}",
-        id.model,
-        id.raw[0],
-        id.raw[1],
-        id.raw[2],
-        id.capacity,
-        sr
-    );
-    let mut line = *b"ID 00 00 00";
-    crate::hex2(&mut line[3..5], id.raw[0]);
-    crate::hex2(&mut line[6..8], id.raw[1]);
-    crate::hex2(&mut line[9..11], id.raw[2]);
-    show_message(id.model.as_bytes(), &line).await;
-
-    // Hold the frame until BACK is pressed (clearing any stale press first so we
-    // don't exit immediately), polling the flag `pic_rx_task` sets.  Nothing else
-    // redraws the OLED while we wait, so the frame persists.
-    crate::BACK_PRESSED.store(false, Ordering::Release);
-    while !crate::BACK_PRESSED.swap(false, Ordering::AcqRel) {
-        embassy_time::Timer::after(embassy_time::Duration::from_millis(50)).await;
-    }
+    screen::show(&fb).await;
 }
 
 /// Display a simple progress bar with an app label.
@@ -478,7 +435,7 @@ pub async fn show_progress(label: &[u8], percent: u8) {
         }
     }
 
-    oled::send_frame(&fb).await;
+    screen::show(&fb).await;
 }
 
 // ── Settings screen ───────────────────────────────────────────────────────────
@@ -500,11 +457,11 @@ const SET_LINE_MAX: usize = 20;
 /// Format the auto-boot row: `AUTO-BOOT: 5S`, or `AUTO-BOOT: <5S>` while the
 /// value is being edited (the brackets are the only cue that the encoder now
 /// changes the value instead of moving the cursor).
-fn auto_boot_line<'a>(
-    buf: &'a mut [u8; SET_LINE_MAX],
-    auto_boot: crate::settings::AutoBoot,
+fn auto_boot_line(
+    buf: &mut [u8; SET_LINE_MAX],
+    auto_boot: deluge_image::settings::AutoBoot,
     editing: bool,
-) -> &'a [u8] {
+) -> &[u8] {
     const PREFIX: &[u8] = b"AUTO-BOOT: ";
     let mut n = 0;
     for &b in PREFIX {
@@ -515,7 +472,7 @@ fn auto_boot_line<'a>(
         buf[n] = b'<';
         n += 1;
     }
-    let mut val = [0u8; crate::settings::AUTO_BOOT_LABEL_MAX];
+    let mut val = [0u8; deluge_image::settings::AUTO_BOOT_LABEL_MAX];
     for &b in auto_boot.label(&mut val) {
         buf[n] = b;
         n += 1;
@@ -538,11 +495,14 @@ fn auto_boot_line<'a>(
 ///   edit started from.
 /// * SELECT on `DEV MODE` flips the flag.
 /// * SELECT on `BACK`, or the BACK button, leaves.
-pub async fn run_settings(cfg: &mut crate::settings::Settings) {
+pub async fn run_settings(cfg: &mut deluge_image::settings::Settings, stock_form: bool) {
+    // The SSB-update row only means something to the stock bootloader's update path; a loader
+    // in a boot slot updates itself (UPDATE LOADER).
+    #[cfg(feature = "flash-protect")]
+    let ssb_row = stock_form;
+    let back = SET_BACK - (cfg!(feature = "flash-protect") && !stock_form) as usize;
     use embassy_time::{Duration, Timer};
 
-    const ENC: usize = deluge_bsp::controls::encoder::SELECT as usize;
-    let mut edge_acc: i8 = 0;
     let mut cursor = SET_AUTO_BOOT;
     // The rows can outgrow the four visible slots (a `flash-protect` build has
     // five), so the window follows the cursor exactly like `run_selector`.
@@ -558,12 +518,12 @@ pub async fn run_settings(cfg: &mut crate::settings::Settings) {
 
     // A BACK latched by a previous mode (e.g. leaving DATA TRANSFER) must not
     // immediately dismiss this screen.
-    crate::BACK_PRESSED.store(false, Ordering::Release);
+    BACK_PRESSED.store(false, Ordering::Release);
 
     loop {
         // ---- draw ----
         let mut line = [0u8; SET_LINE_MAX];
-        let rows: [&[u8]; SET_ROWS] = [
+        let mut rows: [&[u8]; SET_ROWS] = [
             auto_boot_line(&mut line, cfg.auto_boot, editing),
             if cfg.dev_mode {
                 b"DEV MODE: ON"
@@ -582,21 +542,22 @@ pub async fn run_settings(cfg: &mut crate::settings::Settings) {
             },
             b"BACK",
         ];
+        rows[back] = b"BACK";
 
         let mut fb = FrameBuffer::new();
-        render(&mut fb, b"SETTINGS", &rows, scroll, cursor, None);
-        oled::send_frame(&fb).await;
+        render(&mut fb, b"SETTINGS", &rows[..=back], scroll, cursor, None);
+        screen::show(&fb).await;
 
         // Poll at ~60 Hz, like the selector.
         Timer::after(Duration::from_millis(16)).await;
 
         // ---- encoder: adjust the value while editing, else move the cursor ----
-        let detents = deluge_bsp::encoder::take_detents(ENC, &mut edge_acc);
+        let detents = take_detents();
         if detents != 0 {
             if editing {
                 cfg.auto_boot = cfg.auto_boot.step(detents);
             } else if detents > 0 {
-                cursor = (cursor + 1).min(SET_BACK);
+                cursor = (cursor + 1).min(back);
             } else {
                 cursor = cursor.saturating_sub(1);
             }
@@ -609,7 +570,7 @@ pub async fn run_settings(cfg: &mut crate::settings::Settings) {
         }
 
         // ---- BACK button: cancel an edit, or leave the screen ----
-        if crate::BACK_PRESSED.swap(false, Ordering::AcqRel) {
+        if BACK_PRESSED.swap(false, Ordering::AcqRel) {
             if editing {
                 cfg.auto_boot = pre_edit;
                 editing = false;
@@ -641,10 +602,10 @@ pub async fn run_settings(cfg: &mut crate::settings::Settings) {
                     editing = true;
                 }
                 SET_DEV_MODE => cfg.dev_mode = !cfg.dev_mode,
-                SET_FLASH_INFO => show_flash_info().await,
+                SET_FLASH_INFO => crate::device::show_flash_info().await,
                 #[cfg(feature = "flash-protect")]
-                SET_SSB_UPDATE => cfg.ssb_write_enable = !cfg.ssb_write_enable,
-                _ => return, // SET_BACK
+                SET_SSB_UPDATE if ssb_row => cfg.ssb_write_enable = !cfg.ssb_write_enable,
+                _ => return, // BACK
             }
         }
     }

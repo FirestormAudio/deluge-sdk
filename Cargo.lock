@@ -215,6 +215,8 @@ dependencies = [
  "cortex-ar",
  "deluge-bsp",
  "deluge-image",
+ "deluge-loader",
+ "deluge-sdk",
  "deluge-usb-classes",
  "embassy-executor",
  "embassy-futures",
@@ -1321,6 +1323,15 @@ dependencies = [
 [[package]]
 name = "deluge-image"
 version = "0.1.1"
+
+[[package]]
+name = "deluge-loader"
+version = "0.1.1"
+dependencies = [
+ "deluge-flash-protect",
+ "deluge-image",
+ "heapless 0.9.3",
+]
 
 [[package]]
 name = "deluge-panel-protocol"
@@ -3091,6 +3102,15 @@ name = "litrs"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
+
+[[package]]
+name = "loader-shim"
+version = "0.1.0"
+dependencies = [
+ "deluge-image",
+ "rza1-pac",
+ "rza1-rt",
+]
 
 [[package]]
 name = "lock_api"
@@ -5283,6 +5303,7 @@ version = "0.1.0"
 dependencies = [
  "deluge-image",
  "log",
+ "rza1-pac",
  "rza1-rt",
 ]
 

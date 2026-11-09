@@ -7,6 +7,23 @@ breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- `deluge_image::app`: a header for a flat image a loader copies into RAM and
+  runs (`encode_app_header`, `validate_app`), and `mkslot app`, which flattens an ELF's
+  `PT_LOAD` segments under it.
+- `deluge_image::slot::decode_boot_info` reads back the word `boot_info` writes (refusing
+  anything else), and `plan_update` picks a self-update's slot (the one not running) and sequence.
+- `deluge::Sd::list` and `Sd::open_in`: list a root-level directory, and open a file in one
+  (both names single, no paths), on the device and in the simulator.
+
+### Changed
+
+- `deluge::Deluge::sd` can be called again once the `Sd` it returned is dropped, and after a
+  mount that failed: one `Sd` at a time instead of one per boot.
+- `deluge_image::slot::DELUGE` is the Deluge's boot-slot layout, as passed to the `_with`
+  functions.
+
 ## [0.1.1] - 2026-11-08
 
 ### Fixed
@@ -30,9 +47,9 @@ breaking changes.
 
 ### Added
 
-- `deluge-image::slot`: the boot-slot layout (`SlotLayout`, the Deluge's `CLASSIC`) and the variant
-  codes a stage-0 accepts are parameters (`parse_with`, `validate_with`, `encode_header_with`), so
-  another board can use the same header format; the Deluge's are unchanged. `select` picks the
+- `deluge-image::slot`: the boot-slot layout (`SlotLayout`; the Deluge's is a constant) and the variant
+  codes a stage-0 accepts are parameters (`parse_with`, `validate_with`, `encode_header_with`); the
+  Deluge's are unchanged. `select` picks the
   slot to boot from both slots and the watchdog flag: the newest valid, a pending one tried, rolled
   back to the other if the watchdog killed its last boot, or tried again when it is the only one.
   `mkslot` takes `--variant-code`, `--slot-len`, `--slot-b`, the slot offsets and `--corrupt-body-b`.

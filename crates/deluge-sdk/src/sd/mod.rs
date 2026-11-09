@@ -1,4 +1,4 @@
-//! SD-card files (FAT), the same API on every board.
+//! SD-card files (FAT), the same API on the device and in the simulator.
 
 mod error;
 #[cfg(any(target_os = "none", test))]
@@ -6,8 +6,18 @@ pub(crate) mod fat;
 
 pub use error::{FatError, SdError};
 
+/// A directory entry, from [`Sd::list`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DirEntry<'a> {
+    /// The entry's name: its long name if it has one, else its short name.
+    pub name: &'a str,
+    /// The file's length in bytes (`0` for a directory).
+    pub len: u32,
+    pub is_dir: bool,
+}
+
 /// A 32-byte aligned buffer. A [`File`] read into one whose length is a multiple of 512 goes
-/// straight to the card in multi-block transfers, full speed on every board, as long as the file
+/// straight to the card in multi-block transfers, at full speed, as long as the file
 /// position is a multiple of 32 too: after a [`File::seek`] to an offset that isn't, the reads
 /// that follow go a block at a time.
 #[repr(C, align(32))]
@@ -17,7 +27,8 @@ pub struct AlignedBuf<const N: usize>(pub [u8; N]);
 ///
 /// Files in the card's **root** directory, by name (long names work): whole-file
 /// [`read`](Self::read) and [`write`](Self::write), and [`open`](Self::open) for a [`File`] read
-/// a chunk at a time, with seek. Every call awaits the card, so the rest of the app keeps running
+/// a chunk at a time, with seek. One level of directories below the root can be listed
+/// ([`list`](Self::list)) and read from ([`open_in`](Self::open_in)). Every call awaits the card, so the rest of the app keeps running
 /// while a transfer waits on the DMA.
 ///
 /// **Let every call finish.** Don't drop an `Sd` or [`File`] future before it completes (no
@@ -43,7 +54,33 @@ fn root_name(name: &str) -> Result<&str, FatError> {
     Ok(name)
 }
 
+/// Whether an [`Sd`] holds the card ([`Sd::take`]; released when it is dropped).
+static HELD: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+impl Drop for Sd {
+    fn drop(&mut self) {
+        HELD.store(false, core::sync::atomic::Ordering::Release);
+    }
+}
+
 impl Sd {
+    /// Take the card and mount it: one `Sd` at a time, taken again once dropped. A mount that
+    /// fails (no card, no FAT volume) leaves the card free to try again.
+    ///
+    /// # Panics
+    /// If another `Sd` holds the card.
+    pub(crate) async fn take() -> Result<Self, SdError> {
+        use core::sync::atomic::Ordering;
+        if HELD.swap(true, Ordering::AcqRel) {
+            panic!("Deluge::sd(): the card is already taken");
+        }
+        let sd = Self::mount().await;
+        if sd.is_err() {
+            HELD.store(false, Ordering::Release);
+        }
+        sd
+    }
+
     /// Bring the card up and mount its volume.
     pub(crate) async fn mount() -> Result<Self, SdError> {
         Ok(Self {
@@ -68,6 +105,25 @@ impl Sd {
     pub async fn open(&mut self, name: &str) -> Result<File<'_>, FatError> {
         Ok(File {
             file: self.card.open(root_name(name)?).await?,
+            _not_send: crate::NOT_SEND,
+        })
+    }
+
+    /// Call `f` with each entry of the root-level directory `dir` (files and subdirectories, in
+    /// the card's order; not `.` or `..`). `dir` is one name, as a file's is: no path.
+    pub async fn list(
+        &mut self,
+        dir: &str,
+        mut f: impl FnMut(&DirEntry<'_>),
+    ) -> Result<(), FatError> {
+        self.card.list(root_name(dir)?, &mut f).await
+    }
+
+    /// Open file `name` in the root-level directory `dir` to read, as [`open`](Self::open) does
+    /// in the root. Both are single names: no path.
+    pub async fn open_in(&mut self, dir: &str, name: &str) -> Result<File<'_>, FatError> {
+        Ok(File {
+            file: self.card.open_in(root_name(dir)?, root_name(name)?).await?,
             _not_send: crate::NOT_SEND,
         })
     }
@@ -185,6 +241,55 @@ mod sim_tests {
             let mut f = sd.open("F.BIN").await.unwrap();
             f.seek(3).await.unwrap();
             assert_eq!(f.read(&mut buf).await, Ok(0));
+        });
+    }
+
+    #[test]
+    fn sim_list_and_open_in() {
+        with_card("list", async |sd| {
+            let root = std::path::PathBuf::from(std::env::var_os("DELUGE_SIM_SD").unwrap());
+            std::fs::create_dir_all(root.join("APPS").join("SUB")).unwrap();
+            std::fs::write(root.join("APPS").join("a.elf"), b"12345").unwrap();
+            let mut seen = Vec::new();
+            sd.list("APPS", |e| {
+                seen.push((std::string::String::from(e.name), e.len, e.is_dir))
+            })
+            .await
+            .unwrap();
+            seen.sort();
+            assert_eq!(seen, [("SUB".into(), 0, true), ("a.elf".into(), 5, false)]);
+            let mut f = sd.open_in("APPS", "a.elf").await.unwrap();
+            assert_eq!(f.len(), 5);
+            f.close().await.unwrap();
+            assert_eq!(sd.list("NOPE", |_| {}).await, Err(FatError::NotFound));
+            assert_eq!(sd.list("../x", |_| {}).await, Err(FatError::InvalidName));
+            assert!(matches!(
+                sd.open_in("APPS", "../x").await,
+                Err(FatError::InvalidName)
+            ));
+        });
+    }
+
+    /// The card can be taken again once the `Sd` holding it is dropped (the loader lets go of it
+    /// for USB mass storage, then mounts it again), and a mount that fails doesn't keep it.
+    #[test]
+    fn sim_sd_can_be_taken_again_after_drop() {
+        let _turn = CARD_DIR.lock().unwrap_or_else(|e| e.into_inner());
+        block_on(async {
+            let sd = Sd::take().await.unwrap();
+            drop(sd);
+            let again = Sd::take().await;
+            assert!(again.is_ok());
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "already taken")]
+    fn sim_sd_cannot_be_held_twice() {
+        let _turn = CARD_DIR.lock().unwrap_or_else(|e| e.into_inner());
+        block_on(async {
+            let _sd = Sd::take().await.unwrap();
+            let _ = Sd::take().await;
         });
     }
 

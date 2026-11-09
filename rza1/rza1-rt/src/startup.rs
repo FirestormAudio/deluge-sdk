@@ -175,8 +175,13 @@ _reset_handler:
     dsb
     isb
 
-    /* 1d. Set VBAR to our vector table BEFORE clearing HIVEC. */
-    ldr r0, =_start
+    /* 1d. Set VBAR to our vector table BEFORE clearing HIVEC. PC-relative, so an image
+     * that executes in place from another address than it was linked for (a position-
+     * independent boot-slot shim) points VBAR at its own table: the literal is the offset from
+     * the `add` below (PC reads as its address + 8), the same wherever the image runs. */
+    ldr r0, =_start - (.Lvbar_pc + 8)
+.Lvbar_pc:
+    add r0, pc, r0
     mcr p15, 0, r0, c12, c0, 0   /* Write VBAR                   */
     isb
 
@@ -690,7 +695,11 @@ _fault_report:
     msr  cpsr_c, r0               /* back to the exception's mode and stack */
     mov  r0, r6                   /* fault_pc */
     mov  r1, r5                   /* fault_type */
-    ldr  r12, =rza1_cpu_fault_report
+    /* PC-relative, as VBAR above; `bx` keeps a Thumb reporter's bit 0, which the offset
+     * carries. */
+    ldr  r12, =rza1_cpu_fault_report - (.Lreport_pc + 8)
+.Lreport_pc:
+    add  r12, pc, r12
     bx   r12
 
     /* The default reporter (link.x PROVIDEs it as rza1_cpu_fault_report): park the core. A

@@ -59,7 +59,7 @@ pub enum Outcome {
 ///
 /// The cached window can return a stale line after a program (the RZ/A1L's caches
 /// ignore maintenance ops), which would make the post-write verify lie — the same
-/// reason [`crate::settings`] reads through the mirror. Reads are permitted
+/// reason [`super::settings`] reads through the mirror. Reads are permitted
 /// anywhere in the chip, protected region included, so the legacy source is
 /// readable even with the lock-down armed.
 fn read_at(offset: u32, out: &mut [u8]) {
@@ -80,7 +80,7 @@ fn read_at(offset: u32, out: &mut [u8]) {
 /// # Safety
 /// Switches the SPI-flash bus out of memory-mapped read mode for the erase and
 /// program (no code may run from flash during the call — true in the SSB, which
-/// runs from SRAM). Call from the boot path, like [`crate::settings::write`].
+/// runs from SRAM). Call from the boot path, like [`super::settings::write`].
 pub unsafe fn migrate() -> Outcome {
     // Peek the first byte of each location; the rule itself is
     // `flash::deluge_settings_need_migration` (host-tested).
@@ -95,7 +95,7 @@ pub unsafe fn migrate() -> Outcome {
     let mut record = [0u8; APP_RECORD_LEN];
     read_at(flash::DELUGE_SETTINGS_LEGACY_OFFSET, &mut record);
 
-    // SAFETY: `DELUGE_SETTINGS_OFFSET`'s 64 KB block is one of the board's
+    // SAFETY: `DELUGE_SETTINGS_OFFSET`'s 64 KB block is one of the Deluge's
     // writable windows, so `MAP` accepts it; both calls run their manual-mode
     // window with interrupts masked and a bounded WIP-wait internally (required
     // here — taking the OLED SPI-DMA interrupt mid-erase freezes the machine).

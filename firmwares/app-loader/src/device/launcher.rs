@@ -16,7 +16,7 @@
 //! running bootloader.  Writing PT_LOAD segments there directly would corrupt
 //! the bootloader in flight.  The solution is a two-phase approach:
 //!
-//! 1. [`crate::elf::load_from_sd_with_progress`] stages SRAM-targeting segments in SDRAM
+//! 1. [`super::elf::load_from_sd_with_progress`] stages SRAM-targeting segments in SDRAM
 //!    (`0x0FD20000+`) and returns per-segment [`SramSegDesc`] descriptors.
 //!
 //! 2. [`launch_via_trampoline`] copies a small PIC trampoline blob +
@@ -34,7 +34,7 @@ use core::arch::{asm, global_asm};
 
 use rza1_hal::cache;
 
-use crate::elf::SramSegDesc;
+use super::elf::SramSegDesc;
 
 // ---------------------------------------------------------------------------
 // Retention-RAM layout
@@ -170,7 +170,7 @@ unsafe fn flush_all_caches() {
 /// Flush all caches and branch directly to `entry`.
 ///
 /// Use this when the app has no SRAM-targeting segments (i.e.
-/// [`crate::elf::LoadResult::n_sram`] is zero).
+/// [`super::elf::LoadResult::n_sram`] is zero).
 ///
 /// # Safety
 /// `entry` must be the address of a valid ARM-state function.
@@ -190,8 +190,8 @@ pub unsafe fn launch(entry: u32) -> ! {
 ///
 /// # Safety
 /// - Each descriptor in `descs` must name a fully staged source and a valid
-///   SRAM destination (as produced by [`crate::elf::load_from_sd_with_progress`],
-///   the dev-upload path, or [`crate::flashboot`]).
+///   SRAM destination (as produced by [`super::elf::load_from_sd_with_progress`],
+///   the dev-upload path, or [`super::flashboot`]).
 /// - Nothing in the retention RAM region (`0x20000000–0x2001FFFF`) must be
 ///   live; the first-stage bootloader guarantees this.
 /// - `entry` must be the address of a valid ARM-state function.

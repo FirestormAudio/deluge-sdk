@@ -1,4 +1,4 @@
-//! The SD card's errors, the same on every board.
+//! The SD card's errors, the same on the device and in the simulator.
 
 /// Bringing the card up failed ([`Deluge::sd`](crate::Deluge::sd)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

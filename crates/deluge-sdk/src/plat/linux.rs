@@ -523,6 +523,20 @@ impl SdCard {
     pub(crate) async fn open(&mut self, _name: &str) -> Result<SdFile<'_>, crate::sd::FatError> {
         unimplemented!("Sd is not on the linux backend yet")
     }
+    pub(crate) async fn list(
+        &mut self,
+        _dir: &str,
+        _f: &mut dyn FnMut(&crate::sd::DirEntry<'_>),
+    ) -> Result<(), crate::sd::FatError> {
+        unimplemented!("Sd is not on the linux backend yet")
+    }
+    pub(crate) async fn open_in(
+        &mut self,
+        _dir: &str,
+        _name: &str,
+    ) -> Result<SdFile<'_>, crate::sd::FatError> {
+        unimplemented!("Sd is not on the linux backend yet")
+    }
 }
 
 /// Not on the linux backend yet.

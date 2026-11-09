@@ -19,6 +19,7 @@
 //! The crate is `no_std`; `cfg(test)` pulls in `std` so the test harness works.
 #![cfg_attr(not(test), no_std)]
 
+pub mod app;
 pub mod crc;
 pub mod elf;
 pub mod settings;

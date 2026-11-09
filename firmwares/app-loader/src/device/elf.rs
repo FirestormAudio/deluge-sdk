@@ -14,7 +14,8 @@
 //! SDRAM-targeting segments (`0x0C000000–0x0EFFFFFF`) are written directly;
 //! they cannot overwrite the bootloader.
 
-use deluge_bsp::fat::{self, FatError, RawFile};
+use deluge::FatError;
+use deluge::sd::File;
 // The ELF wire-format constants and the pure load-range / staging math live in
 // the host-tested `deluge-image` crate.
 use deluge_bsp::flash;
@@ -87,14 +88,10 @@ impl From<PlanError> for ElfError {
 }
 
 /// Read exactly `buf.len()` bytes from `file` into `buf`.
-fn read_exact(
-    vm: &mut fat::DelugeVolumeManager,
-    file: RawFile,
-    buf: &mut [u8],
-) -> Result<(), ElfError> {
+async fn read_exact(file: &mut File<'_>, buf: &mut [u8]) -> Result<(), ElfError> {
     let mut pos = 0;
     while pos < buf.len() {
-        let n = vm.read(file, &mut buf[pos..])?;
+        let n = file.read(&mut buf[pos..]).await?;
         if n == 0 {
             return Err(ElfError::UnexpectedEof);
         }
@@ -113,7 +110,7 @@ fn read_exact(
 ///   addresses immediately (they cannot overwrite the bootloader).
 /// - **SRAM targets** (`0x20020000–0x202FFFFF`): written to the SDRAM
 ///   staging area; the caller must invoke
-///   [`crate::launcher::launch_via_trampoline`] to move them before
+///   [`super::launcher::launch_via_trampoline`] to move them before
 ///   branching to the app.
 ///
 /// Returns a [`LoadResult`] containing the entry point and any SRAM segment
@@ -125,8 +122,7 @@ fn read_exact(
 /// destination is validated before any write, but the caller must ensure no
 /// live data occupies the SDRAM staging window (`0x0FD20000–0x0FFFFFFF`).
 pub async unsafe fn load_from_sd_with_progress<F, Fut>(
-    vm: &mut fat::DelugeVolumeManager,
-    file: RawFile,
+    file: &mut File<'_>,
     mut on_progress: F,
 ) -> Result<LoadResult, ElfError>
 where
@@ -135,7 +131,7 @@ where
 {
     // 1. Read and validate the 52-byte ELF header.
     let mut hdr = [0u8; 52];
-    read_exact(vm, file, &mut hdr)?;
+    read_exact(file, &mut hdr).await?;
 
     if hdr[0..4] != ELF_MAGIC {
         return Err(ElfError::BadMagic);
@@ -165,12 +161,14 @@ where
 
     // 2. Seek to and read all program headers into a stack buffer.
     //    MAX_PHDRS × 32 bytes = 512 bytes stack.
-    vm.file_seek_from_start(file, e_phoff)?;
+    file.seek(e_phoff).await?;
     let mut phdr_buf = [0u8; MAX_PHDRS * 32];
-    read_exact(vm, file, &mut phdr_buf[..phnum * e_phentsize])?;
+    read_exact(file, &mut phdr_buf[..phnum * e_phentsize]).await?;
 
     // 3. Copy each PT_LOAD segment to its write destination.
-    let mut chunk_buf = [0u8; CHUNK];
+    // 32-byte aligned and a whole block: a read at a 32-byte-aligned file position goes straight
+    // to the card in one transfer (`deluge::sd::AlignedBuf`).
+    let mut chunk_buf = deluge::sd::AlignedBuf([0u8; CHUNK]);
 
     let mut sram_descs = [SramSegDesc::default(); MAX_PHDRS];
     let mut n_sram: usize = 0;
@@ -230,7 +228,7 @@ where
                 SegmentPlacement::Write { write_addr, sram } => (write_addr, sram),
             };
 
-        vm.file_seek_from_start(file, p_offset)?;
+        file.seek(p_offset).await?;
 
         let mut remaining = p_filesz;
         let mut dst = write_addr as *mut u8;
@@ -238,11 +236,11 @@ where
         unsafe {
             while remaining > 0 {
                 let want = remaining.min(CHUNK);
-                let n = vm.read(file, &mut chunk_buf[..want])?;
+                let n = file.read(&mut chunk_buf.0[..want]).await?;
                 if n == 0 {
                     return Err(ElfError::UnexpectedEof);
                 }
-                core::ptr::copy_nonoverlapping(chunk_buf.as_ptr(), dst, n);
+                core::ptr::copy_nonoverlapping(chunk_buf.0.as_ptr(), dst, n);
                 dst = dst.add(n);
                 remaining -= n;
 
@@ -305,7 +303,7 @@ pub struct FlashStage {
 /// Stream an ELF32 file from the SD card and flatten its `PT_LOAD` segments into
 /// a contiguous raw image in the SDRAM staging window — the same `.bin` layout
 /// `objcopy -O binary` produces, which the on-flash boot path
-/// ([`crate::flashboot`]) expects.
+/// ([`super::flashboot`]) expects.
 ///
 /// Only firmware that is **fully SRAM-linked** can be stored to flash: the
 /// flash-boot path reconstructs the image with a single trampoline descriptor
@@ -314,14 +312,13 @@ pub struct FlashStage {
 ///
 /// Inter-segment gaps are zero-filled to match the host flattener. The returned
 /// [`FlashStage`] points into the staging window; the caller programs it into
-/// the slot (see [`crate::flashboot::store_image_to_slot`]).
+/// the slot (see [`super::flashboot::store_image_to_slot`]).
 ///
 /// # Safety
 /// Writes the SDRAM staging window (`0x0FD20000+`); the caller must ensure no
 /// live data occupies it (true during the boot menu, like the SD ELF loader).
 pub async unsafe fn flatten_to_flash_staging<F, Fut>(
-    vm: &mut fat::DelugeVolumeManager,
-    file: RawFile,
+    file: &mut File<'_>,
     mut on_progress: F,
 ) -> Result<FlashStage, ElfError>
 where
@@ -330,7 +327,7 @@ where
 {
     // 1. Read and validate the 52-byte ELF header (same checks as the loader).
     let mut hdr = [0u8; 52];
-    read_exact(vm, file, &mut hdr)?;
+    read_exact(file, &mut hdr).await?;
     if hdr[0..4] != ELF_MAGIC {
         return Err(ElfError::BadMagic);
     }
@@ -349,9 +346,9 @@ where
     }
 
     // 2. Read all program headers.
-    vm.file_seek_from_start(file, e_phoff)?;
+    file.seek(e_phoff).await?;
     let mut phdr_buf = [0u8; MAX_PHDRS * 32];
-    read_exact(vm, file, &mut phdr_buf[..e_phnum * 32])?;
+    read_exact(file, &mut phdr_buf[..e_phnum * 32]).await?;
 
     // 3. First pass: classify every loadable segment, require SRAM, and compute
     //    the flattened image bounds [lo, hi) plus the total bytes to stream.
@@ -393,7 +390,9 @@ where
     unsafe { core::ptr::write_bytes(stage_base as *mut u8, 0, image_len) };
 
     // 4. Second pass: stream each segment's file bytes into staging.
-    let mut chunk_buf = [0u8; CHUNK];
+    // 32-byte aligned and a whole block: a read at a 32-byte-aligned file position goes straight
+    // to the card in one transfer (`deluge::sd::AlignedBuf`).
+    let mut chunk_buf = deluge::sd::AlignedBuf([0u8; CHUNK]);
     let mut copied: u32 = 0;
     let mut last_percent: u8 = if total_bytes == 0 { 100 } else { 0 };
     on_progress(0, total_bytes).await;
@@ -411,16 +410,16 @@ where
         let p_phys = mirror_to_phys(le32(ph, 12));
         let mut dst = sram_stage_addr(p_phys) as *mut u8;
 
-        vm.file_seek_from_start(file, p_offset)?;
+        file.seek(p_offset).await?;
         let mut remaining = p_filesz;
         unsafe {
             while remaining > 0 {
                 let want = remaining.min(CHUNK);
-                let n = vm.read(file, &mut chunk_buf[..want])?;
+                let n = file.read(&mut chunk_buf.0[..want]).await?;
                 if n == 0 {
                     return Err(ElfError::UnexpectedEof);
                 }
-                core::ptr::copy_nonoverlapping(chunk_buf.as_ptr(), dst, n);
+                core::ptr::copy_nonoverlapping(chunk_buf.0.as_ptr(), dst, n);
                 dst = dst.add(n);
                 remaining -= n;
 

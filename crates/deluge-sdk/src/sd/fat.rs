@@ -1,5 +1,5 @@
-//! The FAT volume behind [`Sd`](crate::Sd) on the device, the same on every board: embedded-fatfs
-//! over `block-device-adapters`' byte stream over the board's 512-byte block device. Every card
+//! The FAT volume behind [`Sd`](crate::Sd) on the device: embedded-fatfs
+//! over `block-device-adapters`' byte stream over the card's 512-byte block device. Every card
 //! transfer is awaited, so the rest of the system runs while one waits on the DMA.
 
 use aligned::Aligned;
@@ -8,6 +8,7 @@ use block_device_driver::BlockDevice;
 use embedded_fatfs::{DefaultTimeProvider, Error, FileSystem, FsOptions, LossyOemCpConverter};
 use embedded_io_async::{Read, Seek, SeekFrom, Write};
 
+use super::DirEntry;
 use super::error::FatError;
 
 /// What the filesystem reads and writes: the volume's window of the card, a block at a time.
@@ -133,6 +134,74 @@ impl<D: BlockDevice<512>> Volume<D> {
             len,
         })
     }
+}
+
+impl<D: BlockDevice<512>> Volume<D> {
+    /// Call `f` with each entry of root-level directory `dir`, `.` and `..` left out.
+    pub async fn list(&self, dir: &str, f: &mut dyn FnMut(&DirEntry<'_>)) -> Result<(), FatError> {
+        let d = self.fs.root_dir().open_dir(dir).await?;
+        let mut it = d.iter();
+        // A long name is up to 255 UCS-2 units, each at most 3 bytes of UTF-8.
+        let mut buf = [0u8; 255 * 3];
+        while let Some(e) = it.next().await {
+            let e = e?;
+            let name = match e.long_file_name_as_ucs2_units() {
+                Some(units) => utf8_of(units, &mut buf),
+                None => ascii_of(e.short_file_name_as_bytes(), &mut buf),
+            };
+            if name == "." || name == ".." {
+                continue;
+            }
+            f(&DirEntry {
+                name,
+                len: u32::try_from(e.len()).unwrap_or(u32::MAX),
+                is_dir: e.is_dir(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Open file `name` in root-level directory `dir` to read.
+    pub async fn open_in(&self, dir: &str, name: &str) -> Result<FatFile<'_, D>, FatError> {
+        let entry = self
+            .fs
+            .root_dir()
+            .open_dir(dir)
+            .await?
+            .open_meta(name)
+            .await?;
+        if entry.is_dir() {
+            return Err(FatError::NotFound);
+        }
+        let len = u32::try_from(entry.len()).unwrap_or(u32::MAX);
+        Ok(FatFile {
+            file: entry.to_file(),
+            len,
+        })
+    }
+}
+
+/// UCS-2 `units` as UTF-8 in `buf` (an unpaired surrogate as U+FFFD).
+fn utf8_of<'b>(units: &[u16], buf: &'b mut [u8]) -> &'b str {
+    let mut n = 0;
+    for c in char::decode_utf16(units.iter().copied()) {
+        let c = c.unwrap_or(char::REPLACEMENT_CHARACTER);
+        if n + c.len_utf8() > buf.len() {
+            break;
+        }
+        n += c.encode_utf8(&mut buf[n..]).len();
+    }
+    // Whole characters only were written.
+    core::str::from_utf8(&buf[..n]).unwrap_or("")
+}
+
+/// A short (8.3, OEM code page) name as ASCII in `buf`, any other byte as `?`.
+fn ascii_of<'b>(bytes: &[u8], buf: &'b mut [u8]) -> &'b str {
+    let n = bytes.len().min(buf.len());
+    for (d, &b) in buf.iter_mut().zip(bytes) {
+        *d = if b.is_ascii() { b } else { b'?' };
+    }
+    core::str::from_utf8(&buf[..n]).unwrap_or("")
 }
 
 impl<D: BlockDevice<512>> FatFile<'_, D> {
@@ -303,6 +372,75 @@ mod tests {
     }
 
     const MIB: u32 = 1 << 20;
+
+    /// Put `files` (name, contents) into a new root directory `dir`, through the filesystem.
+    fn make_dir(vol: &Volume<RamDisk>, dir: &str, files: &[(&str, &[u8])]) {
+        block_on(async {
+            let d = vol.fs.root_dir().create_dir(dir).await.unwrap();
+            for (name, data) in files {
+                let mut f = d.create_file(name).await.unwrap();
+                f.write_all(data).await.unwrap();
+                f.flush().await.unwrap();
+                f.close().await.unwrap();
+            }
+            d.create_dir("SUB").await.unwrap();
+            vol.fs.flush().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn list_finds_files_and_dirs() {
+        let vol = mount(&formatted(true));
+        make_dir(
+            &vol,
+            "APPS",
+            &[("a.elf", b"12345"), ("Long Name App.elf", b"x")],
+        );
+        let mut seen = Vec::new();
+        block_on(vol.list("APPS", &mut |e: &DirEntry| {
+            seen.push((std::string::String::from(e.name), e.len, e.is_dir))
+        }))
+        .unwrap();
+        seen.sort();
+        assert_eq!(
+            seen,
+            [
+                ("Long Name App.elf".into(), 1, false),
+                ("SUB".into(), 0, true),
+                ("a.elf".into(), 5, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn list_of_a_missing_dir_is_not_found() {
+        let vol = mount(&formatted(true));
+        assert_eq!(
+            block_on(vol.list("NOPE", &mut |_: &DirEntry| {})),
+            Err(FatError::NotFound)
+        );
+    }
+
+    #[test]
+    fn open_in_reads_a_file_in_a_dir() {
+        let vol = mount(&formatted(true));
+        make_dir(&vol, "BOOT", &[("LOADER.SLT", b"slot image")]);
+        block_on(async {
+            let mut f = vol.open_in("BOOT", "LOADER.SLT").await.unwrap();
+            assert_eq!(f.len(), 10);
+            let mut buf = [0; 16];
+            assert_eq!(f.read(&mut buf).await, Ok(10));
+            assert_eq!(&buf[..10], b"slot image");
+            assert!(matches!(
+                vol.open_in("BOOT", "SUB").await,
+                Err(FatError::NotFound)
+            ));
+            assert!(matches!(
+                vol.open_in("BOOT", "NOPE").await,
+                Err(FatError::NotFound)
+            ));
+        });
+    }
 
     #[test]
     fn mounts_an_mbr_partition() {

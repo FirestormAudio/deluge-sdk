@@ -8,7 +8,7 @@
 //! caller's ([`SrBus`]); this crate decides *which bytes* to write and decodes the read-back. It
 //! has no hardware dependency, so the host tests exercise all of it.
 //!
-//! Each recipe protects the bottom 1 MB (a board's boot region). The protection is armed
+//! Each recipe protects the bottom 1 MB (the boot region). The protection is armed
 //! **non-volatile** (the `06h`→`01h`/`31h` path) so an app-issued software reset (`66h`/`99h`)
 //! reloads it unchanged and can't clear it — only a real power cycle can.
 //!
@@ -53,7 +53,7 @@ const SR1_TB: u8 = 1 << 5;
 const SR1_BP2: u8 = 1 << 4;
 /// SR1 bit 2: `BP0`.
 const SR1_BP0: u8 = 1 << 2;
-/// SR1 region value protecting `0x000000..0x100000` (a board's boot region) on the 4 MB parts:
+/// SR1 region value protecting `0x000000..0x100000` (the boot region) on the 4 MB parts:
 /// from the bottom, `BP2:BP0 = 101` = lower 1/4 (AT25SF321B `BP4:BP0 = 01101`, Table 6; W25 /
 /// S25FL132K `SEC=0, TB=1, BP=101`). (The 8 MB AT25QF641B's is `TB|BP2`, lower 1/8.) Checked
 /// against the datasheet tables by [`protected_range_for`]'s tests.

@@ -714,6 +714,53 @@ pub unsafe fn software_reset() {
     })
 }
 
+/// Put memory-mapped read mode on single-bit `0Bh` fast read (with the controller's common set-up:
+/// data sampled on the even edge, idle pins Hi-Z, one SPBCLK of SSL delays): 24-bit address, 8 dummy cycles,
+/// the read cache on with 2-beat bursts and SSL kept between accesses, at bit rate `SPBCR.SPBR` =
+/// `spbr`, `BRDV` = `brdv` (which clock that gives is the board's: see its BSP). The boot ROM
+/// leaves plain `03h` reads, several times slower.
+///
+/// # Safety
+/// Nothing may execute from the flash window during the call, and no flash operation may be
+/// in progress: the timing changes under any access.
+pub unsafe fn set_fast_read(spbr: u8, brdv: u8) {
+    unsafe {
+        // Not `wait_tend`: TEND marks a manual transfer's end and stays clear in read mode.
+        stop();
+        // Read mode with the common set-up: SFDE, idle pins Hi-Z, data sampled on the even edge,
+        // SPI mode 0, one flash on the bus; and one SPBCLK for each of SSLDR's delays.
+        SPIBSC0
+            .cmncr()
+            .modify(|v| *v = (*v & !CMNCR_COMMON_MASK) | CMNCR_COMMON);
+        SPIBSC0.ssldr().modify(|v| *v &= !SSLDR_DELAYS);
+        SPIBSC0
+            .spbcr()
+            .write_value(u32::from(spbr) << 8 | u32::from(brdv & 0b11));
+        SPIBSC0.drcr().write_value(DRCR_FAST);
+        SPIBSC0.drcmr().write_value(0x0B << 16); // CMD = 0Bh, no option command
+        SPIBSC0.drear().write_value(0);
+        SPIBSC0.dropr().write_value(0);
+        // CDE, ADE = 24-bit, DME; command, address and data single-bit; no option data.
+        SPIBSC0.drenr().write_value(1 << 14 | 0x7 << 8 | 1 << 15);
+        SPIBSC0.drdmcr().write_value(7); // 8 dummy cycles, single-bit
+        SPIBSC0.drcr().write_value(DRCR_FAST | DRCR_RCF);
+        let _ = SPIBSC0.drcr().read();
+    }
+}
+
+/// `CMNCR`'s fields [`set_fast_read`] sets: MD, SFDE, MOIIO3..0, IO3FV, IO2FV, IO0FV, CPHAT,
+/// CPHAR, SSLP, CPOL and BSZ.
+const CMNCR_COMMON_MASK: u32 = 0x81FF_F37B;
+/// Their values: read mode (MD = 0), SFDE = 1, the idle pins Hi-Z (11 each), CPHAT even (0),
+/// CPHAR even (1), SSL low-active, SPBCLK low at negate, a single flash (BSZ = 0), as the
+/// controller's common initialisation in Renesas's driver sets them.
+const CMNCR_COMMON: u32 = 1 << 24 | 0xFF << 16 | 0b11 << 14 | 0b11 << 12 | 0b11 << 8 | 1 << 5;
+/// `SSLDR`'s next-access (SPNDL), negate (SLNDL) and clock (SCKDL) delays; 0 is one SPBCLK each.
+const SSLDR_DELAYS: u32 = 0x0007_0707;
+
+/// `DRCR` for [`set_fast_read`]: RBURST = 1 (2-beat bursts), RBE (the read cache), SSLE.
+const DRCR_FAST: u32 = 1 << 16 | 1 << 8 | 1;
+
 /// The status-register write behind [`write_protection`] and its volatile twin:
 /// `enable` is `06h` (non-volatile) or `50h` (volatile).
 unsafe fn write_status(enable: u32, method: WriteMethod, sr1: Option<u8>, sr2: Option<u8>) -> bool {
@@ -947,6 +994,67 @@ mod tests {
                 (b + 0x00C, DRCR_SSLN | DRCR_RCF),      // flush the read cache
             ]
         );
+    }
+
+    /// Single-bit `0Bh` fast read: 24-bit address, 8 dummy cycles, the read cache on with 2-beat
+    /// bursts, SSL kept, at the bit rate given. SSL is negated first and the cache flushed last.
+    #[test]
+    fn fast_read_programs_0bh_at_the_bit_rate_given() {
+        use crate::pac::SPIBSC0 as S;
+        crate::mmio::test::reset();
+        crate::mmio::test::poke32(0x3FEF_A048, 1); // CMNSR.TEND: idle
+        unsafe { set_fast_read(2, 1) };
+        assert_eq!(crate::mmio::test::peek32(S.spbcr().addr()), 0x0000_0201);
+        crate::mmio::test::reset();
+        crate::mmio::test::poke32(0x3FEF_A048, 1);
+        unsafe { set_fast_read(1, 0) };
+        let w = crate::mmio::test::writes();
+        assert_eq!(w.first(), Some(&(S.drcr().addr(), DRCR_SSLN)), "stop first");
+        assert_eq!(
+            w.last(),
+            Some(&(S.drcr().addr(), 0x0001_0101 | DRCR_RCF)),
+            "flush last"
+        );
+        for (reg, want) in [
+            (S.spbcr().addr(), 0x0000_0100),
+            (S.drcmr().addr(), 0x000B_0000),
+            (S.drenr().addr(), 0x0000_C700),
+            (S.drdmcr().addr(), 0x0000_0007),
+            (S.drear().addr(), 0),
+            (S.dropr().addr(), 0),
+        ] {
+            assert_eq!(crate::mmio::test::peek32(reg), want, "{reg:#x}");
+        }
+        assert_eq!(
+            crate::mmio::test::peek32(S.cmncr().addr()) & CMNCR_MD,
+            0,
+            "read mode"
+        );
+        // The rest of the stock read set-up (`spibsc_common_init`): CMNCR read mode, SFDE, idle
+        // pins Hi-Z (MOIIO3..0, IO3/2/0FV = 11), data sampled on the even edge (CPHAR), mode 0,
+        // single bus; SSLDR's three delays at one SPBCLK.
+        let cmncr = crate::mmio::test::peek32(S.cmncr().addr());
+        assert_eq!(cmncr & 0x81FF_F37B, 0x01FF_F320, "CMNCR {cmncr:#010x}");
+        assert_eq!(
+            crate::mmio::test::peek32(S.ssldr().addr()) & 0x0007_0707,
+            0,
+            "SSLDR"
+        );
+    }
+
+    /// In read mode `CMNSR.TEND` (a manual transfer's end) stays clear, so waiting for it there
+    /// only runs out its timeout: on the bench that was 0.4 s of every boot. The mode change
+    /// waits for SSL to negate (`stop`), nothing else.
+    #[test]
+    fn fast_read_does_not_wait_for_a_manual_transfer() {
+        crate::mmio::test::reset();
+        crate::mmio::test::poke32(0x3FEF_A048, 0); // CMNSR: TEND clear (read mode), SSL negated
+        unsafe { set_fast_read(1, 0) };
+        let polls = crate::mmio::test::log()
+            .iter()
+            .filter(|a| !a.write && a.addr == 0x3FEF_A048)
+            .count();
+        assert!(polls < 10, "CMNSR read {polls} times");
     }
 
     // Generic-controller invariants only.  A board's flash *map* (slot/settings

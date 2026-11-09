@@ -209,9 +209,50 @@ impl SdCard {
         Ok(())
     }
 
+    /// Call `f` with each entry of root-level directory `dir`, in name order.
+    pub(crate) async fn list(
+        &mut self,
+        dir: &str,
+        f: &mut dyn FnMut(&crate::sd::DirEntry<'_>),
+    ) -> Result<(), crate::sd::FatError> {
+        let path = sim_sd_root().join(dir);
+        if !path.is_dir() {
+            return Err(crate::sd::FatError::NotFound);
+        }
+        let mut entries: std::vec::Vec<_> = std::fs::read_dir(path)?.collect::<Result<_, _>>()?;
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            let meta = e.metadata()?;
+            let name = e.file_name();
+            f(&crate::sd::DirEntry {
+                name: &name.to_string_lossy(),
+                len: if meta.is_dir() {
+                    0
+                } else {
+                    u32::try_from(meta.len()).unwrap_or(u32::MAX)
+                },
+                is_dir: meta.is_dir(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Open file `name` in root-level directory `dir` to read.
+    pub(crate) async fn open_in(
+        &mut self,
+        dir: &str,
+        name: &str,
+    ) -> Result<SdFile<'_>, crate::sd::FatError> {
+        Self::open_path(sim_sd_root().join(dir).join(name))
+    }
+
     /// Open a root-directory file to read.
     pub(crate) async fn open(&mut self, name: &str) -> Result<SdFile<'_>, crate::sd::FatError> {
-        let file = std::fs::File::open(sim_sd_root().join(name))?;
+        Self::open_path(sim_sd_root().join(name))
+    }
+
+    fn open_path<'a>(path: std::path::PathBuf) -> Result<SdFile<'a>, crate::sd::FatError> {
+        let file = std::fs::File::open(path)?;
         let meta = file.metadata()?;
         // A directory isn't a file, as on the card.
         if !meta.is_file() {

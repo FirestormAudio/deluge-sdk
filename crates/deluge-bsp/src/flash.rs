@@ -129,6 +129,19 @@ pub const MAP: FlashMap = FlashMap {
 // through this module.
 pub use rza1_hal::spibsc::{read_id, read_status_reg};
 
+/// Put the flash's read mode on the stock Deluge bootloader's final settings: single-bit `0Bh`
+/// fast read with 8 dummy cycles and the read cache on, at SPBR = 1, BRDV = 0 (66.67 Mbps at the
+/// Deluge's clocks), as `DelugeBootloader/src/spibsc_ioset_userdef.c` configures channel 0. A
+/// first stage that leaves the boot ROM's `03h` reads hands over a window several times slower.
+///
+/// # Safety
+/// Nothing may execute from the flash window during the call, and no flash operation may be in
+/// progress.
+pub unsafe fn set_stock_read_mode() {
+    // SAFETY: the caller's contract.
+    unsafe { spibsc::set_fast_read(1, 0) }
+}
+
 /// Prime the SPIBSC write-bounds guard with the true capacity decoded from the
 /// JEDEC ID, so writes work on parts whose density byte isn't a `log2(size)`
 /// (the AT25SF321B reports `1F 87 01`, density byte `0x01`, which the controller's

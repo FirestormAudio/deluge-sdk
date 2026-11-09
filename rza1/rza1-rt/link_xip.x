@@ -62,7 +62,9 @@ SECTIONS {
         . = ALIGN(8);
         __data_end__ = .;
     } > RAM AT> FLASH
-    __data_load__ = LOADADDR(.data);
+    /* An empty .data loads from nowhere: its load address is its own (the reset handler then
+     * skips the copy), so an image with no .data holds no absolute flash address for it. */
+    __data_load__ = SIZEOF(.data) > 0 ? LOADADDR(.data) : __data_start__;
 
     /* The end of what has to be in flash. */
     __flash_image_end = LOADADDR(.data) + SIZEOF(.data);

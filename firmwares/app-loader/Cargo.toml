@@ -10,14 +10,18 @@ name = "app-loader"
 test = false
 
 [dependencies]
+# The loader is an SDK app: bring-up, the display, the controls and the card come from the SDK;
+# the rest (the flash app slot, launching, USB modes, protection) from the BSP and HAL.
+deluge-loader = { path = "../../crates/deluge-loader" }
+deluge = { path = "../../crates/deluge-sdk", package = "deluge-sdk", default-features = false, features = ["fault-blink", "unstable-parts"] }
 usb-classes = { workspace = true, features = ["device-msc"] }
-rza1-hal = { path = "../../rza1/rza1-hal", features = ["rza1l"] }
-# `fat`: the app-loader's ELF loader and file browser read apps off the card
-# through `deluge_bsp::fat`, so the sync embedded-sdmmc stack is not optional here.
+# `unlock-bootloader`: the raw erase/program the loader writes its own boot slots with.
+rza1-hal = { path = "../../rza1/rza1-hal", features = ["rza1l", "unlock-bootloader"] }
 # `zero-init-below-image`: the stock first-stage bootloader runs from 0x20020000 while it
 # copies this image into SRAM, so the image must start above it; the zero-init data below
-# the image lifts `_start` clear. build.rs links `stock_fsb.x`, which checks it did.
-deluge-bsp = { path = "../../crates/deluge-bsp", features = ["flash", "fat", "usb-msc", "zero-init-below-image"] }
+# the image lifts `_start` clear. build.rs links `stock_fsb.x`, which checks it did. (The SDK's
+# deluge-bsp is this one, so its bring-up gets the same layout.)
+deluge-bsp = { path = "../../crates/deluge-bsp", features = ["flash", "usb-msc", "zero-init-below-image"] }
 deluge-image = { path = "../../crates/deluge-image" }
 cortex-ar = { workspace = true }
 embassy-executor = { workspace = true, features = ["nightly", "platform-cortex-ar", "executor-thread"] }
@@ -30,9 +34,10 @@ rtt-target = { workspace = true, optional = true }
 
 [features]
 default = []
-rtt = ["dep:rtt-target", "deluge-bsp/rtt"]
-## Arm the bottom-1 MB bootloader write-protection at boot (provision + per-boot
-## lock-down + the SSB-update maintenance path). Off by default until the per-part
-## recipe is validated on a sacrificial unit; a default build only reads the flash
-## ID and primes the write-bounds guard, never writing the status register.
+rtt = ["dep:rtt-target", "deluge/rtt"]
+## Protect the bottom-1 MB boot region: provision it when it's off, lock it down before an app,
+## and (in the stock form) the SSB-update maintenance path. Off by default until the per-part
+## recipe is validated on a spare unit; without it the loader never writes the protection (it
+## still reloads the status registers, and confirms and updates its own slot through a volatile
+## lift).
 flash-protect = ["deluge-bsp/flash-protect"]
