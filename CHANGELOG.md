@@ -7,6 +7,12 @@ breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- `deluge-flash-protect`: a write that sets SR1 on its own re-sends SR2 with the QE bit that was
+  read, so a part that clears SR2 on a one-byte `01h` keeps its QE; the read-back now checks QE
+  too, so a write that loses it isn't reported as written.
+
 ## [0.2.0] - 2026-11-09
 
 The app-loader is rebuilt on deluge-sdk, and can run from the boot slots behind stage-0 as well as
