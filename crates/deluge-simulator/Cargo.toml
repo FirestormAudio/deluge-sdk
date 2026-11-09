@@ -32,7 +32,7 @@ rack = []
 
 [dependencies]
 # The shared host↔device wire contract (panel role).
-deluge-panel-protocol = { path = "../deluge-panel-protocol", version = "0.1.0", features = ["alloc"] }
+deluge-panel-protocol = { path = "../deluge-panel-protocol", version = "0.2.0", features = ["alloc"] }
 # Lock-free SPSC rings for the in-process audio bridge (cpal callback ⇄ DSP block loop).
 ringbuf = "0.5"
 # Host audio I/O for the in-process link.

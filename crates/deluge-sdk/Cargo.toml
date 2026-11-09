@@ -25,10 +25,10 @@ path = "src/lib.rs"
 [dependencies]
 # Pinned exactly: the macro expands to this crate's hidden `__rt` items, which only the matching
 # release of each provides.
-deluge-macros = { path = "../deluge-sdk-macros", version = "=0.1.1", package = "deluge-sdk-macros" }
+deluge-macros = { path = "../deluge-sdk-macros", version = "=0.2.0", package = "deluge-sdk-macros" }
 # Default features off so `fault-blink` follows this crate's own feature of that name: an app
 # with its own fault handler turns `deluge`'s defaults off.
-deluge-bsp = { path = "../deluge-bsp", version = "0.1.0", default-features = false, features = ["memory-x"] }
+deluge-bsp = { path = "../deluge-bsp", version = "0.2.0", default-features = false, features = ["memory-x"] }
 rza1-hal = { path = "../../rza1/rza1-hal", version = "0.2.0", features = ["rza1l"] }
 fixedpoint = { workspace = true }
 cortex-ar = { workspace = true }
@@ -62,7 +62,7 @@ embassy-executor = { workspace = true, features = [
 ] }
 # `Sd` is built on the BSP's async block device on the device; the simulator backs
 # it with host files instead.
-deluge-bsp = { path = "../deluge-bsp", version = "0.1.0", default-features = false, features = ["memory-x", "block-device"] }
+deluge-bsp = { path = "../deluge-bsp", version = "0.2.0", default-features = false, features = ["memory-x", "block-device"] }
 
 # ── Host (the desktop simulator, `cargo deluge sim`) ─────────────────────────
 # A std executor, with the capability modules driving the simulator panel.

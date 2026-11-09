@@ -7,8 +7,28 @@ breaking changes.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-09
+
+The app-loader is rebuilt on deluge-sdk, and can run from the boot slots behind stage-0 as well as
+from the stock bootloader.
+
 ### Added
 
+- The app-loader can run from a boot slot behind stage-0 as well as from the stock bootloader: one
+  binary for both. In a slot it confirms the slot it booted from, and offers `UPDATE LOADER` for a
+  `/BOOT/LOADER.SLT` on the card, written into the other slot. Boot-region protection (provision
+  on first boot, lock-down before an app) is behind the `flash-protect` feature, off by default.
+- stage-0 boots slot B too: it picks the newest valid slot, tries a pending one, and rolls back
+  to the other when the watchdog ended its last boot.
+- `firmwares/loader-shim`: the slot image's shim, position-independent, so one `LOADER.SLT` fits
+  either slot. `tools/loader-image.sh` builds `LOADER.SLT` and a stage-0 install image, and checks
+  both.
+- `deluge-loader`: the app-loader's logic, host-tested: the boot and protection sequence, the
+  menu and auto-boot decision, app staging and self-update.
+- `rza1_hal::wdt`: the watchdog (its clock select, up to 125 ms), and `spibsc::set_fast_read`
+  (the SPI flash's 0Bh fast read at a given bit rate). `deluge_bsp::flash::set_stock_read_mode`
+  puts the flash's reads back on the stock bootloader's timing.
+- `deluge_bsp::flash::protect::reload`, `lift_volatile` and `restore_volatile`.
 - `deluge_image::app`: a header for a flat image a loader copies into RAM and
   runs (`encode_app_header`, `validate_app`), and `mkslot app`, which flattens an ELF's
   `PT_LOAD` segments under it.
@@ -19,10 +39,9 @@ breaking changes.
 
 ### Changed
 
+- **Breaking:** the Deluge's boot-slot layout is `deluge_image::slot::DELUGE`.
 - `deluge::Deluge::sd` can be called again once the `Sd` it returned is dropped, and after a
   mount that failed: one `Sd` at a time instead of one per boot.
-- `deluge_image::slot::DELUGE` is the Deluge's boot-slot layout, as passed to the `_with`
-  functions.
 
 ## [0.1.1] - 2026-11-08
 
@@ -139,6 +158,7 @@ had a different API and were yanked.
 - **Examples** under `examples/` covering every capability, and hardware validation firmwares
   under `hw-tests/`.
 
-[Unreleased]: https://github.com/FirestormAudio/deluge-sdk/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/FirestormAudio/deluge-sdk/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/FirestormAudio/deluge-sdk/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/FirestormAudio/deluge-sdk/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/FirestormAudio/deluge-sdk/releases/tag/v0.1.0

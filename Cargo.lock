@@ -259,7 +259,7 @@ dependencies = [
 
 [[package]]
 name = "arm-dsp"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "proptest",
 ]
@@ -1224,7 +1224,7 @@ dependencies = [
 
 [[package]]
 name = "deluge-audio-format"
-version = "0.1.1"
+version = "0.2.0"
 
 [[package]]
 name = "deluge-block-device-adapters"
@@ -1237,7 +1237,7 @@ dependencies = [
 
 [[package]]
 name = "deluge-bsp"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "aligned",
  "block-device-driver",
@@ -1293,7 +1293,7 @@ dependencies = [
 
 [[package]]
 name = "deluge-fixedpoint"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "arm-dsp",
  "proptest",
@@ -1301,18 +1301,18 @@ dependencies = [
 
 [[package]]
 name = "deluge-flash-protect"
-version = "0.1.1"
+version = "0.2.0"
 
 [[package]]
 name = "deluge-fonts"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "embedded-graphics",
 ]
 
 [[package]]
 name = "deluge-grid-toolkit"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "deluge-bsp",
  "heapless 0.9.3",
@@ -1322,11 +1322,11 @@ dependencies = [
 
 [[package]]
 name = "deluge-image"
-version = "0.1.1"
+version = "0.2.0"
 
 [[package]]
 name = "deluge-loader"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "deluge-flash-protect",
  "deluge-image",
@@ -1335,14 +1335,14 @@ dependencies = [
 
 [[package]]
 name = "deluge-panel-protocol"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "deluge-sdk"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "aligned",
  "block-device-driver",
@@ -1372,7 +1372,7 @@ dependencies = [
 
 [[package]]
 name = "deluge-sdk-macros"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1401,7 +1401,7 @@ dependencies = [
 
 [[package]]
 name = "deluge-ui-toolkit"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "deluge-fonts",
  "embedded-graphics",
@@ -1412,7 +1412,7 @@ dependencies = [
 
 [[package]]
 name = "deluge-usb-classes"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "critical-section",
  "embassy-futures",
@@ -3258,7 +3258,7 @@ dependencies = [
 
 [[package]]
 name = "max5136"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "embedded-hal 1.0.0",
 ]

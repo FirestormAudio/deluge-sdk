@@ -70,7 +70,7 @@ exclude = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["Katherine Whitlock <kate@skylinesynths.nyc>"]
@@ -104,23 +104,23 @@ gdbstub = { version = "0.7" }
 
 # Fixed-point DSP math and ARMv7 DSP intrinsics, vendored from the `spark`
 # project (MIT/Apache).
-arm-dsp = { path = "crates/arm-dsp", version = "0.1.0" }
+arm-dsp = { path = "crates/arm-dsp", version = "0.2.0" }
 # Published as `deluge-fixedpoint`, imported as `fixedpoint`.
-fixedpoint = { package = "deluge-fixedpoint", path = "crates/deluge-fixedpoint", version = "0.1.0" }
+fixedpoint = { package = "deluge-fixedpoint", path = "crates/deluge-fixedpoint", version = "0.2.0" }
 
 # UI crates vendored from `spark`, GPL-3.0-or-later. Apps opt into them; the
 # permissively licensed `deluge` facade must not depend on them.
-deluge-fonts = { path = "crates/deluge-fonts", version = "0.1.0" }
-deluge-ui-toolkit = { path = "crates/deluge-ui-toolkit", version = "0.1.0" }
-deluge-grid-toolkit = { path = "crates/deluge-grid-toolkit", version = "0.1.0" }
+deluge-fonts = { path = "crates/deluge-fonts", version = "0.2.0" }
+deluge-ui-toolkit = { path = "crates/deluge-ui-toolkit", version = "0.2.0" }
+deluge-grid-toolkit = { path = "crates/deluge-grid-toolkit", version = "0.2.0" }
 
 # Off-chip part drivers, board-agnostic (embedded-hal 1.0).
-max5136 = { path = "drivers/max5136", version = "0.1.0" }
+max5136 = { path = "drivers/max5136", version = "0.2.0" }
 
 # Board-agnostic USB classes. Published as `deluge-usb-classes`, imported as `usb_classes`.
-usb-classes = { package = "deluge-usb-classes", path = "usb/usb-classes", version = "0.1.0" }
+usb-classes = { package = "deluge-usb-classes", path = "usb/usb-classes", version = "0.2.0" }
 # SPI-NOR status-register block protection, shared by the boot chains and their tools.
-deluge-flash-protect = { path = "crates/flash-protect", version = "0.1.0" }
+deluge-flash-protect = { path = "crates/flash-protect", version = "0.2.0" }
 
 [profile.release]
 opt-level = "s"
