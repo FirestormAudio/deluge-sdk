@@ -130,6 +130,7 @@ impl Tx {
 static TX: Mutex<RefCell<Option<Tx>>> = Mutex::new(RefCell::new(None));
 static RX: Mutex<RefCell<Option<SsiRx<'static>>>> = Mutex::new(RefCell::new(None));
 static RX_SIGNAL: Mutex<Cell<Option<BlockSignal>>> = Mutex::new(Cell::new(None));
+static TX_SIGNAL: Mutex<Cell<Option<BlockSignal>>> = Mutex::new(Cell::new(None));
 
 /// Run `f` on what `slot` holds, in a critical section; `None` if it's empty or already in use
 /// (a nested call).
@@ -176,9 +177,16 @@ pub fn rx_block_signal() -> Option<BlockSignal> {
     critical_section::with(|cs| RX_SIGNAL.borrow(cs).get())
 }
 
-fn install(tx: Tx, rx: SsiRx<'static>) {
+/// Waits for the transmit ring's next 128-frame block to complete, without holding it: the codec
+/// has just started playing the next block. `None` before an `init`.
+pub fn tx_block_signal() -> Option<BlockSignal> {
+    critical_section::with(|cs| TX_SIGNAL.borrow(cs).get())
+}
+
+fn install(mut tx: Tx, rx: SsiRx<'static>) {
     critical_section::with(|cs| {
         RX_SIGNAL.borrow(cs).set(Some(rx.block_signal()));
+        TX_SIGNAL.borrow(cs).set(Some(tx.ring().block_signal()));
         *TX.borrow(cs).borrow_mut() = Some(tx);
         *RX.borrow(cs).borrow_mut() = Some(rx);
     });
@@ -327,6 +335,11 @@ mod tests {
         assert!(with_tx(|_| ()).is_none());
         assert!(with_rx(|_| ()).is_none());
         assert!(rx_block_signal().is_none());
+    }
+
+    #[test]
+    fn tx_block_signal_before_init_is_none() {
+        assert!(tx_block_signal().is_none());
     }
 
     #[test]
