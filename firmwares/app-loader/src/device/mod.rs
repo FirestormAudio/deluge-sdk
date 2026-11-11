@@ -7,13 +7,13 @@ pub(crate) mod deluge_settings;
 pub(crate) mod devupload;
 pub(crate) mod elf;
 pub(crate) mod flashboot;
-pub(crate) mod launcher;
 pub(crate) mod settings;
 pub(crate) mod slots;
 pub(crate) mod usbmsc;
 
 use deluge::Sd;
 use deluge_image::settings::Settings;
+use deluge_bsp::launcher;
 use log::{error, info, warn};
 
 use crate::file_browser::{self, EntryList};

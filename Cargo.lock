@@ -1244,6 +1244,7 @@ dependencies = [
  "cortex-ar",
  "critical-section",
  "deluge-flash-protect",
+ "deluge-image",
  "deluge-usb-classes",
  "embassy-executor",
  "embassy-futures",

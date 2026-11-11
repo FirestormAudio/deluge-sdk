@@ -100,6 +100,7 @@ pub mod flash;
 #[cfg(not(target_os = "none"))]
 pub mod host_panel;
 pub mod jacks;
+pub mod launcher;
 #[cfg(target_os = "none")]
 pub mod midi_gate;
 pub mod midi_stream;
