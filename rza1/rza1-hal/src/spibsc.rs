@@ -53,6 +53,12 @@
 //! masked); `to_read_mode` restores the read window before interrupts come back,
 //! which is also what lets the OLED work again afterwards.
 //!
+//! A firmware that runs nothing from the flash (its code, data and handlers all
+//! in RAM, and no reader of the window but the caller) can keep its interrupts
+//! through an erase or program instead: [`FlashMap::erase_sector_interruptible`]
+//! and [`FlashMap::program_interruptible`] run the same window unmasked, on that
+//! promise from the caller.
+//!
 //! **Critical data-register alignment** (per the sample BSP): sub-32-bit manual
 //! transfers are **MSB-aligned** in `SMWDR0`/`SMRDR0` — an 8-bit datum is at bits
 //! `[31:24]`, a 16-bit datum at `[31:16]`; a 32-bit datum is the little-endian
@@ -794,7 +800,30 @@ impl FlashMap {
         // RDID); the per-block guard then reads the cached value.
         chip_capacity();
         // Interrupts masked for the whole manual-mode window (see module docs).
-        critical_section::with(|_| unsafe {
+        critical_section::with(|_| unsafe { self.erase_sector_window(offset) });
+    }
+
+    /// [`erase_sector`](FlashMap::erase_sector) with interrupts left enabled,
+    /// for a firmware that runs nothing from the flash: its interrupts and
+    /// other tasks keep running through the erase (a 64 KB block erase takes
+    /// hundreds of milliseconds).
+    ///
+    /// # Safety
+    /// As [`erase_sector`](FlashMap::erase_sector), and nothing that can run
+    /// during the call (an interrupt handler, a task it wakes, a higher-priority
+    /// executor) may execute from or read the flash window (`0x1800_0000` or its
+    /// `0x5800_0000` mirror): the window does not respond in manual mode, and an
+    /// access stalls the bus. Nothing else may use SPIBSC0 meanwhile.
+    pub unsafe fn erase_sector_interruptible(&self, offset: u32) {
+        chip_capacity();
+        // SAFETY: the caller's contract stands in for the masking.
+        unsafe { self.erase_sector_window(offset) }
+    }
+
+    /// The manual-mode window of a sector erase: into manual mode, erase,
+    /// back to read mode.
+    unsafe fn erase_sector_window(&self, offset: u32) {
+        unsafe {
             to_manual();
             erase_sector_at(
                 offset & !(self.sector_size - 1),
@@ -802,7 +831,7 @@ impl FlashMap {
                 Some(self.writable),
             );
             to_read_mode();
-        });
+        }
     }
 
     /// Erase every block touched by `[offset, offset+len)` (flash-relative).
@@ -849,7 +878,25 @@ impl FlashMap {
     pub unsafe fn program(&self, offset: u32, data: &[u8]) {
         chip_capacity(); // probe chip size before manual mode
         // Interrupts masked for the whole manual-mode window (see module docs).
-        critical_section::with(|_| unsafe {
+        critical_section::with(|_| unsafe { self.program_window(offset, data) });
+    }
+
+    /// [`program`](FlashMap::program) with interrupts left enabled, for a
+    /// firmware that runs nothing from the flash.
+    ///
+    /// # Safety
+    /// As [`erase_sector_interruptible`](FlashMap::erase_sector_interruptible),
+    /// and the target range must already be erased.
+    pub unsafe fn program_interruptible(&self, offset: u32, data: &[u8]) {
+        chip_capacity();
+        // SAFETY: the caller's contract stands in for the masking.
+        unsafe { self.program_window(offset, data) }
+    }
+
+    /// The manual-mode window of a program: into manual mode, the page-bounded
+    /// writes, back to read mode.
+    unsafe fn program_window(&self, offset: u32, data: &[u8]) {
+        unsafe {
             to_manual();
             let mut addr = offset;
             let mut rest = data;
@@ -861,7 +908,7 @@ impl FlashMap {
                 rest = &rest[chunk..];
             }
             to_read_mode();
-        });
+        }
     }
 }
 
@@ -1055,6 +1102,44 @@ mod tests {
             .filter(|a| !a.write && a.addr == 0x3FEF_A048)
             .count();
         assert!(polls < 10, "CMNSR read {polls} times");
+    }
+
+    /// The interruptible erase and program run the masked forms' manual-mode window, register
+    /// for register: only the masking differs.
+    #[test]
+    fn the_interruptible_forms_issue_the_masked_forms_transfers() {
+        let saved = CHIP_CAPACITY.load(Ordering::Relaxed);
+        CHIP_CAPACITY.store(TEST_CHIP, Ordering::Relaxed);
+        static WINDOWS: [core::ops::Range<u32>; 1] = [0x3D_0000..0x3E_0000];
+        let map = FlashMap {
+            sector_size: TEST_SECTOR,
+            page: 256,
+            writable: &WINDOWS,
+        };
+        let data = [0xA5u8; 300]; // two pages
+        let run = |f: &dyn Fn()| {
+            crate::mmio::test::reset();
+            crate::mmio::test::poke32(0x3FEF_A048, 1); // CMNSR.TEND: transfers complete
+            f();
+            crate::mmio::test::writes()
+        };
+        let masked_erase = run(&|| unsafe { map.erase_sector(0x3D_0000) });
+        let open_erase = run(&|| unsafe { map.erase_sector_interruptible(0x3D_0000) });
+        assert!(
+            masked_erase
+                .iter()
+                .any(|&(a, v)| a == 0x3FEF_A024 && v == CMD_SECTOR_ERASE << 16)
+        );
+        assert_eq!(masked_erase, open_erase);
+        let masked_program = run(&|| unsafe { map.program(0x3D_0000, &data) });
+        let open_program = run(&|| unsafe { map.program_interruptible(0x3D_0000, &data) });
+        assert!(
+            masked_program
+                .iter()
+                .any(|&(a, v)| a == 0x3FEF_A024 && v == CMD_PP << 16)
+        );
+        assert_eq!(masked_program, open_program);
+        CHIP_CAPACITY.store(saved, Ordering::Relaxed);
     }
 
     // Generic-controller invariants only.  A board's flash *map* (slot/settings
