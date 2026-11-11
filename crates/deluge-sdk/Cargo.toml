@@ -60,9 +60,11 @@ embassy-executor = { workspace = true, features = [
     "platform-cortex-ar",
     "executor-thread",
 ] }
+embassy-futures = { workspace = true }
 # `Sd` is built on the BSP's async block device on the device; the simulator backs
 # it with host files instead.
 deluge-bsp = { path = "../deluge-bsp", version = "0.2.0", default-features = false, features = ["memory-x", "block-device"] }
+deluge-image = { path = "../deluge-image" }
 
 # ── Host (the desktop simulator, `cargo deluge sim`) ─────────────────────────
 # A std executor, with the capability modules driving the simulator panel.
@@ -108,6 +110,7 @@ usb-log = ["dep:embassy-usb"]
 ## enabling both is a compile error, so build firmware with `-p` to keep another
 ## crate's `usb-log` from unifying in.
 usb-serial = ["dep:embassy-usb"]
+usb-upload = ["dep:embassy-usb"]
 ## `deluge::parts`: the board peripherals no capability has claimed, for an app that drives one
 ## through `deluge-bsp` directly. Not covered by semver (its fields are BSP and HAL types).
 unstable-parts = []

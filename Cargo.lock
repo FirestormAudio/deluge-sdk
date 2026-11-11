@@ -1353,6 +1353,7 @@ dependencies = [
  "deluge-bsp",
  "deluge-embedded-fatfs",
  "deluge-fixedpoint",
+ "deluge-image",
  "deluge-sdk-macros",
  "deluge-simulator",
  "embassy-executor",

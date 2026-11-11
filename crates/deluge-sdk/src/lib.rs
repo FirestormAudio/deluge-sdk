@@ -117,6 +117,9 @@ mod usb_debug;
 #[cfg(all(target_os = "none", feature = "usb-serial"))]
 pub mod usb_serial;
 
+#[cfg(all(target_os = "none", feature = "usb-upload"))]
+pub mod usb_upload;
+
 /// Host (desktop-simulator) backend, active when built for the host triple.
 #[cfg(all(not(target_os = "none"), feature = "sim"))]
 mod host;
