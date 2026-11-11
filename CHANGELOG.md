@@ -7,6 +7,17 @@ breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- `deluge_bsp::audio::tx_block_signal()`: waits for the transmit ring's next 128-frame block to
+  complete, as `rx_block_signal()` does for the receive ring, so a firmware can render one block
+  each time the codec starts the next.
+- `rza1_hal::spibsc::FlashMap::erase_sector_interruptible` and `program_interruptible`: the same
+  manual-mode erase and program with interrupts left enabled, for a firmware that runs nothing
+  from the flash. The masked forms hold interrupts off for a whole 64 KB block erase (about a
+  quarter of a second), which stops a firmware's audio; the caller of these promises that nothing
+  which can run meanwhile reads or executes from the flash window.
+
 ### Fixed
 
 - `deluge-flash-protect`: a write that sets SR1 on its own re-sends SR2 with the QE bit that was
