@@ -7,6 +7,14 @@ breaking changes.
 
 ## [Unreleased]
 
+### Changed
+
+- OLED drawing is faster. `deluge_bsp::oled::FrameBuffer` gains `fill_rect`, which writes a byte
+  (eight rows) at a time, and `blit_columns`; its `embedded-graphics` `fill_solid` and `clear` use
+  the byte-wide fill and `fill_contiguous` clips once instead of per pixel, and `deluge::Oled`
+  forwards to them. The built-in 5×7 text draws a glyph as five column blits instead of 35 pixel
+  writes.
+
 ### Fixed
 
 - `deluge-flash-protect`: a write that sets SR1 on its own re-sends SR2 with the QE bit that was
