@@ -27,8 +27,9 @@ path = "src/lib.rs"
 # release of each provides.
 deluge-macros = { path = "../deluge-sdk-macros", version = "=0.2.0", package = "deluge-sdk-macros" }
 # Default features off so `fault-blink` follows this crate's own feature of that name: an app
-# with its own fault handler turns `deluge`'s defaults off.
-deluge-bsp = { path = "../deluge-bsp", version = "0.2.0", default-features = false, features = ["memory-x"] }
+# with its own fault handler turns `deluge`'s defaults off. `embedded-graphics`: `Oled` draws
+# through the frame buffer's own `DrawTarget` (its byte-wide fills).
+deluge-bsp = { path = "../deluge-bsp", version = "0.2.0", default-features = false, features = ["memory-x", "embedded-graphics"] }
 rza1-hal = { path = "../../rza1/rza1-hal", version = "0.2.0", features = ["rza1l"] }
 fixedpoint = { workspace = true }
 cortex-ar = { workspace = true }

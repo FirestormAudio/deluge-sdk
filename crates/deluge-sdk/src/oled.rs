@@ -20,8 +20,9 @@ pub(crate) async fn init_panel() {
     crate::plat::oled_init_panel().await;
 }
 use embedded_graphics_core::draw_target::DrawTarget;
-use embedded_graphics_core::geometry::{OriginDimensions, Point, Size};
+use embedded_graphics_core::geometry::{OriginDimensions, Size};
 use embedded_graphics_core::pixelcolor::BinaryColor;
+use embedded_graphics_core::primitives::Rectangle;
 
 /// The Deluge OLED display.
 ///
@@ -104,21 +105,35 @@ impl OriginDimensions for Oled {
     }
 }
 
+/// Forwards to the frame buffer's own [`DrawTarget`], which fills a byte (eight rows) at a time.
 impl DrawTarget for Oled {
     type Color = BinaryColor;
     type Error = core::convert::Infallible;
 
+    #[inline]
     fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
     where
         I: IntoIterator<Item = Pixel<Self::Color>>,
     {
-        for Pixel(Point { x, y }, color) in pixels {
-            if x >= 0 && y >= 0 {
-                // `set_pixel` bounds-checks the upper edge.
-                self.fb.set_pixel(x as usize, y as usize, color.is_on());
-            }
-        }
-        Ok(())
+        self.fb.draw_iter(pixels)
+    }
+
+    #[inline]
+    fn fill_contiguous<I>(&mut self, area: &Rectangle, colors: I) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = Self::Color>,
+    {
+        self.fb.fill_contiguous(area, colors)
+    }
+
+    #[inline]
+    fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) -> Result<(), Self::Error> {
+        self.fb.fill_solid(area, color)
+    }
+
+    #[inline]
+    fn clear(&mut self, color: Self::Color) -> Result<(), Self::Error> {
+        self.fb.clear(color)
     }
 }
 
