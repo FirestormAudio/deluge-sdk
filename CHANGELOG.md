@@ -17,6 +17,11 @@ breaking changes.
   from the flash. The masked forms hold interrupts off for a whole 64 KB block erase (about a
   quarter of a second), which stops a firmware's audio; the caller of these promises that nothing
   which can run meanwhile reads or executes from the flash window.
+- `deluge_bsp::encoder` keeps each decoded run of edges with the time it was decoded:
+  `take_timed_edges` hands them out oldest first, so a consumer that runs late can still accelerate on
+  how fast the knob turned. `record_edges` records a run (the interrupts use it, and so can a simulator
+  or a harness), and `take_edges` is the untimed take. `ENCODER_DELTAS` and `take_detents` are
+  unchanged for their callers.
 
 ### Fixed
 

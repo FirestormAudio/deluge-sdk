@@ -83,6 +83,8 @@ pub mod encoder;
 /// Pure quadrature detent accumulation used by the bare-metal `encoder` driver;
 /// non-gated so it unit-tests on the host.
 pub mod encoder_detent;
+/// Pure per-encoder log of timed edge runs used by the `encoder` driver; host-tested.
+pub mod encoder_edge_log;
 /// Pure two-pin quadrature decoding with glitch rejection, used by the `encoder` driver;
 /// non-gated so it unit-tests on the host.
 pub mod encoder_quadrature;
