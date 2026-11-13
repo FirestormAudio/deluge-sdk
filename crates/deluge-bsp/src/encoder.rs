@@ -4,10 +4,17 @@
 //! interrupts every millisecond to read every encoder's pins and catch B-only transitions. Both feed
 //! the encoder's [`QuadratureDecoder`], which counts four edges per cycle and rejects single-pin
 //! glitches (see [`crate::encoder_quadrature`]).
+//!
+//! Each decoded run of edges is kept twice: in the encoder's [`ENCODER_DELTAS`] count, for a consumer that only
+//! needs how far it turned, and with the time it was decoded, for one that accelerates on how fast it turned
+//! ([`take_timed_edges`]).
 
 use core::sync::atomic::{AtomicI8, Ordering};
 
 use embassy_sync::waitqueue::AtomicWaker;
+
+use crate::encoder_edge_log::EdgeLog;
+pub use crate::encoder_edge_log::{EDGE_LOG_CAPACITY, EdgeEvent};
 #[cfg(target_os = "none")]
 use log::info;
 
@@ -31,23 +38,76 @@ pub static ENCODER_DELTAS: [AtomicI8; NUM_ENCODERS] = [
 /// Wakes the firmware encoder task whenever any encoder delta becomes non-zero.
 pub static ENCODER_WAKER: AtomicWaker = AtomicWaker::new();
 
+/// Every encoder's timed runs, in [`ENCODER_DELTAS`] order: what [`take_timed_edges`] hands out. Written with
+/// [`ENCODER_DELTAS`] under one critical section, so a consumer that takes both sees the same edges in each.
+static EDGE_LOGS: critical_section::Mutex<core::cell::RefCell<[EdgeLog; NUM_ENCODERS]>> =
+    critical_section::Mutex::new(core::cell::RefCell::new([EdgeLog::new(); NUM_ENCODERS]));
+
 /// Drain the accumulated edge delta for one encoder and convert it into whole detents.
 #[inline]
 pub fn take_detents(encoder_index: usize, edge_accumulator: &mut i8) -> i8 {
-    let delta = ENCODER_DELTAS[encoder_index].swap(0, Ordering::Relaxed);
+    let delta = take_edges(encoder_index);
     // Pure edge→detent accumulation lives in `crate::encoder_detent` (host-tested).
     crate::encoder_detent::accumulate_detents(delta, edge_accumulator)
 }
 
-/// Add `edges` to encoder `index`'s accumulator, saturating, and wake the consumer.
-fn add_edges(index: usize, edges: i8) {
-    if edges == 0 {
+/// Adds `edges`, decoded at `time_us`, to encoder `index`: to its [`ENCODER_DELTAS`] count, saturating, and to its
+/// timed runs. Wakes the consumer. The encoder interrupts record through this; so can a simulator or a test
+/// harness that stands in for them, on the clock its consumer reads.
+pub fn record_edges(index: usize, edges: i8, time_us: u64) {
+    if edges == 0 || index >= NUM_ENCODERS {
         return;
     }
-    let _ = ENCODER_DELTAS[index].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-        Some(v.saturating_add(edges))
+    critical_section::with(|cs| {
+        let _ = ENCODER_DELTAS[index].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+            Some(v.saturating_add(edges))
+        });
+        EDGE_LOGS.borrow_ref_mut(cs)[index].push(edges, time_us);
     });
     ENCODER_WAKER.wake();
+}
+
+/// Takes encoder `index`'s edge count and clears its timed runs: the untimed take.
+pub fn take_edges(index: usize) -> i8 {
+    if index >= NUM_ENCODERS {
+        return 0;
+    }
+    critical_section::with(|cs| {
+        EDGE_LOGS.borrow_ref_mut(cs)[index].clear();
+        ENCODER_DELTAS[index].swap(0, Ordering::Relaxed)
+    })
+}
+
+/// Takes encoder `index`'s edges as timed runs, oldest first, into `out`; returns how many slots it wrote.
+///
+/// Each run carries the time it was decoded, so a consumer that runs late still sees how fast the edges came.
+/// Edges added to [`ENCODER_DELTAS`] without a time (a writer that does not go through [`record_edges`]) come
+/// last, as one run at `now_us`. When `out` is shorter than the runs, the rest fold into its last slot. Clears the
+/// count too, so the untimed and the timed take never hand out the same edges.
+pub fn take_timed_edges(index: usize, out: &mut [EdgeEvent], now_us: u64) -> usize {
+    if index >= NUM_ENCODERS {
+        return 0;
+    }
+    critical_section::with(|cs| {
+        let mut logs = EDGE_LOGS.borrow_ref_mut(cs);
+        let log = &mut logs[index];
+        // The count and the log's own count saturate alike, so their difference is only what a writer added to
+        // the count directly. The log's plain sum would not do: past the count's saturation it differs from the
+        // count, and the difference would read as a turn the other way.
+        let untimed =
+            i32::from(ENCODER_DELTAS[index].swap(0, Ordering::Relaxed)) - i32::from(log.counted());
+        log.push(
+            untimed.clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8,
+            now_us,
+        );
+        log.drain_into(out)
+    })
+}
+
+/// The interrupts' clock for [`record_edges`].
+#[cfg(target_os = "none")]
+fn now_us() -> u64 {
+    embassy_time::Instant::now().as_micros()
 }
 
 /// How one encoder is wired, in [`ENCODER_DELTAS`] order. All pins are on port 1.
@@ -156,7 +216,7 @@ fn enc_irq_handler(index: usize) {
             w.invert,
         )
     });
-    add_edges(index, edges);
+    record_edges(index, edges, now_us());
 }
 
 /// P0φ/64, about 517 kHz.
@@ -203,7 +263,7 @@ fn poll() {
         for (index, w) in WIRING.iter().enumerate() {
             let edges =
                 decoders[index].observe(pin(pins, w.irq_pin), pin(pins, w.comp_pin), w.invert);
-            add_edges(index, edges);
+            record_edges(index, edges, now_us());
         }
     });
 }
@@ -342,8 +402,12 @@ mod host_tests {
     use super::*;
     use core::sync::atomic::Ordering;
 
+    /// The encoders' state is global: the tests here take turns with it.
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn host_irq_init_is_a_safe_noop_and_encoders_are_quiescent() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         // Must not touch hardware / must not panic on host.
         let (board, _) = crate::board::Board::split(unsafe { rza1_hal::Peripherals::steal() });
         unsafe { irq_init(board.encoder_poll_timer, board.pins.encoders) };
@@ -355,5 +419,83 @@ mod host_tests {
         // take_detents on a zero delta yields no detents (pure-logic sanity).
         let mut acc = 0i8;
         assert_eq!(take_detents(0, &mut acc), 0);
+    }
+
+    #[test]
+    fn a_late_timed_take_sees_each_run_at_its_own_time() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = take_edges(3);
+        record_edges(3, 1, 3_000);
+        record_edges(3, 1, 6_000);
+        record_edges(3, -1, 9_000);
+        let mut out = [EdgeEvent::default(); EDGE_LOG_CAPACITY + 1];
+        let n = take_timed_edges(3, &mut out, 20_000);
+        assert_eq!(
+            out[..n],
+            [
+                EdgeEvent {
+                    time_us: 3_000,
+                    edges: 1
+                },
+                EdgeEvent {
+                    time_us: 6_000,
+                    edges: 1
+                },
+                EdgeEvent {
+                    time_us: 9_000,
+                    edges: -1
+                },
+            ]
+        );
+        assert_eq!(ENCODER_DELTAS[3].load(Ordering::Relaxed), 0);
+        assert_eq!(take_timed_edges(3, &mut out, 21_000), 0);
+    }
+
+    #[test]
+    fn untimed_edges_come_last_at_the_take_time() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = take_edges(2);
+        record_edges(2, 1, 1_000);
+        ENCODER_DELTAS[2].fetch_add(4, Ordering::Relaxed);
+        let mut out = [EdgeEvent::default(); 4];
+        let n = take_timed_edges(2, &mut out, 5_000);
+        assert_eq!(
+            out[..n],
+            [
+                EdgeEvent {
+                    time_us: 1_000,
+                    edges: 1
+                },
+                EdgeEvent {
+                    time_us: 5_000,
+                    edges: 4
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn the_untimed_take_clears_the_timed_runs() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        record_edges(1, 2, 1_000);
+        assert_eq!(take_edges(1), 2);
+        let mut out = [EdgeEvent::default(); 4];
+        assert_eq!(take_timed_edges(1, &mut out, 2_000), 0);
+    }
+
+    #[test]
+    fn a_pile_past_the_counts_range_comes_back_as_it_was_turned() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = take_edges(4);
+        for i in 0..130u64 {
+            record_edges(4, 1, i * 1_000);
+        }
+        let mut out = [EdgeEvent::default(); EDGE_LOG_CAPACITY + 1];
+        let n = take_timed_edges(4, &mut out, 200_000);
+        assert!(out[..n].iter().all(|e| e.edges > 0), "{:?}", &out[..n]);
+        assert_eq!(
+            out[..n].iter().map(|e| i32::from(e.edges)).sum::<i32>(),
+            130
+        );
     }
 }
