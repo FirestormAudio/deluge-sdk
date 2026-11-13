@@ -7,14 +7,15 @@ pub(crate) mod deluge_settings;
 pub(crate) mod devupload;
 pub(crate) mod elf;
 pub(crate) mod flashboot;
-pub(crate) mod launcher;
 pub(crate) mod settings;
 pub(crate) mod slots;
 pub(crate) mod usbmsc;
 
 use deluge::Sd;
 use deluge_image::settings::Settings;
+use deluge_bsp::launcher;
 use log::{error, info, warn};
+use deluge::usb_upload;
 
 use crate::file_browser::{self, EntryList};
 use core::sync::atomic::Ordering;
@@ -222,7 +223,7 @@ fn lock_for_handoff() {
 /// The flash app slot's image, when it holds a valid one.
 pub(crate) type FlashApp = flashboot::FlashImage;
 /// The dev-mode upload listener, brought up before the menu draws.
-pub(crate) type Upload = devupload::Listener;
+pub(crate) type Upload = usb_upload::Listener;
 /// The flash, as the boot sequence uses it.
 pub(crate) type Flash = slots::DelugeFlash;
 /// The loader's boot slots, as a self-update writes them.
@@ -492,12 +493,12 @@ pub(crate) async fn data_transfer() {
 
 /// Bring up the dev-mode upload listener.
 pub(crate) fn start_dev_upload() -> Upload {
-    devupload::prepare()
+    usb_upload::prepare()
 }
 
 /// Listen for an upload; returns only by launching it.
 pub(crate) async fn run_dev_upload(upload: Upload) -> ! {
-    upload.run().await
+    devupload::run_devupload(upload).await
 }
 
 /// Tear the listener down (the menu won), freeing its USB port.

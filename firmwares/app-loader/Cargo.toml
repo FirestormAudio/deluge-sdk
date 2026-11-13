@@ -13,7 +13,7 @@ test = false
 # The loader is an SDK app: bring-up, the display, the controls and the card come from the SDK;
 # the rest (the flash app slot, launching, USB modes, protection) from the BSP and HAL.
 deluge-loader = { path = "../../crates/deluge-loader" }
-deluge = { path = "../../crates/deluge-sdk", package = "deluge-sdk", default-features = false, features = ["fault-blink", "unstable-parts"] }
+deluge = { path = "../../crates/deluge-sdk", package = "deluge-sdk", default-features = false, features = ["fault-blink", "unstable-parts", "usb-upload"] }
 usb-classes = { workspace = true, features = ["device-msc"] }
 # `unlock-bootloader`: the raw erase/program the loader writes its own boot slots with.
 rza1-hal = { path = "../../rza1/rza1-hal", features = ["rza1l", "unlock-bootloader"] }

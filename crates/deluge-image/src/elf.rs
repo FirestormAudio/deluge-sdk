@@ -1064,3 +1064,12 @@ mod tests {
         assert_eq!(bss.memsz, 0x08000);
     }
 }
+
+pub struct LoadResult {
+    /// Application entry point (`e_entry`).
+    pub entry: u32,
+    /// Descriptors for SRAM segments parked in SDRAM staging.
+    pub sram_descs: [SegDesc; MAX_PHDRS],
+    /// Number of valid entries in `sram_descs`.
+    pub n_sram: usize,
+}

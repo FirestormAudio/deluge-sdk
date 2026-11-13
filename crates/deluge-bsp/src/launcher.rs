@@ -34,7 +34,7 @@ use core::arch::{asm, global_asm};
 
 use rza1_hal::cache;
 
-use super::elf::SramSegDesc;
+pub use deluge_image::elf::SegDesc as SramSegDesc;
 
 // ---------------------------------------------------------------------------
 // Retention-RAM layout
