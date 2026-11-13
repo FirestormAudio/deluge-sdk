@@ -26,6 +26,8 @@ pub const EDGE_LOG_CAPACITY: usize = 16;
 pub struct EdgeLog {
     events: [EdgeEvent; EDGE_LOG_CAPACITY],
     len: usize,
+    /// The runs' edges added up as a saturating `i8` count adds them, in the order they came.
+    counted: i8,
 }
 
 impl Default for EdgeLog {
@@ -49,6 +51,7 @@ impl EdgeLog {
                 edges: 0,
             }; EDGE_LOG_CAPACITY],
             len: 0,
+            counted: 0,
         }
     }
 
@@ -57,6 +60,7 @@ impl EdgeLog {
         if edges == 0 {
             return;
         }
+        self.counted = self.counted.saturating_add(edges);
         let event = EdgeEvent { time_us, edges };
         if self.len < EDGE_LOG_CAPACITY {
             self.events[self.len] = event;
@@ -76,9 +80,16 @@ impl EdgeLog {
         self.events().iter().map(|e| i32::from(e.edges)).sum()
     }
 
+    /// The recorded runs' edges added up as a saturating `i8` count adds them, in the order they came: what an `i8`
+    /// accumulator fed the same runs holds, saturation included.
+    pub fn counted(&self) -> i8 {
+        self.counted
+    }
+
     /// Forgets every run.
     pub fn clear(&mut self) {
         self.len = 0;
+        self.counted = 0;
     }
 
     /// Moves every run into `out`, oldest first, and empties the log; returns how many slots it wrote.

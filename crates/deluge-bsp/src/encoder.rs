@@ -91,7 +91,11 @@ pub fn take_timed_edges(index: usize, out: &mut [EdgeEvent], now_us: u64) -> usi
     critical_section::with(|cs| {
         let mut logs = EDGE_LOGS.borrow_ref_mut(cs);
         let log = &mut logs[index];
-        let untimed = i32::from(ENCODER_DELTAS[index].swap(0, Ordering::Relaxed)) - log.edges();
+        // The count and the log's own count saturate alike, so their difference is only what a writer added to
+        // the count directly. The log's plain sum would not do: past the count's saturation it differs from the
+        // count, and the difference would read as a turn the other way.
+        let untimed =
+            i32::from(ENCODER_DELTAS[index].swap(0, Ordering::Relaxed)) - i32::from(log.counted());
         log.push(
             untimed.clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8,
             now_us,
@@ -477,5 +481,21 @@ mod host_tests {
         assert_eq!(take_edges(1), 2);
         let mut out = [EdgeEvent::default(); 4];
         assert_eq!(take_timed_edges(1, &mut out, 2_000), 0);
+    }
+
+    #[test]
+    fn a_pile_past_the_counts_range_comes_back_as_it_was_turned() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = take_edges(4);
+        for i in 0..130u64 {
+            record_edges(4, 1, i * 1_000);
+        }
+        let mut out = [EdgeEvent::default(); EDGE_LOG_CAPACITY + 1];
+        let n = take_timed_edges(4, &mut out, 200_000);
+        assert!(out[..n].iter().all(|e| e.edges > 0), "{:?}", &out[..n]);
+        assert_eq!(
+            out[..n].iter().map(|e| i32::from(e.edges)).sum::<i32>(),
+            130
+        );
     }
 }
