@@ -224,7 +224,10 @@ pub(crate) async fn write_flash_app(
 /// `USB UPDATE`'s buffer: the bottom 4 MiB of SDRAM, `0x0C00_0000..0x0C40_0000`. It shares the
 /// SDRAM app region with the dev-mode upload, which never runs at the same time, and is clear of
 /// the launch staging window at the top of SDRAM ([`deluge_image::elf::SDRAM_STAGE_BASE`]).
-pub(crate) fn uf2_buffer() -> &'static mut [u8] {
+///
+/// # Safety
+/// One user at a time: every call hands out the same window.
+pub(crate) unsafe fn uf2_buffer() -> &'static mut [u8] {
     const BASE: u32 = deluge_image::elf::SDRAM_LO;
     const LEN: usize = 4 << 20;
     const _: () = assert!(BASE as usize + LEN <= deluge_image::elf::SDRAM_STAGE_BASE as usize);
@@ -467,7 +470,8 @@ pub(crate) async fn boot_flash_app(app: FlashApp) -> ! {
         Ok(l) => l,
         Err(e) => {
             error!("The flash app failed its check: {:?}", e);
-            ui::show_message(b"FLASH APP BAD", b"POWER-CYCLE").await;
+            // A power cycle would only auto-boot it again: holding LOAD reaches the menu.
+            ui::show_message(b"FLASH APP BAD", b"HOLD LOAD AT POWER-ON").await;
             loop {
                 embassy_time::Timer::after(embassy_time::Duration::from_secs(60)).await;
             }

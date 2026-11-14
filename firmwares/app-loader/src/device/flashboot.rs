@@ -14,9 +14,9 @@
 //! address and jumps to the entry. The body must zero its own `.bss`: only its bytes are copied.
 
 use deluge_bsp::flash;
-use deluge_image::app::{APP_HEADER_LEN, AppError, AppHeader, validate_app, validate_app_header};
+use deluge_image::app::{APP_HEADER_LEN, AppError, AppHeader, validate_app};
 use deluge_image::slot::VARIANT_OLED;
-use deluge_loader::stage::{StageError, flash_app_move};
+use deluge_loader::stage::{StageError, bootable_header, flash_app_move};
 
 use super::elf::SramSegDesc;
 
@@ -34,9 +34,15 @@ fn window(len: usize) -> &'static [u8] {
     unsafe { core::slice::from_raw_parts(flash::SLOT_ADDR as *const u8, len) }
 }
 
-/// The flash app's header, if the slot holds one (the body is checked at launch).
+/// The flash app's header, if the slot holds one that loads inside SRAM (the body is checked at
+/// launch).
 pub fn probe() -> Option<AppHeader> {
-    validate_app_header(window(APP_HEADER_LEN), &[VARIANT_OLED], MAX_BODY).ok()
+    bootable_header(
+        window(APP_HEADER_LEN),
+        VARIANT_OLED,
+        MAX_BODY,
+        SRAM_LOAD_ORIGIN..SRAM_END,
+    )
 }
 
 /// Why the flash app can't be launched.
@@ -77,8 +83,10 @@ pub enum FlashWriteError {
     Verify(u32),
 }
 
-/// Erase the app slot and program `header` then `body` into it, reading every byte back.
-/// `on_progress(done, total)` is called between 4 KB chunks.
+/// Erase the app slot and program `body`, then `header` last, reading each back. Until the
+/// header is in, the slot reads as empty: a write that fails or is cut off part-way never leaves
+/// a header over a body that doesn't match it. `on_progress(done, total)` is called between 4 KB
+/// chunks. On return the CPU caches hold nothing stale for the slot.
 ///
 /// # Safety
 /// Erases and programs the flash app slot; no code may run from flash during the call (true for
@@ -101,7 +109,6 @@ where
 
     // SAFETY: inside the app slot, which is all `erase_range`/`program` will touch.
     unsafe { flash::MAP.erase_range(flash::SLOT_OFFSET, total as u32) };
-    unsafe { flash::MAP.program(flash::SLOT_OFFSET, header) };
 
     // Program in chunks so the OLED can show progress. `FlashMap::program` splits each call into
     // ≤256-byte page writes and restores memory-mapped read mode (flushing the read cache).
@@ -112,19 +119,37 @@ where
         let n = CHUNK.min(body.len() - off);
         unsafe { flash::MAP.program(base + off as u32, &body[off..off + n]) };
         off += n;
-        on_progress((APP_HEADER_LEN + off) as u32, total as u32).await;
+        on_progress(off as u32, total as u32).await;
     }
+    let result = verify(APP_HEADER_LEN, body).and_then(|()| {
+        unsafe { flash::MAP.program(flash::SLOT_OFFSET, header) };
+        verify(0, header)
+    });
 
-    // Read it all back: the SPIBSC layer recovers from a rejected erase/program (stuck WIP →
-    // Clear-Status) without surfacing an error. Through the **uncached** mirror (`+0x4000_0000`):
-    // L1/L2 may still hold stale lines for the slot from an earlier `probe`.
-    const UNCACHED_MIRROR: u32 = 0x4000_0000;
-    let read = |i: usize| unsafe {
-        core::ptr::read_volatile((flash::SLOT_ADDR + UNCACHED_MIRROR + i as u32) as *const u8)
+    // `probe` and `launch` read the slot through the cached window: drop any lines an earlier
+    // read left, so they see what was just written.
+    // SAFETY: cache maintenance over the slot's mapped window; nothing in it is dirty (it's
+    // only ever read through this mapping).
+    unsafe {
+        rza1_hal::cache::dma_clean_inv_range(
+            flash::SLOT_ADDR as usize,
+            (flash::SLOT_ADDR + total as u32) as usize,
+        )
     };
-    for (i, &want) in header.iter().chain(body.iter()).enumerate() {
-        if read(i) != want {
-            return Err(FlashWriteError::Verify(i as u32));
+    on_progress(total as u32, total as u32).await;
+    result
+}
+
+/// Read `want` back from the slot at `at`, through the **uncached** mirror (`+0x4000_0000`): the
+/// SPIBSC layer recovers from a rejected erase/program (stuck WIP → Clear-Status) without
+/// surfacing an error, and L1/L2 may hold stale lines for the cached window.
+fn verify(at: usize, want: &[u8]) -> Result<(), FlashWriteError> {
+    const UNCACHED_MIRROR: u32 = 0x4000_0000;
+    for (i, &w) in want.iter().enumerate() {
+        let addr = flash::SLOT_ADDR + UNCACHED_MIRROR + (at + i) as u32;
+        // SAFETY: inside the slot's uncached mirror, always mapped.
+        if unsafe { core::ptr::read_volatile(addr as *const u8) } != w {
+            return Err(FlashWriteError::Verify((at + i) as u32));
         }
     }
     Ok(())

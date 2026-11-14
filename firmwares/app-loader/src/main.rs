@@ -403,7 +403,7 @@ async fn main(dlg: Deluge) {
                 device::data_transfer().await;
             }
 
-            // ---- USB UPDATE (returns on BACK, or after a refused file) ----
+            // ---- USB UPDATE (returns on BACK; a written app restarts the unit) ----
             menu::Entry::UsbUpdate => {
                 drop(sd);
                 uf2::usb_update(form).await;

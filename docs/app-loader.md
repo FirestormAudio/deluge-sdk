@@ -200,7 +200,9 @@ BACK TO CANCEL
 Nothing is written until the whole file has arrived and checked out. A file for another board or
 display, a damaged or truncated one, or one too large for its slot is refused with
 `WRONG BOARD`, `DAMAGED FILE` or `TOO LARGE`, and flash is left exactly as it was. A loader file
-on a unit whose loader was started by the stock bootloader gets `NEEDS SLOT BOOT`. Press **BACK**
+on a unit whose loader was started by the stock bootloader gets `NEEDS SLOT BOOT`. If the flash
+itself fails while writing, the unit shows `UPDATE FAILED` / `WRITE FAILED` and goes back to the
+drive; the app slot then reads empty (its header is written last), so drop the file again. Press **BACK**
 to leave at any time before writing starts; once it starts, it runs to the end.
 
 Dev mode isn't needed: choosing `USB UPDATE` on the unit is what lets the drive accept firmware.
@@ -306,7 +308,9 @@ shows `FLASHED OK / NOW DEFAULT` and the image becomes the first/default
 Safety notes:
 
 - Only **fully SRAM-linked** images can be stored. The image's CRC is checked again every time
-  `BOOT FLASH` launches it; a damaged slot shows `FLASH APP BAD`. The loader rejects anything
+  `BOOT FLASH` launches it; a damaged slot shows `FLASH APP BAD` / `HOLD LOAD AT POWER-ON`. With
+  auto-boot on, a power cycle would only launch it again: hold **LOAD** while powering on to reach
+  the menu, then store or drop a good app. The loader rejects anything
   that fails FSB validation *before* touching the slot, so a bad ELF can never
   corrupt an image already in flash. Errors are reported on the OLED
   (`BAD MAGIC`, `WRONG FORMAT`, `NOT FLASHABLE`, `TOO LARGE`, `VERIFY FAILED`,

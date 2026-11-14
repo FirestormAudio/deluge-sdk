@@ -7,8 +7,9 @@
 //! [`validate`] then checks the image as the slot it goes to would. Nothing here writes flash.
 
 use crate::boot::Form;
-use deluge_image::app::{AppError, validate_app};
-use deluge_image::slot::{SlotError, SlotLayout, validate_with};
+use crate::stage::flash_app_move;
+use deluge_image::app::{APP_HEADER_LEN, AppError, validate_app};
+use deluge_image::slot::{HEADER_LEN, SlotError, SlotLayout, validate_with};
 use deluge_image::uf2::{BLOCK_LEN, Families, MAX_BLOCKS, decode};
 
 pub mod volume;
@@ -85,6 +86,9 @@ pub struct Assembler<'b> {
     bits: [u32; WORDS],
     received: u32,
     len: usize,
+    /// The file is complete: it's kept, and every later sector ignored, until [`Assembler::reset`]
+    /// (a host write can carry more sectors after the one that completed it).
+    complete: bool,
 }
 
 impl<'b> Assembler<'b> {
@@ -97,6 +101,7 @@ impl<'b> Assembler<'b> {
             bits: [0; WORDS],
             received: 0,
             len: 0,
+            complete: false,
         }
     }
 
@@ -107,6 +112,7 @@ impl<'b> Assembler<'b> {
         self.bits = [0; WORDS];
         self.received = 0;
         self.len = 0;
+        self.complete = false;
     }
 
     /// (blocks received, the file's block count); `(0, 0)` before a block of a file arrives.
@@ -129,6 +135,9 @@ impl<'b> Assembler<'b> {
 
     /// Take one sector the host wrote.
     pub fn write(&mut self, sector: &[u8; BLOCK_LEN]) -> Event {
+        if self.complete {
+            return Event::Ignored;
+        }
         let Some(b) = decode(sector) else {
             return Event::Ignored;
         };
@@ -156,11 +165,13 @@ impl<'b> Assembler<'b> {
         if b.block_no >= b.num_blocks {
             return refuse(self, Refusal::Damaged);
         }
-        let start = b.target as usize;
-        let end = start + b.payload.len();
-        if end > max.min(self.buf.len()) {
+        // In u64: a `targetAddr` near the top of the 32-bit range mustn't wrap on the device.
+        let end = u64::from(b.target) + b.payload.len() as u64;
+        if end > max.min(self.buf.len()) as u64 {
             return refuse(self, Refusal::TooLarge);
         }
+        let (start, end) = (b.target as usize, end as usize);
+        let (word, bit) = (b.block_no as usize / 32, 1u32 << (b.block_no % 32));
         if self.file != Some(id) {
             self.file = Some(id);
             self.bits = [0; WORDS];
@@ -168,13 +179,13 @@ impl<'b> Assembler<'b> {
             self.len = 0;
         }
         self.buf[start..end].copy_from_slice(b.payload);
-        let (word, bit) = (b.block_no as usize / 32, 1u32 << (b.block_no % 32));
         if self.bits[word] & bit == 0 {
             self.bits[word] |= bit;
             self.received += 1;
         }
         self.len = self.len.max(end);
         if self.received == b.num_blocks {
+            self.complete = true;
             Event::Complete {
                 target,
                 len: self.len,
@@ -188,30 +199,42 @@ impl<'b> Assembler<'b> {
     }
 }
 
-/// Check a completed file as where it goes would: an app as a DAPP image of `variant` with a body
-/// of at most `max_app_body`, a loader as a boot-slot image of `variant` in `layout`, and only
-/// when this loader was started from a boot slot.
-pub fn validate(
-    target: Target,
-    image: &[u8],
-    form: Form,
-    variant: u16,
-    layout: SlotLayout,
-    max_app_body: u32,
-) -> Result<(), Refusal> {
+/// What a completed file is checked against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checks {
+    /// How this loader was started: a loader file needs a boot slot to go to.
+    pub form: Form,
+    /// The variant code both an app and a loader must carry.
+    pub variant: u16,
+    /// The boot slots' layout, for a loader.
+    pub layout: SlotLayout,
+    /// The largest app body the app slot holds.
+    pub max_app_body: u32,
+    /// The RAM an app's body must load into, wholly.
+    pub app_ram: core::ops::Range<u32>,
+}
+
+/// Check a completed file as where it goes would, before anything is written: an app as a DAPP
+/// image of the variant, with a body that fits the slot and loads wholly inside `app_ram`; a
+/// loader as a boot-slot image of the variant, and only when this loader was started from a boot
+/// slot. `Ok` is how many of `image`'s bytes to write (trailing bytes are the file's padding).
+pub fn validate(target: Target, image: &[u8], c: &Checks) -> Result<usize, Refusal> {
     match target {
-        Target::App => validate_app(image, &[variant], max_app_body)
-            .map(|_| ())
-            .map_err(|e| match e {
+        Target::App => {
+            let h = validate_app(image, &[c.variant], c.max_app_body).map_err(|e| match e {
                 AppError::BadVariant => Refusal::WrongBoard,
                 _ => Refusal::Damaged,
-            }),
+            })?;
+            // Where it loads: an app that can't be launched mustn't replace one that can.
+            flash_app_move(&h, 0, c.app_ram.clone()).map_err(|_| Refusal::Damaged)?;
+            Ok(APP_HEADER_LEN + h.body_len as usize)
+        }
         Target::Loader => {
-            if form == Form::Stock {
+            if c.form == Form::Stock {
                 return Err(Refusal::NeedsSlotBoot);
             }
-            validate_with(image, layout, &[variant])
-                .map(|_| ())
+            validate_with(image, c.layout, &[c.variant])
+                .map(|h| HEADER_LEN + h.body_len as usize)
                 .map_err(|e| match e {
                     SlotError::BadVariant => Refusal::WrongBoard,
                     _ => Refusal::Damaged,
@@ -251,6 +274,16 @@ mod tests {
             .to_vec();
         v.extend_from_slice(&body);
         v
+    }
+
+    fn checks(form: Form) -> Checks {
+        Checks {
+            form,
+            variant: VARIANT_OLED,
+            layout: DELUGE,
+            max_app_body: 0x2C_0000 - 64,
+            app_ram: 0x2002_0000..0x2030_0000,
+        }
     }
 
     fn limits() -> Limits {
@@ -460,14 +493,7 @@ mod tests {
         bs[3][0x20..0x20 + 256].fill(0);
         assert!(matches!(feed(&mut a, &bs), Event::Complete { .. }));
         assert_eq!(
-            validate(
-                Target::App,
-                a.image(),
-                SLOT_FORM,
-                VARIANT_OLED,
-                DELUGE,
-                0x2C_0000 - 64
-            ),
+            validate(Target::App, a.image(), &checks(SLOT_FORM)),
             Err(Refusal::Damaged)
         );
     }
@@ -476,14 +502,7 @@ mod tests {
     fn wrong_variant_app_is_wrong_board() {
         let image = app(500, VARIANT_SEVEN_SEG);
         assert_eq!(
-            validate(
-                Target::App,
-                &image,
-                SLOT_FORM,
-                VARIANT_OLED,
-                DELUGE,
-                0x2C_0000 - 64
-            ),
+            validate(Target::App, &image, &checks(SLOT_FORM)),
             Err(Refusal::WrongBoard)
         );
     }
@@ -492,14 +511,7 @@ mod tests {
     fn loader_in_stock_form_needs_slot_boot() {
         let image = loader(500);
         assert_eq!(
-            validate(
-                Target::Loader,
-                &image,
-                Form::Stock,
-                VARIANT_OLED,
-                DELUGE,
-                0x2C_0000 - 64
-            ),
+            validate(Target::Loader, &image, &checks(Form::Stock)),
             Err(Refusal::NeedsSlotBoot)
         );
     }
@@ -509,42 +521,20 @@ mod tests {
         let mut image = loader(500);
         image[HEADER_LEN + 10] ^= 1;
         assert_eq!(
-            validate(
-                Target::Loader,
-                &image,
-                SLOT_FORM,
-                VARIANT_OLED,
-                DELUGE,
-                0x2C_0000 - 64
-            ),
+            validate(Target::Loader, &image, &checks(SLOT_FORM)),
             Err(Refusal::Damaged)
         );
     }
 
     #[test]
     fn good_app_and_loader_validate() {
-        let max = 0x2C_0000 - 64;
         assert_eq!(
-            validate(
-                Target::App,
-                &app(700, VARIANT_OLED),
-                SLOT_FORM,
-                VARIANT_OLED,
-                DELUGE,
-                max
-            ),
-            Ok(())
+            validate(Target::App, &app(700, VARIANT_OLED), &checks(SLOT_FORM)),
+            Ok(64 + 700)
         );
         assert_eq!(
-            validate(
-                Target::Loader,
-                &loader(700),
-                SLOT_FORM,
-                VARIANT_OLED,
-                DELUGE,
-                max
-            ),
-            Ok(())
+            validate(Target::Loader, &loader(700), &checks(SLOT_FORM)),
+            Ok(HEADER_LEN + 700)
         );
     }
 
@@ -563,6 +553,95 @@ mod tests {
         // Dropped again: block 0 reports it again.
         let again: Vec<Event> = bs.iter().map(|b| a.write(b)).collect();
         assert!(again.contains(&Event::Refused(Refusal::TooLarge)));
+    }
+
+    #[test]
+    fn app_loading_outside_ram_is_damaged() {
+        let body = vec![7u8; 600];
+        let mut image = encode_app_header(&body, VARIANT_OLED, 0x2001_0000, 0x2001_0000).to_vec();
+        image.extend_from_slice(&body);
+        assert_eq!(
+            validate(Target::App, &image, &checks(SLOT_FORM)),
+            Err(Refusal::Damaged)
+        );
+    }
+
+    #[test]
+    fn only_the_image_s_own_bytes_are_written() {
+        let mut image = app(700, VARIANT_OLED);
+        image.extend_from_slice(&[0xEE; 300]);
+        assert_eq!(
+            validate(Target::App, &image, &checks(SLOT_FORM)),
+            Ok(64 + 700)
+        );
+    }
+
+    #[test]
+    fn complete_file_is_kept_until_reset() {
+        let a_img = app(1000, VARIANT_OLED);
+        let b_img = app(2000, VARIANT_OLED);
+        let mut buf = vec![0u8; 0x2C_0000];
+        let mut a = Assembler::new(&mut buf, limits());
+        assert!(matches!(
+            feed(&mut a, &blocks(&a_img, DELUGE_OLED.app)),
+            Event::Complete { .. }
+        ));
+        // More sectors in the same host write: another file's block.
+        let b_bs = blocks(&b_img, DELUGE_OLED.app);
+        assert_eq!(a.write(&b_bs[0]), Event::Ignored);
+        assert_eq!(a.image(), &a_img[..]);
+        a.reset();
+        assert!(matches!(a.write(&b_bs[0]), Event::Progress { .. }));
+    }
+
+    #[test]
+    fn same_shape_mix_is_never_written() {
+        // An out-of-order host left file A's second half; file B, the same block count, fills
+        // the gaps. The assembler can't tell the two apart; the body CRC can.
+        let a_img = app(4000, VARIANT_OLED);
+        let mut b_img = a_img.clone();
+        b_img[100..3000].fill(0x42);
+        let (a_bs, b_bs) = (
+            blocks(&a_img, DELUGE_OLED.app),
+            blocks(&b_img, DELUGE_OLED.app),
+        );
+        let mut buf = vec![0u8; 0x2C_0000];
+        let mut a = Assembler::new(&mut buf, limits());
+        let half = a_bs.len() / 2;
+        feed(&mut a, &a_bs[half..]);
+        assert!(matches!(
+            feed(&mut a, &b_bs[..half]),
+            Event::Complete { .. }
+        ));
+        assert_eq!(
+            validate(Target::App, a.image(), &checks(SLOT_FORM)),
+            Err(Refusal::Damaged)
+        );
+    }
+
+    #[test]
+    fn in_order_redrop_of_another_build_completes_first_time() {
+        // A cancelled in-order copy of A, then B in order: B overwrites from block 0.
+        let a_img = app(4000, VARIANT_OLED);
+        let mut b_img = a_img.clone();
+        b_img[100..3000].fill(0x42);
+        let (a_bs, b_bs) = (
+            blocks(&a_img, DELUGE_OLED.app),
+            blocks(&b_img, DELUGE_OLED.app),
+        );
+        let mut buf = vec![0u8; 0x2C_0000];
+        let mut a = Assembler::new(&mut buf, limits());
+        feed(&mut a, &a_bs[..a_bs.len() / 2]);
+        assert!(matches!(feed(&mut a, &b_bs), Event::Complete { .. }));
+        assert_eq!(a.image(), &b_img[..]);
+    }
+
+    #[test]
+    fn huge_target_is_too_large() {
+        let mut buf = vec![0u8; 0x2C_0000];
+        let mut a = Assembler::new(&mut buf, limits());
+        let b = crafted(DELUGE_OLED.app, 0, 2, u32::MAX - 10);
+        assert_eq!(a.write(&b), Event::Refused(Refusal::TooLarge));
     }
 
     #[test]

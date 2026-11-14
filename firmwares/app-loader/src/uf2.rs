@@ -13,7 +13,7 @@ use deluge_image::slot::{self, VARIANT_OLED};
 use deluge_image::uf2::DELUGE_OLED;
 use deluge_loader::boot::Form;
 use deluge_loader::uf2::volume::{Info, Volume};
-use deluge_loader::uf2::{Assembler, Event, Limits, Refusal, Target, validate};
+use deluge_loader::uf2::{Assembler, Checks, Event, Limits, Refusal, Target, validate};
 use deluge_loader::update;
 use embassy_time::{Duration, Timer};
 use log::{error, info};
@@ -121,7 +121,13 @@ async fn status_loop() -> Infallible {
         }
         if let Some(refusal) = refusal_of(REFUSED.swap(0, Ordering::Relaxed)) {
             ui::show_bar_screen(b"USB UPDATE", refusal.message(), None, b"NOTHING WRITTEN").await;
-            Timer::after(Duration::from_secs(2)).await;
+            // Two seconds, still answering BACK.
+            for _ in 0..20 {
+                if crate::controls::BACK_PRESSED.load(Ordering::Acquire) {
+                    break;
+                }
+                Timer::after(Duration::from_millis(100)).await;
+            }
             continue;
         }
         let (rx, total) = (
@@ -163,8 +169,9 @@ async fn session(vol: &mut Volume<'_, '_>) -> Outcome {
     }
 }
 
-/// `USB UPDATE`, from the menu. Returns on BACK or after a write that failed; a written app
-/// restarts the unit, a written loader asks for a power cycle.
+/// `USB UPDATE`, from the menu. Returns only on BACK: a refused file or a failed write shows why
+/// and goes back to the drive. A written app restarts the unit; a written loader asks for a
+/// power cycle.
 pub async fn usb_update(form: Form) {
     loop {
         let limits = Limits {
@@ -185,7 +192,9 @@ pub async fn usb_update(form: Form) {
                 )
             }),
         };
-        let mut vol = Volume::new(info, Assembler::new(device::uf2_buffer(), limits));
+        // SAFETY: the buffer's only user, one session at a time; `vol` is dropped each pass.
+        let buf = unsafe { device::uf2_buffer() };
+        let mut vol = Volume::new(info, Assembler::new(buf, limits));
         let (target, len) = match session(&mut vol).await {
             Outcome::Back => {
                 info!("USB UPDATE: left (BACK)");
@@ -195,28 +204,32 @@ pub async fn usb_update(form: Form) {
         };
         info!("USB UPDATE: a {:?} file of {} bytes is in", target, len);
         let image = vol.assembler().image_mut();
-        let max_app_body = device::flashboot::MAX_BODY;
-        if let Err(r) = validate(
-            target,
-            image,
+        let kept = len.min(image.len());
+        let image = &mut image[..kept];
+        let checks = Checks {
             form,
-            VARIANT_OLED,
-            slot::DELUGE,
-            max_app_body,
-        ) {
-            error!("USB UPDATE: refused: {:?}", r);
-            ui::show_bar_screen(b"USB UPDATE", r.message(), None, b"NOTHING WRITTEN").await;
-            Timer::after(Duration::from_secs(2)).await;
-            continue;
-        }
+            variant: VARIANT_OLED,
+            layout: slot::DELUGE,
+            max_app_body: device::flashboot::MAX_BODY,
+            app_ram: deluge_image::elf::SRAM_LOAD_ORIGIN..deluge_image::elf::SRAM_HI,
+        };
+        let n = match validate(target, image, &checks) {
+            Ok(n) => n,
+            Err(r) => {
+                error!("USB UPDATE: refused: {:?}", r);
+                ui::show_bar_screen(b"USB UPDATE", r.message(), None, b"NOTHING WRITTEN").await;
+                Timer::after(Duration::from_secs(2)).await;
+                continue;
+            }
+        };
         match target {
-            Target::App => write_app(image).await,
-            Target::Loader => write_loader(form, image).await,
+            Target::App => write_app(&image[..n]).await,
+            Target::Loader => write_loader(form, &mut image[..n]).await,
         }
     }
 }
 
-/// Write a validated app and restart; on a failed write, say so and go back to the menu.
+/// Write a validated app and restart; on a failed write, say so and go back to the drive.
 async fn write_app(image: &[u8]) {
     ui::show_bar_screen(b"WRITING", b"DO NOT POWER OFF", Some(0), b"").await;
     match device::write_flash_app(image, b"WRITING APP").await {
