@@ -9,7 +9,7 @@
 //! (cancelled), the port is disconnected, and the function returns.
 
 use core::mem::MaybeUninit;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use embassy_futures::join::join;
 use embassy_futures::select::select;
@@ -41,11 +41,23 @@ rza1_hal::bind_interrupts!(struct UsbIrqs {
 /// Enter SD-card DATA TRANSFER (USB mass storage) mode.  Returns on BACK.
 pub async fn run_data_transfer_mode() {
     info!("DATA: entering SD mass-storage mode");
-    run_session(SdBlock, "Deluge SD Card").await;
+    run_session(
+        SdBlock,
+        "Deluge SD Card",
+        &crate::controls::BACK_PRESSED,
+        status_loop(),
+    )
+    .await;
 }
 
-/// Bring up USB MSC backed by `dev`, run until BACK, then disconnect.
-async fn run_session<B: BlockDevice>(dev: B, product: &'static str) {
+/// Bring up USB MSC backed by `dev`, run until `exit` is set (between SCSI commands), showing
+/// `status` meanwhile, then disconnect.
+pub(crate) async fn run_session<B: BlockDevice>(
+    dev: B,
+    product: &'static str,
+    exit: &AtomicBool,
+    status: impl core::future::Future<Output = core::convert::Infallible>,
+) {
     bot::TX_BYTES.store(0, Ordering::Relaxed);
     bot::RX_BYTES.store(0, Ordering::Relaxed);
 
@@ -56,24 +68,18 @@ async fn run_session<B: BlockDevice>(dev: B, product: &'static str) {
     // `run_until` watches BACK itself and returns only *between* SCSI commands,
     // so the SD card is never left mid-transfer (no torn writes / stuck card).
     let mut buffer = BOT_BUFFER.lock().await;
-    let proto = bot::run_until(
-        dev,
-        ep_in,
-        ep_out,
-        &mut buffer,
-        &crate::controls::BACK_PRESSED,
-    );
-    let oled = status_loop();
+    let proto = bot::run_until(dev, ep_in, ep_out, &mut buffer, exit);
+    let oled = status;
 
     // USB + status run forever; the session ends exactly when `proto` returns
-    // (BACK pressed at a safe command boundary).
+    // (`exit` set, seen at a safe command boundary).
     select(proto, join(usb, oled)).await;
 
     // Drop back to the menu: unplug from the host so it doesn't see a stale
     // unresponsive device.
     // SAFETY: the session is over: its driver went with `proto` and `usb`.
     disconnect(unsafe { rza1_hal::peripherals::USB0::steal() });
-    info!("USB: mode exited (BACK)");
+    info!("USB: session ended");
 }
 
 /// Build the USB device in MSC configuration.  Returns `(device, ep_in, ep_out)`.
@@ -125,7 +131,7 @@ const STATUS_TOP: usize = 10;
 
 /// OLED throughput display for the active DATA TRANSFER session.  Loops forever
 /// (cancelled by the `select` in [`run_session`] when BACK is pressed).
-async fn status_loop() -> ! {
+async fn status_loop() -> core::convert::Infallible {
     // Previous cumulative byte counters, for per-interval speed.
     let mut last_tx = bot::TX_BYTES.load(Ordering::Relaxed);
     let mut last_rx = bot::RX_BYTES.load(Ordering::Relaxed);

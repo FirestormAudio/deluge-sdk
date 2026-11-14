@@ -7,7 +7,21 @@ breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- The app-loader's `USB UPDATE`: the unit shows a drive to drop a `.uf2` onto. An app goes into
+  the flash app slot and the unit restarts; a loader goes into the inactive boot slot through the
+  A/B self-update. Nothing is written until the whole file has arrived and validated; a file for
+  another board, a damaged or a too-large one is refused with flash untouched.
+  `cargo deluge uf2` packs an ELF, a Community `.bin` or a `LOADER.SLT`.
+- `deluge_image::uf2` (UF2 blocks and the Deluge's family IDs), `deluge_loader::uf2` (the
+  assembler, validation and the fake FAT16 volume), `rza1_hal::wdt::Watchdog::reset_now`.
+
 ### Changed
+
+- The Deluge's flash app slot holds a DAPP image (`deluge_image::app`): store-to-flash writes
+  one, and `BOOT FLASH` checks its CRC before launching. An image stored by an earlier loader
+  stops showing as `BOOT FLASH` until it's stored again.
 
 - OLED drawing is faster. `deluge_bsp::oled::FrameBuffer` gains `fill_rect`, which writes a byte
   (eight rows) at a time, and `blit_columns`; its `embedded-graphics` `fill_solid` and `clear` use

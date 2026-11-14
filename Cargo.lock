@@ -1328,8 +1328,14 @@ version = "0.2.0"
 name = "deluge-loader"
 version = "0.2.0"
 dependencies = [
+ "aligned",
+ "block-device-driver",
+ "deluge-block-device-adapters",
+ "deluge-embedded-fatfs",
  "deluge-flash-protect",
  "deluge-image",
+ "embassy-futures",
+ "embedded-io-async 0.7.0",
  "heapless 0.9.3",
 ]
 

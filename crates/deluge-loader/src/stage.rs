@@ -38,6 +38,8 @@ pub enum StageError {
     StagingFull,
     /// More staged segments than [`MAX_MOVES`].
     TooMany,
+    /// A flash app's body doesn't land wholly inside the RAM apps may load into.
+    OutsideRam,
 }
 
 /// The most staged segments a plan holds.
@@ -77,9 +79,110 @@ pub fn staging_plan(
     Ok(moves)
 }
 
+/// The one copy that launches a flash app whose header (checked) sits at `header_at` in the
+/// memory-mapped flash: its body, right after the header, to `load_addr`. Refused unless the body
+/// lands wholly inside `ram`.
+pub fn flash_app_move(
+    h: &deluge_image::app::AppHeader,
+    header_at: u32,
+    ram: core::ops::Range<u32>,
+) -> Result<Move, StageError> {
+    let end = u64::from(h.load_addr) + u64::from(h.body_len);
+    if h.load_addr < ram.start || end > u64::from(ram.end) {
+        return Err(StageError::OutsideRam);
+    }
+    Ok(Move {
+        from: header_at + deluge_image::app::APP_HEADER_LEN as u32,
+        to: h.load_addr,
+        len: h.body_len,
+    })
+}
+
+/// The flash app slot's header when it's one the loader could launch: a valid DAPP header of
+/// `variant` with a body of at most `max_body`, loading wholly inside `ram`. The body's CRC is
+/// checked at launch; this is what the menu offers `BOOT FLASH` on.
+pub fn bootable_header(
+    header: &[u8],
+    variant: u16,
+    max_body: u32,
+    ram: core::ops::Range<u32>,
+) -> Option<deluge_image::app::AppHeader> {
+    let h = deluge_image::app::validate_app_header(header, &[variant], max_body).ok()?;
+    flash_app_move(&h, 0, ram).ok()?;
+    Some(h)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use deluge_image::app::{APP_HEADER_LEN, AppHeader};
+
+    const SRAM: core::ops::Range<u32> = 0x2002_0000..0x2030_0000;
+
+    fn header(load_addr: u32, body_len: u32) -> AppHeader {
+        AppHeader {
+            variant: 0,
+            load_addr,
+            entry: load_addr,
+            body_len,
+            body_crc: 0,
+        }
+    }
+
+    #[test]
+    fn flash_app_move_inside_ram() {
+        let m = flash_app_move(&header(0x2002_0000, 0x1000), 0x1810_0000, SRAM).unwrap();
+        assert_eq!(
+            m,
+            Move {
+                from: 0x1810_0000 + APP_HEADER_LEN as u32,
+                to: 0x2002_0000,
+                len: 0x1000
+            }
+        );
+        // Exactly up to the end fits.
+        assert!(flash_app_move(&header(0x2030_0000 - 0x1000, 0x1000), 0x1810_0000, SRAM).is_ok());
+    }
+
+    #[test]
+    fn bootable_header_checks_where_it_loads() {
+        use deluge_image::app::encode_app_header;
+        let body = [0u8; 0x100];
+        let inside = encode_app_header(&body, 0, 0x2002_0000, 0x2002_0000);
+        let outside = encode_app_header(&body, 0, 0x2001_0000, 0x2001_0000);
+        let h = bootable_header(&inside, 0, 0x1000, SRAM).expect("loads inside SRAM");
+        assert_eq!(h.load_addr, 0x2002_0000);
+        assert!(bootable_header(&outside, 0, 0x1000, SRAM).is_none());
+        assert!(
+            bootable_header(&inside, 1, 0x1000, SRAM).is_none(),
+            "another variant"
+        );
+        assert!(
+            bootable_header(&[0xFF; 64], 0, 0x1000, SRAM).is_none(),
+            "erased"
+        );
+    }
+
+    #[test]
+    fn flash_app_move_outside_ram_refused() {
+        assert_eq!(
+            flash_app_move(&header(0x2001_0000, 0x1000), 0x1810_0000, SRAM),
+            Err(StageError::OutsideRam)
+        );
+        assert_eq!(
+            flash_app_move(&header(0x2030_0000 - 0x800, 0x1000), 0x1810_0000, SRAM),
+            Err(StageError::OutsideRam)
+        );
+        // No wrap-around past 4 GiB.
+        assert_eq!(
+            flash_app_move(
+                &header(0xFFFF_F000, 0x2000),
+                0x1810_0000,
+                0x2002_0000..u32::MAX
+            ),
+            Err(StageError::OutsideRam)
+        );
+    }
 
     const LOADER: Region = Region {
         start: 0x8002_0000,
