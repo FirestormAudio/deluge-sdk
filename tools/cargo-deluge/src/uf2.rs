@@ -7,14 +7,41 @@
 
 use std::path::Path;
 
-use deluge_image::app::{APP_HEADER_LEN, encode_app_header, validate_app};
-use deluge_image::elf::{
-    PT_LOAD, SRAM_HI, SRAM_LOAD_ORIGIN, find_fsb_base, le16, le32, validate_fsb_metadata,
-    validate_header,
-};
-use deluge_image::slot::{self, VARIANT_OLED, VARIANT_SEVEN_SEG};
-use deluge_image::uf2::{self, DELUGE_OLED, DELUGE_SEVEN_SEG, Families};
+use crate::frame::crc32;
 
+// The formats below are the device's (`deluge_image::{uf2, app, slot, elf}`), written out here:
+// this tool is published and `deluge-image` isn't, so it can't be a dependency. The tests pin
+// every one of them against `deluge-image` (a dev-dependency), so the two can't drift.
+
+/// The Deluge's UF2 family IDs (`deluge_image::uf2::{DELUGE_OLED, DELUGE_SEVEN_SEG}`).
+const OLED_APP: u32 = 0xA799_ECAC;
+const OLED_LOADER: u32 = 0x51B0_2BFD;
+const SEVEN_SEG_APP: u32 = 0xC6E8_31B1;
+const SEVEN_SEG_LOADER: u32 = 0x9851_DF9D;
+/// UF2 (`deluge_image::uf2`).
+const UF2_BLOCK: usize = 512;
+const UF2_PAYLOAD: usize = 256;
+const UF2_MAGIC0: u32 = 0x0A32_4655;
+const UF2_MAGIC1: u32 = 0x9E5D_5157;
+const UF2_MAGIC_END: u32 = 0x0AB1_6F30;
+const UF2_FLAG_FAMILY: u32 = 0x2000;
+/// The DAPP app header (`deluge_image::app`).
+const APP_MAGIC: u32 = 0x5050_4144;
+const APP_VERSION: u16 = 1;
+const APP_HEADER_LEN: usize = 0x40;
+/// The boot-slot header (`deluge_image::slot`, the Deluge's layout).
+const SLOT_MAGIC: u32 = 0x544C_5344;
+const SLOT_VERSION: u16 = 1;
+const SLOT_HEADER_LEN: usize = 0x100;
+const SLOT_LEN: usize = 0x7_0000;
+/// The first-stage boot metadata (`deluge_image::elf`).
+const FSB_CODE_START: usize = 0x20;
+const FSB_CODE_END: usize = 0x24;
+const FSB_CODE_EXECUTE: usize = 0x28;
+const FSB_SIGNATURE_OFF: usize = 0x2C;
+const FSB_SIGNATURE: &[u8] = b".BootLoad_ValidProgramTest.";
+/// The SRAM apps load into (`deluge_image::elf::{SRAM_LOAD_ORIGIN, SRAM_HI}`).
+const SRAM: std::ops::Range<u32> = 0x2002_0000..0x2030_0000;
 /// The Deluge's flash app slot (`deluge_bsp::flash::SLOT_LEN`): header and body.
 const APP_SLOT_LEN: usize = 0x2C_0000;
 
@@ -26,19 +53,29 @@ pub(crate) enum Variant {
 }
 
 impl Variant {
+    /// The variant code (`deluge_image::slot::{VARIANT_OLED, VARIANT_SEVEN_SEG}`).
     fn code(self) -> u16 {
         match self {
-            Variant::Oled => VARIANT_OLED,
-            Variant::SevenSeg => VARIANT_SEVEN_SEG,
+            Variant::Oled => 0,
+            Variant::SevenSeg => 1,
         }
     }
 
-    fn families(self) -> Families {
+    /// (app, loader) family IDs.
+    fn families(self) -> (u32, u32) {
         match self {
-            Variant::Oled => DELUGE_OLED,
-            Variant::SevenSeg => DELUGE_SEVEN_SEG,
+            Variant::Oled => (OLED_APP, OLED_LOADER),
+            Variant::SevenSeg => (SEVEN_SEG_APP, SEVEN_SEG_LOADER),
         }
     }
+}
+
+fn le16(b: &[u8], off: usize) -> u16 {
+    u16::from_le_bytes([b[off], b[off + 1]])
+}
+
+fn le32(b: &[u8], off: usize) -> u32 {
+    u32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
 }
 
 /// `cargo deluge uf2`'s arguments.
@@ -104,7 +141,7 @@ pub(crate) fn cmd_uf2(args: &[String]) -> Result<(), String> {
     println!(
         "{}: {} blocks ({} for USB UPDATE)",
         o.out,
-        file.len() / uf2::BLOCK_LEN,
+        file.len() / UF2_BLOCK,
         if o.loader { "a loader" } else { "an app" }
     );
     Ok(())
@@ -112,33 +149,90 @@ pub(crate) fn cmd_uf2(args: &[String]) -> Result<(), String> {
 
 /// `input` as a `.uf2`: an app (ELF or FSB `.bin`) or, with `loader`, a boot-slot image.
 pub(crate) fn pack(input: &[u8], loader: bool, variant: Variant) -> Result<Vec<u8>, String> {
-    let fam = variant.families();
+    let (app_family, loader_family) = variant.families();
     let (image, family) = if loader {
-        slot::validate_with(input, slot::DELUGE, &[variant.code()])
-            .map_err(|e| format!("not a loader slot image for this variant: {e:?}"))?;
-        (input.to_vec(), fam.loader)
+        check_slot_image(input, variant.code())?;
+        (input.to_vec(), loader_family)
     } else {
-        (app_image(input, variant.code())?, fam.app)
+        (app_image(input, variant.code())?, app_family)
     };
-    Ok(uf2::encode(&image, family).flatten().collect())
+    Ok(uf2_encode(&image, family))
+}
+
+/// `image` as UF2 blocks of 256-byte payloads under `family`, `targetAddr` counting from 0.
+fn uf2_encode(image: &[u8], family: u32) -> Vec<u8> {
+    let num_blocks = image.len().div_ceil(UF2_PAYLOAD) as u32;
+    let mut out = Vec::with_capacity(num_blocks as usize * UF2_BLOCK);
+    for (i, chunk) in image.chunks(UF2_PAYLOAD).enumerate() {
+        let mut b = [0u8; UF2_BLOCK];
+        let mut put = |off: usize, v: u32| b[off..off + 4].copy_from_slice(&v.to_le_bytes());
+        put(0, UF2_MAGIC0);
+        put(4, UF2_MAGIC1);
+        put(8, UF2_FLAG_FAMILY);
+        put(12, (i * UF2_PAYLOAD) as u32);
+        put(16, chunk.len() as u32);
+        put(20, i as u32);
+        put(24, num_blocks);
+        put(28, family);
+        put(UF2_BLOCK - 4, UF2_MAGIC_END);
+        b[32..32 + chunk.len()].copy_from_slice(chunk);
+        out.extend_from_slice(&b);
+    }
+    out
+}
+
+/// A DAPP header for `body`: where it loads, its entry, its length and CRC, under `variant`.
+fn dapp_header(body: &[u8], variant: u16, load: u32, entry: u32) -> [u8; APP_HEADER_LEN] {
+    let mut h = [0xFFu8; APP_HEADER_LEN];
+    h[0..4].copy_from_slice(&APP_MAGIC.to_le_bytes());
+    h[4..6].copy_from_slice(&APP_VERSION.to_le_bytes());
+    h[6..8].copy_from_slice(&variant.to_le_bytes());
+    h[8..12].copy_from_slice(&load.to_le_bytes());
+    h[12..16].copy_from_slice(&entry.to_le_bytes());
+    h[16..20].copy_from_slice(&(body.len() as u32).to_le_bytes());
+    h[20..24].copy_from_slice(&crc32(body).to_le_bytes());
+    let hcrc = crc32(&h[..0x3C]);
+    h[0x3C..0x40].copy_from_slice(&hcrc.to_le_bytes());
+    h
+}
+
+/// A loader slot image's checks, as stage-0 makes them: magic, version, variant, length, both
+/// CRCs. (The device checks it again before writing.)
+fn check_slot_image(img: &[u8], variant: u16) -> Result<(), String> {
+    let bad = |why: &str| Err(format!("not a loader slot image for this variant: {why}"));
+    if img.len() < SLOT_HEADER_LEN || le32(img, 0) != SLOT_MAGIC {
+        return bad("no slot header");
+    }
+    if le16(img, 4) != SLOT_VERSION {
+        return bad("a slot header version this tool doesn't know");
+    }
+    if le16(img, 6) != variant {
+        return bad("another variant's");
+    }
+    if le32(img, 0xF8) != crc32(&img[..0xF8]) {
+        return bad("the header CRC doesn't match");
+    }
+    let len = le32(img, 0x0C) as usize;
+    if len == 0 || len > SLOT_LEN - SLOT_HEADER_LEN || img.len() < SLOT_HEADER_LEN + len {
+        return bad("the body length is wrong");
+    }
+    if le32(img, 0x10) != crc32(&img[SLOT_HEADER_LEN..SLOT_HEADER_LEN + len]) {
+        return bad("the body CRC doesn't match");
+    }
+    Ok(())
 }
 
 /// An app's DAPP image from an ELF or a flat `.bin` with the first-stage boot metadata.
 fn app_image(input: &[u8], variant: u16) -> Result<Vec<u8>, String> {
     let flat;
-    let bin = if input.starts_with(&deluge_image::elf::ELF_MAGIC) {
+    let bin = if input.starts_with(b"\x7FELF") {
         flat = flatten_sram(input)?;
         // Drop a leading NOLOAD region the linker placed below the vector table.
-        &flat[find_fsb_base(&flat).unwrap_or(0)..]
+        &flat[fsb_base(&flat).unwrap_or(0)..]
     } else {
         input
     };
-    if bin.len() < 0x30 {
-        return Err("too short to be a firmware image".into());
-    }
-    let base = le32(bin, 0x20);
-    let meta = validate_fsb_metadata(bin, base)
-        .map_err(|e| format!("not a bootable SRAM image (first-stage boot metadata): {e:?}"))?;
+    let (load, entry) = fsb_metadata(bin)?;
     if APP_HEADER_LEN + bin.len() > APP_SLOT_LEN {
         return Err(format!(
             "{} bytes is too large for the {} byte app slot",
@@ -146,19 +240,66 @@ fn app_image(input: &[u8], variant: u16) -> Result<Vec<u8>, String> {
             APP_SLOT_LEN - APP_HEADER_LEN
         ));
     }
-    let mut image = encode_app_header(bin, variant, meta.code_start, meta.entry).to_vec();
+    if load < SRAM.start || u64::from(load) + bin.len() as u64 > u64::from(SRAM.end) {
+        return Err(format!("it loads at {load:#x}, outside SRAM"));
+    }
+    let mut image = dapp_header(bin, variant, load, entry).to_vec();
     image.extend_from_slice(bin);
-    // What the loader will check, so a bad image fails here, not on the device.
-    validate_app(&image, &[variant], (APP_SLOT_LEN - APP_HEADER_LEN) as u32)
-        .map_err(|e| format!("the image doesn't validate: {e:?}"))?;
     Ok(image)
 }
 
-/// An ELF's `PT_LOAD` file images laid out by physical address from the lowest; all must be in
-/// SRAM. Gaps are zeros; `.bss` is left to the image's start-up code. (`mkslot app`'s flattening,
-/// with the app slot's SRAM rule.)
+/// `(load address, entry)` from a flat image's first-stage boot metadata, checked as the device
+/// checks it (`deluge_image::elf::validate_fsb_metadata`).
+fn fsb_metadata(bin: &[u8]) -> Result<(u32, u32), String> {
+    let bad = |why: &str| {
+        Err(format!(
+            "not a bootable SRAM image (first-stage boot metadata): {why}"
+        ))
+    };
+    if bin.len() < FSB_SIGNATURE_OFF + FSB_SIGNATURE.len() {
+        return bad("too short");
+    }
+    if &bin[FSB_SIGNATURE_OFF..FSB_SIGNATURE_OFF + FSB_SIGNATURE.len()] != FSB_SIGNATURE {
+        return bad("no boot signature");
+    }
+    let (start, end, entry) = (
+        le32(bin, FSB_CODE_START),
+        le32(bin, FSB_CODE_END),
+        le32(bin, FSB_CODE_EXECUTE),
+    );
+    if end <= start {
+        return bad("the code end is below its start");
+    }
+    if entry < start || entry >= end {
+        return bad("the entry is outside the code");
+    }
+    if bin.len() > (end - start) as usize {
+        return bad("the image is longer than its metadata says");
+    }
+    Ok((start, entry))
+}
+
+/// Where the vector table starts in a flattened image: the boot signature's offset less its
+/// place in the metadata (`deluge_image::elf::find_fsb_base`).
+fn fsb_base(img: &[u8]) -> Option<usize> {
+    img.windows(FSB_SIGNATURE.len())
+        .enumerate()
+        .skip(FSB_SIGNATURE_OFF)
+        .find(|(_, w)| *w == FSB_SIGNATURE)
+        .map(|(i, _)| i - FSB_SIGNATURE_OFF)
+}
+
+/// An ELF32 LE ARM executable's `PT_LOAD` file images laid out by physical address from the
+/// lowest; all must be in SRAM. Gaps are zeros; `.bss` is left to the image's start-up code.
 fn flatten_sram(elf: &[u8]) -> Result<Vec<u8>, String> {
-    validate_header(elf).map_err(|e| format!("not a loadable ELF: {e:?}"))?;
+    let ok = elf.len() >= 52
+        && elf[4] == 1 // 32-bit
+        && elf[5] == 1 // little-endian
+        && le16(elf, 16) == 2 // ET_EXEC
+        && le16(elf, 18) == 0x28; // EM_ARM
+    if !ok {
+        return Err("not a 32-bit little-endian ARM executable ELF".into());
+    }
     let (phoff, phentsize, phnum) = (
         le32(elf, 28) as usize,
         le16(elf, 42) as usize,
@@ -173,10 +314,10 @@ fn flatten_sram(elf: &[u8]) -> Result<Vec<u8>, String> {
                 .ok_or("program header past the end of the file")
         };
         let (kind, offset, paddr, filesz) = (field(0)?, field(4)?, field(12)?, field(16)?);
-        if kind != PT_LOAD || filesz == 0 {
-            continue;
+        if kind != 1 || filesz == 0 {
+            continue; // not PT_LOAD, or memory only
         }
-        if paddr < SRAM_LOAD_ORIGIN || u64::from(paddr) + u64::from(filesz) > u64::from(SRAM_HI) {
+        if paddr < SRAM.start || u64::from(paddr) + u64::from(filesz) > u64::from(SRAM.end) {
             return Err(format!(
                 "a segment at {paddr:#x} is outside SRAM: only SRAM-linked apps go to the app slot"
             ));
@@ -341,6 +482,63 @@ mod tests {
         let bin = fsb_bin(0x2C_0000);
         let e = pack(&bin, false, Variant::Oled).unwrap_err();
         assert!(e.contains("slot"), "{e}");
+    }
+
+    #[test]
+    fn the_formats_are_the_device_s() {
+        use deluge_image::app::encode_app_header;
+        use deluge_image::elf::{SRAM_HI, SRAM_LOAD_ORIGIN, find_fsb_base};
+        // Family IDs and variant codes.
+        assert_eq!(
+            Variant::Oled.families(),
+            (DELUGE_OLED.app, DELUGE_OLED.loader)
+        );
+        assert_eq!(
+            Variant::SevenSeg.families(),
+            (DELUGE_SEVEN_SEG.app, DELUGE_SEVEN_SEG.loader)
+        );
+        assert_eq!(Variant::Oled.code(), VARIANT_OLED);
+        assert_eq!(Variant::SevenSeg.code(), VARIANT_SEVEN_SEG);
+        assert_eq!(SRAM, SRAM_LOAD_ORIGIN..SRAM_HI);
+        assert_eq!(SLOT_LEN as u32, DELUGE.slot_len);
+        // The DAPP header and the UF2 blocks, byte for byte.
+        let body: Vec<u8> = (0..1234).map(|i| (i * 7) as u8).collect();
+        assert_eq!(
+            dapp_header(&body, 1, BASE, BASE + 4),
+            encode_app_header(&body, 1, BASE, BASE + 4)
+        );
+        let device: Vec<u8> = deluge_image::uf2::encode(&body, OLED_APP)
+            .flatten()
+            .collect();
+        assert_eq!(uf2_encode(&body, OLED_APP), device);
+        // Finding the vector table.
+        let mut flat = vec![0u8; 0x200];
+        flat.extend_from_slice(&fsb_bin(1000));
+        assert_eq!(fsb_base(&flat), find_fsb_base(&flat));
+        assert_eq!(fsb_base(&fsb_bin(1000)), find_fsb_base(&fsb_bin(1000)));
+    }
+
+    #[test]
+    fn slot_checks_agree_with_the_device_s() {
+        use deluge_image::slot::validate_with;
+        let body = vec![0x22u8; 3000];
+        let mut good = encode_header_with(&body, VARIANT_OLED, 1, 0x100, DELUGE)
+            .unwrap()
+            .to_vec();
+        good.extend_from_slice(&body);
+        let mut bad_body = good.clone();
+        bad_body[SLOT_HEADER_LEN + 5] ^= 1;
+        let mut bad_header = good.clone();
+        bad_header[0x08] ^= 1;
+        for img in [&good, &bad_body, &bad_header, &good[..2000].to_vec()] {
+            for v in [VARIANT_OLED, VARIANT_SEVEN_SEG] {
+                assert_eq!(
+                    check_slot_image(img, v).is_ok(),
+                    validate_with(img, DELUGE, &[v]).is_ok(),
+                    "variant {v}"
+                );
+            }
+        }
     }
 
     #[test]
