@@ -11,6 +11,8 @@ use deluge_image::app::{AppError, validate_app};
 use deluge_image::slot::{SlotError, SlotLayout, validate_with};
 use deluge_image::uf2::{BLOCK_LEN, Families, MAX_BLOCKS, decode};
 
+pub mod volume;
+
 /// Where a file goes, from its family ID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
