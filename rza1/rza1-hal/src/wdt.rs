@@ -70,6 +70,22 @@ impl<'d> Watchdog<'d> {
         }
     }
 
+    /// Reset the chip now: the shortest overflow, never kicked. A boot stage-0 enters reads it as
+    /// a watchdog reset (`WOVF`), which a confirmed slot boots through as usual.
+    pub fn reset_now(&mut self) -> ! {
+        self.arm_for_reset();
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
+    /// Clear `WOVF` (while it is set an overflow resets nothing), then [`Watchdog::start`] at
+    /// P0φ/32, a few microseconds to overflow.
+    fn arm_for_reset(&mut self) {
+        take_overflow();
+        self.start(0);
+    }
+
     /// Restart the count from 0.
     pub fn kick(&mut self) {
         // SAFETY: as `start`.
@@ -156,6 +172,26 @@ mod tests {
                 (WTCNT, 0x5A00),
                 (WRCSR, 0x5A00 | 0x40),
                 (WTCSR, 0xA500 | 0b0111_1111),
+            ]
+        );
+    }
+
+    #[test]
+    fn arm_for_reset_clears_wovf_then_starts_fastest() {
+        let mut w = wdt();
+        test::reset();
+        test::poke8(WRCSR, 0x80 | 0x1F);
+        w.arm_for_reset();
+        assert_eq!(
+            test::writes(),
+            [
+                // A set WOVF would stop the overflow from resetting anything: clear it first.
+                (WRCSR, 0xA500),
+                // Stopped, watchdog mode, P0φ/32 (the shortest overflow), then running.
+                (WTCSR, 0xA500 | 0b0101_1000),
+                (WTCNT, 0x5A00),
+                (WRCSR, 0x5A00 | 0x40),
+                (WTCSR, 0xA500 | 0b0111_1000),
             ]
         );
     }

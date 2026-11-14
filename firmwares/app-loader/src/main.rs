@@ -24,6 +24,7 @@ mod controls;
 mod device;
 mod file_browser;
 mod screen;
+mod uf2;
 mod ui;
 
 use deluge::prelude::*;
@@ -389,14 +390,7 @@ async fn main(dlg: Deluge) {
                     }
                     Err(e) => {
                         error!("Loader update failed: {:?}", e);
-                        let line2: &[u8] = match e {
-                            update::UpdateError::Foreign => b"WRONG VARIANT",
-                            update::UpdateError::Invalid(_) => b"BAD IMAGE",
-                            update::UpdateError::NoSequence => b"NO SEQUENCE",
-                            update::UpdateError::Locked => b"LOCKED",
-                            update::UpdateError::Write(_) => b"WRITE FAILED",
-                        };
-                        ui::show_message(b"UPDATE FAILED", line2).await;
+                        ui::show_message(b"UPDATE FAILED", e.message()).await;
                         embassy_time::Timer::after(embassy_time::Duration::from_secs(2)).await;
                     }
                 }
@@ -407,6 +401,12 @@ async fn main(dlg: Deluge) {
                 // The host gets the raw card: let go of the mounted volume first.
                 drop(sd);
                 device::data_transfer().await;
+            }
+
+            // ---- USB UPDATE (returns on BACK, or after a refused file) ----
+            menu::Entry::UsbUpdate => {
+                drop(sd);
+                uf2::usb_update(form).await;
             }
 
             // ---- Flash boot path (never returns) ----

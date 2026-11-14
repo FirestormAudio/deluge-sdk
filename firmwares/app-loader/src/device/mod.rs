@@ -211,7 +211,6 @@ async fn program_with_progress(
 
 /// Write a validated DAPP `image` (header then body) into the flash app slot, with a progress
 /// bar under `label`.
-#[allow(dead_code)] // USB UPDATE's (the next commit)
 pub(crate) async fn write_flash_app(
     image: &[u8],
     label: &[u8],
@@ -220,6 +219,35 @@ pub(crate) async fn write_flash_app(
     let header: &[u8; deluge_image::app::APP_HEADER_LEN] =
         header.try_into().expect("split at the header's length");
     program_with_progress(header, body, label, 0).await
+}
+
+/// `USB UPDATE`'s buffer: the bottom 4 MiB of SDRAM, `0x0C00_0000..0x0C40_0000`. It shares the
+/// SDRAM app region with the dev-mode upload, which never runs at the same time, and is clear of
+/// the launch staging window at the top of SDRAM ([`deluge_image::elf::SDRAM_STAGE_BASE`]).
+pub(crate) fn uf2_buffer() -> &'static mut [u8] {
+    const BASE: u32 = deluge_image::elf::SDRAM_LO;
+    const LEN: usize = 4 << 20;
+    const _: () = assert!(BASE as usize + LEN <= deluge_image::elf::SDRAM_STAGE_BASE as usize);
+    // SAFETY: SDRAM is up before the menu runs, and the window is used by `USB UPDATE` alone
+    // while it runs (see above).
+    unsafe { core::slice::from_raw_parts_mut(BASE as *mut u8, LEN) }
+}
+
+/// Serve `dev` (the `USB UPDATE` drive) as USB mass storage until `exit` is set.
+pub(crate) async fn uf2_session<B: usb_classes::bot::BlockDevice>(
+    dev: B,
+    exit: &core::sync::atomic::AtomicBool,
+    status: impl core::future::Future<Output = core::convert::Infallible>,
+) {
+    usbmsc::run_session(dev, "Deluge UF2 Update", exit, status).await
+}
+
+/// Reset the chip through the watchdog: stage-0 boots the confirmed loader slot again (or, in
+/// the stock form, the stock bootloader starts the loader).
+pub(crate) fn restart() -> ! {
+    cortex_ar::interrupt::disable();
+    // SAFETY: the loader is done; nothing else uses the watchdog from here.
+    rza1_hal::wdt::Watchdog::new(unsafe { rza1_hal::peripherals::WDT::steal() }).reset_now()
 }
 
 /// Identify the SPI-NOR part at runtime and hold the result on screen until BACK.

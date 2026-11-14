@@ -401,6 +401,35 @@ pub async fn show_message(line1: &[u8], line2: &[u8]) {
     screen::show(&fb).await;
 }
 
+/// Four rows: `title`, `line`, a progress bar (`None`: no bar), `footer`. `USB UPDATE`'s drive
+/// and write screens.
+pub async fn show_bar_screen(title: &[u8], line: &[u8], percent: Option<u8>, footer: &[u8]) {
+    let mut fb = FrameBuffer::new();
+    fb.fill(0x00);
+    let centre = |t: &[u8]| (WIDTH.saturating_sub(t.len() * 6)) / 2;
+    draw_str(&mut fb, centre(title), TOP_PAD, title);
+    draw_str(&mut fb, centre(line), TOP_PAD + 10, line);
+    if let Some(pct) = percent {
+        let (bar_x, bar_y, bar_w, bar_h) = (8usize, TOP_PAD + 21, WIDTH - 16, 8usize);
+        for x in bar_x..bar_x + bar_w {
+            fb.set_pixel(x, bar_y, true);
+            fb.set_pixel(x, bar_y + bar_h - 1, true);
+        }
+        for y in bar_y..bar_y + bar_h {
+            fb.set_pixel(bar_x, y, true);
+            fb.set_pixel(bar_x + bar_w - 1, y, true);
+        }
+        let fill = (bar_w - 2) * usize::from(pct.min(100)) / 100;
+        for y in bar_y + 1..bar_y + bar_h - 1 {
+            for x in bar_x + 1..bar_x + 1 + fill {
+                fb.set_pixel(x, y, true);
+            }
+        }
+    }
+    draw_str(&mut fb, centre(footer), TOP_PAD + 32, footer);
+    screen::show(&fb).await;
+}
+
 /// Display a simple progress bar with an app label.
 pub async fn show_progress(label: &[u8], percent: u8) {
     let mut fb = FrameBuffer::new();

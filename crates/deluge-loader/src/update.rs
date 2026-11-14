@@ -53,6 +53,19 @@ pub enum UpdateError {
     Write(WriteError),
 }
 
+impl UpdateError {
+    /// The second line the display shows under `UPDATE FAILED`.
+    pub fn message(self) -> &'static [u8] {
+        match self {
+            UpdateError::Foreign => b"WRONG VARIANT",
+            UpdateError::Invalid(_) => b"BAD IMAGE",
+            UpdateError::NoSequence => b"NO SEQUENCE",
+            UpdateError::Locked => b"LOCKED",
+            UpdateError::Write(_) => b"WRITE FAILED",
+        }
+    }
+}
+
 /// Whether the menu offers `UPDATE LOADER`: only in the slot form (a loader the stock bootloader
 /// started has no boot slots to update), and only for an image on the card that is a valid slot
 /// image this loader accepts, and not one a slot already holds (`slots`: both slots' checks; the file stays on the card once it's
@@ -190,6 +203,21 @@ mod tests {
 
     /// The lock-down is armed (an app ran since the flash last lost power): nothing can be
     /// written, and the unlock route (a power cycle), not a write failure, is the answer.
+    #[test]
+    fn update_error_lines_are_today_s() {
+        assert_eq!(UpdateError::Foreign.message(), b"WRONG VARIANT");
+        assert_eq!(
+            UpdateError::Invalid(SlotError::BodyCrc).message(),
+            b"BAD IMAGE"
+        );
+        assert_eq!(UpdateError::NoSequence.message(), b"NO SEQUENCE");
+        assert_eq!(UpdateError::Locked.message(), b"LOCKED");
+        assert_eq!(
+            UpdateError::Write(WriteError::Verify).message(),
+            b"WRITE FAILED"
+        );
+    }
+
     #[test]
     fn locked_update_asks_to_unlock() {
         let mut w = slots(0);
