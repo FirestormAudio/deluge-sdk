@@ -22,7 +22,6 @@ breaking changes.
 - The Deluge's flash app slot holds a DAPP image (`deluge_image::app`): store-to-flash writes
   one, and `BOOT FLASH` checks its CRC before launching. An image stored by an earlier loader
   stops showing as `BOOT FLASH` until it's stored again.
-
 - OLED drawing is faster. `deluge_bsp::oled::FrameBuffer` gains `fill_rect`, which writes a byte
   (eight rows) at a time, and `blit_columns`; its `embedded-graphics` `fill_solid` and `clear` use
   the byte-wide fill and `fill_contiguous` clips once instead of per pixel, and `deluge::Oled`
