@@ -24,5 +24,6 @@ pub mod crc;
 pub mod elf;
 pub mod settings;
 pub mod slot;
+pub mod uf2;
 
 pub use crc::{Crc32, crc32};
