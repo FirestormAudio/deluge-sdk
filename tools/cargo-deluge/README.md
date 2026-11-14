@@ -37,6 +37,7 @@ The table follows `cargo deluge help`, which lists every option.
 | `cargo deluge sim [opts]` | Build for the host and run the app in the [desktop simulator](../../docs/simulator.md) |
 | `cargo deluge linux [opts]` | Build for the Deluge's Linux userland and pack a bootable image (needs `DELUGE_BASE`) |
 | `cargo deluge loader [--dest <dir>]` | Build the app-loader's flashable `app-loader.bin` (inside an SDK checkout) |
+| `cargo deluge uf2 <input> [--loader] [--variant oled\|7seg] [-o <out>]` | Pack an app (ELF or boot-header `.bin`) or a loader (`LOADER.SLT`) into a `.uf2` for the boot menu's `USB UPDATE` |
 | `cargo deluge debug [--release] [-- ...]` | Build, then `probe-rs run` over J-Link |
 | `cargo deluge trace [--release] [--flow] [-- ...]` | Build, then `probe-rs read-trace` (needs the `trace-a9` probe-rs fork) |
 

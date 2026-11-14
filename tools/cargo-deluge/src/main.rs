@@ -26,13 +26,15 @@
 //!   (needs the Deluge in dev mode on the boot menu).
 //! - `cargo deluge loader [--dest <sd-mount>]` — build the app-loader's
 //!   flashable `app-loader.bin` (inside an SDK checkout only).
+//! - `cargo deluge uf2 <input> [--loader] [--variant oled|7seg] [-o <out>]` — pack an app or
+//!   a loader into a `.uf2` for the boot menu's `USB UPDATE`.
 //! - `cargo deluge debug [--release] [-- <args>]` — build, then `probe-rs run`
 //!   (J-Link).
 //! - `cargo deluge trace [--release] [--flow] [--duration-ms N] [-- <args>]` —
 //!   build, then `probe-rs read-trace` (J-Link, `trace-a9` fork).
 //!
-//! Apps are loaded by the app-loader as **ELF** and run from RAM; this tool only
-//! ever emits an ELF (UF2 is the separate firmware-flash path).
+//! Apps are loaded by the app-loader as **ELF** and run from RAM; `uf2` packs one (or a
+//! loader) into a `.uf2` for the boot menu's `USB UPDATE`, which writes it to flash.
 //!
 //! Each subcommand lives in its own module; this file is just argument dispatch,
 //! the shared device constants, and the help text ([`HELP`], which the README's table copies).
@@ -47,6 +49,7 @@ mod new;
 mod probe;
 mod run;
 mod sim;
+mod uf2;
 mod util;
 
 use std::env;
@@ -88,6 +91,7 @@ fn main() -> ExitCode {
         "sim" => sim::cmd_sim(rest),
         "linux" => linux::cmd_linux(rest),
         "loader" => loader::cmd_loader(rest),
+        "uf2" => uf2::cmd_uf2(rest),
         "debug" => probe::cmd_debug(rest),
         "trace" => probe::cmd_trace(rest),
         "" | "help" | "-h" | "--help" => {
@@ -160,6 +164,12 @@ Commands:
   loader [opts]              Build the app-loader's flashable app-loader.bin (run
                              inside a deluge-sdk checkout; no cargo-binutils needed).
                                --dest <dir>   copy it to <dir>/ on the SD card
+  uf2 <input> [opts]         Pack an app (ELF, or a .bin with the boot header) or a
+                             loader (LOADER.SLT) into a .uf2 for the boot menu's
+                             USB UPDATE: drop it on the drive the unit shows.
+                               --loader          the input is a loader slot image
+                               --variant V       oled (default) or 7seg
+                               -o <path>         output (else <input>.uf2)
   debug [--release] [-- ...] Build, then `probe-rs run` over J-Link (--chip set)
   trace [--release] [opts]   Build, then `probe-rs read-trace` (trace-a9 fork):
                                --flow         compact execution-flow view
