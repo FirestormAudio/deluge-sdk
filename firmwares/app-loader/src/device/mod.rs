@@ -96,13 +96,14 @@ async fn ssb_update_pass() {
 /// Store a selected SD `/APPS` ELF into the flash app slot.
 ///
 /// Opens the file, flattens its `PT_LOAD` segments into the SDRAM staging window
-/// ([`elf::flatten_to_flash_staging`]), then validates + programs it into the
-/// slot ([`flashboot::store_image_to_slot`]).  Progress and the final result are
-/// shown on the OLED.  On success the next boot-menu pass re-probes the slot and
-/// the image appears as the default `BOOT FLASH` entry — no extra wiring needed.
+/// ([`elf::flatten_to_flash_staging`]), puts a DAPP header on it (load address from the
+/// flattened image's FSB metadata, as is its entry), and programs it into the slot
+/// ([`program_with_progress`]).  Progress and the final result are shown on the OLED.  On
+/// success the next boot-menu pass re-probes the slot and the image appears as the default
+/// `BOOT FLASH` entry — no extra wiring needed.
 ///
-/// Returns to the menu on any error; the slot is only ever touched after the
-/// image passes FSB validation, so a bad ELF cannot brick an existing image.
+/// Returns to the menu on any error; the slot is only ever touched after the image passes
+/// validation, so a bad ELF cannot brick an existing image.
 async fn write_app_to_flash(sd: &mut Sd, apps: &file_browser::EntryList, idx: usize, label: &[u8]) {
     use embassy_time::{Duration, Timer};
 
@@ -145,30 +146,80 @@ async fn write_app_to_flash(sd: &mut Sd, apps: &file_browser::EntryList, idx: us
 
     let _ = file.close().await;
 
-    // Validate + program into the flash slot — second half of the progress bar.
-    match unsafe {
-        flashboot::store_image_to_slot(&stage, |done, total| async move {
-            let pct = 50 + done.saturating_mul(50).checked_div(total).unwrap_or(50) as u8;
-            ui::show_progress(label, pct.min(100)).await;
-        })
-        .await
-    } {
+    // SAFETY: the staging window holds `stage.len` flattened bytes until the next launch or
+    // store, and nothing else runs meanwhile.
+    let body = unsafe { core::slice::from_raw_parts(stage.ptr, stage.len) };
+    let entry = match deluge_image::elf::validate_fsb_metadata(body, stage.code_start) {
+        Ok(meta) => meta.entry,
+        Err(e) => {
+            error!("Flash store: no boot header: {:?}", e);
+            ui::show_message(b"FLASH ERROR", b"BAD IMAGE").await;
+            Timer::after(Duration::from_secs(2)).await;
+            return;
+        }
+    };
+    if body.len() as u32 > flashboot::MAX_BODY {
+        ui::show_message(b"FLASH ERROR", b"TOO LARGE").await;
+        Timer::after(Duration::from_secs(2)).await;
+        return;
+    }
+    let header = deluge_image::app::encode_app_header(
+        body,
+        deluge_image::slot::VARIANT_OLED,
+        stage.code_start,
+        entry,
+    );
+
+    // Program into the flash slot — second half of the progress bar.
+    match program_with_progress(&header, body, label, 50).await {
         Ok(()) => {
             info!("Flash store: programmed {} bytes into the slot", stage.len);
             ui::show_message(b"FLASHED OK", b"NOW DEFAULT").await;
             Timer::after(Duration::from_secs(2)).await;
         }
         Err(e) => {
-            error!("Flash store: image rejected: {:?}", e);
+            error!("Flash store: write failed: {:?}", e);
             let line2: &[u8] = match e {
-                deluge_image::elf::FsbError::VerifyFailed(_) => b"VERIFY FAILED",
-                deluge_image::elf::FsbError::TooLargeForSlot => b"TOO LARGE",
-                _ => b"BAD IMAGE",
+                flashboot::FlashWriteError::Verify(_) => b"VERIFY FAILED",
+                flashboot::FlashWriteError::TooLarge => b"TOO LARGE",
             };
             ui::show_message(b"FLASH ERROR", line2).await;
             Timer::after(Duration::from_secs(2)).await;
         }
     }
+}
+
+/// Program `header` and `body` into the app slot, the progress bar under `label` running from
+/// `from` to 100 %.
+async fn program_with_progress(
+    header: &[u8; deluge_image::app::APP_HEADER_LEN],
+    body: &[u8],
+    label: &[u8],
+    from: u8,
+) -> Result<(), flashboot::FlashWriteError> {
+    let span = u32::from(100 - from);
+    // SAFETY: the loader runs from SRAM; nothing executes from flash during the write.
+    unsafe {
+        flashboot::program_slot(header, body, |done, total| async move {
+            let pct =
+                u32::from(from) + done.saturating_mul(span).checked_div(total).unwrap_or(span);
+            ui::show_progress(label, pct.min(100) as u8).await;
+        })
+        .await
+    }
+}
+
+/// Write a validated DAPP `image` (header then body) into the flash app slot, with a progress
+/// bar under `label`.
+#[allow(dead_code)] // USB UPDATE's (the next commit)
+pub(crate) async fn write_flash_app(
+    image: &[u8],
+    label: &[u8],
+) -> Result<(), flashboot::FlashWriteError> {
+    let (header, body) = image.split_at(deluge_image::app::APP_HEADER_LEN);
+    let header: &[u8; deluge_image::app::APP_HEADER_LEN] =
+        header.try_into().expect("split at the header's length");
+    program_with_progress(header, body, label, 0).await
 }
 
 /// Identify the SPI-NOR part at runtime and hold the result on screen until BACK.
@@ -220,7 +271,7 @@ fn lock_for_handoff() {
 }
 
 /// The flash app slot's image, when it holds a valid one.
-pub(crate) type FlashApp = flashboot::FlashImage;
+pub(crate) type FlashApp = deluge_image::app::AppHeader;
 /// The dev-mode upload listener, brought up before the menu draws.
 pub(crate) type Upload = devupload::Listener;
 /// The flash, as the boot sequence uses it.
@@ -378,24 +429,32 @@ pub(crate) fn flash_app() -> Option<FlashApp> {
 }
 
 /// Launch the flash app. The card must already be let go of.
-pub(crate) async fn boot_flash_app(img: FlashApp) -> ! {
+pub(crate) async fn boot_flash_app(app: FlashApp) -> ! {
     info!(
-        "Booting flash image: start={:#010x} end={:#010x} entry={:#010x}",
-        img.code_start, img.code_end, img.entry
+        "Booting the flash app: load={:#010x} len={:#x} entry={:#010x}",
+        app.load_addr, app.body_len, app.entry
     );
     ui::show_message(b"BOOTING", b"FLASH FW").await;
+    let (desc, entry) = match flashboot::launch(&app) {
+        Ok(l) => l,
+        Err(e) => {
+            error!("The flash app failed its check: {:?}", e);
+            ui::show_message(b"FLASH APP BAD", b"POWER-CYCLE").await;
+            loop {
+                embassy_time::Timer::after(embassy_time::Duration::from_secs(60)).await;
+            }
+        }
+    };
 
     // Draw the boot droplet so the panel shows it through handoff.
     // Must run before interrupts/DMA are quiesced (see show_boot_logo).
     show_boot_logo().await;
 
-    // Close FAT handles and quiesce, then copy from flash into SRAM via
-    // the trampoline (single descriptor) like the SD ELF path.
+    // Quiesce, then copy the body from the flash window into SRAM via the trampoline (single
+    // descriptor) like the SD ELF path.
     cortex_ar::interrupt::disable();
     unsafe { quiesce_for_handoff() };
-
-    let desc = img.desc();
-    unsafe { launcher::launch_via_trampoline(&[desc], img.entry) }
+    unsafe { launcher::launch_via_trampoline(&[desc], entry) }
 }
 
 /// Store app `idx` of `apps` into the flash app slot, showing progress under `label`.

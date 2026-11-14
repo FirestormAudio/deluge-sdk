@@ -6,188 +6,126 @@
 //! card present, like the original Deluge bootloader.
 //!
 //! ## Image format
-//! The on-flash image is a **raw `.bin`** (e.g. produced by `cargo build-fw-bin`)
-//! linked to load and run from SRAM at `0x2002_0000`.  Byte 0 of the image is the
-//! vector table / `_start`, and the standard FSB metadata words sit just past the
-//! eight vector entries (see `deluge-bsp/src/boot_header.rs`):
-//!
-//! | Image offset | Word |
-//! |--------------|------|
-//! | `+0x20` | `code_start`   — load address of byte 0 |
-//! | `+0x24` | `code_end`     — one past the last image byte |
-//! | `+0x28` | `code_execute` — entry point |
-//! | `+0x2C` | `".BootLoad_ValidProgramTest."` signature |
-//!
-//! The image lives at the flash slot ([`flash::SLOT_ADDR`]); we read these
-//! words through the memory-mapped window, validate them, and reuse the
-//! existing trampoline ([`super::launcher::launch_via_trampoline`]) to copy
-//! `code_start..code_end` from flash into SRAM and jump to `code_execute`.
+//! The app slot ([`flash::SLOT_OFFSET`]) holds a DAPP image ([`deluge_image::app`]): a 64-byte
+//! header (load address, entry, body length, body CRC, the OLED variant) and the body right after
+//! it, an SRAM-linked flat image. [`probe`] checks the header when the menu is built; the whole
+//! image, body CRC included, is checked at launch ([`launch`]), and the trampoline
+//! ([`super::launcher::launch_via_trampoline`]) copies the body from the flash window to its load
+//! address and jumps to the entry. The body must zero its own `.bss`: only its bytes are copied.
 
 use deluge_bsp::flash;
-use deluge_image::elf::{FsbError, validate_fsb_metadata};
+use deluge_image::app::{APP_HEADER_LEN, AppError, AppHeader, validate_app, validate_app_header};
+use deluge_image::slot::VARIANT_OLED;
+use deluge_loader::stage::{StageError, flash_app_move};
 
-use super::elf::{FlashStage, SramSegDesc};
-
-/// Offsets of the FSB metadata words from the image base.
-const META_CODE_START: u32 = 0x20;
-const META_CODE_END: u32 = 0x24;
-const META_CODE_EXECUTE: u32 = 0x28;
-const META_SIGNATURE: u32 = 0x2C;
-
-/// Signature string the FSB metadata carries (`.asciz` in `deluge-bsp/src/boot_header.rs`).
-const SIGNATURE: &[u8] = b".BootLoad_ValidProgramTest.";
+use super::elf::SramSegDesc;
 
 /// Lowest legal SRAM load address (retention RAM below this is reserved).
 const SRAM_LOAD_ORIGIN: u32 = 0x2002_0000;
 /// One past the top of usable on-chip SRAM.
 const SRAM_END: u32 = 0x2030_0000;
+/// The largest body the slot holds.
+pub const MAX_BODY: u32 = flash::SLOT_LEN - APP_HEADER_LEN as u32;
 
-/// Validated description of the on-flash firmware image.
-#[derive(Clone, Copy)]
-pub struct FlashImage {
-    /// SRAM load address of image byte 0.
-    pub code_start: u32,
-    /// One past the last image byte.
-    pub code_end: u32,
-    /// Entry point.
-    pub entry: u32,
+/// The slot's first `len` bytes, through the memory-mapped window.
+fn window(len: usize) -> &'static [u8] {
+    // SAFETY: the app slot is inside the always-mapped SPIBSC read window, and `len` never
+    // exceeds the slot (callers bound it by a checked header).
+    unsafe { core::slice::from_raw_parts(flash::SLOT_ADDR as *const u8, len) }
 }
 
-#[inline]
-fn read_word(off: u32) -> u32 {
-    // Reads go through the cached memory-mapped window; flash is memory-mapped here.
-    unsafe { core::ptr::read_volatile((flash::SLOT_ADDR + off) as *const u32) }
+/// The flash app's header, if the slot holds one (the body is checked at launch).
+pub fn probe() -> Option<AppHeader> {
+    validate_app_header(window(APP_HEADER_LEN), &[VARIANT_OLED], MAX_BODY).ok()
 }
 
-#[inline]
-fn read_byte(off: u32) -> u8 {
-    unsafe { core::ptr::read_volatile((flash::SLOT_ADDR + off) as *const u8) }
+/// Why the flash app can't be launched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlashAppError {
+    /// The image failed a check (its header or its body CRC).
+    Image(AppError),
+    /// It loads outside the SRAM apps live in.
+    BadLoadAddress(StageError),
 }
 
-/// Inspect the flash slot and return a [`FlashImage`] if it holds a valid,
-/// sane firmware image (correct signature and in-range metadata).
-pub fn probe() -> Option<FlashImage> {
-    // Signature must match exactly.
-    for (i, &b) in SIGNATURE.iter().enumerate() {
-        if read_byte(META_SIGNATURE + i as u32) != b {
-            return None;
-        }
-    }
-
-    let code_start = read_word(META_CODE_START);
-    let code_end = read_word(META_CODE_END);
-    let entry = read_word(META_CODE_EXECUTE);
-
-    // Sanity-check the metadata before we trust it for a memcpy + jump.
-    if !(SRAM_LOAD_ORIGIN..SRAM_END).contains(&code_start) {
-        return None;
-    }
-    if code_end <= code_start || code_end > SRAM_END {
-        return None;
-    }
-    if code_end - code_start > flash::SLOT_LEN {
-        return None;
-    }
-    if entry < code_start || entry >= code_end {
-        return None;
-    }
-
-    Some(FlashImage {
-        code_start,
-        code_end,
-        entry,
-    })
-}
-
-impl FlashImage {
-    /// Build the single trampoline descriptor that copies the image from the
-    /// flash memory-mapped window into SRAM.
-    ///
-    /// `src` is the **real** SPIBSC window address (`0x1810_0000`), not the
-    /// `0x5810_0000` uncached mirror: the trampoline runs with the MMU off, so
-    /// only the physical SPIBSC AHB window is valid.  Reads happen with caches
-    /// off, so the cached/uncached attribute is irrelevant.
-    pub fn desc(&self) -> SramSegDesc {
-        SramSegDesc {
-            src: flash::SLOT_ADDR,
-            dst: self.code_start,
-            filesz: self.code_end - self.code_start,
-            zero_extra: 0,
-        }
-    }
-}
-
-/// Program a flattened firmware image (staged in SDRAM by
-/// [`super::elf::flatten_to_flash_staging`]) into the flash app slot.
+/// The flash app, checked whole (header and body CRC) through the window: the trampoline's copy
+/// straight from the flash window, and the entry.
 ///
-/// The image's FSB metadata is validated **before** any erase, so an image the
-/// boot path would reject is refused without touching the slot — it can never
-/// brick an existing stored image. After a successful return the next
-/// [`probe`] sees the new image (`FlashMap::program` flushes the read cache).
+/// The copy's source is the **real** SPIBSC window address (`0x1810_0000`), not the uncached
+/// mirror: the trampoline runs with the MMU off, so only the physical window is valid.
+pub fn launch(h: &AppHeader) -> Result<(SramSegDesc, u32), FlashAppError> {
+    let whole = window(APP_HEADER_LEN + h.body_len as usize);
+    let h = validate_app(whole, &[VARIANT_OLED], MAX_BODY).map_err(FlashAppError::Image)?;
+    let m = flash_app_move(&h, flash::SLOT_ADDR, SRAM_LOAD_ORIGIN..SRAM_END)
+        .map_err(FlashAppError::BadLoadAddress)?;
+    let desc = SramSegDesc {
+        src: m.from,
+        dst: m.to,
+        filesz: m.len,
+        zero_extra: 0,
+    };
+    Ok((desc, h.entry))
+}
+
+/// Why writing the app slot failed. The slot may be partly written: it then reads invalid, and
+/// the menu still works.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlashWriteError {
+    /// Bigger than the slot.
+    TooLarge,
+    /// Didn't read back as written, at this byte of the image.
+    Verify(u32),
+}
+
+/// Erase the app slot and program `header` then `body` into it, reading every byte back.
+/// `on_progress(done, total)` is called between 4 KB chunks.
 ///
 /// # Safety
-/// Erases and programs the flash app slot; no code may run from flash during the
-/// call (true for the app loader, which executes from SRAM). Reads the staging window
-/// via `stage.ptr` for `stage.len` bytes, which the caller must keep valid.
-pub async unsafe fn store_image_to_slot<F, Fut>(
-    stage: &FlashStage,
+/// Erases and programs the flash app slot; no code may run from flash during the call (true for
+/// the app loader, which executes from SRAM).
+pub async unsafe fn program_slot<F, Fut>(
+    header: &[u8; APP_HEADER_LEN],
+    body: &[u8],
     mut on_progress: F,
-) -> Result<(), FsbError>
+) -> Result<(), FlashWriteError>
 where
     F: FnMut(u32, u32) -> Fut,
     Fut: core::future::Future<Output = ()>,
 {
-    let image = unsafe { core::slice::from_raw_parts(stage.ptr, stage.len) };
-
-    // Reject anything that would overrun the slot *before* erasing.  The
-    // `spibsc` guards silently drop writes past the slot, which would leave a
-    // truncated, unbootable image with no error surfaced.
-    if stage.len as u32 > flash::SLOT_LEN {
-        return Err(FsbError::TooLargeForSlot);
+    let total = APP_HEADER_LEN + body.len();
+    // The `spibsc` guards silently drop writes past the slot: refuse before erasing.
+    if total as u32 > flash::SLOT_LEN {
+        return Err(FlashWriteError::TooLarge);
     }
+    on_progress(0, total as u32).await;
 
-    // Validate before erasing so a bad image cannot brick the slot.
-    let meta = validate_fsb_metadata(image, stage.code_start)?;
+    // SAFETY: inside the app slot, which is all `erase_range`/`program` will touch.
+    unsafe { flash::MAP.erase_range(flash::SLOT_OFFSET, total as u32) };
+    unsafe { flash::MAP.program(flash::SLOT_OFFSET, header) };
 
-    // The span the FSB copies (`code_end - code_start`, 64 KB-rounded with any
-    // BSS tail) can exceed the flat image. `probe` refuses to boot an image
-    // whose copy span overruns the slot, so reject it here rather than flash an
-    // image that would never appear as BOOT FLASH.
-    if meta.code_end - meta.code_start > flash::SLOT_LEN {
-        return Err(FsbError::TooLargeForSlot);
-    }
-
-    let len = stage.len as u32;
-    on_progress(0, len).await;
-
-    // Erase every 64 KB block the image spans.
-    unsafe { flash::MAP.erase_range(flash::SLOT_OFFSET, len) };
-
-    // Program in chunks so the OLED can show progress. `FlashMap::program`
-    // internally splits each call into ≤256-byte page writes and restores
-    // memory-mapped read mode (flushing the read cache) when it returns.
-    const CHUNK: usize = 0x1000; // 4 KB
+    // Program in chunks so the OLED can show progress. `FlashMap::program` splits each call into
+    // ≤256-byte page writes and restores memory-mapped read mode (flushing the read cache).
+    const CHUNK: usize = 0x1000;
+    let base = flash::SLOT_OFFSET + APP_HEADER_LEN as u32;
     let mut off = 0usize;
-    while off < image.len() {
-        let n = CHUNK.min(image.len() - off);
-        unsafe { flash::MAP.program(flash::SLOT_OFFSET + off as u32, &image[off..off + n]) };
+    while off < body.len() {
+        let n = CHUNK.min(body.len() - off);
+        unsafe { flash::MAP.program(base + off as u32, &body[off..off + n]) };
         off += n;
-        on_progress(off as u32, len).await;
+        on_progress((APP_HEADER_LEN + off) as u32, total as u32).await;
     }
 
-    // Read the whole image back and compare: the SPIBSC layer recovers from a
-    // rejected erase/program (stuck WIP → Clear-Status) without surfacing an
-    // error. Read through the **uncached** SPIBSC mirror (`+0x4000_0000`):
-    // `program` flushed the SPIBSC read cache, but L1/L2 may still hold stale
-    // lines for the slot from an earlier `probe`.
+    // Read it all back: the SPIBSC layer recovers from a rejected erase/program (stuck WIP →
+    // Clear-Status) without surfacing an error. Through the **uncached** mirror (`+0x4000_0000`):
+    // L1/L2 may still hold stale lines for the slot from an earlier `probe`.
     const UNCACHED_MIRROR: u32 = 0x4000_0000;
-    for (i, &want) in image.iter().enumerate() {
-        let addr = flash::SLOT_ADDR + UNCACHED_MIRROR + i as u32;
-        let got = unsafe { core::ptr::read_volatile(addr as *const u8) };
-        if got != want {
-            return Err(FsbError::VerifyFailed(i as u32));
+    let read = |i: usize| unsafe {
+        core::ptr::read_volatile((flash::SLOT_ADDR + UNCACHED_MIRROR + i as u32) as *const u8)
+    };
+    for (i, &want) in header.iter().chain(body.iter()).enumerate() {
+        if read(i) != want {
+            return Err(FlashWriteError::Verify(i as u32));
         }
     }
-
     Ok(())
 }

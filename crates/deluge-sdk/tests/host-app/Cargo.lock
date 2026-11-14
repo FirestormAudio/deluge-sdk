@@ -1174,6 +1174,7 @@ dependencies = [
  "embassy-time",
  "embassy-usb",
  "embassy-usb-driver",
+ "embedded-graphics-core",
  "heapless 0.9.3",
  "log",
  "max5136",
