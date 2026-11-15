@@ -21,7 +21,7 @@ use deluge_loader::splash::PRE_ROLL_BLOCKS;
 use deluge_loader::splash::{
     BLOCK_PERIOD_MS, LOGO_BLOCKS, SplashPlan, load_blocks, next_block, pad_ms,
 };
-use embassy_time::{Duration, Instant, Timer};
+use embassy_time::{Duration, Instant, Ticker, Timer};
 
 use crate::screen;
 
@@ -59,11 +59,13 @@ fn frame(n: u8) -> FrameBuffer {
 }
 
 /// The animator: each [`BLOCK_PERIOD_MS`], one more block while active and under the limit.
-/// Spawned once at boot; idle otherwise.
+/// A fixed-rate tick, so a frame's send time (a few ms) doesn't stretch the pace. Spawned once at
+/// boot; idle otherwise.
 #[embassy_executor::task]
 pub async fn animate() {
+    let mut tick = Ticker::every(period());
     loop {
-        Timer::after(period()).await;
+        tick.next().await;
         if !ACTIVE.load(Ordering::Acquire) {
             continue;
         }
@@ -122,9 +124,10 @@ pub async fn progress(done: u32, total: u32) {
 pub async fn finish() {
     LIMIT.store(LOGO_BLOCKS, Ordering::Release);
     ACTIVE.store(true, Ordering::Release);
-    // The animator needs at most `pad_ms` more; two periods' slack for the frame in flight.
-    let deadline = Instant::now()
-        + Duration::from_millis(pad_ms(SHOWN.load(Ordering::Acquire)) + 2 * BLOCK_PERIOD_MS);
+    // The animator needs at most `pad_ms` more; the deadline only catches one that stalled, so
+    // it has half as long again, and a 100 ms floor.
+    let pad = pad_ms(SHOWN.load(Ordering::Acquire));
+    let deadline = Instant::now() + Duration::from_millis(pad + pad / 2 + 100);
     while SHOWN.load(Ordering::Acquire) < LOGO_BLOCKS && Instant::now() < deadline {
         Timer::after(period()).await;
     }
