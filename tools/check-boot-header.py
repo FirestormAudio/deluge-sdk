@@ -34,17 +34,19 @@ class Elf:
         self.sections = [struct.unpack_from("<IIIIIIIIII", d, self.shoff + i * self.shentsize)
                          for i in range(self.shnum)]
         self.symbols = {}
+        self.sizes = {}
         self.addrs = set()
         for sh in self.sections:
             if sh[1] != 2:  # SHT_SYMTAB
                 continue
             strtab = self.sections[sh[6]]
             for off in range(sh[4], sh[4] + sh[5], sh[9]):
-                name_off, value, _size, info, _other, shndx = struct.unpack_from("<IIIBBH", d, off)
+                name_off, value, size, info, _other, shndx = struct.unpack_from("<IIIBBH", d, off)
                 end = d.index(b"\0", strtab[4] + name_off)
                 name = d[strtab[4] + name_off:end].decode()
                 if shndx != 0 and name:
                     self.symbols.setdefault(name, value)
+                    self.sizes.setdefault(name, size)
                     # Every label and mapping symbol ($a, $d) in a code section bounds a block.
                     if info & 0xF in (0, 2) and shndx < len(self.sections) and self.sections[shndx][2] & 0x4:
                         self.addrs.add(value & ~1)

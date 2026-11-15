@@ -40,8 +40,8 @@ valid, `0xFF` = header valid, body not needed), both slots' sequences, the boot-
 the cycles the checks took, and the raw `CPG.FRQCR` (low half).
 
 Stage-0 never writes flash and never touches clocks, SDRAM, the MMU, the D-cache or any peripheral
-but the flash controller's read mode, the watchdog's reset flag and that one pin. It pulls in no HAL:
-the register addresses come from `rza1-pac`.
+but the flash controller's read mode, the watchdog's reset flag and that one pin. It pulls in no
+HAL: the register addresses come from `rza1-pac`.
 
 ## Boot timing
 
@@ -69,7 +69,8 @@ its entry, so the droplet appears ~0.35 s after reset (was ~1.7 s, ~2.6 s with t
 cargo build-stage0          # target/armv7a-none-eabihf/release/stage0 (ELF)
 cargo build-stage0-bin      # target/armv7a-none-eabihf/release/stage0.bin (raw, for offset 0)
 tools/check-xip-image.py --flash 0x18000000:0x10000 --ram 0x20020000:0x10000 \
-  --require-symbol STAGE0_HEARTBEAT --require-symbol STAGE0_STATUS target/armv7a-none-eabihf/release/stage0
+  --require-symbol STAGE0_HEARTBEAT --require-symbol STAGE0_STATUS \
+  --ram-code stage0_set_fast_read target/armv7a-none-eabihf/release/stage0
 ```
 
 The layout check must pass before an image is installed. Installing it is

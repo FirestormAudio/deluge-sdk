@@ -5,9 +5,9 @@
 //! place from there (rza1-rt's `link_xip.x`): rza1-rt's reset handler installs the vector table,
 //! copies `.data` from flash and sets the stacks, then `main`:
 //!
-//! 0. switches the flash reads to the stock bootloader's fast reads ([`set_fast_read`], run from
-//!    RAM): the ROM's `03h` reads at its slow clock with the read cache off made the slot check
-//!    and the shim's copy take about 1.6 s;
+//! 0. switches the flash reads to the stock bootloader's fast reads
+//!    ([`stage0_set_fast_read`], run from RAM): the ROM's `03h` reads at its slow clock with the
+//!    read cache off made the slot check and the shim's copy take about 1.6 s;
 //! 1. turns on the L1 I-cache (and nothing else: the MMU and D-cache stay off), so the CRC loop
 //!    runs from cache instead of refetching every instruction over SPI;
 //! 2. starts the PMU cycle counter, to time the checks;
@@ -24,8 +24,8 @@
 //!
 //! [`STAGE0_STATUS`] records what happened, for a J-Link to read without resetting the core.
 //! Stage-0 never writes flash and never touches clocks, SDRAM, the MMU, the D-cache or any
-//! peripheral but the flash controller's read mode, the watchdog's reset flag and the one GPIO pin. The register
-//! addresses come from `rza1-pac`; it pulls in no HAL.
+//! peripheral but the flash controller's read mode, the watchdog's reset flag and the one GPIO
+//! pin. The register addresses come from `rza1-pac`; it pulls in no HAL.
 
 #![no_std]
 #![no_main]
@@ -156,14 +156,16 @@ const SSL_TIMEOUT: u32 = 2_000_000;
 ///
 /// Runs from RAM (in `.data`, which the reset handler copied): nothing may execute from the flash
 /// window while its timing changes. It touches only the controller's registers, with no calls,
-/// so no instruction is fetched from flash until it returns.
+/// so no instruction is fetched from flash until it returns: `tools/check-xip-image.py
+/// --ram-code stage0_set_fast_read` checks the built image for that (stage-0 is built release).
 ///
 /// # Safety
-/// No flash operation in progress; called through a pointer (the RAM copy is out of a direct
-/// branch's reach from the flash window).
+/// No flash operation in progress. Called through a pointer, so the call itself can't go by way
+/// of a linker veneer in flash.
+#[unsafe(no_mangle)]
 #[unsafe(link_section = ".data.stage0_fast_read")]
 #[inline(never)]
-unsafe extern "C" fn set_fast_read() {
+unsafe extern "C" fn stage0_set_fast_read() {
     let reg = |off: usize| (SPIBSC0 + off) as *mut u32;
     // SAFETY: the flash controller's registers; this code runs from RAM.
     unsafe {
@@ -326,9 +328,10 @@ fn slot_error(header: &Result<SlotHeader, SlotError>, body: Body) -> SlotError {
 
 #[rza1_rt::entry]
 fn main() -> ! {
-    // SAFETY: nothing is mid-operation on the flash; the call goes through a pointer to the RAM copy.
+    // SAFETY: nothing is mid-operation on the flash; the call goes through a pointer to the RAM
+    // copy.
     unsafe {
-        let fast_read: unsafe extern "C" fn() = core::hint::black_box(set_fast_read);
+        let fast_read: unsafe extern "C" fn() = core::hint::black_box(stage0_set_fast_read);
         fast_read();
     }
     enable_icache();
