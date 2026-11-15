@@ -441,6 +441,7 @@ pub(crate) async fn boot_flash_app(app: FlashApp) -> ! {
         "Booting the flash app: load={:#010x} len={:#x} entry={:#010x}",
         app.load_addr, app.body_len, app.entry
     );
+    splash::start_load().await;
     let (desc, entry) = match flashboot::launch_with_progress(&app, splash::progress).await {
         Ok(l) => l,
         Err(e) => {
@@ -474,6 +475,7 @@ pub(crate) async fn store_flash_app(sd: &mut Sd, apps: &EntryList, idx: usize, l
 /// it can't be loaded, having said why on the display.
 pub(crate) async fn launch_elf(mut sd: Sd, apps: &EntryList, idx: usize) {
     info!("Loading: {}", apps.name(idx));
+    splash::start_load().await;
 
     // Open the selected file from /APPS/.
     let mut file = match file_browser::open_app(&mut sd, apps, idx).await {

@@ -72,14 +72,25 @@ pub fn restart() {
 
 /// `done` of `total` bytes loaded: stop the pre-roll and draw the droplet in proportion. The first
 /// call after [`begin`] or [`restart`] fixes the base (the blocks already drawn).
+///
+/// The first call always draws, even with no new block: after [`restart`] that clears the menu the
+/// launch was picked from, at once.
 pub async fn progress(done: u32, total: u32) {
     stop_pre_roll();
     let drawn = DRAWN.load(Ordering::Acquire);
-    let base = match BASE.compare_exchange(NO_BASE, drawn, Ordering::AcqRel, Ordering::Acquire) {
-        Ok(_) => drawn,
-        Err(b) => b,
-    };
-    raise_to(load_blocks(base, done, total)).await;
+    match BASE.compare_exchange(NO_BASE, drawn, Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) => {
+            DRAWN.fetch_max(load_blocks(drawn, done, total), Ordering::AcqRel);
+            draw().await;
+        }
+        Err(base) => raise_to(load_blocks(base, done, total)).await,
+    }
+}
+
+/// A load is starting, nothing read yet: fix its base and show the droplet now (over the menu,
+/// for a launch picked from it).
+pub async fn start_load() {
+    progress(0, 1).await;
 }
 
 /// Draw the whole droplet. Must run while interrupts, the executor and the PIC service are still
