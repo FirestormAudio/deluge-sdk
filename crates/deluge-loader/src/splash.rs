@@ -42,7 +42,7 @@ pub enum SplashPlan {
     /// An INSTANT boot: the droplet goes as far as [`PRE_ROLL_BLOCKS`] while the loader works,
     /// then the image load takes it the rest of the way to the hand-off.
     Launch,
-    /// A boot headed for the menu: the whole droplet, with the marker (if any) on its last frame,
+    /// A boot headed for the menu: the whole droplet, with the marker (if any) on every frame,
     /// then the menu.
     Menu(Option<Marker>),
 }
@@ -56,7 +56,7 @@ impl SplashPlan {
         }
     }
 
-    /// The marker on the whole droplet's frame.
+    /// The marker on the droplet's frames.
     pub const fn marker(self) -> Option<Marker> {
         match self {
             SplashPlan::Launch => None,

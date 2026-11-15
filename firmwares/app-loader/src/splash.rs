@@ -3,7 +3,7 @@
 //!
 //! One task, [`animate`], draws the droplet a block at a time at the stock bootloader's pace
 //! ([`BLOCK_PERIOD_MS`]), never past a limit ([`begin`]): the whole droplet on a boot headed for
-//! the menu (its last frame marked `(D)` or `(R)` when there's a reason to say), or
+//! the menu (every frame marked `(D)` or `(R)` when there's a reason to say), or
 //! [`PRE_ROLL_BLOCKS`] on an INSTANT boot while the loader works, then as far as the image load has
 //! got ([`progress`]). However fast the load, [`finish`] lets the droplet play out whole at that
 //! pace before the menu or the hand-off.
@@ -15,7 +15,7 @@
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use deluge_bsp::oled::FrameBuffer;
-use deluge_bsp::oled::{boot_logo_marked, boot_logo_partial};
+use deluge_bsp::oled::{boot_logo_partial, stamp_marker};
 #[cfg(doc)]
 use deluge_loader::splash::PRE_ROLL_BLOCKS;
 use deluge_loader::splash::{
@@ -50,12 +50,14 @@ pub fn begin(plan: SplashPlan) {
     ACTIVE.store(true, Ordering::Release);
 }
 
-/// The droplet's frame with `n` blocks: the whole one carries the marker, if any.
+/// The droplet's frame with `n` blocks, with the marker, if any, on every frame.
 fn frame(n: u8) -> FrameBuffer {
+    let mut fb = boot_logo_partial(usize::from(n));
     match MARKER.load(Ordering::Acquire) {
-        m if m != 0 && n >= LOGO_BLOCKS => boot_logo_marked(m),
-        _ => boot_logo_partial(usize::from(n)),
+        0 => {}
+        m => stamp_marker(&mut fb, m),
     }
+    fb
 }
 
 /// The animator: each [`BLOCK_PERIOD_MS`], one more block while active and under the limit.

@@ -159,7 +159,7 @@ async fn main(dlg: Deluge) {
     }
 
     // The droplet, from now until the menu or the hand-off, at the stock pace: whole before the
-    // menu (its last frame marked `(R)` or `(D)` saying why), or through the boot and the load
+    // menu (every frame marked `(R)` or `(D)` saying why), or through the boot and the load
     // on an INSTANT unit.
     dlg.spawner().spawn(splash::animate().unwrap());
     splash::begin(splash_plan(&device::read_settings(), recovery));

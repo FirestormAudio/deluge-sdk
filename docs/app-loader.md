@@ -89,10 +89,10 @@ On power-up the loader:
 
 1. **Initialises the platform** — MMU, caches, SDRAM, GIC, and the OSTM timers,
    then the PIC link and OLED, which then shows the Deluge droplet building up
-   block by block at the stock bootloader's pace: in about a third of a second
-   before the menu (its last frame with `(D)` in the corner in dev mode, `(R)`
-   when LOAD is held), or on an `INSTANT` unit through the steps below and the
-   load, until the hand-off.
+   block by block at the stock bootloader's pace: in about two thirds of a second
+   before the menu (with `(D)` in the corner throughout in dev mode, `(R)` when
+   LOAD is held), or on an `INSTANT` unit through the steps below and the load,
+   until the hand-off.
 2. **Probes the on-flash app slot.** If a valid image is present it becomes the
    default boot entry, listed first as **`BOOT FLASH`**. This is independent of
    the SD card, so a unit with flashed firmware boots with no card inserted.

@@ -894,9 +894,15 @@ pub fn boot_logo_partial(n: usize) -> FrameBuffer {
 /// the menu in dev mode.
 pub fn boot_logo_marked(marker: u8) -> FrameBuffer {
     let mut fb = boot_logo();
-    // Three 6-px cells flush with the right edge, the glyphs' 7 rows on the bottom rows.
-    text::draw_str(&mut fb, WIDTH - 3 * 6, HEIGHT - 8, &[b'(', marker, b')']);
+    stamp_marker(&mut fb, marker);
     fb
+}
+
+/// Draw `(marker)` in the bottom-right corner of `fb`, clear of the droplet: on every frame of a
+/// droplet that's building up, as on the whole one.
+pub fn stamp_marker(fb: &mut FrameBuffer, marker: u8) {
+    // Three 6-px cells flush with the right edge, the glyphs' 7 rows on the bottom rows.
+    text::draw_str(fb, WIDTH - 3 * 6, HEIGHT - 8, &[b'(', marker, b')']);
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1077,6 +1083,26 @@ mod tests {
         }
         assert!(outside > 0, "no marker drawn");
         assert_ne!(d.as_bytes(), r.as_bytes());
+    }
+
+    #[test]
+    fn stamp_marker_marks_a_partial_droplet_like_the_whole_one() {
+        let whole = boot_logo_marked(b'R');
+        let mut part = boot_logo_partial(5);
+        stamp_marker(&mut part, b'R');
+        let five = boot_logo_partial(5);
+        let logo = boot_logo();
+        for x in 0..WIDTH {
+            for y in 0..HEIGHT {
+                // The droplet's first five blocks stay; the marker's pixels match the whole frame's.
+                if five.get_pixel(x, y) {
+                    assert!(part.get_pixel(x, y), "block pixel ({x}, {y}) lost");
+                }
+                if !logo.get_pixel(x, y) {
+                    assert_eq!(part.get_pixel(x, y), whole.get_pixel(x, y), "({x}, {y})");
+                }
+            }
+        }
     }
 
     #[test]
