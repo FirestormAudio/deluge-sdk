@@ -11,9 +11,12 @@ with rza1-rt's `link_xip.x` and this crate's `memory_stage0.x` (64 KB of flash, 
 
 At boot it turns on the L1 I-cache (only that: MMU and D-cache stay off), reads and clears the
 watchdog's overflow flag (`WRCSR.WOVF`, which the watchdog's own internal reset leaves set: the
-last boot ended in a watchdog reset), then validates boot slots A (`0x010000`) and B (`0x080000`)
-through the XIP window (`deluge_image::slot`: a 256-byte header page, then the body CRC), timing
-the checks with the PMU cycle counter. `deluge_image::slot::select` picks one:
+last boot ended in a watchdog reset), then checks boot slots A (`0x010000`) and B (`0x080000`)
+through the XIP window, timing the checks with the PMU cycle counter. It parses both 256-byte
+header pages, and `deluge_image::slot::select_lazy` picks one, CRC-checking only the bodies the
+choice depends on: the booted slot's, plus the pending slot's when it rolls back from one. The
+CRC table is copied into RAM with `.data`, since a lookup through the uncached XIP window would
+cost a flash read. The choice is `deluge_image::slot::select`'s:
 
 - the valid slot with the higher sequence (A on a tie);
 - a confirmed one boots whatever the watchdog flag says;
@@ -27,10 +30,10 @@ per round, forever, where `code` is slot A's `SlotError::code()`: 1 bad magic (e
 2 version, 3 header CRC, 4 variant, 5 body length, 6 entry, 7 truncated, 8 body CRC.
 `STAGE0_HEARTBEAT` (starts at `0x5A5A_0000`) counts the toggles.
 
-`STAGE0_STATUS` (10 words, for `mem32 <addr> 10` over J-Link) holds the tag `0x53544730`, the
-state (1 validating, 2 entering a slot, 3 fault), the watchdog flag, both slots' error codes
-(`0` = valid), both slots' sequences, the boot-info word written, the cycles both checks took,
-and the raw `CPG.FRQCR` (low half).
+`STAGE0_STATUS` (10 words, for `mem32 <addr> 10` over J-Link) holds the tag `0x53544730`, the state
+(1 validating, 2 entering a slot, 3 fault), the watchdog flag, both slots' error codes (`0` =
+valid, `0xFF` = header valid, body not needed), both slots' sequences, the boot-info word written,
+the cycles the checks took, and the raw `CPG.FRQCR` (low half).
 
 Stage-0 never writes flash and never touches clocks, SDRAM, the MMU, the D-cache, the flash
 controller or any peripheral but the watchdog's reset flag and that one pin. It pulls in no HAL:

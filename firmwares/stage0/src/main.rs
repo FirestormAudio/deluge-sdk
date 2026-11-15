@@ -11,10 +11,11 @@
 //! 3. reads and clears the watchdog's overflow flag (`WRCSR.WOVF`, which the watchdog's own
 //!    internal reset leaves set, HW manual §12.5.5): set, the last boot was killed by the
 //!    watchdog;
-//! 4. validates boot slots A and B ([`deluge_image::slot::validate`]: header page, then body
-//!    CRC) through the XIP window;
-//! 5. picks one ([`deluge_image::slot::select`]: the newest valid slot, falling back from a
-//!    pending one the watchdog killed), writes the boot-info word into retention RAM and branches
+//! 4. parses both slots' header pages through the XIP window, then picks one
+//!    ([`deluge_image::slot::select_lazy`]: the newest valid slot, falling back from a pending one
+//!    the watchdog killed), CRC-checking only the bodies that choice depends on, normally just
+//!    the booted slot's, with a table held in RAM;
+//! 5. writes the boot-info word into retention RAM and branches
 //!    to the slot's entry; with neither slot valid it blinks the SYNC LED (P6_7) `code` times
 //!    per round, where `code` is slot A's [`SlotError::code`], forever.
 //!
@@ -30,10 +31,21 @@ use core::arch::asm;
 use core::panic::PanicInfo;
 use core::ptr::{read_volatile, write_volatile};
 
-use deluge_image::slot::{self, BOOT_INFO_ADDR, Choice, DELUGE, SLOT_LEN, SlotError, SlotHeader};
+use deluge_image::crc::{CrcTable, IEEE_TABLE, crc32_with};
+use deluge_image::slot::{
+    self, BOOT_INFO_ADDR, Body, Choice, DELUGE, SLOT_LEN, SlotError, SlotHeader,
+};
 
 /// Where the SPI flash is mapped, and where the ROM enters stage-0.
 const FLASH_BASE: u32 = 0x1800_0000;
+
+/// The CRC table, in RAM: the reset handler copies `.data` from flash. A table read through the
+/// uncached XIP window would cost a flash read per byte checked.
+#[unsafe(link_section = ".data")]
+static CRC_TABLE: CrcTable = IEEE_TABLE;
+
+/// The status block's error code for a body [`slot::select_lazy`] didn't need to read.
+const UNCHECKED: u32 = 0xFF;
 
 /// Counts SYNC LED toggles of the fault blink. Initialised to a non-zero value so that reading
 /// `0x5A5A_xxxx` over J-Link proves the reset handler copied `.data` from flash.
@@ -49,13 +61,14 @@ struct Stage0Status {
     state: u32,
     /// `1` if the watchdog had overflowed (the last boot ended in a watchdog reset), else `0`.
     wovf: u32,
-    /// Slot A's and B's [`SlotError::code`], or `0` for a valid slot.
+    /// Slot A's and B's [`SlotError::code`], `0` for a valid slot, or [`UNCHECKED`] for a slot
+    /// whose header is valid and whose body wasn't needed.
     error: [u32; 2],
     /// Slot A's and B's header `sequence`, or `0` for an invalid slot.
     sequence: [u32; 2],
     /// The boot-info word written for the entered slot, or `0`.
     choice: u32,
-    /// CPU cycles spent validating both slots (PMCCNTR, ÷64 divider off).
+    /// CPU cycles spent validating the slots (PMCCNTR, ÷64 divider off).
     crc_cycles: u32,
     /// The raw `CPG.FRQCR`, so `crc_cycles` can be turned into time.
     frqcr: u16,
@@ -211,16 +224,28 @@ fn slot_bytes(n: usize) -> &'static [u8] {
     unsafe { core::slice::from_raw_parts(base as *const u8, SLOT_LEN as usize) }
 }
 
-/// Record slot `n`'s check in the status block.
-fn record(n: usize, r: &Result<SlotHeader, SlotError>) {
-    let (error, sequence) = match r {
-        Ok(h) => (0, h.sequence),
-        Err(e) => (e.code(), 0),
+/// Record slot `n`'s check in the status block: its header check, and what was learned of its body.
+fn record(n: usize, header: &Result<SlotHeader, SlotError>, body: Body) {
+    let (error, sequence) = match (header, body) {
+        (Err(e), _) => (e.code(), 0),
+        (Ok(h), Body::Valid) => (0, h.sequence),
+        (Ok(h), Body::Unchecked) => (UNCHECKED, h.sequence),
+        (Ok(_), Body::Invalid(e)) => (e.code(), 0),
     };
     // SAFETY: the status block as in `fault`.
     unsafe {
         write_volatile(&raw mut STAGE0_STATUS.error[n], error);
         write_volatile(&raw mut STAGE0_STATUS.sequence[n], sequence);
+    }
+}
+
+/// Slot `n`'s error for the fault blink: its header error, else its body error.
+fn slot_error(header: &Result<SlotHeader, SlotError>, body: Body) -> SlotError {
+    match (header, body) {
+        (Err(e), _) => *e,
+        (Ok(_), Body::Invalid(e)) => e,
+        // `select_lazy` only reports NoSlot once every header-valid body failed.
+        _ => SlotError::BadMagic,
     }
 }
 
@@ -244,26 +269,25 @@ fn main() -> ! {
     }
 
     let c0 = cycles();
-    let a = slot::validate(slot_bytes(0));
-    let b = slot::validate(slot_bytes(1));
+    let headers = [slot::parse(slot_bytes(0)), slot::parse(slot_bytes(1))];
+    let (choice, body) = slot::select_lazy(headers[0], headers[1], wovf, |n| {
+        let h = headers[n as usize].as_ref().map_err(|e| *e)?;
+        slot::check_body(slot_bytes(n as usize), h, |d| crc32_with(&CRC_TABLE, d))
+    });
     let c1 = cycles();
-    record(0, &a);
-    record(1, &b);
+    record(0, &headers[0], body[0]);
+    record(1, &headers[1], body[1]);
     // SAFETY: as above.
     unsafe { write_volatile(&raw mut STAGE0_STATUS.crc_cycles, c1.wrapping_sub(c0)) };
 
-    let results = [a, b];
-    let ((n, reason), header) = match slot::select(a, b, wovf) {
-        Choice::Boot { slot, reason } => match results[slot as usize] {
+    let ((n, reason), header) = match choice {
+        Choice::Boot { slot, reason } => match headers[slot as usize] {
             Ok(h) => ((slot, reason), h),
-            // `select` only picks a slot that validated.
+            // `select_lazy` only boots a slot whose header parsed.
             Err(e) => fault(e),
         },
-        // Both slots are invalid; A's error is the one blinked.
-        Choice::NoSlot => match a {
-            Err(e) => fault(e),
-            Ok(_) => fault(SlotError::BadMagic), // unreachable: `select` would have taken A
-        },
+        // No slot is valid; A's error is the one blinked.
+        Choice::NoSlot => fault(slot_error(&headers[0], body[0])),
     };
     let info = slot::boot_info(n, reason as u8);
     let base = FLASH_BASE + DELUGE.slot_offsets[n as usize];
@@ -274,7 +298,7 @@ fn main() -> ! {
         write_volatile(&raw mut STAGE0_STATUS.state, STATE_ENTERING);
         write_volatile(BOOT_INFO_ADDR as *mut u32, info);
         write_volatile(PSR6, u32::from(SYNC_LED) << 16);
-        // `validate` checked the entry is 4-aligned and inside the body, so this is ARM code in
+        // `parse` checked the entry is 4-aligned and inside the body, so this is ARM code in
         // the chosen slot. The slot's reset handler sets up everything it needs from scratch.
         asm!(
             "dsb",
