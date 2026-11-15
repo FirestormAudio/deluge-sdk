@@ -10,10 +10,11 @@ pub const LOGO_BLOCKS: u8 = 25;
 /// Blocks an animated boot may draw before a load starts.
 pub const PRE_ROLL_BLOCKS: u8 = 10;
 /// Milliseconds per block: the droplet never draws faster than this, and the hand-off waits for
-/// it to complete at this pace ([`pad_ms`]). The stock bootloader's pace: it draws a block per
-/// 64 KB copied, which on the bench (2026-11-15: 400 MHz, its own flash setup) took 5.21 M CPU
-/// cycles, 13.0 ms; the whole droplet takes about 1/3 s.
-pub const BLOCK_PERIOD_MS: u64 = 13;
+/// it to complete at this pace ([`pad_ms`]); the whole droplet takes 0.65 s. Set by eye on the
+/// bench (2026-11-15) to match the stock bootloader's droplet as it looks. Its copy loop asks for
+/// a block per 64 KB, about every 13 ms, but at that pace ours looked about twice as fast as
+/// stock's.
+pub const BLOCK_PERIOD_MS: u64 = 26;
 
 /// Why a boot is headed for the menu, shown in a corner of the static droplet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
