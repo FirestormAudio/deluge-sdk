@@ -12,7 +12,14 @@
 //! [`Crc32::update_with`].
 
 /// A CRC-32 lookup table: entry `i` is the CRC register after shifting byte `i` through.
-pub struct CrcTable(pub [u32; 256]);
+///
+/// Only [`IEEE_TABLE`] exists: a caller copies it (to place it somewhere particular) but can't
+/// build another, so [`crc32_with`] always computes the CRC this crate defines.
+///
+/// ```compile_fail
+/// let forged = deluge_image::crc::CrcTable([0; 256]);
+/// ```
+pub struct CrcTable([u32; 256]);
 
 const fn build_table() -> CrcTable {
     let mut table = [0u32; 256];
