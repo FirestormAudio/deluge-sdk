@@ -24,6 +24,7 @@ mod controls;
 mod device;
 mod file_browser;
 mod screen;
+mod splash;
 mod uf2;
 mod ui;
 
@@ -37,6 +38,7 @@ use controls::LOAD_SEEN;
 use deluge_image::slot;
 use deluge_loader::boot::{self, BootPolicy, Form, Unlock};
 use deluge_loader::update::SlotWriter;
+use deluge_loader::splash::plan as splash_plan;
 use deluge_loader::{menu, update};
 
 /// Write `byte` as two uppercase hex digits into `out[..2]` (for on-OLED
@@ -145,14 +147,18 @@ async fn main(dlg: Deluge) {
 
     // Recovery gesture: LOAD pressed or held at any point between reset and
     // here (see LOAD_SEEN).  Sampled once — later menu passes are user-driven
-    // and must not re-trigger it.  The splash matters most on an INSTANT unit,
-    // which otherwise gives no sign that the *hold* — rather than a failed boot —
+    // and must not re-trigger it.  The droplet's `(R)` matters most on an INSTANT
+    // unit, which otherwise gives no sign that the *hold* — rather than a failed boot —
     // is why the menu appeared.  Nothing is persisted: the user's setting stands.
     let recovery = LOAD_SEEN.load(core::sync::atomic::Ordering::Acquire);
     if recovery {
         info!("Recovery: LOAD held at boot — forcing the boot menu");
-        ui::show_message(b"RECOVERY", b"BOOT MENU").await;
-        embassy_time::Timer::after(embassy_time::Duration::from_millis(700)).await;
+    }
+
+    // The droplet, from now until the menu or the hand-off: static (with `(R)` or `(D)` saying
+    // why) when the menu is coming, built up through the boot and the load on an INSTANT unit.
+    if splash::begin(splash_plan(&device::read_settings(), recovery)).await {
+        dlg.spawner().spawn(splash::pre_roll().unwrap());
     }
 
     // Auto-boot (countdown *or* instant) only ever fires on the first pass of the
@@ -164,12 +170,8 @@ async fn main(dlg: Deluge) {
     // Boot menu loop.  A bootable selection launches and never returns; the
     // DATA TRANSFER USB mode returns here when BACK is pressed, and a
     // write-to-flash also returns here, so the menu is rebuilt from fresh state
-    // (re-probing the flash slot and re-listing the SD card).
-    //
-    // Only the first pass shows the "DELUGE BOOT / INIT SD..." splash; on later
-    // passes it would look like a reboot, so the menu is simply redrawn by
-    // `run_selector`.
-    let mut first_pass = true;
+    // (re-probing the flash slot and re-listing the SD card).  The first pass runs
+    // under the droplet; later passes simply redraw the menu (`run_selector`).
     loop {
         // Read persisted settings each pass so a DEV MODE toggle takes effect on
         // the very next menu rebuild (dev mode adds a background USB listener and
@@ -182,11 +184,6 @@ async fn main(dlg: Deluge) {
         if flash_img.is_some() {
             info!("Flash: valid firmware image present in slot");
         }
-
-        if first_pass {
-            ui::show_message(b"DELUGE BOOT", b"INIT SD...").await;
-        }
-        first_pass = false;
 
         // Take the card for this pass.  A missing/failed card is not fatal; every exit
         // from the pass drops it, so the next pass (or DATA TRANSFER) can take it again.
@@ -278,6 +275,8 @@ async fn main(dlg: Deluge) {
                 long_press: false,
             }
         } else {
+            // The menu draws next: no droplet frame may land on it.
+            splash::stop_pre_roll();
             let countdown = match mode {
                 settings::BootMode::Countdown(secs) => secs,
                 // Wait: `run_selector` treats 0 as "no countdown, wait for a pick".
