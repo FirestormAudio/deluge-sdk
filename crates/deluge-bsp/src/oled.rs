@@ -1038,7 +1038,10 @@ mod tests {
             let (a, b) = (boot_logo_partial(n), boot_logo_partial(n + 1));
             for x in 0..WIDTH {
                 for y in 0..HEIGHT {
-                    assert!(!a.get_pixel(x, y) || b.get_pixel(x, y), "n = {n} ({x}, {y})");
+                    assert!(
+                        !a.get_pixel(x, y) || b.get_pixel(x, y),
+                        "n = {n} ({x}, {y})"
+                    );
                 }
             }
         }

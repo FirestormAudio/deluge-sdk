@@ -37,8 +37,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use controls::LOAD_SEEN;
 use deluge_image::slot;
 use deluge_loader::boot::{self, BootPolicy, Form, Unlock};
-use deluge_loader::update::SlotWriter;
 use deluge_loader::splash::plan as splash_plan;
+use deluge_loader::update::SlotWriter;
 use deluge_loader::{menu, update};
 
 /// Write `byte` as two uppercase hex digits into `out[..2]` (for on-OLED
@@ -127,7 +127,10 @@ async fn main(dlg: Deluge) {
     // (the PIC reports it in answer to the button-state resend its bring-up sends).
     dlg.spawner().spawn(controls::run(dlg.input()).unwrap());
     screen::init(dlg.oled().await);
-    info!("OLED: ready at {} ms", embassy_time::Instant::now().as_millis());
+    info!(
+        "OLED: ready at {} ms",
+        embassy_time::Instant::now().as_millis()
+    );
     if early.unlock == Unlock::NeedsPowerOff {
         // Pending, but the protection is locked down (an app launched since the flash last lost
         // power): the confirm can't be written until the flash powers off. Still fed.
@@ -314,6 +317,11 @@ async fn main(dlg: Deluge) {
             index: selected,
             long_press,
         } = selection;
+        // A launch picked from the menu builds the droplet up from empty; an INSTANT one carries
+        // on from the pre-roll.
+        if mode != settings::BootMode::Instant {
+            splash::restart();
+        }
 
         // The menu branch won (or dev mode is off): if a CDC listener was brought
         // up, tear it down so the port is free for a later DATA TRANSFER MSC init.
@@ -417,9 +425,8 @@ async fn main(dlg: Deluge) {
             // ---- SD ELF path (returns only if it can't be loaded) ----
             menu::Entry::SdApp(i) => {
                 let list = sd_listing.expect("sd listing present for SD entry");
-                let label = list.display_name(i);
                 let sd = sd.expect("the card is mounted for an SD entry");
-                device::launch_elf(sd, &list, i, label).await;
+                device::launch_elf(sd, &list, i).await;
             }
         }
     }

@@ -923,24 +923,27 @@ mod tests {
                                 };
                                 let expected = select(full(0, qa, ca), full(1, qb, cb), wovf);
                                 let mut calls = [0u32; 2];
-                                let (choice, body) = select_lazy(
-                                    header(0, qa, ca),
-                                    header(1, qb, cb),
-                                    wovf,
-                                    |n| {
+                                let (choice, body) =
+                                    select_lazy(header(0, qa, ca), header(1, qb, cb), wovf, |n| {
                                         calls[n as usize] += 1;
                                         match st[n as usize] {
                                             State::BodyBad => Err(SlotError::BodyCrc),
                                             _ => Ok(()),
                                         }
-                                    },
-                                );
-                                let case = format!("{sa:?} {sb:?} c={ca},{cb} q={qa},{qb} wovf={wovf}");
+                                    });
+                                let case =
+                                    format!("{sa:?} {sb:?} c={ca},{cb} q={qa},{qb} wovf={wovf}");
                                 match (expected, choice) {
                                     (Choice::NoSlot, Choice::NoSlot) => {}
                                     (
-                                        Choice::Boot { slot: es, reason: er },
-                                        Choice::Boot { slot: ls, reason: lr },
+                                        Choice::Boot {
+                                            slot: es,
+                                            reason: er,
+                                        },
+                                        Choice::Boot {
+                                            slot: ls,
+                                            reason: lr,
+                                        },
                                     ) => {
                                         assert_eq!(es, ls, "slot: {case}");
                                         let other = 1 - ls as usize;
@@ -997,4 +1000,3 @@ mod tests {
         );
     }
 }
-

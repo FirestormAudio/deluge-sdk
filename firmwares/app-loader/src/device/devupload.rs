@@ -32,7 +32,7 @@ use deluge_image::Crc32;
 use deluge_image::elf::{MAX_PHDRS, SDRAM_HI, SDRAM_LO, StreamRouter};
 
 use super::{elf, launcher};
-use crate::ui;
+use crate::{splash, ui};
 
 // ── Wire-protocol constants ───────────────────────────────────────────────────
 
@@ -318,9 +318,11 @@ async fn receive(rx: Receiver<'static, Rusb1Driver<'static>>) -> ! {
 async fn handoff(result: elf::LoadResult) -> ! {
     ui::show_message(b"LAUNCHING", b"FROM USB").await;
 
-    // Draw the boot droplet before interrupts/DMA are quiesced (must run while
-    // the executor and the PIC service are still live — see `super::show_boot_logo`).
-    super::show_boot_logo().await;
+    // The whole droplet, drawn afresh over the message, before interrupts/DMA are
+    // quiesced (must run while the executor and the PIC service are still live — see
+    // `splash::finish`).
+    splash::restart();
+    splash::finish().await;
 
     // Unplug from the host: it sees a clean disconnect and re-enumerates the
     // launched app's own USB stack (e.g. the usb-log CDC for `cargo deluge run

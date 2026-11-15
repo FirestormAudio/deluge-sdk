@@ -73,22 +73,34 @@ mod tests {
     use deluge_image::settings::AutoBoot;
 
     fn cfg(dev_mode: bool, auto_boot: AutoBoot) -> Settings {
-        Settings { dev_mode, auto_boot }
+        Settings {
+            dev_mode,
+            auto_boot,
+        }
     }
 
     #[test]
     fn instant_animates() {
-        assert_eq!(plan(&cfg(false, AutoBoot::Instant), false), SplashPlan::Animate);
+        assert_eq!(
+            plan(&cfg(false, AutoBoot::Instant), false),
+            SplashPlan::Animate
+        );
     }
 
     #[test]
     fn countdown_is_static_unmarked() {
-        assert_eq!(plan(&cfg(false, AutoBoot::Secs(5)), false), SplashPlan::Static(None));
+        assert_eq!(
+            plan(&cfg(false, AutoBoot::Secs(5)), false),
+            SplashPlan::Static(None)
+        );
     }
 
     #[test]
     fn never_is_static_unmarked() {
-        assert_eq!(plan(&cfg(false, AutoBoot::Never), false), SplashPlan::Static(None));
+        assert_eq!(
+            plan(&cfg(false, AutoBoot::Never), false),
+            SplashPlan::Static(None)
+        );
     }
 
     #[test]
@@ -137,7 +149,10 @@ mod tests {
             for i in 0..=1000u64 {
                 let done = (u64::from(total) * i / 1000) as u32;
                 let b = load_blocks(10, done, total);
-                assert!(b >= last && (10..=25).contains(&b), "total {total} done {done}");
+                assert!(
+                    b >= last && (10..=25).contains(&b),
+                    "total {total} done {done}"
+                );
                 last = b;
             }
         }
