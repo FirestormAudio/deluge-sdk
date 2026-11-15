@@ -19,9 +19,9 @@ use deluge_bsp::oled::{boot_logo_partial, stamp_marker};
 #[cfg(doc)]
 use deluge_loader::splash::PRE_ROLL_BLOCKS;
 use deluge_loader::splash::{
-    BLOCK_PERIOD_MS, LOGO_BLOCKS, SplashPlan, load_blocks, next_block, pad_ms,
+    BLOCK_PERIOD_MS, LOGO_BLOCKS, SplashPlan, load_blocks, next_block, next_due, pad_ms,
 };
-use embassy_time::{Duration, Instant, Ticker, Timer};
+use embassy_time::{Duration, Instant, Timer};
 
 use crate::screen;
 
@@ -38,10 +38,6 @@ static MARKER: AtomicU8 = AtomicU8::new(0);
 /// The block count a load started from, once [`start_load`] (or the first [`progress`]) fixed it.
 static BASE: AtomicU8 = AtomicU8::new(NO_BASE);
 const NO_BASE: u8 = u8::MAX;
-
-fn period() -> Duration {
-    Duration::from_millis(BLOCK_PERIOD_MS)
-}
 
 /// Start the droplet for `plan`: how far it may go before a load, and its marker.
 pub fn begin(plan: SplashPlan) {
@@ -61,13 +57,16 @@ fn frame(n: u8) -> FrameBuffer {
 }
 
 /// The animator: each [`BLOCK_PERIOD_MS`], one more block while active and under the limit.
-/// A fixed-rate tick, so a frame's send time (a few ms) doesn't stretch the pace. Spawned once at
-/// boot; idle otherwise.
+/// Blocks are due on a fixed grid, so a frame's send time (a few ms) doesn't stretch the pace;
+/// after a wake late enough to have missed a slot (the executor was busy), the grid restarts from
+/// then ([`next_due`]) rather than drawing the missed blocks back to back. Spawned once at boot;
+/// idle otherwise.
 #[embassy_executor::task]
 pub async fn animate() {
-    let mut tick = Ticker::every(period());
+    let mut due = Instant::now().as_millis() + BLOCK_PERIOD_MS;
     loop {
-        tick.next().await;
+        Timer::at(Instant::from_millis(due)).await;
+        due = next_due(due, Instant::now().as_millis());
         if !ACTIVE.load(Ordering::Acquire) {
             continue;
         }
@@ -117,12 +116,16 @@ pub async fn progress(done: u32, total: u32) {
     };
     LIMIT.fetch_max(load_blocks(base, done, total), Ordering::AcqRel);
     ACTIVE.store(true, Ordering::Release);
+    // Let the animator run: a caller like the flash app's CRC check otherwise never yields
+    // between its chunks.
+    embassy_futures::yield_now().await;
 }
 
 /// Let the droplet play out whole at the stock pace, and return once its last frame is on the
-/// panel: before the menu draws, and before the hand-off. Must run while interrupts, the executor and the PIC service are still live: a frame
-/// awaits the OLED DMA-completion IRQ and the PIC's chip-select echo, so it cannot complete once
-/// the machine has been quiesced for the hand-off.
+/// panel: before the menu draws, and before the hand-off. Must run while interrupts, the
+/// executor and the PIC service are still live: a frame awaits the OLED DMA-completion IRQ and
+/// the PIC's chip-select echo, so it cannot complete once the machine has been quiesced for the
+/// hand-off.
 pub async fn finish() {
     LIMIT.store(LOGO_BLOCKS, Ordering::Release);
     ACTIVE.store(true, Ordering::Release);
@@ -130,8 +133,9 @@ pub async fn finish() {
     // it has half as long again, and a 100 ms floor.
     let pad = pad_ms(SHOWN.load(Ordering::Acquire));
     let deadline = Instant::now() + Duration::from_millis(pad + pad / 2 + 100);
+    // Polled finely, so the menu or the hand-off follows the last block promptly.
     while SHOWN.load(Ordering::Acquire) < LOGO_BLOCKS && Instant::now() < deadline {
-        Timer::after(period()).await;
+        Timer::after(Duration::from_millis(2)).await;
     }
     stop();
     if SHOWN.load(Ordering::Acquire) < LOGO_BLOCKS {
@@ -144,6 +148,9 @@ pub async fn finish() {
 /// matters more than the animation.
 pub async fn finish_now() {
     stop();
+    // A launch over USB from the dev-mode menu: the app starts on the plain droplet, as from the
+    // menu.
+    MARKER.store(0, Ordering::Release);
     DRAWN.store(LOGO_BLOCKS, Ordering::Release);
     screen::show(&frame(LOGO_BLOCKS)).await;
     SHOWN.store(LOGO_BLOCKS, Ordering::Release);

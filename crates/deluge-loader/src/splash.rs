@@ -105,6 +105,18 @@ pub fn pad_ms(drawn: u8) -> u64 {
     u64::from(LOGO_BLOCKS.saturating_sub(drawn)) * BLOCK_PERIOD_MS
 }
 
+/// When the next block is due (ms), after the one due at `due` was drawn at `now`: a period on,
+/// keeping the grid through wake-up jitter; but when that slot has already passed (the executor
+/// was busy), a period after `now`, so missed blocks are never drawn back to back.
+pub fn next_due(due: u64, now: u64) -> u64 {
+    let next = due + BLOCK_PERIOD_MS;
+    if next > now {
+        next
+    } else {
+        now + BLOCK_PERIOD_MS
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,5 +244,25 @@ mod tests {
             Some(Marker::Dev)
         );
         assert_eq!(SplashPlan::Launch.marker(), None);
+    }
+
+    #[test]
+    fn next_due_keeps_the_grid_when_on_time() {
+        assert_eq!(next_due(1_000, 1_000), 1_000 + BLOCK_PERIOD_MS);
+        assert_eq!(next_due(1_000, 1_003), 1_000 + BLOCK_PERIOD_MS);
+    }
+
+    #[test]
+    fn next_due_restarts_the_grid_once_a_slot_has_passed() {
+        assert_eq!(
+            next_due(1_000, 1_000 + BLOCK_PERIOD_MS),
+            1_000 + 2 * BLOCK_PERIOD_MS
+        );
+    }
+
+    #[test]
+    fn next_due_never_catches_up_after_a_late_wake() {
+        // Woken 500 ms late: the next block is a full period after this one, not at once.
+        assert_eq!(next_due(1_000, 1_500), 1_500 + BLOCK_PERIOD_MS);
     }
 }
