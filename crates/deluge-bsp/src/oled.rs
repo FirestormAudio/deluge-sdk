@@ -387,6 +387,8 @@ pub mod text {
             b'!' => [0x00, 0x5F, 0x00, 0x00, 0x00],
             b'.' => [0x00, 0x60, 0x60, 0x00, 0x00],
             b'-' => [0x08, 0x08, 0x08, 0x08, 0x08],
+            b'(' => [0x00, 0x1C, 0x22, 0x41, 0x00],
+            b')' => [0x00, 0x41, 0x22, 0x1C, 0x00],
             b'_' => [0x40, 0x40, 0x40, 0x40, 0x40],
             b'/' => [0x20, 0x10, 0x08, 0x04, 0x02],
             b':' => [0x00, 0x36, 0x36, 0x00, 0x00],
@@ -862,22 +864,38 @@ const BOOT_LOGO_W: usize = 11;
 const BOOT_LOGO_H: usize = 10;
 const BOOT_LOGO_SCALE: usize = 3;
 
+/// How many blocks the droplet is drawn in.
+pub const BOOT_LOGO_BLOCKS: usize = BOOT_LOGO.len();
+
 /// Build a frame showing the Deluge droplet centered in the visible area.
 pub fn boot_logo() -> FrameBuffer {
+    boot_logo_partial(BOOT_LOGO_BLOCKS)
+}
+
+/// The droplet's first `n` blocks (all of them for `n >= BOOT_LOGO_BLOCKS`), in the order the
+/// stock bootloader drew them, where [`boot_logo`] puts them.
+pub fn boot_logo_partial(n: usize) -> FrameBuffer {
     let mut fb = FrameBuffer::new();
     let x0 = (WIDTH - BOOT_LOGO_W * BOOT_LOGO_SCALE) / 2;
     let y0 = VISIBLE_TOP + (VISIBLE_HEIGHT - BOOT_LOGO_H * BOOT_LOGO_SCALE) / 2;
-    for &(gx, gy) in BOOT_LOGO.iter() {
-        for sy in 0..BOOT_LOGO_SCALE {
-            for sx in 0..BOOT_LOGO_SCALE {
-                fb.set_pixel(
-                    x0 + gx * BOOT_LOGO_SCALE + sx,
-                    y0 + gy * BOOT_LOGO_SCALE + sy,
-                    true,
-                );
-            }
-        }
+    for &(gx, gy) in BOOT_LOGO.iter().take(n) {
+        fb.fill_rect(
+            x0 + gx * BOOT_LOGO_SCALE,
+            y0 + gy * BOOT_LOGO_SCALE,
+            BOOT_LOGO_SCALE,
+            BOOT_LOGO_SCALE,
+            true,
+        );
     }
+    fb
+}
+
+/// The whole droplet with `(marker)` in the bottom-right corner, e.g. `(D)` for a boot headed for
+/// the menu in dev mode.
+pub fn boot_logo_marked(marker: u8) -> FrameBuffer {
+    let mut fb = boot_logo();
+    // Three 6-px cells flush with the right edge, the glyphs' 7 rows on the bottom rows.
+    text::draw_str(&mut fb, WIDTH - 3 * 6, HEIGHT - 8, &[b'(', marker, b')']);
     fb
 }
 
@@ -984,6 +1002,78 @@ mod tests {
         // Corners stay dark.
         assert!(!fb.get_pixel(0, VISIBLE_TOP));
         assert!(!fb.get_pixel(WIDTH - 1, HEIGHT - 1));
+    }
+
+    fn lit(fb: &FrameBuffer) -> usize {
+        (0..WIDTH)
+            .flat_map(|x| (0..HEIGHT).map(move |y| (x, y)))
+            .filter(|&(x, y)| fb.get_pixel(x, y))
+            .count()
+    }
+
+    #[test]
+    fn partial_zero_is_blank() {
+        assert_eq!(lit(&boot_logo_partial(0)), 0);
+    }
+
+    #[test]
+    fn partial_lights_nine_pixels_per_block() {
+        for n in 0..=BOOT_LOGO_BLOCKS {
+            assert_eq!(lit(&boot_logo_partial(n)), 9 * n, "n = {n}");
+        }
+        assert_eq!(lit(&boot_logo_partial(30)), 225);
+    }
+
+    #[test]
+    fn partial_full_equals_boot_logo() {
+        assert_eq!(
+            boot_logo_partial(BOOT_LOGO_BLOCKS).as_bytes(),
+            boot_logo().as_bytes()
+        );
+    }
+
+    #[test]
+    fn partial_grows_monotonically() {
+        for n in 0..BOOT_LOGO_BLOCKS {
+            let (a, b) = (boot_logo_partial(n), boot_logo_partial(n + 1));
+            for x in 0..WIDTH {
+                for y in 0..HEIGHT {
+                    assert!(!a.get_pixel(x, y) || b.get_pixel(x, y), "n = {n} ({x}, {y})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn parentheses_have_glyphs() {
+        let unknown = text::glyph(0x7F);
+        assert_ne!(text::glyph(b'('), unknown);
+        assert_ne!(text::glyph(b')'), unknown);
+    }
+
+    #[test]
+    fn marked_adds_pixels_outside_the_droplet_only_in_view() {
+        let logo = boot_logo();
+        let d = boot_logo_marked(b'D');
+        let r = boot_logo_marked(b'R');
+        // The droplet's box: x0 = 47, y0 = 11, 33 × 30.
+        let in_droplet = |x: usize, y: usize| (47..80).contains(&x) && (11..41).contains(&y);
+        let mut outside = 0;
+        for x in 0..WIDTH {
+            for y in 0..HEIGHT {
+                if logo.get_pixel(x, y) {
+                    assert!(d.get_pixel(x, y), "droplet pixel ({x}, {y}) lost");
+                }
+                if d.get_pixel(x, y) {
+                    assert!(y >= VISIBLE_TOP, "bezel row {y} col {x} lit");
+                    if !in_droplet(x, y) {
+                        outside += 1;
+                    }
+                }
+            }
+        }
+        assert!(outside > 0, "no marker drawn");
+        assert_ne!(d.as_bytes(), r.as_bytes());
     }
 
     #[test]
