@@ -88,6 +88,28 @@ pub use host::{
 // Device: real SDHI1 hardware driver
 // ---------------------------------------------------------------------------
 
+/// Whether the card the driver identified is stale: a card-detect edge since the last look
+/// (`edges`, as [`take_card_detect_events`] reports them: removed, inserted), or a card still
+/// `ready` that is no longer in the slot (`inserted`), the backstop for an edge that went missing
+/// (an init consumes the edges as it starts). A swap between two looks shows as an insertion,
+/// with or without its removal; either way the card in the slot isn't the one identified.
+pub fn card_stale(edges: (bool, bool), ready: bool, inserted: bool) -> bool {
+    let (removed, inserted_edge) = edges;
+    removed || inserted_edge || (ready && !inserted)
+}
+
+/// Forget the card if it is stale ([`card_stale`]): [`invalidate`] it, so no transfer goes out to
+/// the previous card's address and [`is_ready`] reads false until [`init`] identifies whatever is
+/// in the slot now. Whether it was forgotten.
+pub fn forget_stale_card() -> bool {
+    let stale = card_stale(take_card_detect_events(), is_ready(), is_inserted());
+    if stale {
+        invalidate();
+        log::info!("sd: card removed or swapped; re-identify before use");
+    }
+    stale
+}
+
 /// Whether the card can be used for an operation: an aborted transfer (the controller stopped and
 /// reset after a dropped command or transfer, `aborted`) makes it unusable until `init` runs again,
 /// as does a card `init` hasn't readied.
@@ -1078,6 +1100,34 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_removal_edge_makes_the_card_stale() {
+        assert!(super::card_stale((true, false), true, true));
+    }
+
+    /// A swap between two looks: the removal and the insertion both latched, or only the
+    /// insertion (the card back in the slot by the time the level is read).
+    #[test]
+    fn an_insertion_edge_makes_the_card_stale() {
+        assert!(super::card_stale((false, true), true, true));
+        assert!(super::card_stale((true, true), true, true));
+    }
+
+    /// The level backstop: a removal whose edge went missing (an init consumes edges as it
+    /// starts).
+    #[test]
+    fn a_ready_card_no_longer_in_the_slot_is_stale() {
+        assert!(super::card_stale((false, false), true, false));
+    }
+
+    #[test]
+    fn an_unchanged_card_is_current() {
+        assert!(!super::card_stale((false, false), true, true));
+        // Nothing identified: nothing to forget (init runs when the host asks).
+        assert!(!super::card_stale((false, false), false, false));
+        assert!(!super::card_stale((false, false), false, true));
+    }
 
     #[test]
     fn init_reports_ready() {
