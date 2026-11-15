@@ -43,6 +43,26 @@ Stage-0 never writes flash and never touches clocks, SDRAM, the MMU, the D-cache
 but the flash controller's read mode, the watchdog's reset flag and that one pin. It pulls in no HAL:
 the register addresses come from `rza1-pac`.
 
+## Boot timing
+
+Measured on the J-Trace rig (2026-11-15, W25Q32JV, loader slot ~265 KB). Stage-0 runs at the boot
+ROM's clocks (`FRQCR` `0x0335`: the CPU at 133 MHz); cycles are `STAGE0_STATUS.crc_cycles`, and
+"to the loader" is the PMU cycle count at the loader's entry, both from stage-0's `main`.
+
+| Stage-0 | Slots | Slot check | To the loader |
+| --- | --- | --- | --- |
+| both bodies, bitwise CRC, ROM reads | A | 144.0 M cycles, 1.08 s | |
+| both bodies, bitwise CRC, ROM reads | A, B | 288.9 M cycles, 2.17 s | |
+| booted body only, table CRC, ROM reads | A | 151.5 M cycles, 1.14 s | 211.2 M cycles, 1.58 s |
+| booted body only, table CRC, ROM reads | A, B | 137.8 M cycles, 1.03 s | |
+| booted body only, table CRC, fast reads | A | 23.0 M cycles, 0.17 s | 32.5 M cycles, 0.24 s |
+| fast reads, newer B's body bad (A boots) | A, B | 43.9 M cycles, 0.33 s | |
+
+The flash reads, not the CRC, were the cost: the table CRC alone saved ~6% per byte. The ROM
+leaves `03h` reads at `SPBCR` = 3 with the read cache off; the stock fast-read setup is ~6.6×
+faster, for stage-0's check and the shim's copy alike. The loader's display is up ~110 ms after
+its entry, so the droplet appears ~0.35 s after reset (was ~1.7 s, ~2.6 s with two valid slots).
+
 ## Building
 
 ```sh
