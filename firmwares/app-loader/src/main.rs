@@ -125,7 +125,7 @@ async fn main(dlg: Deluge) {
     // (the PIC reports it in answer to the button-state resend its bring-up sends).
     dlg.spawner().spawn(controls::run(dlg.input()).unwrap());
     screen::init(dlg.oled().await);
-    info!("OLED: ready");
+    info!("OLED: ready at {} ms", embassy_time::Instant::now().as_millis());
     if early.unlock == Unlock::NeedsPowerOff {
         // Pending, but the protection is locked down (an app launched since the flash last lost
         // power): the confirm can't be written until the flash powers off. Still fed.
