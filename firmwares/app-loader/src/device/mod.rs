@@ -58,38 +58,35 @@ pub(crate) async fn show_boot_logo() {
     screen::show(&deluge_bsp::oled::boot_logo()).await;
 }
 
-/// The one-shot SSB update: if the `SSB UPDATE: ARM` toggle is set, unlock the
-/// bootloader region, consume the toggle, and park with no app launched, so the
-/// FSB's power-on update can reflash the SSB. Runs once at boot. Arming is not
-/// done here but at hand-off ([`lock_for_handoff`]).
+/// `SETTINGS` → `SSB UPDATE`: unlock the bootloader region now and park with no app, so the
+/// FSB's power-on update can reflash the SSB after the user power-cycles.
+///
+/// This runs only from the menu, never from a stored flag: the settings sector sits outside
+/// the protected region, so a flag there is one any app could set. The lock-down is armed at
+/// hand-off and cleared by a power cycle, so after a cold boot the unlock succeeds. After a
+/// warm reset the lock-down is still armed and the unlock is refused: the user is told to
+/// power-cycle and retry, and BACK returns to the menu.
 #[cfg(feature = "flash-protect")]
-async fn ssb_update_pass() {
+pub(crate) async fn ssb_update_now() {
     use deluge_bsp::flash::{self, protect};
 
-    let cfg = settings::read();
-    if !cfg.ssb_write_enable {
-        return;
-    }
     let id = flash::identify();
-    // SAFETY: the loader runs from SRAM; nothing is launched after this.
+    // SAFETY: the loader runs from SRAM; on success nothing is launched after this.
     let unlocked = unsafe { protect::unprotect(id) };
-    let cleared = unsafe {
-        settings::write(&Settings {
-            ssb_write_enable: false,
-            ..cfg
-        })
-        .await
-    };
     info!(
-        "Flash protect: SSB write-enable consumed (unlocked={:?}, toggle_cleared={})",
-        unlocked, cleared
+        "Flash protect: SSB update unlock from the menu ({:?})",
+        unlocked
     );
-    match unlocked {
-        Ok(_) => ui::show_message(b"SSB UPDATE READY", b"POWER-CYCLE NOW").await,
-        Err(_) => ui::show_message(b"SSB UNLOCK FAILED", b"POWER-CYCLE").await,
+    if unlocked.is_ok() {
+        ui::show_message(b"SSB UPDATE READY", b"POWER-CYCLE NOW").await;
+        loop {
+            embassy_time::Timer::after(embassy_time::Duration::from_secs(60)).await;
+        }
     }
-    loop {
-        embassy_time::Timer::after(embassy_time::Duration::from_secs(60)).await;
+    ui::show_message(b"SSB UNLOCK REFUSED", b"POWER-CYCLE, RETRY").await;
+    BACK_PRESSED.store(false, Ordering::Release);
+    while !BACK_PRESSED.swap(false, Ordering::AcqRel) {
+        embassy_time::Timer::after(embassy_time::Duration::from_millis(50)).await;
     }
 }
 
@@ -395,9 +392,7 @@ pub(crate) async fn early(form: deluge_loader::boot::Form) {
     }
 
     // Bring the Deluge app's settings forward if they are still at the pre-
-    // relocation offset. Unconditional (like the relocation itself) and ahead of
-    // `ssb_update_pass`, which parks forever when it runs and would
-    // otherwise skip the migration on that boot. See `deluge_settings`.
+    // relocation offset. Unconditional, like the relocation itself. See `deluge_settings`.
     match unsafe { deluge_settings::migrate() } {
         deluge_settings::Outcome::NotNeeded => {}
         deluge_settings::Outcome::Migrated => {
@@ -407,14 +402,6 @@ pub(crate) async fn early(form: deluge_loader::boot::Form) {
             warn!("Deluge settings: migration failed; the app will factory-reset")
         }
     }
-
-    // If the one-shot SSB write-enable toggle is set, unlock the bootloader
-    // region and park with no app. Protection itself is armed at hand-off
-    // (`quiesce_for_handoff`), so the menu runs with the status register
-    // writable. Compiled out (no status-register writes) unless the
-    // `flash-protect` feature is on (see `deluge_bsp::flash::protect`).
-    #[cfg(feature = "flash-protect")]
-    ssb_update_pass().await;
 }
 
 /// The loader's persisted settings (the defaults when none are stored).

@@ -225,7 +225,7 @@ SETTINGS
   BACK
 ```
 
-A loader built with `flash-protect` adds an `SSB UPDATE: ARM` row before `BACK`.
+A loader built with `flash-protect` adds an `SSB UPDATE` row before `BACK`.
 
 - **`AUTO-BOOT`** — how long the menu waits before launching the default entry.
   Press SELECT to edit (the value is bracketed, `<5S>`, while live), turn the
@@ -330,7 +330,7 @@ accident or otherwise. The boot menu itself always runs unlocked.
 The protection has two parts that behave differently:
 
 - **The region protection** (the block-protect bits) is non-volatile: it stays on across power
-  cycles, until `SSB UPDATE: ARM` clears it. The first-stage bootloader runs before the loader,
+  cycles, until `SSB UPDATE` clears it. The first-stage bootloader runs before the loader,
   so it can't write a new second-stage image while it is on, whether that's a new loader or
   stock or Community firmware.
 - **The lock** (the status register made read-only) lasts only until the next power cycle. The
@@ -338,18 +338,23 @@ The protection has two parts that behave differently:
 
 To update the loader on a protected unit, or to install stock or Community firmware on it:
 
-1. **`SETTINGS` → `SSB UPDATE: ARM`**, then `BACK`.
-2. Power-cycle. The loader clears the protection, launches nothing, and shows
-   `SSB UPDATE READY / POWER-CYCLE NOW`.
+1. Power the unit on holding LOAD to reach the boot menu. It has to be a power-on: after a
+   warm reset the lock is still set, and the next step shows `SSB UNLOCK REFUSED`.
+2. **`SETTINGS` → `SSB UPDATE`**. The loader clears the protection, launches nothing, and
+   shows `SSB UPDATE READY / POWER-CYCLE NOW`.
 3. Install the new loader, or the firmware's `.bin`, as in
    [Installing the loader](#installing-the-loader).
 
 Stock and Community firmware never set the protection again, so a unit returned to them stays
-unprotected.
+unprotected. If you select `SSB UPDATE` by mistake, power-cycle: the next launch sets the
+protection again.
+
+`SSB UPDATE` acts at once instead of being saved for the next boot. The settings sector sits
+outside the protected region, so a saved request is one any app could make.
 
 The protection recipe is written only for the three parts `FLASH INFO` can identify; on any
 other part the loader launches unlocked and logs why. Nothing the feature writes is permanent:
-a power cycle clears the lock, `SSB UPDATE: ARM` clears the region protection, holding LOAD at
+a power cycle clears the lock, `SSB UPDATE` clears the region protection, holding LOAD at
 power-on reaches the menu unlocked, and a J-Link can clear the protection while the loader runs.
 
 The feature is off in the default build and in the CI image. To build it:
@@ -376,7 +381,7 @@ The loader is designed so you can always get back to a working state:
   USB uploads.
 - **Reinstalling the loader itself** — repeat
   [Installing the loader](#installing-the-loader). On a loader built with `flash-protect`, run
-  `SSB UPDATE: ARM` first (see [Bootloader write protection](#bootloader-write-protection)); the
+  `SSB UPDATE` first (see [Bootloader write protection](#bootloader-write-protection)); the
   same goes for going back to stock or Community firmware.
 
 ---

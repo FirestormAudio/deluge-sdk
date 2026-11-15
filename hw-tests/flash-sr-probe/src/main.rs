@@ -18,6 +18,8 @@
 //! | `unprotect` | clears the region and the lock (the recovery step)              |
 //! | `restore`   | erases a test block holding exactly the probe's mark           |
 //! | `volatile-combined` | a volatile two-byte `01h` (W25 / S25): checks its byte order, then resets |
+//! | `reset-attack` | needs the lock already armed: `66h 99h`, then the clears (non-volatile, volatile) and one test page in the protected region — the AT25SF321B's suspected failure, in its order |
+//! | `bypass-top` | W25 only: top 64 KB + lock-down, then tries to get round it: a non-volatile and a volatile clear, volatile SR3 `WPS` + `98h` + one test page; software reset |
 //!
 //! Every status-register write goes through `deluge_bsp::flash::protect`'s
 //! planner, so none can carry `SRP0` or an `LB` bit. The one exception, the clear
@@ -47,6 +49,8 @@ enum Mode {
     Unprotect,
     Restore,
     VolatileCombined,
+    BypassTop,
+    ResetAttack,
 }
 
 const fn same(a: &str, b: &str) -> bool {
@@ -81,9 +85,13 @@ const fn parse(s: &str) -> Mode {
         Mode::Restore
     } else if same(s, "volatile-combined") {
         Mode::VolatileCombined
+    } else if same(s, "bypass-top") {
+        Mode::BypassTop
+    } else if same(s, "reset-attack") {
+        Mode::ResetAttack
     } else {
         panic!(
-            "FLASH_SR_PROBE_MODE: read, volatile, nv-top, lock-top, bottom, unprotect, restore or volatile-combined"
+            "FLASH_SR_PROBE_MODE: read, volatile, nv-top, lock-top, bottom, unprotect, restore, volatile-combined, bypass-top or reset-attack"
         )
     }
 }
@@ -196,6 +204,8 @@ fn run() -> Result<(), ()> {
         }
         Mode::Restore => restore()?,
         Mode::VolatileCombined => volatile_combined(id)?,
+        Mode::BypassTop => bypass_top(id, r)?,
+        Mode::ResetAttack => reset_attack(r)?,
     }
     report_regs("after");
     Ok(())
@@ -413,7 +423,7 @@ fn clear_attempt(r: ProtectionRecipe) -> Result<(), ()> {
     let before = spibsc::protection_regs();
     let (sr1, sr2) = Goal::unprotect().target(before.1);
     // SAFETY: running from SRAM; the bytes are the planner's (zeros and QE).
-    unsafe { spibsc::write_protection(r.method(), Some(sr1), Some(sr2)) };
+    unsafe { spibsc::write_protection(protect::hal_method(r.method()), Some(sr1), Some(sr2)) };
     let after = spibsc::protection_regs();
     if protect::protection_bits(after.0, after.1) == protect::protection_bits(before.0, before.1) {
         info!("clear while locked: rejected (lock holds)");
@@ -445,6 +455,158 @@ fn reset_check(id: FlashId) -> Result<(), ()> {
         Ok(())
     } else {
         error!("software reset: the lock-down did not behave as the datasheet says");
+        Err(())
+    }
+}
+
+/// SR3's `WPS` bit on the W25Q32JV: set, the SR1 block-protect field is ignored and per-block
+/// locks (all set at power-up, `98h` clears them) apply instead.
+const SR3_WPS: u8 = 1 << 2;
+
+/// W25 only. Arm the top-64 KB test lock, then try every way round it an app could take
+/// without a power cycle, logging each: the planner's clear (non-volatile, then volatile), and
+/// volatile SR3 `WPS = 1` followed by a global block unlock and one test-page program. Nothing
+/// here writes SR3 non-volatile. The run always ends with a software reset (which drops any
+/// volatile change) and the usual check that the lock-down survived it.
+///
+/// Fails if any attempt got through. Afterwards: power-cycle, `unprotect`, and `restore` if the
+/// test page was written.
+fn bypass_top(id: FlashId, r: ProtectionRecipe) -> Result<(), ()> {
+    if id.raw != [0xEF, 0x40, 0x16] {
+        error!("bypass-top is for the W25Q32JV only (SR3, WPS and 98h are W25 commands)");
+        return Err(());
+    }
+    let sr3 = spibsc::read_sr3();
+    if spibsc::read_sr3() != sr3 || sr3 == 0xFF || sr3 & SR3_WPS != 0 {
+        error!(
+            "SR3={:02x}: unstable, blank or WPS already set; stopping",
+            sr3
+        );
+        return Err(());
+    }
+    info!("SR3={:02x}", sr3);
+    check_blank(BLANK_TOP)?;
+    step("top 64 KB + lock", apply(id, Goal::top_test(true)))?;
+
+    let mut held = true;
+    held &= clear_attempt(r).is_ok();
+
+    // The same clear through the volatile path (`50h`).
+    let before = spibsc::protection_regs();
+    let (sr1, sr2) = Goal::unprotect().target(before.1);
+    // SAFETY: running from SRAM; the planner's unprotect bytes, volatile.
+    unsafe {
+        spibsc::write_protection_volatile(protect::hal_method(r.method()), Some(sr1), Some(sr2))
+    };
+    let after = spibsc::protection_regs();
+    if protect::protection_bits(after.0, after.1) == protect::protection_bits(before.0, before.1) {
+        info!("volatile clear while locked: rejected (lock holds)");
+    } else {
+        error!(
+            "volatile clear while locked: CHANGED {:02x?} -> {:02x?}",
+            before, after
+        );
+        held = false;
+    }
+
+    // Volatile WPS = 1, then unlock every block and try the test page.
+    // SAFETY: running from SRAM; only WPS changes, in the volatile copy.
+    unsafe { spibsc::write_sr3_volatile(sr3 | SR3_WPS) };
+    let sr3_after = spibsc::read_sr3();
+    if sr3_after & SR3_WPS == 0 {
+        info!("SR3 WPS while locked: rejected (SR3={:02x})", sr3_after);
+    } else {
+        error!(
+            "SR3 WPS while locked: SET (SR3={:02x}) — the lock-down does not cover SR3",
+            sr3_after
+        );
+        held = false;
+    }
+    // SAFETY: running from SRAM.
+    unsafe { spibsc::global_block_unlock() };
+    held &= program_test(&TOP_PAGE).is_ok();
+
+    held &= reset_check(id).is_ok();
+    let sr3_reset = spibsc::read_sr3();
+    info!("SR3 after software reset: {:02x}", sr3_reset);
+    if held {
+        info!("bypass-top: every attempt was refused");
+        Ok(())
+    } else {
+        error!("bypass-top: at least one attempt got through (see above)");
+        Err(())
+    }
+}
+
+/// The AT25SF321B's suspected failure, in its order, against a lock already armed (by
+/// `lock-top`, `bypass-top`, or a loader hand-off): `66h 99h` first, then the planner's clear
+/// (non-volatile, then volatile), then one test page in each protected test window. On the
+/// AT25SF321B the reset is suspected to drop the lock, letting everything after it through.
+/// Writes nothing unless the lock is set and a protected test block is blank; fails if anything
+/// got through.
+fn reset_attack(r: ProtectionRecipe) -> Result<(), ()> {
+    let (sr1, sr2) = spibsc::protection_regs();
+    if sr2 & 1 == 0 {
+        error!("the lock-down is not armed (SR2={:02x}); arm it first", sr2);
+        return Err(());
+    }
+    // SAFETY: running from SRAM.
+    unsafe { spibsc::software_reset() };
+    let (rs1, rs2) = spibsc::protection_regs();
+    let mut held = rs2 & 1 != 0;
+    if held {
+        info!(
+            "after 66h 99h: still locked (SR1={:02x} SR2={:02x})",
+            rs1, rs2
+        );
+    } else {
+        error!(
+            "after 66h 99h: UNLOCKED (SR1={:02x} SR2={:02x}) — the reset failure suspected on the AT25SF321B",
+            rs1, rs2
+        );
+    }
+    held &= clear_attempt(r).is_ok();
+    let before = spibsc::protection_regs();
+    let (c1, c2) = Goal::unprotect().target(before.1);
+    // SAFETY: running from SRAM; the planner's unprotect bytes, volatile.
+    unsafe {
+        spibsc::write_protection_volatile(protect::hal_method(r.method()), Some(c1), Some(c2))
+    };
+    let after = spibsc::protection_regs();
+    if protect::protection_bits(after.0, after.1) == protect::protection_bits(before.0, before.1) {
+        info!("volatile clear after reset: rejected (lock holds)");
+    } else {
+        error!(
+            "volatile clear after reset: CHANGED {:02x?} -> {:02x?}",
+            before, after
+        );
+        held = false;
+    }
+    // A test page only where the region at the start of this run covered it, and it is blank.
+    let region = sr1 & 0x7C;
+    let windows: [(&'static [Range<u32>; 1], Range<u32>, bool); 2] = [
+        (&TOP_PAGE, BLANK_TOP, region == 0x04),
+        (&LOW_PAGE, BLANK_LOW, region == 0x34),
+    ];
+    let mut tried = false;
+    for (page, blank, covered) in windows {
+        if covered && check_blank(blank).is_ok() {
+            tried = true;
+            held &= program_test(page).is_ok();
+        }
+    }
+    if !tried {
+        info!(
+            "no blank test window under region {:02x}: program not tried",
+            region
+        );
+    }
+    report_regs("end");
+    if held {
+        info!("reset-attack: the lock held through 66h 99h");
+        Ok(())
+    } else {
+        error!("reset-attack: the lock did not hold (see above)");
         Err(())
     }
 }

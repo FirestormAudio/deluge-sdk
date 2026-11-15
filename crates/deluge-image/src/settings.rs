@@ -13,7 +13,7 @@
 //! |--------|-------------|------------------------------------------------------|
 //! | 0..4   | `magic`     | `b"DSET"`                                             |
 //! | 4      | `version`   | record version (`2`; version `1` is still readable)  |
-//! | 5      | `flags`     | bit 0 = dev_mode; bit 1 = ssb_write_enable; rest 0   |
+//! | 5      | `flags`     | bit 0 = dev_mode; bit 1 retired (ignored); rest 0    |
 //! | 6      | `auto_boot` | `0` = instant, `1..=20` = seconds, `21` = never      |
 //! | 7      | reserved    | 0                                                     |
 //! | 8..12  | `crc32`     | CRC-32 (IEEE) of bytes `0..8`, little-endian          |
@@ -175,12 +175,6 @@ pub struct Settings {
     pub dev_mode: bool,
     /// How long the boot menu waits before launching the default entry.
     pub auto_boot: AutoBoot,
-    /// One-shot **SSB write-enable** toggle. When `true`, the next boot unlocks
-    /// the bootloader flash region (clears block protection, does not re-arm the
-    /// lock-down) and enters a no-app maintenance mode so the FSB's power-on
-    /// update path can reflash the SSB; the SSB clears this flag as it consumes
-    /// it. Default `false`.
-    pub ssb_write_enable: bool,
 }
 
 /// Magic identifying a valid settings record.
@@ -191,10 +185,13 @@ pub const VERSION: u8 = 2;
 const VERSION_V1: u8 = 1;
 /// `flags` bit: dev mode enabled.
 const FLAG_DEV_MODE: u8 = 1 << 0;
-/// `flags` bit: one-shot SSB write-enable armed. (Was a reserved-`0` bit in the
-/// original `version` 1 records, so adding it stays backward-compatible — old
-/// records simply decode it as `false`; no version bump needed.)
-const FLAG_SSB_WRITE_ENABLE: u8 = 1 << 1;
+/// `flags` bit 1 once held a one-shot "SSB write-enable" request that the loader acted on at
+/// boot. The settings sector sits outside the protected bootloader region, so a running app
+/// could set it and get the next cold boot to unprotect the bootloaders. The loader now
+/// unprotects only from its menu, while someone is at the unit. [`decode`] ignores the bit and
+/// [`encode`] writes it as `0`.
+#[cfg(test)]
+const FLAG_RETIRED_SSB_WRITE_ENABLE: u8 = 1 << 1;
 /// Bytes covered by the CRC (everything before the CRC word).
 const PAYLOAD_LEN: usize = 8;
 /// Total encoded record length.
@@ -209,9 +206,6 @@ pub fn encode(s: &Settings) -> [u8; RECORD_LEN] {
     let mut flags = 0u8;
     if s.dev_mode {
         flags |= FLAG_DEV_MODE;
-    }
-    if s.ssb_write_enable {
-        flags |= FLAG_SSB_WRITE_ENABLE;
     }
     buf[5] = flags;
     buf[6] = s.auto_boot.to_byte();
@@ -247,7 +241,6 @@ pub fn decode(buf: &[u8]) -> Option<Settings> {
     Some(Settings {
         dev_mode: buf[5] & FLAG_DEV_MODE != 0,
         auto_boot,
-        ssb_write_enable: buf[5] & FLAG_SSB_WRITE_ENABLE != 0,
     })
 }
 
@@ -274,14 +267,11 @@ mod tests {
         modes.extend((1..=MAX_AUTO_BOOT_SECS).map(AutoBoot::Secs));
         for auto_boot in modes {
             for dev_mode in [false, true] {
-                for ssb_write_enable in [false, true] {
-                    let s = Settings {
-                        dev_mode,
-                        auto_boot,
-                        ssb_write_enable,
-                    };
-                    assert_eq!(decode(&encode(&s)), Some(s), "round-trip {:?}", s);
-                }
+                let s = Settings {
+                    dev_mode,
+                    auto_boot,
+                };
+                assert_eq!(decode(&encode(&s)), Some(s), "round-trip {:?}", s);
             }
         }
     }
@@ -305,32 +295,28 @@ mod tests {
         Settings {
             dev_mode: false,
             auto_boot,
-            ssb_write_enable: false,
         }
     }
 
-    /// A record written before `ssb_write_enable` existed (bit 1 held the reserved
-    /// `0`) still decodes — to `ssb_write_enable: false` — so claiming the bit did
-    /// not need a version bump of its own.
+    /// A record written while bit 1 was the SSB write-enable request still decodes, with
+    /// everything else intact, and the bit has no effect: an app that sets it gains nothing.
     #[test]
-    fn old_records_decode_ssb_write_enable_false() {
+    fn retired_ssb_write_enable_bit_is_ignored() {
         for dev_mode in [false, true] {
-            let mut rec = encode(&Settings {
+            let s = Settings {
                 dev_mode,
-                auto_boot: AutoBoot::default(),
-                ssb_write_enable: true,
-            });
-            rec[5] &= !FLAG_SSB_WRITE_ENABLE; // simulate an old writer (bit 1 clear)
+                auto_boot: AutoBoot::Secs(7),
+            };
+            let mut rec = encode(&s);
+            assert_eq!(
+                rec[5] & FLAG_RETIRED_SSB_WRITE_ENABLE,
+                0,
+                "encode writes the bit as 0"
+            );
+            rec[5] |= FLAG_RETIRED_SSB_WRITE_ENABLE;
             let crc = crc32(&rec[..PAYLOAD_LEN]).to_le_bytes();
             rec[8..12].copy_from_slice(&crc);
-            assert_eq!(
-                decode(&rec),
-                Some(Settings {
-                    dev_mode,
-                    auto_boot: AutoBoot::default(),
-                    ssb_write_enable: false,
-                })
-            );
+            assert_eq!(decode(&rec), Some(s));
         }
     }
 
@@ -344,7 +330,6 @@ mod tests {
                 Some(Settings {
                     dev_mode,
                     auto_boot: AutoBoot::Secs(DEFAULT_AUTO_BOOT_SECS),
-                    ssb_write_enable: false,
                 }),
             );
         }
@@ -358,7 +343,6 @@ mod tests {
         let mut rec = encode(&Settings {
             dev_mode: true,
             auto_boot: AutoBoot::Never,
-            ssb_write_enable: false,
         });
         for byte in [22u8, 100, 0xFE] {
             rec[6] = byte;
@@ -369,7 +353,6 @@ mod tests {
                 Some(Settings {
                     dev_mode: true,
                     auto_boot: AutoBoot::Never,
-                    ssb_write_enable: false,
                 }),
                 "byte {byte}",
             );
@@ -389,10 +372,8 @@ mod tests {
         let mut rec = encode(&Settings {
             dev_mode: true,
             auto_boot: AutoBoot::Secs(3),
-            ssb_write_enable: false,
         });
-        // Bit 2 is still reserved, so this exercises the CRC and nothing else —
-        // bit 1 now carries `ssb_write_enable`.
+        // Bit 2 is reserved, so this exercises the CRC and nothing else.
         rec[5] ^= 0x04;
         assert_eq!(decode(&rec), None);
 
@@ -476,7 +457,6 @@ mod tests {
         Settings {
             dev_mode,
             auto_boot,
-            ssb_write_enable: false,
         }
     }
 

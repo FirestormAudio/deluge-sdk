@@ -38,6 +38,11 @@ breaking changes.
 - `deluge-flash-protect`: a write that sets SR1 on its own re-sends SR2 with the QE bit that was
   read, so a part that clears SR2 on a one-byte `01h` keeps its QE; the read-back now checks QE
   too, so a write that loses it isn't reported as written.
+- `flash-protect` loader: an app could unprotect the bootloader region. The `SSB UPDATE: ARM`
+  request was saved in the settings sector, which sits outside the protected region, so an app
+  could set it and the next power-on cleared the protection. `SETTINGS` → `SSB UPDATE` now
+  clears the protection at once, from the menu, and nothing is saved.
+  `deluge_image::settings::Settings` loses `ssb_write_enable`; flag bit 1 is ignored.
 
 ## [0.2.0] - 2026-11-09
 
