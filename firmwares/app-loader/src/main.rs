@@ -158,14 +158,18 @@ async fn main(dlg: Deluge) {
         info!("Recovery: LOAD held at boot — forcing the boot menu");
     }
 
-    // The droplet, from now until the menu or the hand-off: static (with `(R)` or `(D)` saying
-    // why) when the menu is coming, built up through the boot and the load on an INSTANT unit.
+    // The droplet, from now until the menu or the hand-off, at the stock pace: whole before the
+    // menu (its last frame marked `(R)` or `(D)` saying why), or through the boot and the load
+    // on an INSTANT unit.
     dlg.spawner().spawn(splash::animate().unwrap());
-    splash::begin(splash_plan(&device::read_settings(), recovery)).await;
+    splash::begin(splash_plan(&device::read_settings(), recovery));
 
     // Auto-boot (countdown *or* instant) only ever fires on the first pass of the
     // loop below.  See `settings::boot_mode`.
     let mut auto_boot_allowed = true;
+    // The boot's droplet plays out before the first menu only: later passes come back from a
+    // screen of their own (a failed launch's message, DATA TRANSFER, ...).
+    let mut droplet_pending = true;
 
     device::early(form).await;
 
@@ -272,13 +276,21 @@ async fn main(dlg: Deluge) {
             // flash image when present, else the first SD app).  `boot_mode`
             // guarantees `boot_total > 0` here, so index 0 is a real boot target.
             info!("Auto-boot: INSTANT — launching the default entry");
+            // The launch takes the droplet to the hand-off; a menu after a failed one doesn't
+            // replay it.
+            droplet_pending = false;
             ui::Selection {
                 index: 0,
                 long_press: false,
             }
         } else {
-            // The menu draws next: no droplet frame may land on it.
-            splash::stop();
+            // The menu draws next: no droplet frame may land on it. On the first pass, let the
+            // boot's droplet finish first.
+            if core::mem::take(&mut droplet_pending) {
+                splash::finish().await;
+            } else {
+                splash::stop();
+            }
             let countdown = match mode {
                 settings::BootMode::Countdown(secs) => secs,
                 // Wait: `run_selector` treats 0 as "no countdown, wait for a pick".

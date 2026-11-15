@@ -1,5 +1,5 @@
-//! The boot droplet's policy: whether a boot shows it static (with a marker saying why the menu is
-//! coming) or animated, how far a load lets it go, and its pace: one block per
+//! The boot droplet's policy: how far a boot lets it go before a load (all of it, with a marker
+//! saying why, when the menu is coming), how far a load lets it go, and its pace: one block per
 //! [`BLOCK_PERIOD_MS`], however fast the load, so it always plays out whole. The firmware's
 //! `splash` module draws it.
 
@@ -34,21 +34,42 @@ impl Marker {
     }
 }
 
-/// What the display shows from the moment it is up until the menu or a launch.
+/// What the display shows from the moment it is up until the menu or a launch. Either way the
+/// droplet plays at [`BLOCK_PERIOD_MS`] a block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SplashPlan {
-    /// An INSTANT boot: the droplet builds up through the loader's work and the load.
-    Animate,
-    /// A boot headed for the menu: the whole droplet at once, with the marker if any.
-    Static(Option<Marker>),
+    /// An INSTANT boot: the droplet goes as far as [`PRE_ROLL_BLOCKS`] while the loader works,
+    /// then the image load takes it the rest of the way to the hand-off.
+    Launch,
+    /// A boot headed for the menu: the whole droplet, with the marker (if any) on its last frame,
+    /// then the menu.
+    Menu(Option<Marker>),
+}
+
+impl SplashPlan {
+    /// How far the droplet may go before a load starts.
+    pub const fn limit(self) -> u8 {
+        match self {
+            SplashPlan::Launch => PRE_ROLL_BLOCKS,
+            SplashPlan::Menu(_) => LOGO_BLOCKS,
+        }
+    }
+
+    /// The marker on the whole droplet's frame.
+    pub const fn marker(self) -> Option<Marker> {
+        match self {
+            SplashPlan::Launch => None,
+            SplashPlan::Menu(m) => m,
+        }
+    }
 }
 
 /// The splash for a boot with settings `cfg`, `recovery` when LOAD was held. Decided before the
 /// card is listed, so it assumes something is bootable: a boot that turns out to have nothing
-/// still reaches the menu, which replaces the droplet.
+/// still reaches the menu once the droplet completes.
 pub fn plan(cfg: &Settings, recovery: bool) -> SplashPlan {
     if boot_mode(cfg, 1, recovery, true) == BootMode::Instant {
-        return SplashPlan::Animate;
+        return SplashPlan::Launch;
     }
     let marker = if recovery {
         Some(Marker::Recovery)
@@ -57,7 +78,7 @@ pub fn plan(cfg: &Settings, recovery: bool) -> SplashPlan {
     } else {
         None
     };
-    SplashPlan::Static(marker)
+    SplashPlan::Menu(marker)
 }
 
 /// Blocks to show `done` of `total` bytes into a load that started with `base` blocks drawn: the
@@ -96,43 +117,43 @@ mod tests {
     }
 
     #[test]
-    fn instant_animates() {
+    fn instant_is_a_launch() {
         assert_eq!(
             plan(&cfg(false, AutoBoot::Instant), false),
-            SplashPlan::Animate
+            SplashPlan::Launch
         );
     }
 
     #[test]
-    fn countdown_is_static_unmarked() {
+    fn countdown_is_menu_unmarked() {
         assert_eq!(
             plan(&cfg(false, AutoBoot::Secs(5)), false),
-            SplashPlan::Static(None)
+            SplashPlan::Menu(None)
         );
     }
 
     #[test]
-    fn never_is_static_unmarked() {
+    fn never_is_menu_unmarked() {
         assert_eq!(
             plan(&cfg(false, AutoBoot::Never), false),
-            SplashPlan::Static(None)
+            SplashPlan::Menu(None)
         );
     }
 
     #[test]
-    fn dev_mode_is_static_d() {
+    fn dev_mode_is_menu_d() {
         assert_eq!(
             plan(&cfg(true, AutoBoot::Instant), false),
-            SplashPlan::Static(Some(Marker::Dev))
+            SplashPlan::Menu(Some(Marker::Dev))
         );
         assert_eq!(Marker::Dev.glyph(), b'D');
     }
 
     #[test]
-    fn recovery_on_instant_is_static_r() {
+    fn recovery_on_instant_is_menu_r() {
         assert_eq!(
             plan(&cfg(false, AutoBoot::Instant), true),
-            SplashPlan::Static(Some(Marker::Recovery))
+            SplashPlan::Menu(Some(Marker::Recovery))
         );
         assert_eq!(Marker::Recovery.glyph(), b'R');
     }
@@ -141,7 +162,7 @@ mod tests {
     fn recovery_beats_dev() {
         assert_eq!(
             plan(&cfg(true, AutoBoot::Secs(5)), true),
-            SplashPlan::Static(Some(Marker::Recovery))
+            SplashPlan::Menu(Some(Marker::Recovery))
         );
     }
 
@@ -199,5 +220,16 @@ mod tests {
         assert_eq!(pad_ms(24), BLOCK_PERIOD_MS);
         assert_eq!(pad_ms(0), 25 * BLOCK_PERIOD_MS);
         assert_eq!(pad_ms(30), 0);
+    }
+
+    #[test]
+    fn a_launch_pre_rolls_and_a_menu_boot_plays_the_whole_droplet() {
+        assert_eq!(SplashPlan::Launch.limit(), PRE_ROLL_BLOCKS);
+        assert_eq!(SplashPlan::Menu(None).limit(), LOGO_BLOCKS);
+        assert_eq!(
+            SplashPlan::Menu(Some(Marker::Dev)).marker(),
+            Some(Marker::Dev)
+        );
+        assert_eq!(SplashPlan::Launch.marker(), None);
     }
 }

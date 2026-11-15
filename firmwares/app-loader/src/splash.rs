@@ -1,11 +1,12 @@
 //! The boot droplet on the panel, from the moment the display is up until the menu or the hand-off
 //! ([`deluge_loader::splash`] decides what to show).
 //!
-//! A boot headed for the menu shows the whole droplet at once ([`begin`]). Otherwise one task,
-//! [`animate`], draws it a block at a time at the stock bootloader's pace
-//! ([`BLOCK_PERIOD_MS`]), never past a limit: [`PRE_ROLL_BLOCKS`] while the loader works, then as
-//! far as the image load has got ([`progress`]). However fast the load, [`finish`] lets the droplet
-//! play out whole at that pace before the hand-off.
+//! One task, [`animate`], draws the droplet a block at a time at the stock bootloader's pace
+//! ([`BLOCK_PERIOD_MS`]), never past a limit ([`begin`]): the whole droplet on a boot headed for
+//! the menu (its last frame marked `(D)` or `(R)` when there's a reason to say), or
+//! [`PRE_ROLL_BLOCKS`] on an INSTANT boot while the loader works, then as far as the image load has
+//! got ([`progress`]). However fast the load, [`finish`] lets the droplet play out whole at that
+//! pace before the menu or the hand-off.
 //!
 //! Only the animator draws droplet frames while it runs, so no stale, shorter frame can land last.
 //! It checks it may draw and asks for the screen with no await in between: after [`stop`], no new
@@ -13,9 +14,12 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-use deluge_bsp::oled::{boot_logo, boot_logo_marked, boot_logo_partial};
+use deluge_bsp::oled::FrameBuffer;
+use deluge_bsp::oled::{boot_logo_marked, boot_logo_partial};
+#[cfg(doc)]
+use deluge_loader::splash::PRE_ROLL_BLOCKS;
 use deluge_loader::splash::{
-    BLOCK_PERIOD_MS, LOGO_BLOCKS, PRE_ROLL_BLOCKS, SplashPlan, load_blocks, next_block, pad_ms,
+    BLOCK_PERIOD_MS, LOGO_BLOCKS, SplashPlan, load_blocks, next_block, pad_ms,
 };
 use embassy_time::{Duration, Instant, Timer};
 
@@ -29,6 +33,8 @@ static SHOWN: AtomicU8 = AtomicU8::new(0);
 static LIMIT: AtomicU8 = AtomicU8::new(0);
 /// Whether the animator may draw.
 static ACTIVE: AtomicBool = AtomicBool::new(false);
+/// The marker's letter for the whole droplet's frame, or 0 for none.
+static MARKER: AtomicU8 = AtomicU8::new(0);
 /// The block count a load started from, once [`start_load`] (or the first [`progress`]) fixed it.
 static BASE: AtomicU8 = AtomicU8::new(NO_BASE);
 const NO_BASE: u8 = u8::MAX;
@@ -37,24 +43,18 @@ fn period() -> Duration {
     Duration::from_millis(BLOCK_PERIOD_MS)
 }
 
-/// Show `plan`'s first frame: the whole droplet (with its marker) for a boot headed for the menu,
-/// or start the animator's pre-roll.
-pub async fn begin(plan: SplashPlan) {
-    match plan {
-        SplashPlan::Static(marker) => {
-            ACTIVE.store(false, Ordering::Release);
-            DRAWN.store(LOGO_BLOCKS, Ordering::Release);
-            SHOWN.store(LOGO_BLOCKS, Ordering::Release);
-            let frame = match marker {
-                Some(m) => boot_logo_marked(m.glyph()),
-                None => boot_logo(),
-            };
-            screen::show(&frame).await;
-        }
-        SplashPlan::Animate => {
-            LIMIT.store(PRE_ROLL_BLOCKS, Ordering::Release);
-            ACTIVE.store(true, Ordering::Release);
-        }
+/// Start the droplet for `plan`: how far it may go before a load, and its marker.
+pub fn begin(plan: SplashPlan) {
+    MARKER.store(plan.marker().map_or(0, |m| m.glyph()), Ordering::Release);
+    LIMIT.store(plan.limit(), Ordering::Release);
+    ACTIVE.store(true, Ordering::Release);
+}
+
+/// The droplet's frame with `n` blocks: the whole one carries the marker, if any.
+fn frame(n: u8) -> FrameBuffer {
+    match MARKER.load(Ordering::Acquire) {
+        m if m != 0 && n >= LOGO_BLOCKS => boot_logo_marked(m),
+        _ => boot_logo_partial(usize::from(n)),
     }
 }
 
@@ -70,7 +70,7 @@ pub async fn animate() {
         let drawn = DRAWN.load(Ordering::Acquire);
         if let Some(n) = next_block(drawn, LIMIT.load(Ordering::Acquire)) {
             DRAWN.store(n, Ordering::Release);
-            screen::show(&boot_logo_partial(usize::from(n))).await;
+            screen::show(&frame(n)).await;
             SHOWN.store(n, Ordering::Release);
         }
     }
@@ -88,6 +88,7 @@ pub fn restart() {
     DRAWN.store(0, Ordering::Release);
     SHOWN.store(0, Ordering::Release);
     LIMIT.store(0, Ordering::Release);
+    MARKER.store(0, Ordering::Release);
     BASE.store(NO_BASE, Ordering::Release);
 }
 
@@ -97,7 +98,7 @@ pub async fn start_load() {
     stop();
     let drawn = DRAWN.load(Ordering::Acquire);
     let _ = BASE.compare_exchange(NO_BASE, drawn, Ordering::AcqRel, Ordering::Acquire);
-    screen::show(&boot_logo_partial(usize::from(drawn))).await;
+    screen::show(&frame(drawn)).await;
     SHOWN.store(drawn, Ordering::Release);
     ACTIVE.store(true, Ordering::Release);
 }
@@ -115,7 +116,7 @@ pub async fn progress(done: u32, total: u32) {
 }
 
 /// Let the droplet play out whole at the stock pace, and return once its last frame is on the
-/// panel. Must run while interrupts, the executor and the PIC service are still live: a frame
+/// panel: before the menu draws, and before the hand-off. Must run while interrupts, the executor and the PIC service are still live: a frame
 /// awaits the OLED DMA-completion IRQ and the PIC's chip-select echo, so it cannot complete once
 /// the machine has been quiesced for the hand-off.
 pub async fn finish() {
@@ -139,6 +140,6 @@ pub async fn finish() {
 pub async fn finish_now() {
     stop();
     DRAWN.store(LOGO_BLOCKS, Ordering::Release);
-    screen::show(&boot_logo()).await;
+    screen::show(&frame(LOGO_BLOCKS)).await;
     SHOWN.store(LOGO_BLOCKS, Ordering::Release);
 }
