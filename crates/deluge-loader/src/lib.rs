@@ -9,6 +9,7 @@
 
 pub mod boot;
 pub mod menu;
+pub mod splash;
 pub mod stage;
 pub mod uf2;
 pub mod update;
