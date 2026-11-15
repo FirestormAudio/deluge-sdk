@@ -66,7 +66,8 @@ echo "==> building"
 build stage0
 "$OBJCOPY" -O binary "$BIN/stage0" "$OUT/stage0.bin"
 tools/check-xip-image.py --flash 0x18000000:0x10000 --ram 0x20020000:0x10000 \
-  --require-symbol STAGE0_HEARTBEAT --require-symbol STAGE0_STATUS "$BIN/stage0"
+  --require-symbol STAGE0_HEARTBEAT --require-symbol STAGE0_STATUS \
+  --ram-code stage0_set_fast_read "$BIN/stage0"
 build app-loader
 python3 tools/check-boot-header.py "$BIN/app-loader"
 mkslot app --elf "$BIN/app-loader" --variant-code 0 --out "$OUT/loader.app"

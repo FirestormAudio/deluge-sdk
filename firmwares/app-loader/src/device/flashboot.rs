@@ -9,12 +9,12 @@
 //! The app slot ([`flash::SLOT_OFFSET`]) holds a DAPP image ([`deluge_image::app`]): a 64-byte
 //! header (load address, entry, body length, body CRC, the OLED variant) and the body right after
 //! it, an SRAM-linked flat image. [`probe`] checks the header when the menu is built; the whole
-//! image, body CRC included, is checked at launch ([`launch`]), and the trampoline
+//! image, body CRC included, is checked at launch ([`launch_with_progress`]), and the trampoline
 //! ([`super::launcher::launch_via_trampoline`]) copies the body from the flash window to its load
 //! address and jumps to the entry. The body must zero its own `.bss`: only its bytes are copied.
 
 use deluge_bsp::flash;
-use deluge_image::app::{APP_HEADER_LEN, AppError, AppHeader, validate_app};
+use deluge_image::app::{APP_HEADER_LEN, AppError, AppHeader, BodyCheck, validate_app_header};
 use deluge_image::slot::VARIANT_OLED;
 use deluge_loader::stage::{StageError, bootable_header, flash_app_move};
 
@@ -54,14 +54,38 @@ pub enum FlashAppError {
     BadLoadAddress(StageError),
 }
 
+/// Body bytes checked between progress reports.
+const PROGRESS_CHUNK: usize = 64 * 1024;
+
 /// The flash app, checked whole (header and body CRC) through the window: the trampoline's copy
-/// straight from the flash window, and the entry.
+/// straight from the flash window, and the entry. `on_progress(done, total)` (body bytes) is
+/// awaited after each [`PROGRESS_CHUNK`] of the body CRC, and not at all for the chunk that
+/// finds the body bad.
 ///
 /// The copy's source is the **real** SPIBSC window address (`0x1810_0000`), not the uncached
 /// mirror: the trampoline runs with the MMU off, so only the physical window is valid.
-pub fn launch(h: &AppHeader) -> Result<(SramSegDesc, u32), FlashAppError> {
+pub async fn launch_with_progress<F, Fut>(
+    h: &AppHeader,
+    mut on_progress: F,
+) -> Result<(SramSegDesc, u32), FlashAppError>
+where
+    F: FnMut(u32, u32) -> Fut,
+    Fut: core::future::Future<Output = ()>,
+{
     let whole = window(APP_HEADER_LEN + h.body_len as usize);
-    let h = validate_app(whole, &[VARIANT_OLED], MAX_BODY).map_err(FlashAppError::Image)?;
+    let h = validate_app_header(whole, &[VARIANT_OLED], MAX_BODY).map_err(FlashAppError::Image)?;
+    let mut check = BodyCheck::new(h);
+    let h = loop {
+        match check.step(whole, PROGRESS_CHUNK) {
+            None => on_progress(check.done(), check.total()).await,
+            Some(Ok(h)) => {
+                on_progress(check.done(), check.total()).await;
+                break h;
+            }
+            // No "done" report for a body that failed: the caller says why instead.
+            Some(Err(e)) => return Err(FlashAppError::Image(e)),
+        }
+    };
     let m = flash_app_move(&h, flash::SLOT_ADDR, SRAM_LOAD_ORIGIN..SRAM_END)
         .map_err(FlashAppError::BadLoadAddress)?;
     let desc = SramSegDesc {
@@ -126,7 +150,7 @@ where
         verify(0, header)
     });
 
-    // `probe` and `launch` read the slot through the cached window: drop any lines an earlier
+    // `probe` and `launch_with_progress` read the slot through the cached window: drop any lines an earlier
     // read left, so they see what was just written.
     // SAFETY: cache maintenance over the slot's mapped window; nothing in it is dirty (it's
     // only ever read through this mapping).

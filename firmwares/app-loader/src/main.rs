@@ -24,6 +24,7 @@ mod controls;
 mod device;
 mod file_browser;
 mod screen;
+mod splash;
 mod uf2;
 mod ui;
 
@@ -36,6 +37,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use controls::LOAD_SEEN;
 use deluge_image::slot;
 use deluge_loader::boot::{self, BootPolicy, Form, Unlock};
+use deluge_loader::splash::plan as splash_plan;
 use deluge_loader::update::SlotWriter;
 use deluge_loader::{menu, update};
 
@@ -125,7 +127,10 @@ async fn main(dlg: Deluge) {
     // (the PIC reports it in answer to the button-state resend its bring-up sends).
     dlg.spawner().spawn(controls::run(dlg.input()).unwrap());
     screen::init(dlg.oled().await);
-    info!("OLED: ready");
+    info!(
+        "OLED: ready at {} ms",
+        embassy_time::Instant::now().as_millis()
+    );
     if early.unlock == Unlock::NeedsPowerOff {
         // Pending, but the protection is locked down (an app launched since the flash last lost
         // power): the confirm can't be written until the flash powers off. Still fed.
@@ -145,31 +150,34 @@ async fn main(dlg: Deluge) {
 
     // Recovery gesture: LOAD pressed or held at any point between reset and
     // here (see LOAD_SEEN).  Sampled once — later menu passes are user-driven
-    // and must not re-trigger it.  The splash matters most on an INSTANT unit,
-    // which otherwise gives no sign that the *hold* — rather than a failed boot —
+    // and must not re-trigger it.  The droplet's `(R)` matters most on an INSTANT
+    // unit, which otherwise gives no sign that the *hold* — rather than a failed boot —
     // is why the menu appeared.  Nothing is persisted: the user's setting stands.
     let recovery = LOAD_SEEN.load(core::sync::atomic::Ordering::Acquire);
     if recovery {
         info!("Recovery: LOAD held at boot — forcing the boot menu");
-        ui::show_message(b"RECOVERY", b"BOOT MENU").await;
-        embassy_time::Timer::after(embassy_time::Duration::from_millis(700)).await;
     }
+
+    // The droplet, from now until the menu or the hand-off, at the stock pace: whole before the
+    // menu (every frame marked `(R)` or `(D)` saying why), or through the boot and the load
+    // on an INSTANT unit.
+    dlg.spawner().spawn(splash::animate().unwrap());
+    splash::begin(splash_plan(&device::read_settings(), recovery));
 
     // Auto-boot (countdown *or* instant) only ever fires on the first pass of the
     // loop below.  See `settings::boot_mode`.
     let mut auto_boot_allowed = true;
+    // The boot's droplet plays out before the first menu only: later passes come back from a
+    // screen of their own (a failed launch's message, DATA TRANSFER, ...).
+    let mut droplet_pending = true;
 
     device::early(form).await;
 
     // Boot menu loop.  A bootable selection launches and never returns; the
     // DATA TRANSFER USB mode returns here when BACK is pressed, and a
     // write-to-flash also returns here, so the menu is rebuilt from fresh state
-    // (re-probing the flash slot and re-listing the SD card).
-    //
-    // Only the first pass shows the "DELUGE BOOT / INIT SD..." splash; on later
-    // passes it would look like a reboot, so the menu is simply redrawn by
-    // `run_selector`.
-    let mut first_pass = true;
+    // (re-probing the flash slot and re-listing the SD card).  The first pass runs
+    // under the droplet; later passes simply redraw the menu (`run_selector`).
     loop {
         // Read persisted settings each pass so a DEV MODE toggle takes effect on
         // the very next menu rebuild (dev mode adds a background USB listener and
@@ -182,11 +190,6 @@ async fn main(dlg: Deluge) {
         if flash_img.is_some() {
             info!("Flash: valid firmware image present in slot");
         }
-
-        if first_pass {
-            ui::show_message(b"DELUGE BOOT", b"INIT SD...").await;
-        }
-        first_pass = false;
 
         // Take the card for this pass.  A missing/failed card is not fatal; every exit
         // from the pass drops it, so the next pass (or DATA TRANSFER) can take it again.
@@ -273,11 +276,21 @@ async fn main(dlg: Deluge) {
             // flash image when present, else the first SD app).  `boot_mode`
             // guarantees `boot_total > 0` here, so index 0 is a real boot target.
             info!("Auto-boot: INSTANT — launching the default entry");
+            // The launch takes the droplet to the hand-off; a menu after a failed one doesn't
+            // replay it.
+            droplet_pending = false;
             ui::Selection {
                 index: 0,
                 long_press: false,
             }
         } else {
+            // The menu draws next: no droplet frame may land on it. On the first pass, let the
+            // boot's droplet finish first.
+            if core::mem::take(&mut droplet_pending) {
+                splash::finish().await;
+            } else {
+                splash::stop();
+            }
             let countdown = match mode {
                 settings::BootMode::Countdown(secs) => secs,
                 // Wait: `run_selector` treats 0 as "no countdown, wait for a pick".
@@ -315,6 +328,11 @@ async fn main(dlg: Deluge) {
             index: selected,
             long_press,
         } = selection;
+        // A launch picked from the menu builds the droplet up from empty; an INSTANT one carries
+        // on from the pre-roll.
+        if mode != settings::BootMode::Instant {
+            splash::restart();
+        }
 
         // The menu branch won (or dev mode is off): if a CDC listener was brought
         // up, tear it down so the port is free for a later DATA TRANSFER MSC init.
@@ -418,9 +436,8 @@ async fn main(dlg: Deluge) {
             // ---- SD ELF path (returns only if it can't be loaded) ----
             menu::Entry::SdApp(i) => {
                 let list = sd_listing.expect("sd listing present for SD entry");
-                let label = list.display_name(i);
                 let sd = sd.expect("the card is mounted for an SD entry");
-                device::launch_elf(sd, &list, i, label).await;
+                device::launch_elf(sd, &list, i).await;
             }
         }
     }

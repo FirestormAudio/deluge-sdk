@@ -88,7 +88,11 @@ The old copy is left in place.
 On power-up the loader:
 
 1. **Initialises the platform** — MMU, caches, SDRAM, GIC, and the OSTM timers,
-   then the PIC link and OLED.
+   then the PIC link and OLED, which then shows the Deluge droplet building up
+   block by block at the stock bootloader's pace: in about two thirds of a second
+   before the menu (with `(D)` in the corner throughout in dev mode, `(R)` when
+   LOAD is held), or on an `INSTANT` unit through the steps below and the load,
+   until the hand-off.
 2. **Probes the on-flash app slot.** If a valid image is present it becomes the
    default boot entry, listed first as **`BOOT FLASH`**. This is independent of
    the SD card, so a unit with flashed firmware boots with no card inserted.
@@ -97,10 +101,11 @@ On power-up the loader:
 4. **Builds the boot menu** and shows it on the OLED, auto-booting the default
    entry after the configured delay (5 seconds out of the box — see
    [`SETTINGS`](#settings--auto-boot-and-dev-mode)).
-5. **Launches your selection** — streams the chosen ELF, loads its `PT_LOAD`
-   segments, flushes the caches, blanks the OLED, quiesces all DMA/timers/IRQs,
-   and branches to the entry point. This never returns; the app owns the machine
-   until the next power-cycle.
+5. **Launches your selection** — streams the chosen ELF while the droplet fills
+   in, at the stock bootloader's pace (a fast load waits for it to complete),
+   loads its `PT_LOAD` segments, flushes the caches, leaves the droplet on the
+   OLED, quiesces all DMA/timers/IRQs, and branches to the entry point. This never
+   returns; the app owns the machine until the next power-cycle.
 
 ---
 
@@ -154,7 +159,7 @@ will not boot out from under you).
 ### Recovery — always reach the menu
 
 **Hold the LOAD button down while powering the unit on.** The loader
-shows `RECOVERY`, then the boot menu with no countdown, waiting indefinitely —
+shows the droplet with `(R)` in the corner, then the boot menu with no countdown, waiting indefinitely —
 whatever the auto-boot setting says.
 
 This is the way back from an `AUTO-BOOT: INSTANT` unit whose flashed firmware is

@@ -7,7 +7,12 @@ loaded byte inside its flash window (anything else would never reach the chip), 
 writable segments (.data, .bss, stacks) inside its RAM window, and fit the flash length.
 rza1-rt's link_xip.x produces this layout; this checks an ELF actually has it.
 
-Usage: tools/check-xip-image.py --flash BASE:LEN --ram BASE:LEN [--require-symbol NAME]... ELF
+`--ram-code NAME` checks a function that must run with no flash under it (stage-0's switch of the
+flash read mode): it lies in the RAM window and none of its instructions calls out (`bl`, `blx`)
+or branches outside it, so nothing is fetched from flash until it returns.
+
+Usage: tools/check-xip-image.py --flash BASE:LEN --ram BASE:LEN [--require-symbol NAME]...
+                                [--ram-code NAME]... ELF
 """
 
 import argparse
@@ -32,7 +37,24 @@ def inside(lo, hi, win):
     return win[0] <= lo and hi <= win[0] + win[1]
 
 
-def check(path, flash, ram, required):
+def escapes(addr, size, words):
+    """The offsets of the instructions in the ARM function at `addr` (`size` bytes, its `words`)
+    that call out or branch outside it."""
+    bad = []
+    for i, insn in enumerate(words):
+        at = addr + 4 * i
+        cond, op = insn >> 28, (insn >> 25) & 0b111
+        if op == 0b101:
+            if cond == 0xF or insn & (1 << 24):  # blx <imm>, or bl
+                bad.append(at - addr)
+            elif not addr <= _cbh.branch_target(at, insn) < addr + size:  # b out of the function
+                bad.append(at - addr)
+        elif insn & 0x0FFF_FFF0 == 0x012F_FF30:  # blx <reg>
+            bad.append(at - addr)
+    return bad
+
+
+def check(path, flash, ram, required, ram_code=()):
     elf = _cbh.Elf(path)
     errors = []
     entry = struct.unpack_from("<I", elf.data, 0x18)[0]
@@ -73,6 +95,19 @@ def check(path, flash, ram, required):
             errors.append(f"no `{name}` symbol")
         elif not inside(addr, addr + 1, ram):
             errors.append(f"`{name}` is at 0x{addr:08x}, outside RAM")
+    for name in ram_code:
+        addr, size = elf.symbols.get(name), elf.sizes.get(name, 0)
+        if addr is None or size == 0:
+            errors.append(f"no `{name}` function")
+            continue
+        addr &= ~1
+        if not inside(addr, addr + size, ram):
+            errors.append(f"`{name}` is at 0x{addr:08x}, outside RAM")
+            continue
+        words = [elf.word(addr + 4 * i) for i in range(size // 4)]
+        for off in escapes(addr, size, words):
+            errors.append(f"`{name}`+0x{off:x} calls out or branches outside it: "
+                          "it would fetch from flash")
     return errors
 
 
@@ -81,10 +116,11 @@ def main():
     ap.add_argument("--flash", type=window, required=True)
     ap.add_argument("--ram", type=window, required=True)
     ap.add_argument("--require-symbol", action="append", default=[])
+    ap.add_argument("--ram-code", action="append", default=[])
     ap.add_argument("elf")
     args = ap.parse_args()
     try:
-        errors = check(args.elf, args.flash, args.ram, args.require_symbol)
+        errors = check(args.elf, args.flash, args.ram, args.require_symbol, args.ram_code)
     except (OSError, ValueError) as e:
         print(f"{args.elf}: {e}", file=sys.stderr)
         return 1

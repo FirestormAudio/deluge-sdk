@@ -20,7 +20,7 @@ use crate::file_browser::{self, EntryList};
 use core::sync::atomic::Ordering;
 
 use crate::controls::BACK_PRESSED;
-use crate::{hex2, screen, ui};
+use crate::{hex2, splash, ui};
 
 /// Stop all autonomous peripheral activity before branching to the app.
 ///
@@ -45,17 +45,6 @@ pub(crate) unsafe fn quiesce_for_handoff() {
         // Turn the interrupt controller off entirely.
         rza1_hal::gic::shutdown();
     }
-}
-
-/// Draw the Deluge droplet right before handing off to a launched image, so the
-/// panel holds the boot logo (not the loader's menu) all the way through U-Boot
-/// and early kernel until the image's own display code takes over.
-///
-/// Must be called while interrupts, the executor, and the PIC service are still
-/// live: `send_frame` awaits the OLED DMA-completion IRQ and the PIC chip-select
-/// echo, so it cannot complete once the machine has been quiesced for handoff.
-pub(crate) async fn show_boot_logo() {
-    screen::show(&deluge_bsp::oled::boot_logo()).await;
 }
 
 /// `SETTINGS` → `SSB UPDATE`: unlock the bootloader region now and park with no app, so the
@@ -452,11 +441,12 @@ pub(crate) async fn boot_flash_app(app: FlashApp) -> ! {
         "Booting the flash app: load={:#010x} len={:#x} entry={:#010x}",
         app.load_addr, app.body_len, app.entry
     );
-    ui::show_message(b"BOOTING", b"FLASH FW").await;
-    let (desc, entry) = match flashboot::launch(&app) {
+    splash::start_load().await;
+    let (desc, entry) = match flashboot::launch_with_progress(&app, splash::progress).await {
         Ok(l) => l,
         Err(e) => {
             error!("The flash app failed its check: {:?}", e);
+            splash::stop();
             // A power cycle would only auto-boot it again: holding LOAD reaches the menu.
             ui::show_message(b"FLASH APP BAD", b"HOLD LOAD AT POWER-ON").await;
             loop {
@@ -465,9 +455,9 @@ pub(crate) async fn boot_flash_app(app: FlashApp) -> ! {
         }
     };
 
-    // Draw the boot droplet so the panel shows it through handoff.
-    // Must run before interrupts/DMA are quiesced (see show_boot_logo).
-    show_boot_logo().await;
+    // The whole droplet, so the panel shows it through the hand-off. Must run before
+    // interrupts/DMA are quiesced (see `splash::finish`).
+    splash::finish().await;
 
     // Quiesce, then copy the body from the flash window into SRAM via the trampoline (single
     // descriptor) like the SD ELF path.
@@ -481,17 +471,18 @@ pub(crate) async fn store_flash_app(sd: &mut Sd, apps: &EntryList, idx: usize, l
     write_app_to_flash(sd, apps, idx, label).await
 }
 
-/// Load app `idx` of `apps` and launch it, showing progress under `label`. Returns only if
+/// Load app `idx` of `apps` and launch it, the boot droplet tracking the load. Returns only if
 /// it can't be loaded, having said why on the display.
-pub(crate) async fn launch_elf(mut sd: Sd, apps: &EntryList, idx: usize, label: &[u8]) {
+pub(crate) async fn launch_elf(mut sd: Sd, apps: &EntryList, idx: usize) {
     info!("Loading: {}", apps.name(idx));
-    ui::show_progress(label, 0).await;
+    splash::start_load().await;
 
     // Open the selected file from /APPS/.
     let mut file = match file_browser::open_app(&mut sd, apps, idx).await {
         Ok(f) => f,
         Err(e) => {
             error!("Failed to open app: {:?}", e);
+            splash::stop();
             ui::show_message(b"OPEN ERROR", b"BACK TO MENU").await;
             embassy_time::Timer::after(embassy_time::Duration::from_secs(2)).await;
             return;
@@ -500,39 +491,35 @@ pub(crate) async fn launch_elf(mut sd: Sd, apps: &EntryList, idx: usize, label: 
 
     // Stream-load ELF segments.  SRAM-targeting segments are staged in SDRAM;
     // SDRAM-targeting segments are written to their final addresses directly.
-    let load_result = match unsafe {
-        elf::load_from_sd_with_progress(&mut file, |done, total| async move {
-            let raw = done.saturating_mul(100).checked_div(total).unwrap_or(100) as u8;
-            ui::show_progress(label, raw).await;
-        })
-        .await
-    } {
-        Ok(r) => r,
-        Err(e) => {
-            let line2: &[u8] = match e {
-                elf::ElfError::BadMagic => b"BAD MAGIC",
-                elf::ElfError::WrongFormat => b"WRONG FORMAT",
-                elf::ElfError::BadLoadAddress => b"BAD LOAD ADDR",
-                elf::ElfError::Unstreamable => b"BAD LAYOUT",
-                _ => b"SEE LOG",
-            };
-            error!("ELF load error: {:?}", e);
-            ui::show_message(b"LOAD ERROR", line2).await;
-            embassy_time::Timer::after(embassy_time::Duration::from_secs(2)).await;
-            let _ = file.close().await;
-            return;
-        }
-    };
+    let load_result =
+        match unsafe { elf::load_from_sd_with_progress(&mut file, splash::progress).await } {
+            Ok(r) => r,
+            Err(e) => {
+                let line2: &[u8] = match e {
+                    elf::ElfError::BadMagic => b"BAD MAGIC",
+                    elf::ElfError::WrongFormat => b"WRONG FORMAT",
+                    elf::ElfError::BadLoadAddress => b"BAD LOAD ADDR",
+                    elf::ElfError::Unstreamable => b"BAD LAYOUT",
+                    _ => b"SEE LOG",
+                };
+                error!("ELF load error: {:?}", e);
+                splash::stop();
+                ui::show_message(b"LOAD ERROR", line2).await;
+                embassy_time::Timer::after(embassy_time::Duration::from_secs(2)).await;
+                let _ = file.close().await;
+                return;
+            }
+        };
 
     info!(
         "ELF loaded, entry = {:#010x}, {} SRAM segment(s) staged",
         load_result.entry, load_result.n_sram
     );
 
-    // Draw the boot droplet so the panel shows it through handoff — even if
+    // The whole droplet, so the panel shows it through the hand-off — even if
     // the launched app never uses the display. Must run before interrupts/DMA
-    // are quiesced (see show_boot_logo).
-    show_boot_logo().await;
+    // are quiesced (see `splash::finish`).
+    splash::finish().await;
 
     // Close the file and let go of the card, then disable interrupts, before we hand off.
     let _ = file.close().await;
