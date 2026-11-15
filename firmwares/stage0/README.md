@@ -9,14 +9,18 @@ with rza1-rt's `link_xip.x` and this crate's `memory_stage0.x` (64 KB of flash, 
 > Stage-0 replaces the Deluge's stock first-stage bootloader. Installing it is for development
 > units with a J-Link attached and a full flash backup; it is not part of a normal app workflow.
 
-At boot it turns on the L1 I-cache (only that: MMU and D-cache stay off), reads and clears the
-watchdog's overflow flag (`WRCSR.WOVF`, which the watchdog's own internal reset leaves set: the
-last boot ended in a watchdog reset), then checks boot slots A (`0x010000`) and B (`0x080000`)
-through the XIP window, timing the checks with the PMU cycle counter. It parses both 256-byte
-header pages, and `deluge_image::slot::select_lazy` picks one, CRC-checking only the bodies the
-choice depends on: the booted slot's, plus the pending slot's when it rolls back from one. The
-CRC table is copied into RAM with `.data`, since a lookup through the uncached XIP window would
-cost a flash read. The choice is `deluge_image::slot::select`'s:
+At boot it first switches the flash controller from the boot ROM's reads (`03h` at a slow clock,
+the read cache off) to the stock bootloader's: `0Bh` fast read, SPBR = 1, BRDV = 0 (66.67 Mbps),
+the read cache on, as the loader and every stock unit run. The switch runs from RAM (`.data`),
+since nothing may execute from the flash window while its timing changes. Then it turns on the L1
+I-cache (only that: MMU and D-cache stay off), reads and clears the watchdog's overflow flag
+(`WRCSR.WOVF`, which the watchdog's own internal reset leaves set: the last boot ended in a
+watchdog reset), then checks boot slots A (`0x010000`) and B (`0x080000`) through the XIP window,
+timing the checks with the PMU cycle counter. It parses both 256-byte header pages, and
+`deluge_image::slot::select_lazy` picks one, CRC-checking only the bodies the choice depends on:
+the booted slot's, plus the pending slot's when it rolls back from one. The CRC table is copied
+into RAM with `.data`, since a lookup through the uncached XIP window would cost a flash read. The
+choice is `deluge_image::slot::select`'s:
 
 - the valid slot with the higher sequence (A on a tie);
 - a confirmed one boots whatever the watchdog flag says;
@@ -35,8 +39,8 @@ per round, forever, where `code` is slot A's `SlotError::code()`: 1 bad magic (e
 valid, `0xFF` = header valid, body not needed), both slots' sequences, the boot-info word written,
 the cycles the checks took, and the raw `CPG.FRQCR` (low half).
 
-Stage-0 never writes flash and never touches clocks, SDRAM, the MMU, the D-cache, the flash
-controller or any peripheral but the watchdog's reset flag and that one pin. It pulls in no HAL:
+Stage-0 never writes flash and never touches clocks, SDRAM, the MMU, the D-cache or any peripheral
+but the flash controller's read mode, the watchdog's reset flag and that one pin. It pulls in no HAL:
 the register addresses come from `rza1-pac`.
 
 ## Building
