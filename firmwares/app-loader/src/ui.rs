@@ -515,7 +515,7 @@ fn auto_boot_line(
 
 /// The `SETTINGS` screen: edit `cfg` in place and return when the user leaves.
 ///
-/// Does **no** flash I/O — the caller compares the result against what it read
+/// Does no settings I/O — the caller compares the result against what it read
 /// and writes once, so a session of encoder turns costs one erase/program rather
 /// than one per keypress.
 ///
@@ -523,6 +523,9 @@ fn auto_boot_line(
 ///   `INSTANT → 1S … 20S → NEVER`, SELECT confirms, BACK restores the value the
 ///   edit started from.
 /// * SELECT on `DEV MODE` flips the flag.
+/// * SELECT on `SSB UPDATE` (`flash-protect` builds, stock form) unlocks the bootloader region
+///   at once and parks for a power cycle; it is the one row that touches the flash, and it
+///   writes the status register, not the settings.
 /// * SELECT on `BACK`, or the BACK button, leaves.
 pub async fn run_settings(cfg: &mut deluge_image::settings::Settings, stock_form: bool) {
     // The SSB-update row only means something to the stock bootloader's update path; a loader
@@ -560,15 +563,9 @@ pub async fn run_settings(cfg: &mut deluge_image::settings::Settings, stock_form
                 b"DEV MODE: OFF"
             },
             b"FLASH INFO",
-            // The row doubles as the toggle's state readout: `ARMED` means the
-            // next boot will unlock the bootloader region and hold in the no-app
-            // maintenance pass instead of launching anything.
+            // Unlocks the bootloader region right away (see `device::ssb_update_now`).
             #[cfg(feature = "flash-protect")]
-            if cfg.ssb_write_enable {
-                b"SSB UPDATE: ARMED"
-            } else {
-                b"SSB UPDATE: ARM"
-            },
+            b"SSB UPDATE",
             b"BACK",
         ];
         rows[back] = b"BACK";
@@ -633,7 +630,7 @@ pub async fn run_settings(cfg: &mut deluge_image::settings::Settings, stock_form
                 SET_DEV_MODE => cfg.dev_mode = !cfg.dev_mode,
                 SET_FLASH_INFO => crate::device::show_flash_info().await,
                 #[cfg(feature = "flash-protect")]
-                SET_SSB_UPDATE if ssb_row => cfg.ssb_write_enable = !cfg.ssb_write_enable,
+                SET_SSB_UPDATE if ssb_row => crate::device::ssb_update_now().await,
                 _ => return, // BACK
             }
         }
