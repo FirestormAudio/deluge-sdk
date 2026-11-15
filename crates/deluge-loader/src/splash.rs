@@ -1,14 +1,18 @@
 //! The boot droplet's policy: whether a boot shows it static (with a marker saying why the menu is
-//! coming) or animated, and how far a load has drawn it. The firmware's `splash` module draws it.
+//! coming) or animated, how far a load lets it go, and its pace: one block per
+//! [`BLOCK_PERIOD_MS`], however fast the load, so it always plays out whole. The firmware's
+//! `splash` module draws it.
 
 use deluge_image::settings::{BootMode, Settings, boot_mode};
 
 /// Blocks in the whole droplet.
 pub const LOGO_BLOCKS: u8 = 25;
-/// Blocks an animated boot draws on a timer before a load takes over.
+/// Blocks an animated boot may draw before a load starts.
 pub const PRE_ROLL_BLOCKS: u8 = 10;
-/// Milliseconds between pre-roll blocks.
-pub const PRE_ROLL_PERIOD_MS: u64 = 25;
+/// Milliseconds per block: the droplet never draws faster than this, and the hand-off waits for
+/// it to complete at this pace ([`pad_ms`]). Provisional: to be set to the stock bootloader's
+/// measured per-block time.
+pub const BLOCK_PERIOD_MS: u64 = 25;
 
 /// Why a boot is headed for the menu, shown in a corner of the static droplet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +69,17 @@ pub fn load_blocks(base: u8, done: u32, total: u32) -> u8 {
     }
     let rest = u64::from(LOGO_BLOCKS - base);
     base + (rest * u64::from(done) / u64::from(total)) as u8
+}
+
+/// The droplet's next step: one more block when `drawn` is below `limit`.
+pub fn next_block(drawn: u8, limit: u8) -> Option<u8> {
+    (drawn < limit.min(LOGO_BLOCKS)).then_some(drawn + 1)
+}
+
+/// The most the hand-off can wait for a droplet `drawn` blocks in to complete at
+/// [`BLOCK_PERIOD_MS`].
+pub fn pad_ms(drawn: u8) -> u64 {
+    u64::from(LOGO_BLOCKS.saturating_sub(drawn)) * BLOCK_PERIOD_MS
 }
 
 #[cfg(test)]
@@ -165,5 +180,23 @@ mod tests {
     fn load_blocks_never_below_base_or_above_full() {
         assert_eq!(load_blocks(30, 0, 100), 25);
         assert_eq!(load_blocks(25, 1, 100), 25);
+    }
+
+    #[test]
+    fn next_block_steps_one_at_a_time_up_to_the_limit() {
+        assert_eq!(next_block(0, 10), Some(1));
+        assert_eq!(next_block(9, 10), Some(10));
+        assert_eq!(next_block(10, 10), None);
+        assert_eq!(next_block(12, 10), None);
+        assert_eq!(next_block(24, 25), Some(25));
+        assert_eq!(next_block(25, 30), None);
+    }
+
+    #[test]
+    fn padding_is_the_blocks_left_at_the_stock_pace() {
+        assert_eq!(pad_ms(25), 0);
+        assert_eq!(pad_ms(24), BLOCK_PERIOD_MS);
+        assert_eq!(pad_ms(0), 25 * BLOCK_PERIOD_MS);
+        assert_eq!(pad_ms(30), 0);
     }
 }

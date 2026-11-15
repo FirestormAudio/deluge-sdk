@@ -446,7 +446,7 @@ pub(crate) async fn boot_flash_app(app: FlashApp) -> ! {
         Ok(l) => l,
         Err(e) => {
             error!("The flash app failed its check: {:?}", e);
-            splash::stop_pre_roll();
+            splash::stop();
             // A power cycle would only auto-boot it again: holding LOAD reaches the menu.
             ui::show_message(b"FLASH APP BAD", b"HOLD LOAD AT POWER-ON").await;
             loop {
@@ -482,7 +482,7 @@ pub(crate) async fn launch_elf(mut sd: Sd, apps: &EntryList, idx: usize) {
         Ok(f) => f,
         Err(e) => {
             error!("Failed to open app: {:?}", e);
-            splash::stop_pre_roll();
+            splash::stop();
             ui::show_message(b"OPEN ERROR", b"BACK TO MENU").await;
             embassy_time::Timer::after(embassy_time::Duration::from_secs(2)).await;
             return;
@@ -503,7 +503,7 @@ pub(crate) async fn launch_elf(mut sd: Sd, apps: &EntryList, idx: usize) {
                     _ => b"SEE LOG",
                 };
                 error!("ELF load error: {:?}", e);
-                splash::stop_pre_roll();
+                splash::stop();
                 ui::show_message(b"LOAD ERROR", line2).await;
                 embassy_time::Timer::after(embassy_time::Duration::from_secs(2)).await;
                 let _ = file.close().await;

@@ -160,9 +160,8 @@ async fn main(dlg: Deluge) {
 
     // The droplet, from now until the menu or the hand-off: static (with `(R)` or `(D)` saying
     // why) when the menu is coming, built up through the boot and the load on an INSTANT unit.
-    if splash::begin(splash_plan(&device::read_settings(), recovery)).await {
-        dlg.spawner().spawn(splash::pre_roll().unwrap());
-    }
+    dlg.spawner().spawn(splash::animate().unwrap());
+    splash::begin(splash_plan(&device::read_settings(), recovery)).await;
 
     // Auto-boot (countdown *or* instant) only ever fires on the first pass of the
     // loop below.  See `settings::boot_mode`.
@@ -279,7 +278,7 @@ async fn main(dlg: Deluge) {
             }
         } else {
             // The menu draws next: no droplet frame may land on it.
-            splash::stop_pre_roll();
+            splash::stop();
             let countdown = match mode {
                 settings::BootMode::Countdown(secs) => secs,
                 // Wait: `run_selector` treats 0 as "no countdown, wait for a pick".

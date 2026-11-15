@@ -318,11 +318,10 @@ async fn receive(rx: Receiver<'static, Rusb1Driver<'static>>) -> ! {
 async fn handoff(result: elf::LoadResult) -> ! {
     ui::show_message(b"LAUNCHING", b"FROM USB").await;
 
-    // The whole droplet, drawn afresh over the message, before interrupts/DMA are
-    // quiesced (must run while the executor and the PIC service are still live — see
-    // `splash::finish`).
-    splash::restart();
-    splash::finish().await;
+    // The whole droplet at once over the message (no pacing: the dev loop's speed matters
+    // more), before interrupts/DMA are quiesced (must run while the executor and the PIC
+    // service are still live — see `splash::finish`).
+    splash::finish_now().await;
 
     // Unplug from the host: it sees a clean disconnect and re-enumerates the
     // launched app's own USB stack (e.g. the usb-log CDC for `cargo deluge run

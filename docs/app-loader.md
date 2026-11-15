@@ -100,10 +100,11 @@ On power-up the loader:
 4. **Builds the boot menu** and shows it on the OLED, auto-booting the default
    entry after the configured delay (5 seconds out of the box — see
    [`SETTINGS`](#settings--auto-boot-and-dev-mode)).
-5. **Launches your selection** — streams the chosen ELF (the droplet fills in as
-   it loads), loads its `PT_LOAD` segments, flushes the caches, leaves the droplet
-   on the OLED, quiesces all DMA/timers/IRQs, and branches to the entry point.
-   This never returns; the app owns the machine until the next power-cycle.
+5. **Launches your selection** — streams the chosen ELF while the droplet fills
+   in, at the stock bootloader's pace (a fast load waits for it to complete),
+   loads its `PT_LOAD` segments, flushes the caches, leaves the droplet on the
+   OLED, quiesces all DMA/timers/IRQs, and branches to the entry point. This never
+   returns; the app owns the machine until the next power-cycle.
 
 ---
 
