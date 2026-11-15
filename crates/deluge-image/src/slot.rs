@@ -287,13 +287,24 @@ pub fn validate_with(
     accepts: &[u16],
 ) -> Result<SlotHeader, SlotError> {
     let header = parse_with(slot, layout, accepts)?;
-    // `body_len <= layout.max_body_len()` (checked by `parse_with`), so this cannot overflow.
+    check_body(slot, &header, crc32)?;
+    Ok(header)
+}
+
+/// Check the body of `slot` against its parsed `header`: present, and its CRC (computed by
+/// `crc`, normally [`crc32`]) matches. Errors as [`validate_with`] reports them.
+pub fn check_body(
+    slot: &[u8],
+    header: &SlotHeader,
+    crc: impl Fn(&[u8]) -> u32,
+) -> Result<(), SlotError> {
+    // `body_len <= max_body_len()` for a parsed header, so this cannot overflow.
     let end = HEADER_LEN + header.body_len as usize;
     let body = slot.get(HEADER_LEN..end).ok_or(SlotError::Truncated)?;
-    if crc32(body) != header.body_crc {
+    if crc(body) != header.body_crc {
         return Err(SlotError::BodyCrc);
     }
-    Ok(header)
+    Ok(())
 }
 
 /// Build the header page for `body`, with the confirm word left pending: the
@@ -400,6 +411,63 @@ pub fn select(
         (false, false, _) => boot(slot, Reason::PendingTry),
         (false, true, Some(o)) => boot(o, Reason::RolledBack),
         (false, true, None) => boot(slot, Reason::PendingRetry),
+    }
+}
+
+/// What [`select_lazy`] learned of a slot's body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Body {
+    /// Not read: the choice didn't depend on it.
+    Unchecked,
+    /// Its CRC matched.
+    Valid,
+    /// It failed this check.
+    Invalid(SlotError),
+}
+
+/// [`select`], reading only the bodies the choice depends on.
+///
+/// `a` and `b` are the slots' header checks ([`parse`]); `check(n)` body-checks slot `n`
+/// ([`check_body`]). The booted slot is always body-checked, and for [`Reason::RolledBack`] so is
+/// the pending slot rolled back from. The slot and reason equal
+/// `select(validate(A), validate(B), wovf)`'s, except that [`Reason::Newest`] stands where the full
+/// check would say [`Reason::OnlyValid`] when the other slot's body went unchecked. Each body is
+/// checked at most once; the second result says which were.
+pub fn select_lazy(
+    a: Result<SlotHeader, SlotError>,
+    b: Result<SlotHeader, SlotError>,
+    wovf: bool,
+    mut check: impl FnMut(u8) -> Result<(), SlotError>,
+) -> (Choice, [Body; 2]) {
+    let headers = [a, b];
+    let mut body = [Body::Unchecked; 2];
+    loop {
+        let eff = |n: usize| match body[n] {
+            Body::Invalid(e) => Err(e),
+            _ => headers[n],
+        };
+        let choice = select(eff(0), eff(1), wovf);
+        let Choice::Boot { slot, reason } = choice else {
+            return (choice, body);
+        };
+        let mut needed = [false; 2];
+        needed[slot as usize] = true;
+        if reason == Reason::RolledBack {
+            needed[1 - slot as usize] = true;
+        }
+        let mut failed = false;
+        for n in 0..2 {
+            if needed[n] && body[n] == Body::Unchecked {
+                body[n] = match check(n as u8) {
+                    Ok(()) => Body::Valid,
+                    Err(e) => Body::Invalid(e),
+                };
+            }
+            failed |= needed[n] && matches!(body[n], Body::Invalid(_));
+        }
+        if !failed {
+            return (choice, body);
+        }
     }
 }
 
@@ -825,4 +893,108 @@ mod tests {
     fn update_refuses_at_max() {
         assert_eq!(plan_update(0, hdr(u32::MAX, true), BAD), None);
     }
+
+    /// One slot's state in the lazy-selection cases.
+    #[derive(Clone, Copy, Debug)]
+    enum State {
+        HeaderBad,
+        BodyGood,
+        BodyBad,
+    }
+
+    #[test]
+    fn select_lazy_agrees_with_select() {
+        let states = [State::HeaderBad, State::BodyGood, State::BodyBad];
+        let seqs = [(2, 1), (1, 2), (1, 1)];
+        for sa in states {
+            for sb in states {
+                for ca in [true, false] {
+                    for cb in [true, false] {
+                        for (qa, qb) in seqs {
+                            for wovf in [false, true] {
+                                let st = [sa, sb];
+                                let header = |n: usize, q, c| match st[n] {
+                                    State::HeaderBad => Err(SlotError::HeaderCrc),
+                                    _ => hdr(q, c),
+                                };
+                                let full = |n: usize, q, c| match st[n] {
+                                    State::BodyBad => Err(SlotError::BodyCrc),
+                                    _ => header(n, q, c),
+                                };
+                                let expected = select(full(0, qa, ca), full(1, qb, cb), wovf);
+                                let mut calls = [0u32; 2];
+                                let (choice, body) = select_lazy(
+                                    header(0, qa, ca),
+                                    header(1, qb, cb),
+                                    wovf,
+                                    |n| {
+                                        calls[n as usize] += 1;
+                                        match st[n as usize] {
+                                            State::BodyBad => Err(SlotError::BodyCrc),
+                                            _ => Ok(()),
+                                        }
+                                    },
+                                );
+                                let case = format!("{sa:?} {sb:?} c={ca},{cb} q={qa},{qb} wovf={wovf}");
+                                match (expected, choice) {
+                                    (Choice::NoSlot, Choice::NoSlot) => {}
+                                    (
+                                        Choice::Boot { slot: es, reason: er },
+                                        Choice::Boot { slot: ls, reason: lr },
+                                    ) => {
+                                        assert_eq!(es, ls, "slot: {case}");
+                                        let other = 1 - ls as usize;
+                                        assert!(
+                                            er == lr
+                                                || (er == Reason::OnlyValid
+                                                    && lr == Reason::Newest
+                                                    && body[other] == Body::Unchecked),
+                                            "reason {er:?} vs {lr:?}: {case}"
+                                        );
+                                    }
+                                    (e, l) => panic!("{e:?} vs {l:?}: {case}"),
+                                }
+                                for n in 0..2 {
+                                    assert!(calls[n] <= 1, "slot {n} checked twice: {case}");
+                                    let want = match (calls[n], st[n]) {
+                                        (0, _) => Body::Unchecked,
+                                        (_, State::BodyBad) => Body::Invalid(SlotError::BodyCrc),
+                                        _ => Body::Valid,
+                                    };
+                                    assert_eq!(body[n], want, "body {n}: {case}");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn select_lazy_checks_one_body_when_newest_is_good() {
+        let mut calls = 0;
+        let (choice, body) = select_lazy(hdr(1, true), hdr(2, true), false, |_| {
+            calls += 1;
+            Ok(())
+        });
+        assert_eq!(choice, boot(1, Reason::Newest));
+        assert_eq!(calls, 1);
+        assert_eq!(body, [Body::Unchecked, Body::Valid]);
+    }
+
+    #[test]
+    fn check_body_reports_crc_and_truncation() {
+        let img = image(BODY);
+        let h = parse(&img).unwrap();
+        assert_eq!(check_body(&img, &h, crc32), Ok(()));
+        let mut bad = img.clone();
+        bad[HEADER_LEN] ^= 1;
+        assert_eq!(check_body(&bad, &h, crc32), Err(SlotError::BodyCrc));
+        assert_eq!(
+            check_body(&img[..HEADER_LEN + 2], &h, crc32),
+            Err(SlotError::Truncated)
+        );
+    }
 }
+
