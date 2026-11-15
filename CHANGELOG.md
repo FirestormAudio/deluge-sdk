@@ -30,6 +30,11 @@ breaking changes.
 
 ### Fixed
 
+- USB mass storage of the SD card (`DATA TRANSFER`, `msc-firmware`): a card pulled or swapped
+  while a computer is attached is re-identified. `deluge_bsp::usb::sd_block::SdBlock` forgets the
+  old card on a card-detect edge, on a ready card that's no longer in the slot, or on a failed
+  transfer (`deluge_bsp::sd::forget_stale_card`), so the next TEST UNIT READY brings the new card
+  up. It used to keep addressing the old card, every read a medium error until BACK.
 - `deluge-flash-protect`: a write that sets SR1 on its own re-sends SR2 with the QE bit that was
   read, so a part that clears SR2 on a one-byte `01h` keeps its QE; the read-back now checks QE
   too, so a write that loses it isn't reported as written.
