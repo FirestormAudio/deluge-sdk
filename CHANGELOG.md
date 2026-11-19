@@ -16,6 +16,19 @@ breaking changes.
   `cargo deluge uf2` packs an ELF, a Community `.bin` or a `LOADER.SLT`.
 - `deluge_image::uf2` (UF2 blocks and the Deluge's family IDs), `deluge_loader::uf2` (the
   assembler, validation and the fake FAT16 volume), `rza1_hal::wdt::Watchdog::reset_now`.
+- `deluge_bsp::audio::tx_block_signal()`: waits for the transmit ring's next 128-frame block to
+  complete, as `rx_block_signal()` does for the receive ring, so a firmware can render one block
+  each time the codec starts the next.
+- `rza1_hal::spibsc::FlashMap::erase_sector_interruptible` and `program_interruptible`: the same
+  manual-mode erase and program with interrupts left enabled, for a firmware that runs nothing
+  from the flash. The masked forms hold interrupts off for a whole 64 KB block erase (about a
+  quarter of a second), which stops a firmware's audio; the caller of these promises that nothing
+  which can run meanwhile reads or executes from the flash window.
+- `deluge_bsp::encoder` keeps each decoded run of edges with the time it was decoded:
+  `take_timed_edges` hands them out oldest first, so a consumer that runs late can still accelerate on
+  how fast the knob turned. `record_edges` records a run (the interrupts use it, and so can a simulator
+  or a harness), and `take_edges` is the untimed take. `ENCODER_DELTAS` and `take_detents` are
+  unchanged for their callers.
 
 ### Changed
 
