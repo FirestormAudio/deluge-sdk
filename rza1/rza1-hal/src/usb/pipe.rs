@@ -41,28 +41,25 @@ pub(crate) const PIPE_COUNT: usize = 16;
 // Per-pipe async wakers
 // ---------------------------------------------------------------------------
 
-/// One waker per pipe.  The ISR calls `wake()` when a transfer finishes.
-pub(crate) static PIPE_WAKERS: [AtomicWaker; PIPE_COUNT] = {
-    #[allow(clippy::declare_interior_mutable_const)]
-    const W: AtomicWaker = AtomicWaker::new();
-    [W; PIPE_COUNT]
-};
+/// One waker per port and pipe.  The ISR calls `wake()` when a transfer finishes.
+pub(crate) static PIPE_WAKERS: [[AtomicWaker; PIPE_COUNT]; 2] =
+    [const { [const { AtomicWaker::new() }; PIPE_COUNT] }; 2];
 
 // ---------------------------------------------------------------------------
 // Transfer-done / error flags set by the ISR
 // ---------------------------------------------------------------------------
 
-/// Bitmask: bit N = pipe N transfer has completed (BRDY/BEMP fired).
-pub(crate) static PIPE_DONE: AtomicU16 = AtomicU16::new(0);
+/// Per port, a bitmask: bit N = pipe N transfer has completed (BRDY/BEMP fired).
+pub(crate) static PIPE_DONE: [AtomicU16; 2] = [const { AtomicU16::new(0) }; 2];
 
-/// Bitmask: bit N = pipe N encountered a NRDY error.
-pub(crate) static PIPE_NRDY: AtomicU16 = AtomicU16::new(0);
+/// Per port, a bitmask: bit N = pipe N encountered a NRDY error.
+pub(crate) static PIPE_NRDY: [AtomicU16; 2] = [const { AtomicU16::new(0) }; 2];
 
-/// Bitmask: bit N = pipe N is an IN (device→host) pipe.  Set by
+/// Per port, a bitmask: bit N = pipe N is an IN (device→host) pipe.  Set by
 /// [`pipe_configure`].  The BEMP ISR uses this to distinguish non-zero IN pipes
 /// from OUT pipes because BEMP is also reported for receive-side overflow/error
 /// conditions.
-pub(crate) static PIPE_IS_IN: AtomicU16 = AtomicU16::new(0);
+pub(crate) static PIPE_IS_IN: [AtomicU16; 2] = [const { AtomicU16::new(0) }; 2];
 
 /// Activate an ISO IN pipe for continuous BRDY-driven streaming.
 ///
@@ -159,13 +156,15 @@ impl PipeXferState {
 }
 
 /// Per-port array of transfer states.  Index 0 = DCP (pipe 0).
-pub(crate) static PIPE_XFER: [critical_section::Mutex<core::cell::UnsafeCell<PipeXferState>>;
-    PIPE_COUNT] = {
+pub(crate) static PIPE_XFER: [[critical_section::Mutex<core::cell::UnsafeCell<PipeXferState>>;
+    PIPE_COUNT]; 2] = {
     use core::cell::UnsafeCell;
     use critical_section::Mutex;
     #[allow(clippy::declare_interior_mutable_const)]
     const IDLE: Mutex<UnsafeCell<PipeXferState>> = Mutex::new(UnsafeCell::new(PipeXferState::IDLE));
-    [IDLE; PIPE_COUNT]
+    #[allow(clippy::declare_interior_mutable_const)]
+    const PORT: [Mutex<UnsafeCell<PipeXferState>>; PIPE_COUNT] = [IDLE; PIPE_COUNT];
+    [PORT; 2]
 };
 
 // ---------------------------------------------------------------------------
@@ -307,9 +306,11 @@ pub(crate) unsafe fn pipe_configure(u: Usb, n: usize, cfg: &PipeConfig) {
 
         // Record direction so the BEMP ISR can dispatch IN vs OUT (see PIPE_IS_IN).
         if cfg.is_in {
-            PIPE_IS_IN.fetch_or(1u16 << n, core::sync::atomic::Ordering::Release);
+            PIPE_IS_IN[super::iso::port_of(u)]
+                .fetch_or(1u16 << n, core::sync::atomic::Ordering::Release);
         } else {
-            PIPE_IS_IN.fetch_and(!(1u16 << n), core::sync::atomic::Ordering::Release);
+            PIPE_IS_IN[super::iso::port_of(u)]
+                .fetch_and(!(1u16 << n), core::sync::atomic::Ordering::Release);
         }
 
         let mut pipecfg = cfg.ep_num as u16 & PIPECFG_EPNUM_MASK;
@@ -409,7 +410,7 @@ pub(crate) unsafe fn pipe_configure(u: Usb, n: usize, cfg: &PipeConfig) {
 pub(crate) unsafe fn pipe_xfer_in_start(u: Usb, n: usize, mps: u16) -> bool {
     unsafe {
         critical_section::with(|cs| {
-            let state = &mut *PIPE_XFER[n].borrow(cs).get();
+            let state = &mut *PIPE_XFER[super::iso::port_of(u)][n].borrow(cs).get();
             if state.remaining == 0 {
                 state.buf = core::ptr::NonNull::dangling();
                 if state.length == 0 {
@@ -511,7 +512,7 @@ pub(crate) unsafe fn pipe_xfer_out_brdy(u: Usb, n: usize, speculative: bool) -> 
         let state = &mut *{
             // No critical section: the ISR caller cannot be preempted by the
             // task on a single core, and the speculative caller holds one.
-            PIPE_XFER[n]
+            PIPE_XFER[super::iso::port_of(u)][n]
                 .borrow(critical_section::CriticalSection::new())
                 .get()
         };
@@ -626,7 +627,7 @@ pub(crate) unsafe fn pipe_xfer_out_brdy(u: Usb, n: usize, speculative: bool) -> 
 pub(crate) unsafe fn pipe_xfer_in_bemp(u: Usb, n: usize) -> bool {
     unsafe {
         let state = &mut *{
-            PIPE_XFER[n]
+            PIPE_XFER[super::iso::port_of(u)][n]
                 .borrow(critical_section::CriticalSection::new())
                 .get()
         };

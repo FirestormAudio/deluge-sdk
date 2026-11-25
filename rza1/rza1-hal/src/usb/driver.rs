@@ -850,12 +850,12 @@ impl Bus for Rusb1Bus {
                     // Signal any task blocked in read() that the endpoint is
                     // now disabled, so it returns Err(EndpointError::Disabled)
                     // rather than blocking forever.
-                    PIPE_NRDY.fetch_or(1u16 << p, Ordering::Release);
+                    PIPE_NRDY[port].fetch_or(1u16 << p, Ordering::Release);
                 }
             }
             // Wake any task waiting in wait_enabled() or read() so it can observe
             // the new pipe state (PID changed to BUF/NAK, or PIPE_NRDY set).
-            PIPE_WAKERS[p].wake();
+            PIPE_WAKERS[port][p].wake();
         }
     }
 
@@ -1024,7 +1024,7 @@ impl ControlPipe for Rusb1ControlPipe {
             // immediately, before the IN data has actually been sent.
             u.bempsts().write_value(!(1u16));
             u.bempenb().modify(|r| *r |= 0x0001);
-            PIPE_DONE.fetch_and(!(1u16), Ordering::Release);
+            PIPE_DONE[self.port as usize].fetch_and(!(1u16), Ordering::Release);
             // The reset-abort flag is cleared once per transfer in setup(); leave
             // it latched here so a reset between packets aborts rather than hangs.
 
@@ -1070,11 +1070,11 @@ impl ControlPipe for Rusb1ControlPipe {
             // Wait for BEMP on pipe 0 (data transmitted to host), or for a bus
             // reset to abort the transfer.
             let aborted = core::future::poll_fn(|cx| {
-                PIPE_WAKERS[0].register(cx.waker());
+                PIPE_WAKERS[self.port as usize][0].register(cx.waker());
                 if CTRL_ABORT[self.port as usize].load(Ordering::Acquire) {
                     return Poll::Ready(true);
                 }
-                let done = PIPE_DONE.fetch_and(!(1u16), Ordering::Acquire);
+                let done = PIPE_DONE[self.port as usize].fetch_and(!(1u16), Ordering::Acquire);
                 if done & 1 != 0 {
                     Poll::Ready(false)
                 } else {
@@ -1172,7 +1172,7 @@ impl embassy_usb_driver::Endpoint for Rusb1EndpointOut {
 
     async fn wait_enabled(&mut self) {
         core::future::poll_fn(|cx| {
-            PIPE_WAKERS[self.pipe as usize].register(cx.waker());
+            PIPE_WAKERS[self.port as usize][self.pipe as usize].register(cx.waker());
             let u = usb(self.port);
             let ctr = pipectr(u, self.pipe as usize).read();
             if (ctr & super::regs::PIPECTR_PID_MASK) == PIPECTR_PID_BUF {
@@ -1198,7 +1198,7 @@ struct IdleOnDrop {
 impl Drop for IdleOnDrop {
     fn drop(&mut self) {
         critical_section::with(|cs| {
-            let state = unsafe { &mut *PIPE_XFER[self.pipe].borrow(cs).get() };
+            let state = unsafe { &mut *PIPE_XFER[self.port as usize][self.pipe].borrow(cs).get() };
             state.remaining = 0;
             state.buf = core::ptr::NonNull::dangling();
             if self.brdy_off {
@@ -1215,7 +1215,7 @@ impl EndpointOut for Rusb1EndpointOut {
 
         // Store the transfer state so the ISR can fill the buffer.
         critical_section::with(|cs| {
-            let state = unsafe { &mut *PIPE_XFER[pipe].borrow(cs).get() };
+            let state = unsafe { &mut *PIPE_XFER[self.port as usize][pipe].borrow(cs).get() };
             state.buf = unsafe { core::ptr::NonNull::new_unchecked(buf.as_mut_ptr()) };
             state.length = buf.len() as u16;
             state.remaining = buf.len() as u16;
@@ -1238,8 +1238,8 @@ impl EndpointOut for Rusb1EndpointOut {
         // Clear a completion or error the last transfer on this pipe left behind (its reader
         // dropped, or a bus reset disabled the pipe) before arming this one, as `write` does;
         // the poll below would otherwise return at once.
-        PIPE_DONE.fetch_and(!(1u16 << pipe), Ordering::Release);
-        PIPE_NRDY.fetch_and(!(1u16 << pipe), Ordering::Release);
+        PIPE_DONE[self.port as usize].fetch_and(!(1u16 << pipe), Ordering::Release);
+        PIPE_NRDY[self.port as usize].fetch_and(!(1u16 << pipe), Ordering::Release);
 
         // Enable BRDY for this pipe → ISR will call pipe_xfer_out_brdy.
         //
@@ -1304,25 +1304,25 @@ impl EndpointOut for Rusb1EndpointOut {
                 }
             });
             if fired {
-                PIPE_DONE.fetch_or(1u16 << pipe, Ordering::Release);
-                PIPE_WAKERS[pipe].wake();
+                PIPE_DONE[self.port as usize].fetch_or(1u16 << pipe, Ordering::Release);
+                PIPE_WAKERS[self.port as usize][pipe].wake();
             }
             pipe_enable(u, pipe);
         }
 
         // Wait for ISR to complete the read.
         let nbytes = core::future::poll_fn(|cx| {
-            PIPE_WAKERS[pipe].register(cx.waker());
-            let done = PIPE_DONE.load(Ordering::Acquire);
+            PIPE_WAKERS[self.port as usize][pipe].register(cx.waker());
+            let done = PIPE_DONE[self.port as usize].load(Ordering::Acquire);
             if done & (1u16 << pipe) != 0 {
-                PIPE_DONE.fetch_and(!(1u16 << pipe), Ordering::Release);
+                PIPE_DONE[self.port as usize].fetch_and(!(1u16 << pipe), Ordering::Release);
                 let state = critical_section::with(|cs| {
-                    let s = unsafe { &*PIPE_XFER[pipe].borrow(cs).get() };
+                    let s = unsafe { &*PIPE_XFER[self.port as usize][pipe].borrow(cs).get() };
                     s.transferred
                 });
                 Poll::Ready(Ok(state as usize))
-            } else if PIPE_NRDY.load(Ordering::Acquire) & (1u16 << pipe) != 0 {
-                PIPE_NRDY.fetch_and(!(1u16 << pipe), Ordering::Release);
+            } else if PIPE_NRDY[self.port as usize].load(Ordering::Acquire) & (1u16 << pipe) != 0 {
+                PIPE_NRDY[self.port as usize].fetch_and(!(1u16 << pipe), Ordering::Release);
                 Poll::Ready(Err(EndpointError::Disabled))
             } else {
                 Poll::Pending
@@ -1371,7 +1371,7 @@ impl embassy_usb_driver::Endpoint for Rusb1EndpointIn {
 
     async fn wait_enabled(&mut self) {
         core::future::poll_fn(|cx| {
-            PIPE_WAKERS[self.pipe as usize].register(cx.waker());
+            PIPE_WAKERS[self.port as usize][self.pipe as usize].register(cx.waker());
             let u = usb(self.port);
             let ctr = pipectr(u, self.pipe as usize).read();
             if (ctr & super::regs::PIPECTR_PID_MASK) == PIPECTR_PID_BUF {
@@ -1390,7 +1390,7 @@ impl EndpointIn for Rusb1EndpointIn {
         let mps = self.info.max_packet_size;
 
         critical_section::with(|cs| {
-            let state = unsafe { &mut *PIPE_XFER[pipe].borrow(cs).get() };
+            let state = unsafe { &mut *PIPE_XFER[self.port as usize][pipe].borrow(cs).get() };
             // Cast away const — we only read this pointer in the ISR.
             state.buf = unsafe { core::ptr::NonNull::new_unchecked(buf.as_ptr() as *mut u8) };
             state.length = buf.len() as u16;
@@ -1411,8 +1411,8 @@ impl EndpointIn for Rusb1EndpointIn {
         // poll_fn below return immediately; the next write() would then send on
         // the same data toggle, and the host would discard that packet as a
         // retransmission.
-        PIPE_DONE.fetch_and(!(1u16 << pipe), Ordering::Release);
-        PIPE_NRDY.fetch_and(!(1u16 << pipe), Ordering::Release);
+        PIPE_DONE[self.port as usize].fetch_and(!(1u16 << pipe), Ordering::Release);
+        PIPE_NRDY[self.port as usize].fetch_and(!(1u16 << pipe), Ordering::Release);
 
         // Kick off the first packet; subsequent packets are sent from the BEMP ISR.
         //
@@ -1457,13 +1457,13 @@ impl EndpointIn for Rusb1EndpointIn {
 
         // Wait for all packets to drain.
         core::future::poll_fn(|cx| {
-            PIPE_WAKERS[pipe].register(cx.waker());
-            let done = PIPE_DONE.load(Ordering::Acquire);
+            PIPE_WAKERS[self.port as usize][pipe].register(cx.waker());
+            let done = PIPE_DONE[self.port as usize].load(Ordering::Acquire);
             if done & (1u16 << pipe) != 0 {
-                PIPE_DONE.fetch_and(!(1u16 << pipe), Ordering::Release);
+                PIPE_DONE[self.port as usize].fetch_and(!(1u16 << pipe), Ordering::Release);
                 Poll::Ready(Ok(()))
-            } else if PIPE_NRDY.load(Ordering::Acquire) & (1u16 << pipe) != 0 {
-                PIPE_NRDY.fetch_and(!(1u16 << pipe), Ordering::Release);
+            } else if PIPE_NRDY[self.port as usize].load(Ordering::Acquire) & (1u16 << pipe) != 0 {
+                PIPE_NRDY[self.port as usize].fetch_and(!(1u16 << pipe), Ordering::Release);
                 Poll::Ready(Err(EndpointError::Disabled))
             } else {
                 Poll::Pending
@@ -1630,8 +1630,8 @@ pub(crate) unsafe fn dcd_int_handler(port: u8) {
                     // the data stage is complete. Its BEMP may be pending in this same
                     // interrupt, and the BEMPENB write above masks it from the BEMP handler
                     // below: complete `data_in` here or it waits forever.
-                    PIPE_DONE.fetch_or(1, Ordering::Release);
-                    PIPE_WAKERS[0].wake();
+                    PIPE_DONE[p].fetch_or(1, Ordering::Release);
+                    PIPE_WAKERS[p][0].wake();
                 }
                 // ctsq=4 (WRSS) / ctsq=5 (WRND): accept() / accept_set_address()
                 // are called by the embassy-usb task and set CCPL from there.
@@ -1667,8 +1667,8 @@ pub(crate) unsafe fn dcd_int_handler(port: u8) {
                     // legitimately complete the transfer.
                     let done = pipe_xfer_out_brdy(u, n, false);
                     if done {
-                        PIPE_DONE.fetch_or(1u16 << n, Ordering::Release);
-                        PIPE_WAKERS[n].wake();
+                        PIPE_DONE[p].fetch_or(1u16 << n, Ordering::Release);
+                        PIPE_WAKERS[p][n].wake();
                     }
                 }
             }
@@ -1692,9 +1692,9 @@ pub(crate) unsafe fn dcd_int_handler(port: u8) {
                     // data stage.  Disable the BEMP0 interrupt now; CCPL is set
                     // by the CTRT ctsq=2 handler.
                     u.bempenb().modify(|r| *r &= !0x0001);
-                    PIPE_DONE.fetch_or(1, Ordering::Release);
-                    PIPE_WAKERS[0].wake();
-                } else if PIPE_IS_IN.load(Ordering::Acquire) & (1u16 << n) != 0
+                    PIPE_DONE[p].fetch_or(1, Ordering::Release);
+                    PIPE_WAKERS[p][0].wake();
+                } else if PIPE_IS_IN[p].load(Ordering::Acquire) & (1u16 << n) != 0
                     && pipe_xfer_in_bemp(u, n)
                 {
                     // All packets transmitted — complete unconditionally.
@@ -1710,8 +1710,8 @@ pub(crate) unsafe fn dcd_int_handler(port: u8) {
                     // at BUF and BEMP re-asserts while the host polls it, a storm
                     // that would starve the task `write()` must wake.
                     pipe_bemp_disable(u, n);
-                    PIPE_DONE.fetch_or(1u16 << n, Ordering::Release);
-                    PIPE_WAKERS[n].wake();
+                    PIPE_DONE[p].fetch_or(1u16 << n, Ordering::Release);
+                    PIPE_WAKERS[p][n].wake();
                 }
             }
         }
@@ -1841,7 +1841,7 @@ unsafe fn process_bus_reset(port: u8) {
                     // The reset above clears BEMPENB wholesale, so a transfer
                     // missed here loses the interrupt it is blocked on and
                     // `write()` never completes.
-                    let state = &mut *PIPE_XFER[n].borrow(cs).get();
+                    let state = &mut *PIPE_XFER[p][n].borrow(cs).get();
                     if state.buf != core::ptr::NonNull::dangling() {
                         state.remaining = 0;
                         state.buf = core::ptr::NonNull::dangling();
@@ -1853,11 +1853,11 @@ unsafe fn process_bus_reset(port: u8) {
 
         // Wake aborted waiters (they will observe PIPE_NRDY and return an error).
         if abort_mask != 0 {
-            PIPE_NRDY.fetch_or(abort_mask, Ordering::Release);
+            PIPE_NRDY[p].fetch_or(abort_mask, Ordering::Release);
             #[allow(clippy::needless_range_loop)]
             for n in 1..16usize {
                 if abort_mask & (1u16 << n) != 0 {
-                    PIPE_WAKERS[n].wake();
+                    PIPE_WAKERS[p][n].wake();
                 }
             }
         }
@@ -1869,7 +1869,7 @@ unsafe fn process_bus_reset(port: u8) {
         // return an error and the device task falls back to bus.poll().
         CTRL_ABORT[p].store(true, Ordering::Release);
         CTRL_WAKERS[p].wake();
-        PIPE_WAKERS[0].wake();
+        PIPE_WAKERS[p][0].wake();
 
         // Re-apply all pipe hardware configs so the host can re-enumerate.
         configure_all_pipes(port);
@@ -1916,10 +1916,10 @@ mod tests {
         test::poke16(u.intsts(0).addr(), INTSTS0_CTRT | INTSTS0_BEMP | 2);
         test::poke16(u.bempsts().addr(), 0x0001);
         test::poke16(u.bempenb().addr(), 0x0001);
-        PIPE_DONE.fetch_and(!1u16, Ordering::Relaxed);
+        PIPE_DONE[0].fetch_and(!1u16, Ordering::Relaxed);
         unsafe { dcd_int_handler(0) };
         assert_ne!(
-            PIPE_DONE.load(Ordering::Acquire) & 1,
+            PIPE_DONE[0].load(Ordering::Acquire) & 1,
             0,
             "the data stage did not complete"
         );
@@ -1928,6 +1928,16 @@ mod tests {
             ctr & (PIPECTR_PID_MASK | PIPECTR_CCPL),
             PIPECTR_PID_BUF | PIPECTR_CCPL
         );
+    }
+
+    /// One port's finished transfer is not another's.
+    #[test]
+    fn a_completion_on_one_port_leaves_the_other_alone() {
+        let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        fresh_port1();
+        PIPE_DONE[0].fetch_or(1 << 9, Ordering::Release);
+        assert_eq!(PIPE_DONE[1].load(Ordering::Acquire) & (1 << 9), 0);
+        PIPE_DONE[0].fetch_and(!(1 << 9), Ordering::Release);
     }
 
     /// The BEMP that ends an IN transfer turns that pipe's BEMP interrupt off. The pipe stays at
@@ -1945,12 +1955,14 @@ mod tests {
         test::poke16(u.intsts(0).addr(), INTSTS0_BEMP);
         test::poke16(u.bempsts().addr(), 1 << PIPE);
         test::poke16(u.bempenb().addr(), 1 << PIPE);
-        PIPE_IS_IN.fetch_or(1 << PIPE, Ordering::Relaxed);
-        critical_section::with(|cs| unsafe { (*PIPE_XFER[PIPE].borrow(cs).get()).remaining = 0 });
-        PIPE_DONE.fetch_and(!(1 << PIPE), Ordering::Relaxed);
+        PIPE_IS_IN[0].fetch_or(1 << PIPE, Ordering::Relaxed);
+        critical_section::with(|cs| unsafe {
+            (*PIPE_XFER[0][PIPE].borrow(cs).get()).remaining = 0
+        });
+        PIPE_DONE[0].fetch_and(!(1 << PIPE), Ordering::Relaxed);
         unsafe { dcd_int_handler(0) };
         assert_ne!(
-            PIPE_DONE.load(Ordering::Acquire) & (1 << PIPE),
+            PIPE_DONE[0].load(Ordering::Acquire) & (1 << PIPE),
             0,
             "the transfer completes"
         );
@@ -2366,7 +2378,7 @@ mod tests {
 
     fn xfer_idle(pipe: usize) -> (u16, core::ptr::NonNull<u8>) {
         critical_section::with(|cs| {
-            let s = unsafe { &*PIPE_XFER[pipe].borrow(cs).get() };
+            let s = unsafe { &*PIPE_XFER[1][pipe].borrow(cs).get() };
             (s.remaining, s.buf)
         })
     }
@@ -2432,7 +2444,7 @@ mod tests {
         {
             let mut read = core::pin::pin!(out.read(&mut buf));
             assert!(read.as_mut().poll(&mut cx).is_pending());
-            PIPE_DONE.fetch_or(1 << pipe, Ordering::Release); // the ISR completes it; nobody polls
+            PIPE_DONE[1].fetch_or(1 << pipe, Ordering::Release); // the ISR completes it; nobody polls
         }
         let mut read = core::pin::pin!(out.read(&mut buf));
         assert!(
