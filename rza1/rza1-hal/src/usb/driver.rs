@@ -172,7 +172,7 @@ impl PortAlloc {
         //   PIPE9-15 : bulk (function-controller mode).
         // Bulk endpoints MUST skip pipes 6-8: assigning a bulk transfer to an
         // interrupt-only pipe silently never raises BRDY, and (because all
-        // bulk/interrupt pipes share the D1FIFO port) it stalls the other
+        // bulk/interrupt pipes share the CFIFO port) it stalls the other
         // bulk pipes too.
         let (start, end) = match xfer_type {
             XferType::Control => return Some(0),
@@ -988,8 +988,8 @@ impl ControlPipe for Rusb1ControlPipe {
             return Err(EndpointError::Disabled);
         }
 
-        // Read from CFIFO (pipe 0 OUT).
-        unsafe {
+        // Read from CFIFO (pipe 0 OUT), which the USB interrupt shares: one step.
+        critical_section::with(|_| unsafe {
             let u = usb(self.port);
             let fifo = FifoPort::cfifo(u);
             fifo_select_pipe(&fifo, 0, false);
@@ -1004,7 +1004,7 @@ impl ControlPipe for Rusb1ControlPipe {
                 self.port, len, vld
             );
             Ok(len)
-        }
+        })
     }
 
     async fn data_in(
@@ -1028,37 +1028,41 @@ impl ControlPipe for Rusb1ControlPipe {
             // The reset-abort flag is cleared once per transfer in setup(); leave
             // it latched here so a reset between packets aborts rather than hangs.
 
-            let fifo = FifoPort::cfifo(u);
-            fifo_select_pipe(&fifo, 0, true); // ISEL=1 selects IN direction
+            // Select, fill and commit in one step: the USB interrupt shares the port.
+            critical_section::with(|_| {
+                let fifo = FifoPort::cfifo(u);
+                fifo_select_pipe(&fifo, 0, true); // ISEL=1 selects IN direction
 
-            // Wait (bounded) for the ISEL bit to take effect (CFIFOSEL latency).
-            let mut ready = false;
-            for _ in 0..1000u32 {
-                let sel = u.cfifosel().read();
-                if sel & super::regs::FIFOSEL_ISEL != 0 {
-                    ready = true;
-                    break;
+                // Wait (bounded) for the ISEL bit to take effect (CFIFOSEL latency).
+                let mut ready = false;
+                for _ in 0..1000u32 {
+                    let sel = u.cfifosel().read();
+                    if sel & super::regs::FIFOSEL_ISEL != 0 {
+                        ready = true;
+                        break;
+                    }
                 }
-            }
-            trace!(
-                "usb{}: CFIFO ISEL ready={} frdy={}",
-                self.port,
-                ready,
-                fifo_is_ready(&fifo, 0)
-            );
-            if !ready || !fifo_is_ready(&fifo, 0) {
-                warn!(
-                    "usb{}: data_in CFIFO not ready — returning Disabled",
-                    self.port
+                trace!(
+                    "usb{}: CFIFO ISEL ready={} frdy={}",
+                    self.port,
+                    ready,
+                    fifo_is_ready(&fifo, 0)
                 );
-                return Err(EndpointError::Disabled);
-            }
+                if !ready || !fifo_is_ready(&fifo, 0) {
+                    warn!(
+                        "usb{}: data_in CFIFO not ready — returning Disabled",
+                        self.port
+                    );
+                    return Err(EndpointError::Disabled);
+                }
 
-            sw_to_hw_fifo(&fifo, data.as_ptr(), data.len());
+                sw_to_hw_fifo(&fifo, data.as_ptr(), data.len());
 
-            if last || data.len() < self.mps as usize {
-                fifo_bval(&fifo);
-            }
+                if last || data.len() < self.mps as usize {
+                    fifo_bval(&fifo);
+                }
+                Ok(())
+            })?;
 
             // Arm DCP for IN transfers by setting PID=BUF (TRM §28.4.6.2(b)).
             // PID was left at NAK by hardware after the SETUP packet was received.
@@ -1260,7 +1264,7 @@ impl EndpointOut for Rusb1EndpointOut {
                 brdyenb.read() & (1u16 << pipe) != 0
             };
 
-            // D1FIFO mutual exclusion: the arm/drain below points the shared
+            // CFIFO mutual exclusion: the arm/drain below points the shared
             // FIFO port's CURPIPE at this pipe and then copies data out.  The
             // USB ISR does the same select-then-copy for other pipes (an IN
             // pipe's BEMP continuation fill, or another OUT pipe's BRDY drain);
@@ -1580,7 +1584,9 @@ pub(crate) unsafe fn dcd_int_handler(port: u8) {
             let intsts_live = u.intsts(0).read();
             if intsts_live & INTSTS0_VALID != 0 {
                 // Clear CFIFO before latching the setup packet — any data left
-                // over from the previous transfer must be discarded.
+                // over from the previous transfer must be discarded. A bulk pipe
+                // may be the one selected, so select the control pipe first.
+                super::fifo::cfifo_select_control(u);
                 u.cfifoctr().write_value(FIFOCTR_BCLR);
 
                 // Capture setup packet from USBREQ/USBVAL/USBINDX/USBLENG.
@@ -1811,6 +1817,7 @@ unsafe fn process_bus_reset(port: u8) {
         BUS_EVENTS[p].fetch_and(!(BUS_EVT_SUSPEND | BUS_EVT_RESUME), Ordering::AcqRel);
 
         // Clear the control FIFO.
+        super::fifo::cfifo_select_control(u);
         u.cfifoctr().write_value(FIFOCTR_BCLR);
 
         // Deselect D0FIFO and D1FIFO (CURPIPE = 0).
@@ -1938,6 +1945,29 @@ mod tests {
         PIPE_DONE[0].fetch_or(1 << 9, Ordering::Release);
         assert_eq!(PIPE_DONE[1].load(Ordering::Acquire) & (1 << 9), 0);
         PIPE_DONE[0].fetch_and(!(1 << 9), Ordering::Release);
+    }
+
+    /// Bulk pipes share the CPU port, so a SETUP can find one selected. The clear it issues must reach the
+    /// control pipe's buffer, not that pipe's.
+    #[test]
+    fn a_setup_selects_the_control_pipe_before_it_clears_the_cpu_port() {
+        let u = usb(0);
+        test::reset();
+        test::rcw0(u.intsts(0).addr());
+        test::poke16(u.intsts(0).addr(), INTSTS0_CTRT | INTSTS0_VALID | 1);
+        test::poke16(u.cfifosel().addr(), 4);
+        unsafe { dcd_int_handler(0) };
+        let log = test::log();
+        let clear = log
+            .iter()
+            .position(|a| a.write && a.addr == u.cfifoctr().addr())
+            .expect("the SETUP clears the port");
+        let selected = log[..clear]
+            .iter()
+            .rev()
+            .find(|a| a.write && a.addr == u.cfifosel().addr())
+            .map(|a| a.val & 0xF);
+        assert_eq!(selected, Some(0));
     }
 
     /// The BEMP that ends an IN transfer turns that pipe's BEMP interrupt off. The pipe stays at

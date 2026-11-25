@@ -547,7 +547,7 @@ pub(crate) unsafe fn pipe_xfer_out_brdy(u: Usb, n: usize, speculative: bool) -> 
         }
 
         let fifo = fifo_for_pipe(u, n);
-        // Receiving (OUT) pipe selection.  For bulk pipes on the shared D1FIFO
+        // Receiving (OUT) pipe selection.  For bulk pipes on the shared CFIFO
         // (e.g. CDC OUT pipe 3 sharing the port with IN pipe 4) use the TRM
         // deselect-first CURPIPE-change procedure so this read cannot surface
         // the previously-selected IN pipe's staged data.  ISO pipes have
