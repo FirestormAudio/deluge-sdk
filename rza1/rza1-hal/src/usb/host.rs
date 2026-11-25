@@ -39,7 +39,7 @@
 //! ## FIFO routing (host mode)
 //!
 //! - Pipe 0 (control): CFIFO
-//! - Pipes 1-9 (all others): **D0FIFO** (unlike device mode, host never uses D1FIFO)
+//! - Pipes 1-9 (all others): **D0FIFO**; D1FIFO belongs to the receive DMA
 //!
 //! ## PIPECFG.DIR in host mode
 //!

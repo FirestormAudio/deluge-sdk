@@ -284,10 +284,11 @@ pub(crate) const PKT_BUF_BLOCKS: usize = PKT_BUF_SIZE_BYTES / PKT_BUF_BLOCK_SIZE
 // ---------------------------------------------------------------------------
 // BUSWAIT — BWAIT[5:0] wait cycles per register access (TRM §28.3.2).
 // Constraint: consecutive register accesses must take >= 67 ns of P1-bus
-// (66.7 MHz, 15 ns/cycle) time, i.e. >= 3 wait cycles (5 access cycles).
-// 0x0F (15 waits, the reset value) is used: conservative.
+// (66.7 MHz, 15 ns/cycle) time, i.e. >= 3 wait cycles (5 access cycles, 75 ns).
+// The reset value (15 waits, 255 ns) makes every access more than three times
+// as slow, and the USB interrupt is mostly such accesses.
 // ---------------------------------------------------------------------------
-pub(crate) const BUSWAIT_VALUE: u16 = 0x000F;
+pub(crate) const BUSWAIT_VALUE: u16 = 0x0003;
 
 // ---------------------------------------------------------------------------
 // Registers
@@ -316,6 +317,15 @@ pub(crate) fn pipectr(u: Usb, pipe: usize) -> Reg<u16, RW> {
 #[cfg(all(test, not(target_os = "none")))]
 mod tests {
     use super::*;
+
+    /// Consecutive accesses must be at least 67 ns apart (TRM §28.3.2); an access takes its wait cycles and two more,
+    /// at P1's 66.7 MHz (15 ns). No wait longer than that asks for.
+    #[test]
+    fn the_bus_wait_is_the_least_the_manual_allows() {
+        let ns = |wait: u16| (u32::from(wait) + 2) * 15;
+        assert!(ns(BUSWAIT_VALUE) >= 67);
+        assert!(ns(BUSWAIT_VALUE - 1) < 67);
+    }
 
     /// The USB registers sit at the offsets `struct st_usb20` (`usb20_iodefine.h`) gives them.
     #[test]

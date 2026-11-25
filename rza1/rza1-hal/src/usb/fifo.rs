@@ -4,27 +4,35 @@
 //! and provides the `sw_to_hw_fifo` / `hw_to_sw_fifo` byte-copy routines
 //! that handle the RUSB1's MBW (memory bus width) switching rules.
 //!
-//! Routing policy (as in TinyUSB `dcd_rusb1.c`):
+//! Routing policy in device mode:
 //! - Pipe 0 (DCP / control)         → CFIFO
 //! - Pipes 1–2 (ISO)                → D0FIFO  (dedicated for audio)
-//! - Pipes 3–15 (bulk / interrupt)  → D1FIFO
+//! - Pipes 3–15 (bulk / interrupt)  → CFIFO, shared with control
+//!
+//! D1FIFO is left to a DMA channel: it and D0FIFO are the ports a DMA can use.
+//! Whoever selects a pipe on the shared CFIFO copies it in the same critical
+//! section (or in the USB interrupt), so no one else re-points the port meanwhile.
 //!
 //! ## MBW rules (TRM §28.3.8)
 //! The MBW field in the FIFO SEL register must not change once a FIFO read
 //! has begun.  MBW=32 is set together with CURPIPE and never narrowed; sub-word
 //! tails use byte-lane stores (write) or unpack one extra word (read).
 //!
-//! ## RZ/A1 D1FIFO quirk
-//! Writing D1FIFOSEL re-triggers the FIFO port switching state machine even
-//! if only MBW changes, and a read immediately after the MBW write returns
+//! ## RZ/A1 DnFIFO quirk
+//! Writing a FIFOSEL register re-triggers that port's switching state machine
+//! even if only MBW changes, and a read immediately after the MBW write returns
 //! `0xFF`, so MBW is never changed after selection.
 
 use super::regs::{
     FIFOCTR_BCLR, FIFOCTR_BVAL, FIFOCTR_DTLN_MASK, FIFOCTR_FRDY, FIFOSEL_CURPIPE_MASK,
-    FIFOSEL_MBW_MASK, FIFOSEL_MBW_SHIFT, MBW_32,
+    FIFOSEL_ISEL, FIFOSEL_MBW_MASK, FIFOSEL_MBW_SHIFT, MBW_32,
 };
 use crate::pac::common::{RW, Reg};
 use crate::pac::usb::Usb;
+
+/// Polls of a FIFO port's registers before giving up on it: about 38 µs at the
+/// shortest bus wait, two accesses a poll.
+const FIFO_POLLS: usize = 256;
 
 /// Hardware FIFO port: data register, its byte lanes, SEL register and CTR register.
 pub(crate) struct FifoPort {
@@ -58,16 +66,6 @@ impl FifoPort {
             ctr: u.d0fifoctr(),
         }
     }
-
-    /// The D1FIFO port of USB port `u`.
-    pub fn d1fifo(u: Usb) -> Self {
-        Self {
-            data: u.d1fifo(),
-            lanes: [u.d1fifo_b(0), u.d1fifo_b(1), u.d1fifo_b(2), u.d1fifo_b(3)],
-            sel: u.d1fifosel(),
-            ctr: u.d1fifoctr(),
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -76,12 +74,11 @@ impl FifoPort {
 
 /// Return the correct [`FifoPort`] for `pipe_num`.
 ///
-/// Routing: pipe 0 → CFIFO, pipes 1-2 → D0FIFO, pipes 3+ → D1FIFO.
+/// Routing: pipes 1-2 → D0FIFO, every other pipe → CFIFO.
 pub(crate) fn fifo_for_pipe(u: Usb, pipe_num: usize) -> FifoPort {
     match pipe_num {
-        0 => FifoPort::cfifo(u),
         1 | 2 => FifoPort::d0fifo(u),
-        _ => FifoPort::d1fifo(u),
+        _ => FifoPort::cfifo(u),
     }
 }
 
@@ -113,7 +110,7 @@ pub(crate) unsafe fn fifo_is_ready(fifo: &FifoPort, pipe_num: usize) -> bool {
     // Correct selection — including the deselect-first dance the TRM mandates
     // when switching to a *receiving* pipe — is handled by the caller via
     // `fifo_select_recv` so the port can't surface the prior pipe's data.
-    for _ in 0..64 {
+    for _ in 0..FIFO_POLLS {
         let sel = fifo.sel.read();
         if (sel & FIFOSEL_CURPIPE_MASK) as usize != pipe_num {
             continue;
@@ -125,22 +122,37 @@ pub(crate) unsafe fn fifo_is_ready(fifo: &FifoPort, pipe_num: usize) -> bool {
     false
 }
 
-/// Select a **receiving-direction** (OUT) pipe on a DnFIFO port, following the
+/// Point the CPU port at the control pipe, receiving, so that a clear reaches that
+/// pipe's buffer and not one a bulk pipe left selected. `false` if the port did not
+/// confirm it: nothing may be cleared then.
+///
+/// # Safety
+/// In the USB interrupt, or with interrupts off: nothing else may select a pipe
+/// on the port meanwhile.
+pub(crate) unsafe fn cfifo_select_control(u: Usb) -> bool {
+    unsafe {
+        let fifo = FifoPort::cfifo(u);
+        fifo_select_pipe(&fifo, 0, false);
+        (0..FIFO_POLLS).any(|_| fifo.sel.read() & (FIFOSEL_CURPIPE_MASK | FIFOSEL_ISEL) == 0)
+    }
+}
+
+/// Select a **receiving-direction** (OUT) pipe on a FIFO port, following the
 /// TRM §28 CURPIPE-change procedure: set CURPIPE to a different value (0 = no
 /// pipe) first, confirm it latched, then select the target pipe.
 ///
-/// On a shared D1FIFO, an OUT drain that selects its pipe in a single write can
+/// On a shared port, an OUT drain that selects its pipe in a single write can
 /// observe the FRDY/data of the *previously selected* IN pipe and read its
 /// staged TX bytes back onto the OUT path.  Deselecting first resets the port
 /// state machine so the subsequent read reflects only the target pipe.
 ///
 /// # Safety
-/// `fifo` must be a valid DnFIFO port; `pipe_num` must be a DnFIFO pipe (≥ 1).
+/// `fifo` must be a valid port; `pipe_num` must be one it can select (≥ 1).
 pub(crate) unsafe fn fifo_select_recv(fifo: &FifoPort, pipe_num: usize) {
     unsafe {
-        // Step 1: deselect (CURPIPE = 0 → "no pipe" on D0/D1FIFO) and confirm.
+        // Step 1: deselect (CURPIPE = 0: "no pipe" on D0FIFO, the DCP on CFIFO) and confirm.
         fifo_select_pipe(fifo, 0, false);
-        for _ in 0..64 {
+        for _ in 0..FIFO_POLLS {
             if (fifo.sel.read() & FIFOSEL_CURPIPE_MASK) == 0 {
                 break;
             }
@@ -324,6 +336,26 @@ mod tests {
     fn a_fifo_port_is_send() {
         fn send<T: Send>() {}
         send::<FifoPort>();
+    }
+
+    /// D0 is for the isochronous pipes and D1 for a DMA channel; every other pipe goes through the CPU port.
+    #[test]
+    fn bulk_and_interrupt_pipes_use_the_cpu_port() {
+        let u = usb(0);
+        for n in 3..16 {
+            assert_eq!(
+                fifo_for_pipe(u, n).sel.addr(),
+                u.cfifosel().addr(),
+                "pipe {n}"
+            );
+        }
+        for n in 1..16 {
+            assert_ne!(
+                fifo_for_pipe(u, n).sel.addr(),
+                u.d1fifosel().addr(),
+                "pipe {n}"
+            );
+        }
     }
 
     #[test]
