@@ -896,7 +896,11 @@ mod tests {
                 .filter(|e| e.attributes & 0x03 == 0x02)
                 .map(|e| (e.alt, e.max_packet))
                 .collect();
-            assert_eq!(sizes, [(0, want), (0, want), (1, want), (1, want)], "{speed:?}");
+            assert_eq!(
+                sizes,
+                [(0, want), (0, want), (1, want), (1, want)],
+                "{speed:?}"
+            );
         }
     }
 
