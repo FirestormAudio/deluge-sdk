@@ -1646,9 +1646,25 @@ pub(crate) unsafe fn dcd_int_handler(port: u8) {
 
         // ── CTRT (control transfer stage) ────────────────────────────────────
         if sts & INTSTS0_CTRT != 0 {
-            // Re-read INTSTS0 to get the live VALID bit.
-            let intsts_live = u.intsts(0).read();
-            if intsts_live & INTSTS0_VALID != 0 {
+            // Which stage this is comes from one reading of INTSTS0.  A SETUP can arrive
+            // after that reading, and the flag clear above can have swallowed its CTRT:
+            // then VALID is set now and wasn't.  Its request registers are stored after
+            // VALID rises (TRM §28.4.6(2)(a)), so wait (bounded) for the CTRT that says so.
+            let mut stage = sts;
+            if stage & INTSTS0_VALID == 0 {
+                let mut live = u.intsts(0).read();
+                if live & INTSTS0_VALID != 0 {
+                    for _ in 0..64 {
+                        if live & INTSTS0_CTRT != 0 {
+                            u.intsts(0).write_value(!INTSTS0_CTRT);
+                            break;
+                        }
+                        live = u.intsts(0).read();
+                    }
+                    stage = live;
+                }
+            }
+            if stage & INTSTS0_VALID != 0 {
                 // Clear CFIFO before latching the setup packet — any data left
                 // over from the previous transfer must be discarded. A bulk pipe
                 // may be the one selected, so select the control pipe first.
@@ -1681,7 +1697,7 @@ pub(crate) unsafe fn dcd_int_handler(port: u8) {
                 // Signal setup() only when VALID=1 (i.e. a real SETUP packet).
                 // Status-stage CTRT events (VALID=0) must NOT wake setup() or
                 // it would return a stale packet.
-                let ctsq = (sts & INTSTS0_CTSQ_MASK) as u8;
+                let ctsq = (stage & INTSTS0_CTSQ_MASK) as u8;
                 CTRL_STAGE[p].store(ctsq, Ordering::Release);
                 CTRL_WAKERS[p].wake();
                 // A `data_in` in progress waits on the pipe's waker: it ends now.

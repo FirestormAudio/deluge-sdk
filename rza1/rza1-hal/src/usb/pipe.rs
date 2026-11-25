@@ -784,12 +784,15 @@ unsafe fn pipe_quiesce(u: Usb, n: usize) {
 /// # Safety
 /// The caller owns USB port `u`: no other context reconfigures pipe `n` meanwhile.
 pub(crate) unsafe fn pipe_brdy_enable(u: Usb, n: usize) {
-    let brdysts = u.brdysts();
-    let brdyenb = u.brdyenb();
-    // Clear any pending BRDY for this pipe before enabling.
-    brdysts.write_value(!((1u16) << n));
-    let cur = brdyenb.read();
-    brdyenb.write_value(cur | (1u16 << n));
+    // The USB interrupt changes the same register.
+    critical_section::with(|_| {
+        let brdysts = u.brdysts();
+        let brdyenb = u.brdyenb();
+        // Clear any pending BRDY for this pipe before enabling.
+        brdysts.write_value(!((1u16) << n));
+        let cur = brdyenb.read();
+        brdyenb.write_value(cur | (1u16 << n));
+    });
 }
 
 /// Disable BRDY interrupt for pipe `n`.
@@ -797,9 +800,12 @@ pub(crate) unsafe fn pipe_brdy_enable(u: Usb, n: usize) {
 /// # Safety
 /// The caller owns USB port `u`: no other context reconfigures pipe `n` meanwhile.
 pub(crate) unsafe fn pipe_brdy_disable(u: Usb, n: usize) {
-    let brdyenb = u.brdyenb();
-    let cur = brdyenb.read();
-    brdyenb.write_value(cur & !(1u16 << n));
+    // The USB interrupt changes the same register.
+    critical_section::with(|_| {
+        let brdyenb = u.brdyenb();
+        let cur = brdyenb.read();
+        brdyenb.write_value(cur & !(1u16 << n));
+    });
 }
 
 /// Enable BEMP interrupt for pipe `n`.
@@ -807,11 +813,14 @@ pub(crate) unsafe fn pipe_brdy_disable(u: Usb, n: usize) {
 /// # Safety
 /// The caller owns USB port `u`: no other context reconfigures pipe `n` meanwhile.
 pub(crate) unsafe fn pipe_bemp_enable(u: Usb, n: usize) {
-    let bempsts = u.bempsts();
-    let bempenb = u.bempenb();
-    bempsts.write_value(!((1u16) << n));
-    let cur = bempenb.read();
-    bempenb.write_value(cur | (1u16 << n));
+    // The USB interrupt changes the same register.
+    critical_section::with(|_| {
+        let bempsts = u.bempsts();
+        let bempenb = u.bempenb();
+        bempsts.write_value(!((1u16) << n));
+        let cur = bempenb.read();
+        bempenb.write_value(cur | (1u16 << n));
+    });
 }
 
 /// Disable BEMP interrupt for pipe `n`.
@@ -819,9 +828,12 @@ pub(crate) unsafe fn pipe_bemp_enable(u: Usb, n: usize) {
 /// # Safety
 /// The caller owns USB port `u`: no other context reconfigures pipe `n` meanwhile.
 pub(crate) unsafe fn pipe_bemp_disable(u: Usb, n: usize) {
-    let bempenb = u.bempenb();
-    let cur = bempenb.read();
-    bempenb.write_value(cur & !(1u16 << n));
+    // The USB interrupt changes the same register.
+    critical_section::with(|_| {
+        let bempenb = u.bempenb();
+        let cur = bempenb.read();
+        bempenb.write_value(cur & !(1u16 << n));
+    });
 }
 
 // ---------------------------------------------------------------------------
