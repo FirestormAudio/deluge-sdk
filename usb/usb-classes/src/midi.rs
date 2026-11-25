@@ -4,7 +4,7 @@
 //!
 //! | Alt | `bcdMSC` | Endpoint MPS | Wire format |
 //! |---|---|---|---|
-//! | 0 | `0x0100` | 64 bytes | USB MIDI 1.0 — 4-byte event packets (CIN + 3 bytes) |
+//! | 0 | `0x0100` | 512 bytes at high speed, 64 at full speed ([`BusSpeed`]) | USB MIDI 1.0 — 4-byte event packets (CIN + 3 bytes) |
 //! | 1 | `0x0200` | 512 bytes at high speed, 64 at full speed ([`BusSpeed`]) | USB MIDI 2.0 — raw UMP 32-bit words |
 //!
 //! The host selects an alt setting via `SET_INTERFACE`.  A [`MidiClassHandler`]
@@ -118,11 +118,12 @@ const GTB_ID: u8 = 0x01; // single bidirectional GTB
 /// with jitter-reduction timestamps.
 const GTB_MIDI2_PROTOCOL: u8 = 0x11;
 
-// Bulk endpoint max packet sizes
-const BULK_MPS_MIDI1: u16 = 64; // USB FS-compatible, used for alt 0
+/// The MIDI 1.0 IN pump's batches: 16 event packets, a whole packet at full speed and a short one at high speed.
+const MIDI1_TX_BATCH: usize = 64;
+/// The largest bulk packet at either speed: the MIDI 1.0 OUT pump's buffer.
+const BULK_MPS_MAX: usize = 512;
 
-/// The speed the device controller runs the bus at, which sets the MIDI 2.0 alternate's bulk
-/// packet size: USB 2.0 fixes bulk endpoints at 512 bytes at high speed and caps them at 64 at full
+/// The speed the device controller runs the bus at, which sets both alternates' bulk packet size: USB 2.0 fixes bulk endpoints at 512 bytes at high speed and caps them at 64 at full
 /// speed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BusSpeed {
@@ -417,9 +418,9 @@ impl Handler for MidiClassHandler {
 
 /// Endpoint handles returned by [`build`].
 pub struct MidiEndpoints<'d, D: Driver<'d>> {
-    /// Alt 0 bulk OUT — 64-byte MIDI 1.0 event packets (host → device).
+    /// Alt 0 bulk OUT — MIDI 1.0 event packets (host → device).
     pub ep_out_midi1: D::EndpointOut,
-    /// Alt 0 bulk IN  — 64-byte MIDI 1.0 event packets (device → host).
+    /// Alt 0 bulk IN  — MIDI 1.0 event packets (device → host).
     pub ep_in_midi1: D::EndpointIn,
     /// Alt 1 bulk OUT — UMP words (host → device).
     pub ep_out_midi2: D::EndpointOut,
@@ -462,7 +463,7 @@ pub fn build_with<'d, D: Driver<'d>>(
     let mut ms_ib = func.interface();
     let ms_iface = ms_ib.interface_number();
 
-    // Alt 0: MIDI 1.0 — 64-byte bulk, jack-based class descriptors ───────────
+    // Alt 0: MIDI 1.0 — bulk sized for the bus speed, jack-based class descriptors ─
     let mut alt0 = ms_ib.alt_setting(USB_CLASS_AUDIO, USB_SUBCLASS_MIDI_STREAMING, 0x00, None);
 
     // CS MS Interface Header: bcdMSC=1.00, wTotalLength=37
@@ -511,10 +512,10 @@ pub fn build_with<'d, D: Driver<'d>>(
         ],
     );
     // Bulk OUT (host → device)
-    let ep_out_midi1 = alt0.endpoint_bulk_out(None, BULK_MPS_MIDI1);
+    let ep_out_midi1 = alt0.endpoint_bulk_out(None, speed.bulk_max_packet());
     alt0.descriptor(CS_ENDPOINT, &[MS_GENERAL, 1, JACK_EMB_OUT_ID]);
     // Bulk IN (device → host)
-    let ep_in_midi1 = alt0.endpoint_bulk_in(None, BULK_MPS_MIDI1);
+    let ep_in_midi1 = alt0.endpoint_bulk_in(None, speed.bulk_max_packet());
     alt0.descriptor(CS_ENDPOINT, &[MS_GENERAL, 1, JACK_EMB_IN_ID]);
 
     // Alt 1: MIDI 2.0 — bulk sized for the bus speed, GTBs via GET_DESCRIPTOR (0x26) ─
@@ -601,11 +602,12 @@ pub async fn run_rx_midi1_with<'d, D: Driver<'d>>(
 ) where
     D::EndpointOut: EndpointOut,
 {
-    let mut buf = [0u8; 64];
+    let mut buf = [0u8; BULK_MPS_MAX];
+    let buf = &mut buf[..(ep_out.info().max_packet_size as usize).min(BULK_MPS_MAX)];
     loop {
         ep_out.wait_enabled().await;
         loop {
-            match ep_out.read(&mut buf).await {
+            match ep_out.read(buf).await {
                 Ok(n) => {
                     let packet_mode = state.packets.packets_enabled();
                     for packet in midi_packets::packets_in(&buf[..n]) {
@@ -651,7 +653,7 @@ pub async fn run_tx_midi1_with<'d, D: Driver<'d>>(
     let mut pending = [0u8; 3];
     let mut pos: usize = 0;
     let mut expected: usize = 0;
-    let mut transfer = [0u8; BULK_MPS_MIDI1 as usize];
+    let mut transfer = [0u8; MIDI1_TX_BATCH];
 
     loop {
         ep_in.wait_enabled().await;
@@ -879,6 +881,40 @@ mod tests {
         let mut other = gtb_request(1, 1, 18);
         other.value = 0x2201; // a report descriptor, not ours
         assert!(h.control_in(other, &mut buf).is_none());
+    }
+
+    /// Every bulk endpoint of a high-speed device is 512 bytes (USB 2.0 §5.8.3), or Linux refuses the interface.
+    #[test]
+    fn both_alternates_bulk_endpoints_follow_the_bus_speed() {
+        use crate::test_usb::{config_descriptor, endpoints};
+        for (speed, want) in [(BusSpeed::High, 512), (BusSpeed::Full, 64)] {
+            let desc = config_descriptor(|b| {
+                let _ = build(b, speed);
+            });
+            let sizes: std::vec::Vec<(u8, u16)> = endpoints(&desc)
+                .into_iter()
+                .filter(|e| e.attributes & 0x03 == 0x02)
+                .map(|e| (e.alt, e.max_packet))
+                .collect();
+            assert_eq!(sizes, [(0, want), (0, want), (1, want), (1, want)], "{speed:?}");
+        }
+    }
+
+    /// A high-speed host may fill a whole 512-byte packet with MIDI 1.0 events; none of them is lost.
+    #[test]
+    fn a_packet_longer_than_64_bytes_is_delivered_whole() {
+        use crate::test_usb::{FakeDriver, FakeEp};
+        static P: PacketQueues = PacketQueues::new();
+        static S: MidiState = MidiState::new(&P);
+        S.packets().use_packets();
+        let events: std::vec::Vec<[u8; 4]> = (0..20u8).map(|i| [0x09, 0x90, i, 0x64]).collect();
+        let transfer: std::vec::Vec<u8> = events.iter().flatten().copied().collect();
+        let task = run_rx_midi1_with::<FakeDriver>(&S, FakeEp::reading_packets(&transfer, 512));
+        let mut task = core::pin::pin!(task);
+        assert!(embassy_futures::poll_once(task.as_mut()).is_pending());
+        for e in &events {
+            assert_eq!(S.packets().try_recv_packet_from_host(), Some(*e));
+        }
     }
 
     #[test]
