@@ -724,6 +724,17 @@ pub(crate) unsafe fn pipe_reset(u: Usb, n: usize) {
     }
 }
 
+/// Turn pipe `n` off: no endpoint, no transfers, on no FIFO port.
+///
+/// # Safety
+/// The caller owns USB port `u`: no other context reconfigures pipe `n` meanwhile.
+pub(crate) unsafe fn pipe_forget(u: Usb, n: usize) {
+    unsafe { pipe_quiesce(u, n) };
+    pipectr(u, n).write_value(PIPECTR_PID_NAK);
+    u.pipesel().write_value(n as u16);
+    u.pipecfg().write_value(0);
+}
+
 /// Halt pipe `n` and make it safe to reconfigure (TRM §28.3.32 precondition).
 ///
 /// Sets PID=NAK, waits for PBUSY to clear (required after a software

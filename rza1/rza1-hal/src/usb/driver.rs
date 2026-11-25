@@ -53,8 +53,8 @@ use super::fifo::{
 use super::pipe::{
     BufAllocator, PIPE_COUNT, PIPE_DONE, PIPE_IS_IN, PIPE_NRDY, PIPE_WAKERS, PIPE_XFER, PipeConfig,
     XferType, pipe_bemp_disable, pipe_bemp_enable, pipe_brdy_disable, pipe_brdy_enable,
-    pipe_configure, pipe_disable, pipe_enable, pipe_iso_in_activate, pipe_reset, pipe_stall,
-    pipe_xfer_in_bemp, pipe_xfer_in_brdy, pipe_xfer_in_start, pipe_xfer_out_brdy,
+    pipe_configure, pipe_disable, pipe_enable, pipe_forget, pipe_iso_in_activate, pipe_reset,
+    pipe_stall, pipe_xfer_in_bemp, pipe_xfer_in_brdy, pipe_xfer_in_start, pipe_xfer_out_brdy,
 };
 use super::regs::{
     BUSWAIT_VALUE, DCPMAXP_MXPS_MASK, DVSQ_DEFAULT, DVSQ_SUSP0, DVSTCTR0_RHST, DVSTCTR0_RHST_FS,
@@ -740,6 +740,9 @@ impl Bus for Rusb1Bus {
                 );
                 embassy_time::Timer::after_millis(10).await;
             }
+
+            // The hardware keeps what a previous image configured.
+            forget_unallocated_pipes(self.port);
 
             // Configure allocated pipes on the hardware.
             configure_all_pipes(self.port);
@@ -1967,6 +1970,28 @@ unsafe fn process_bus_reset(port: u8) {
     }
 }
 
+/// Turn off every pipe this driver did not allocate, and the DMA modes of both DnFIFO ports: an
+/// image started over another finds that one's endpoints still answering.
+///
+/// # Safety
+/// The caller owns USB port `port`, and no transfer is in progress on it.
+unsafe fn forget_unallocated_pipes(port: u8) {
+    unsafe {
+        let u = usb(port);
+        critical_section::with(|cs| {
+            let alloc = &*PORT_ALLOC[port as usize].borrow(cs).get();
+            for n in 1..PIPE_COUNT {
+                if alloc.pipe_cfg[n].is_none() {
+                    pipe_forget(u, n);
+                }
+            }
+        });
+        u.pipesel().write_value(0);
+        u.d0fbcfg().write_value(0);
+        u.d1fbcfg().write_value(0);
+    }
+}
+
 /// (Re-)configure all allocated pipes on the hardware.  Called on enable and
 /// on bus reset.
 unsafe fn configure_all_pipes(port: u8) {
@@ -2332,6 +2357,54 @@ mod tests {
         assert!(poll(f).is_pending());
         assert_eq!(dcpctr() & PIPECTR_CCPL, 0);
         assert_eq!(dcpctr() & 0b10, 0b10);
+    }
+
+    /// An image started over another (a probe load, a hand-over) finds that one's pipes still
+    /// configured: an endpoint number it also uses answers on two pipes, and the new bulk
+    /// endpoint gets no handshake. A bus enable turns off every pipe it did not allocate.
+    #[test]
+    fn enabling_the_bus_turns_off_pipes_a_previous_image_left() {
+        let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut d = fresh_port1();
+        let ours = d
+            .alloc_endpoint_out(EndpointType::Bulk, None, 512, 0)
+            .unwrap()
+            .pipe as usize;
+        let u = usb(1);
+        for n in 1..16 {
+            test::poke16(pipectr(u, n).addr(), PIPECTR_PID_BUF);
+        }
+        test::poke16(u.d1fbcfg().addr(), 0x0010);
+        unsafe { forget_unallocated_pipes(1) };
+        let log = test::log();
+        let mut selected = 0;
+        let mut cleared = std::vec::Vec::new();
+        for a in log.iter().filter(|a| a.write) {
+            if a.addr == u.pipesel().addr() {
+                selected = a.val as usize;
+            }
+            if a.addr == u.pipecfg().addr() && a.val == 0 {
+                cleared.push(selected);
+            }
+        }
+        for n in 1..16 {
+            assert_eq!(cleared.contains(&n), n != ours, "PIPECFG of pipe {n}");
+            assert_eq!(
+                test::peek16(pipectr(u, n).addr()) & PIPECTR_PID_MASK == 0,
+                n != ours,
+                "PID of pipe {n}"
+            );
+        }
+        assert_eq!(
+            test::peek16(u.pipesel().addr()),
+            0,
+            "PIPESEL left selecting no pipe"
+        );
+        assert_eq!(
+            test::peek16(u.d1fbcfg().addr()),
+            0,
+            "the previous DMA's FIFO mode"
+        );
     }
 
     /// The BEMP that ends an IN transfer turns that pipe's BEMP interrupt off. The pipe stays at
