@@ -112,6 +112,35 @@ impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
         }) as u16
     };
 
+    /// The capture endpoint's wMaxPacketSize with 4-byte slots ([`new_in_words`](Self::new_in_words)): 49 frames
+    /// while that fits in 1024 bytes, else 12 frames of a high-speed microframe. Both are whole 32-bit words.
+    pub const CAPTURE_MAX_PACKET_WORDS: u16 = {
+        let full_speed = 49 * CAPTURE_CH * 4;
+        let high_speed = 12 * CAPTURE_CH * 4;
+        assert!(
+            high_speed <= 1024,
+            "capture ISO IN max packet exceeds the 1024-byte high-speed limit"
+        );
+        (if full_speed <= 1024 {
+            full_speed
+        } else {
+            high_speed
+        }) as u16
+    };
+
+    /// As [`new`](Self::new), with 24-bit samples left-justified in 4-byte slots (`bSubslotSize` 4, `bBitResolution`
+    /// 24) in alternate 2 of both streams, so every packet of either setting is whole 32-bit words for an even channel
+    /// count. Both alternates use packets of [`CAPTURE_MAX_PACKET_WORDS`](Self::CAPTURE_MAX_PACKET_WORDS) to the host.
+    pub fn new_in_words<'d, D: Driver<'d>>(
+        builder: &mut Builder<'d, D>,
+        iso_packet_size: u16,
+    ) -> (Self, D::EndpointOut, D::EndpointIn)
+    where
+        D::EndpointIn: Endpoint,
+    {
+        Self::build(builder, iso_packet_size, 4, Self::CAPTURE_MAX_PACKET_WORDS)
+    }
+
     /// Allocate USB interfaces and ISO OUT (speaker) + ISO IN (mic) endpoints
     /// for the UAC2 device.
     ///
@@ -133,7 +162,19 @@ impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
     where
         D::EndpointIn: Endpoint,
     {
-        let _ = Self::CAPTURE_MAX_PACKET; // evaluates the size check at compile time
+        Self::build(builder, iso_packet_size, 3, Self::CAPTURE_MAX_PACKET)
+    }
+
+    /// The function, with `slot_24` bytes to a 24-bit sample and `capture_mps` the capture endpoint's packet.
+    fn build<'d, D: Driver<'d>>(
+        builder: &mut Builder<'d, D>,
+        iso_packet_size: u16,
+        slot_24: u8,
+        capture_mps: u16,
+    ) -> (Self, D::EndpointOut, D::EndpointIn)
+    where
+        D::EndpointIn: Endpoint,
+    {
         let mut func = builder.function(USB_CLASS_AUDIO, 0x00, USB_PROTOCOL_IP_02_00);
 
         // ── AudioControl interface ──────────────────────────────────────────
@@ -270,7 +311,7 @@ impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
         as_cap_alt1.descriptor(CS_INTERFACE, &[AS_FORMAT_TYPE, 0x01, 0x02, 0x10]); // subslot=2, 16-bit
         let ep_in = as_cap_alt1.endpoint_isochronous_in(
             None,
-            Self::CAPTURE_MAX_PACKET, // see CAPTURE_MAX_PACKET
+            capture_mps,
             1,
             SynchronizationType::Asynchronous,
             UsageType::ImplicitFeedbackDataEndpoint,
@@ -303,10 +344,10 @@ impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
                 0x00, // CAPTURE_CH channels, no predefined spatial mapping
             ],
         );
-        as_cap_alt2.descriptor(CS_INTERFACE, &[AS_FORMAT_TYPE, 0x01, 0x03, 0x18]); // subslot=3, 24-bit
+        as_cap_alt2.descriptor(CS_INTERFACE, &[AS_FORMAT_TYPE, 0x01, slot_24, 0x18]); // 24-bit
         let _ep_in_24 = as_cap_alt2.endpoint_isochronous_in(
             Some(ep_in.info().addr), // reuses the same pipe as alt 1
-            Self::CAPTURE_MAX_PACKET,
+            capture_mps,
             1,
             SynchronizationType::Asynchronous,
             UsageType::ImplicitFeedbackDataEndpoint,
@@ -386,7 +427,7 @@ impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
                 0x00, // 2ch FL+FR
             ],
         );
-        as_alt2.descriptor(CS_INTERFACE, &[AS_FORMAT_TYPE, 0x01, 0x03, 0x18]); // subslot=3, 24-bit
+        as_alt2.descriptor(CS_INTERFACE, &[AS_FORMAT_TYPE, 0x01, slot_24, 0x18]); // 24-bit
         let _ep_out_24 = as_alt2.endpoint_isochronous_out(
             Some(ep_out.info().addr), // reuse same OUT pipe as alt 1
             iso_packet_size,
@@ -536,6 +577,53 @@ mod tests {
     #[test]
     fn eight_channel_capture_is_sized_per_microframe() {
         assert_eq!(capture_max_packets::<8>(), [168, 168]);
+    }
+
+    /// The type-I format descriptors (CS_INTERFACE, FORMAT_TYPE) in descriptor order: subslot bytes and bits.
+    fn formats(desc: &[u8]) -> Vec<(u8, u8)> {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < desc.len() {
+            let n = desc[i] as usize;
+            if desc[i + 1] == CS_INTERFACE && desc[i + 2] == AS_FORMAT_TYPE && n == 6 {
+                out.push((desc[i + 4], desc[i + 5]));
+            }
+            i += n;
+        }
+        out
+    }
+
+    #[test]
+    fn word_slots_carry_24_bits_in_alternate_2_of_both_streams() {
+        let desc = config_descriptor(|b| {
+            let _ = AudioClass::<2>::new_in_words(b, 392);
+        });
+        assert_eq!(formats(&desc), [(2, 16), (4, 24), (2, 16), (4, 24)]);
+    }
+
+    #[test]
+    fn new_keeps_packed_24_bit() {
+        let desc = config_descriptor(|b| {
+            let _ = AudioClass::<2>::new(b, 288);
+        });
+        assert_eq!(formats(&desc), [(2, 16), (3, 24), (2, 16), (3, 24)]);
+    }
+
+    /// In words, the capture packet is 49 frames of 4-byte slots while that fits a packet, else 12 frames.
+    #[test]
+    fn the_word_slot_capture_packet_fits() {
+        assert_eq!(AudioClass::<2>::CAPTURE_MAX_PACKET_WORDS, 392);
+        assert_eq!(AudioClass::<8>::CAPTURE_MAX_PACKET_WORDS, 384);
+        assert_eq!(AudioClass::<16>::CAPTURE_MAX_PACKET_WORDS, 768);
+        let desc = config_descriptor(|b| {
+            let _ = AudioClass::<2>::new_in_words(b, 392);
+        });
+        let capture: Vec<u16> = endpoints(&desc)
+            .into_iter()
+            .filter(|e| e.addr & 0x80 != 0 && e.attributes & 0x03 == 0x01)
+            .map(|e| e.max_packet)
+            .collect();
+        assert_eq!(capture, [392, 392]);
     }
 
     #[test]
