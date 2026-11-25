@@ -18,9 +18,9 @@
 //! has begun.  MBW=32 is set together with CURPIPE and never narrowed; sub-word
 //! tails use byte-lane stores (write) or unpack one extra word (read).
 //!
-//! ## RZ/A1 D1FIFO quirk
-//! Writing D1FIFOSEL re-triggers the FIFO port switching state machine even
-//! if only MBW changes, and a read immediately after the MBW write returns
+//! ## RZ/A1 DnFIFO quirk
+//! Writing a FIFOSEL register re-triggers that port's switching state machine
+//! even if only MBW changes, and a read immediately after the MBW write returns
 //! `0xFF`, so MBW is never changed after selection.
 
 use super::regs::{
@@ -29,6 +29,10 @@ use super::regs::{
 };
 use crate::pac::common::{RW, Reg};
 use crate::pac::usb::Usb;
+
+/// Polls of a FIFO port's registers before giving up on it: about 38 µs at the
+/// shortest bus wait, two accesses a poll.
+const FIFO_POLLS: usize = 256;
 
 /// Hardware FIFO port: data register, its byte lanes, SEL register and CTR register.
 pub(crate) struct FifoPort {
@@ -106,7 +110,7 @@ pub(crate) unsafe fn fifo_is_ready(fifo: &FifoPort, pipe_num: usize) -> bool {
     // Correct selection — including the deselect-first dance the TRM mandates
     // when switching to a *receiving* pipe — is handled by the caller via
     // `fifo_select_recv` so the port can't surface the prior pipe's data.
-    for _ in 0..64 {
+    for _ in 0..FIFO_POLLS {
         let sel = fifo.sel.read();
         if (sel & FIFOSEL_CURPIPE_MASK) as usize != pipe_num {
             continue;
@@ -118,21 +122,18 @@ pub(crate) unsafe fn fifo_is_ready(fifo: &FifoPort, pipe_num: usize) -> bool {
     false
 }
 
-/// Point the CPU port at the control pipe, receiving, and confirm it, so that a
-/// clear reaches that pipe's buffer and not one a bulk pipe left selected.
+/// Point the CPU port at the control pipe, receiving, so that a clear reaches that
+/// pipe's buffer and not one a bulk pipe left selected. `false` if the port did not
+/// confirm it: nothing may be cleared then.
 ///
 /// # Safety
 /// In the USB interrupt, or with interrupts off: nothing else may select a pipe
 /// on the port meanwhile.
-pub(crate) unsafe fn cfifo_select_control(u: Usb) {
+pub(crate) unsafe fn cfifo_select_control(u: Usb) -> bool {
     unsafe {
         let fifo = FifoPort::cfifo(u);
         fifo_select_pipe(&fifo, 0, false);
-        for _ in 0..64 {
-            if fifo.sel.read() & (FIFOSEL_CURPIPE_MASK | FIFOSEL_ISEL) == 0 {
-                break;
-            }
-        }
+        (0..FIFO_POLLS).any(|_| fifo.sel.read() & (FIFOSEL_CURPIPE_MASK | FIFOSEL_ISEL) == 0)
     }
 }
 
@@ -146,12 +147,12 @@ pub(crate) unsafe fn cfifo_select_control(u: Usb) {
 /// state machine so the subsequent read reflects only the target pipe.
 ///
 /// # Safety
-/// `fifo` must be a valid DnFIFO port; `pipe_num` must be a DnFIFO pipe (≥ 1).
+/// `fifo` must be a valid port; `pipe_num` must be one it can select (≥ 1).
 pub(crate) unsafe fn fifo_select_recv(fifo: &FifoPort, pipe_num: usize) {
     unsafe {
         // Step 1: deselect (CURPIPE = 0: "no pipe" on D0FIFO, the DCP on CFIFO) and confirm.
         fifo_select_pipe(fifo, 0, false);
-        for _ in 0..64 {
+        for _ in 0..FIFO_POLLS {
             if (fifo.sel.read() & FIFOSEL_CURPIPE_MASK) == 0 {
                 break;
             }
@@ -337,7 +338,7 @@ mod tests {
         send::<FifoPort>();
     }
 
-    /// D0 and D1 are for the isochronous pipes; every other pipe goes through the CPU port.
+    /// D0 is for the isochronous pipes and D1 for a DMA channel; every other pipe goes through the CPU port.
     #[test]
     fn bulk_and_interrupt_pipes_use_the_cpu_port() {
         let u = usb(0);
