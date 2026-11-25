@@ -12,3 +12,12 @@ description = "The Deluge app-loader's logic: the boot and protection sequence, 
 deluge-image = { path = "../deluge-image" }
 deluge-flash-protect = { workspace = true }
 heapless = "0.9"
+
+[dev-dependencies]
+# The fake drive's tests mount it as a host would.
+embedded-fatfs = { package = "deluge-embedded-fatfs", path = "../embedded-fatfs", default-features = false, features = ["lfn"] }
+block-device-adapters = { package = "deluge-block-device-adapters", path = "../block-device-adapters" }
+block-device-driver = "0.2"
+aligned = "0.4"
+embedded-io-async = "0.7"
+embassy-futures = { workspace = true }

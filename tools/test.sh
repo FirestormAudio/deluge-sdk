@@ -68,7 +68,7 @@ cargo test --target "$QEMU" -p deluge-fixedpoint
 # The chip crates are their own workspace; their suite (tests, PAC checks, register-table check)
 # runs from rza1/tools/test.sh, which CI also runs on its own.
 rza1/tools/test.sh
-cargo test --target "$QEMU" -p deluge-bsp --features usb-host-uac,usb-host-overbridge,flash --lib
+cargo test --target "$QEMU" -p deluge-bsp --features usb-host-uac,usb-host-overbridge,flash,embedded-graphics --lib
 cargo test --target "$QEMU" -p deluge-usb-classes --features device-audio,device-midi,host-midi,host-uac,host-overbridge,device-overbridge --lib
 cargo test --target "$QEMU" -p deluge-fonts --lib
 
@@ -113,6 +113,8 @@ cargo test --target "$HOST" -p deluge-sdk --features sim
 cargo build --target "$HOST" --manifest-path crates/deluge-sdk/tests/host-app/Cargo.toml \
   --target-dir target/host-app
 cargo test --target "$HOST" --manifest-path tools/cargo-deluge/Cargo.toml
+# A real build too: a dev-dependency (deluge-image) links into the tests but not the tool.
+cargo build --target "$HOST" --manifest-path tools/cargo-deluge/Cargo.toml
 # libdeluge-sys builds from its checked-in bindings with no libdeluge present, as on docs.rs. On
 # the host: CI has no musl target, and the bindings compile for either.
 DOCS_RS=1 cargo doc --no-deps --target "$HOST" \

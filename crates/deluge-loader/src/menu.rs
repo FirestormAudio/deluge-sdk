@@ -8,7 +8,7 @@ use heapless::Vec;
 /// The most SD apps the menu lists (`/APPS/`, in directory order).
 pub const MAX_SD_APPS: usize = 32;
 /// The most entries [`entries`] returns.
-pub const MAX_ENTRIES: usize = MAX_SD_APPS + 4;
+pub const MAX_ENTRIES: usize = MAX_SD_APPS + 5;
 
 /// One menu line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,6 +19,8 @@ pub enum Entry {
     SdApp(usize),
     /// USB mass storage for the card.
     DataTransfer,
+    /// A drive to drop a `.uf2` app or loader onto (`crate::uf2`).
+    UsbUpdate,
     /// Write the new loader image on the card into the other boot slot.
     UpdateLoader,
     /// The loader's settings.
@@ -26,10 +28,10 @@ pub enum Entry {
 }
 
 /// The menu: the flash app (when the slot holds a valid one), then the SD apps, then
-/// `DATA TRANSFER`, `UPDATE LOADER` (when offered) and `SETTINGS`. The first entry is the default.
+/// `DATA TRANSFER`, `USB UPDATE`, `UPDATE LOADER` (when offered) and `SETTINGS`. The first entry is the default.
 pub fn entries(flash_valid: bool, sd_apps: usize, update_offered: bool) -> Vec<Entry, MAX_ENTRIES> {
     let mut v = Vec::new();
-    // Within capacity by construction: at most 1 + MAX_SD_APPS + 3.
+    // Within capacity by construction: at most 1 + MAX_SD_APPS + 4.
     let mut push = |e| {
         let _ = v.push(e);
     };
@@ -38,6 +40,7 @@ pub fn entries(flash_valid: bool, sd_apps: usize, update_offered: bool) -> Vec<E
     }
     (0..sd_apps.min(MAX_SD_APPS)).for_each(|i| push(Entry::SdApp(i)));
     push(Entry::DataTransfer);
+    push(Entry::UsbUpdate);
     if update_offered {
         push(Entry::UpdateLoader);
     }
@@ -51,6 +54,7 @@ pub fn label<'a>(entry: Entry, sd_names: &[&'a [u8]]) -> &'a [u8] {
         Entry::FlashApp => b"BOOT FLASH",
         Entry::SdApp(n) => sd_names.get(n).copied().unwrap_or(b""),
         Entry::DataTransfer => b"DATA TRANSFER",
+        Entry::UsbUpdate => b"USB UPDATE",
         Entry::UpdateLoader => b"UPDATE LOADER",
         Entry::Settings => b"SETTINGS",
     }
@@ -77,6 +81,7 @@ mod tests {
                 Entry::SdApp(0),
                 Entry::SdApp(1),
                 Entry::DataTransfer,
+                Entry::UsbUpdate,
                 Entry::Settings
             ]
         );
@@ -85,6 +90,7 @@ mod tests {
             [
                 Entry::SdApp(0),
                 Entry::DataTransfer,
+                Entry::UsbUpdate,
                 Entry::UpdateLoader,
                 Entry::Settings
             ]
@@ -101,6 +107,17 @@ mod tests {
         assert_eq!(label(Entry::DataTransfer), b"DATA TRANSFER");
         assert_eq!(label(Entry::UpdateLoader), b"UPDATE LOADER");
         assert_eq!(label(Entry::Settings), b"SETTINGS");
+    }
+
+    #[test]
+    fn usb_update_follows_data_transfer() {
+        let e = entries(false, 0, false);
+        assert_eq!(
+            e.as_slice(),
+            [Entry::DataTransfer, Entry::UsbUpdate, Entry::Settings]
+        );
+        assert_eq!(label(Entry::UsbUpdate, &[]), b"USB UPDATE");
+        assert_eq!(boot_targets(&e), 0);
     }
 
     #[test]

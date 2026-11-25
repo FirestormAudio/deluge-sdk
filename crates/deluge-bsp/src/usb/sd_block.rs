@@ -5,6 +5,12 @@ use usb_classes::bot::{BlockDevice, Inquiry};
 
 /// [`BlockDevice`] backed by the inserted SD card ([`crate::sd`]).  Shared by the
 /// MSC firmware and the bootloader's DATA TRANSFER mode.
+///
+/// A card pulled, or swapped for another, while the host is attached is forgotten before the
+/// next command reaches it ([`crate::sd::forget_stale_card`]), so the host's next TEST UNIT
+/// READY finds it not ready and brings up whatever card is in the slot. A transfer that fails
+/// forgets the card too: a card that stopped answering (one swapped while its edges went
+/// unseen, say) is re-identified rather than addressed again.
 pub struct SdBlock;
 
 impl BlockDevice for SdBlock {
@@ -13,6 +19,7 @@ impl BlockDevice for SdBlock {
     }
 
     fn is_ready(&self) -> bool {
+        crate::sd::forget_stale_card();
         crate::sd::is_ready()
     }
 
@@ -24,15 +31,17 @@ impl BlockDevice for SdBlock {
     }
 
     async fn read(&mut self, lba: u32, count: u32, buf: &mut [u8]) -> Result<(), ()> {
+        crate::sd::forget_stale_card();
         crate::sd::read_sectors(lba, count, buf)
             .await
-            .map_err(|_| ())
+            .map_err(|_| crate::sd::invalidate())
     }
 
     async fn write(&mut self, lba: u32, count: u32, buf: &[u8]) -> Result<(), ()> {
+        crate::sd::forget_stale_card();
         crate::sd::write_sectors(lba, count, buf)
             .await
-            .map_err(|_| ())
+            .map_err(|_| crate::sd::invalidate())
     }
 
     fn inquiry(&self) -> Inquiry {

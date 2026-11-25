@@ -153,6 +153,12 @@ impl FrameBuffer {
     }
 }
 
+impl core::fmt::Debug for FrameBuffer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("FrameBuffer")
+    }
+}
+
 impl Default for FrameBuffer {
     fn default() -> Self {
         Self::new()
@@ -207,8 +213,54 @@ impl FrameBuffer {
     /// Return a flat byte slice over all 768 frame bytes (page-major order).
     #[inline]
     pub fn as_bytes(&self) -> &[u8] {
-        // Safety: [[u8; 128]; 6] has the same layout as [u8; 768].
-        unsafe { core::slice::from_raw_parts(self.pages.as_ptr() as *const u8, FRAME_BYTES) }
+        self.pages.as_flattened()
+    }
+
+    /// Set (`on`) or clear the `w × h` rectangle at (`x`, `y`), clipped to the frame.
+    ///
+    /// A byte (eight rows) at a time: only the rectangle's top and bottom pages are
+    /// masked, so a full-screen fill is 768 byte writes rather than 6,144 pixel ones.
+    pub fn fill_rect(&mut self, x: usize, y: usize, w: usize, h: usize, on: bool) {
+        let x1 = x.saturating_add(w).min(WIDTH);
+        let y1 = y.saturating_add(h).min(HEIGHT);
+        if x >= x1 || y >= y1 {
+            return;
+        }
+        let (first, last) = (y / 8, (y1 - 1) / 8);
+        for (p, page) in self.pages.iter_mut().enumerate().take(last + 1).skip(first) {
+            let top = if p == first { y % 8 } else { 0 };
+            let bottom = if p == last { (y1 - 1) % 8 } else { 7 };
+            let mask = (0xFFu8 << top) & (0xFFu8 >> (7 - bottom));
+            let row = &mut page[x..x1];
+            if mask == 0xFF {
+                row.fill(if on { 0xFF } else { 0x00 });
+            } else if on {
+                row.iter_mut().for_each(|b| *b |= mask);
+            } else {
+                row.iter_mut().for_each(|b| *b &= !mask);
+            }
+        }
+    }
+
+    /// OR column bitmaps into the frame: column `i` of `cols` lands at `x + i`, its
+    /// bit `n` at row `y + n`.
+    ///
+    /// Clear bits leave the frame alone (a transparent background), as do columns
+    /// and rows off the frame. A column is one or two byte writes, so a column-byte
+    /// bitmap such as the [`text`] font's glyphs draws without going pixel by pixel.
+    pub fn blit_columns(&mut self, x: usize, y: usize, cols: &[u8]) {
+        if y >= HEIGHT || x >= WIDTH {
+            return;
+        }
+        let (page, shift) = (y / 8, y % 8);
+        let n = cols.len().min(WIDTH - x);
+        for (i, &c) in cols[..n].iter().enumerate() {
+            let v = (c as u16) << shift;
+            self.pages[page][x + i] |= v as u8;
+            if shift != 0 && page + 1 < PAGES {
+                self.pages[page + 1][x + i] |= (v >> 8) as u8;
+            }
+        }
     }
 }
 
@@ -223,13 +275,18 @@ impl FrameBuffer {
 /// simulator/engine) can render here on the host target and stream `as_bytes()` to the
 /// panel themselves. The surface is the full `128 × 48` panel; offset content down by
 /// [`VISIBLE_TOP`] to clear the faceplate bezel.
+///
+/// `fill_solid` and `clear` write whole bytes ([`FrameBuffer::fill_rect`]), and
+/// `fill_contiguous` clips once rather than per pixel; `embedded-graphics`'
+/// defaults would send every one of them through `draw_iter` a pixel at a time.
 #[cfg(feature = "embedded-graphics")]
 mod eg {
     use super::{FrameBuffer, HEIGHT, WIDTH};
     use embedded_graphics_core::Pixel;
     use embedded_graphics_core::draw_target::DrawTarget;
-    use embedded_graphics_core::geometry::{OriginDimensions, Point, Size};
+    use embedded_graphics_core::geometry::{Dimensions, OriginDimensions, Point, Size};
     use embedded_graphics_core::pixelcolor::BinaryColor;
+    use embedded_graphics_core::primitives::Rectangle;
 
     impl OriginDimensions for FrameBuffer {
         #[inline]
@@ -255,6 +312,60 @@ mod eg {
             }
             Ok(())
         }
+
+        fn fill_contiguous<I>(&mut self, area: &Rectangle, colors: I) -> Result<(), Self::Error>
+        where
+            I: IntoIterator<Item = Self::Color>,
+        {
+            let clip = area.intersection(&self.bounding_box());
+            if clip.is_zero_sized() {
+                return Ok(());
+            }
+            let mut colors = colors.into_iter();
+            let (rows, cols) = (clip.rows(), clip.columns());
+            // `colors` runs row by row over all of `area`, the clipped-off parts included.
+            for y in area.rows() {
+                if y >= rows.end {
+                    // Below the frame: nothing left to draw, whatever `area` still covers.
+                    break;
+                }
+                let row_in = rows.contains(&y);
+                for x in area.columns() {
+                    let Some(c) = colors.next() else {
+                        return Ok(());
+                    };
+                    if row_in && cols.contains(&x) {
+                        let (x, y) = (x as usize, y as usize);
+                        let byte = &mut self.pages[y / 8][x];
+                        if c.is_on() {
+                            *byte |= 1 << (y % 8);
+                        } else {
+                            *byte &= !(1 << (y % 8));
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) -> Result<(), Self::Error> {
+            let clip = area.intersection(&self.bounding_box());
+            if !clip.is_zero_sized() {
+                self.fill_rect(
+                    clip.top_left.x as usize,
+                    clip.top_left.y as usize,
+                    clip.size.width as usize,
+                    clip.size.height as usize,
+                    color.is_on(),
+                );
+            }
+            Ok(())
+        }
+
+        fn clear(&mut self, color: Self::Color) -> Result<(), Self::Error> {
+            self.fill(if color.is_on() { 0xFF } else { 0x00 });
+            Ok(())
+        }
     }
 }
 
@@ -276,6 +387,8 @@ pub mod text {
             b'!' => [0x00, 0x5F, 0x00, 0x00, 0x00],
             b'.' => [0x00, 0x60, 0x60, 0x00, 0x00],
             b'-' => [0x08, 0x08, 0x08, 0x08, 0x08],
+            b'(' => [0x00, 0x1C, 0x22, 0x41, 0x00],
+            b')' => [0x00, 0x41, 0x22, 0x1C, 0x00],
             b'_' => [0x40, 0x40, 0x40, 0x40, 0x40],
             b'/' => [0x20, 0x10, 0x08, 0x04, 0x02],
             b':' => [0x00, 0x36, 0x36, 0x00, 0x00],
@@ -319,21 +432,18 @@ pub mod text {
         }
     }
 
-    /// Draw an ASCII string at pixel (`x`, `y`) in the frame buffer.
-    /// Characters are 5 px wide + 1 px gap; strings are clipped to display width.
+    /// Draw an ASCII string at pixel (`x`, `y`) in the frame buffer, lighting the
+    /// glyphs' pixels. Characters are 5 px wide + 1 px gap; a glyph that wouldn't fit
+    /// whole across the width isn't drawn (nor any after it), and rows past the
+    /// bottom are dropped. Each glyph's columns are page bytes already, so they go in
+    /// a column at a time ([`FrameBuffer::blit_columns`]).
     pub fn draw_str(fb: &mut FrameBuffer, mut x: usize, y: usize, s: &[u8]) {
         for &ch in s {
-            if x + 6 > WIDTH {
+            if x.checked_add(6).is_none_or(|end| end > WIDTH) {
                 break;
             }
-            let cols = glyph(ch);
-            for (col_idx, &col_bits) in cols.iter().enumerate() {
-                for bit in 0..7u8 {
-                    if col_bits & (1 << bit) != 0 {
-                        fb.set_pixel(x + col_idx, y + bit as usize, true);
-                    }
-                }
-            }
+            // Bit 7 is unused: only the glyph's seven rows are drawn.
+            fb.blit_columns(x, y, &glyph(ch).map(|c| c & 0x7F));
             x += 6;
         }
     }
@@ -754,23 +864,45 @@ const BOOT_LOGO_W: usize = 11;
 const BOOT_LOGO_H: usize = 10;
 const BOOT_LOGO_SCALE: usize = 3;
 
+/// How many blocks the droplet is drawn in.
+pub const BOOT_LOGO_BLOCKS: usize = BOOT_LOGO.len();
+
 /// Build a frame showing the Deluge droplet centered in the visible area.
 pub fn boot_logo() -> FrameBuffer {
+    boot_logo_partial(BOOT_LOGO_BLOCKS)
+}
+
+/// The droplet's first `n` blocks (all of them for `n >= BOOT_LOGO_BLOCKS`), in the order the
+/// stock bootloader drew them, where [`boot_logo`] puts them.
+pub fn boot_logo_partial(n: usize) -> FrameBuffer {
     let mut fb = FrameBuffer::new();
     let x0 = (WIDTH - BOOT_LOGO_W * BOOT_LOGO_SCALE) / 2;
     let y0 = VISIBLE_TOP + (VISIBLE_HEIGHT - BOOT_LOGO_H * BOOT_LOGO_SCALE) / 2;
-    for &(gx, gy) in BOOT_LOGO.iter() {
-        for sy in 0..BOOT_LOGO_SCALE {
-            for sx in 0..BOOT_LOGO_SCALE {
-                fb.set_pixel(
-                    x0 + gx * BOOT_LOGO_SCALE + sx,
-                    y0 + gy * BOOT_LOGO_SCALE + sy,
-                    true,
-                );
-            }
-        }
+    for &(gx, gy) in BOOT_LOGO.iter().take(n) {
+        fb.fill_rect(
+            x0 + gx * BOOT_LOGO_SCALE,
+            y0 + gy * BOOT_LOGO_SCALE,
+            BOOT_LOGO_SCALE,
+            BOOT_LOGO_SCALE,
+            true,
+        );
     }
     fb
+}
+
+/// The whole droplet with `(marker)` in the bottom-right corner, e.g. `(D)` for a boot headed for
+/// the menu in dev mode.
+pub fn boot_logo_marked(marker: u8) -> FrameBuffer {
+    let mut fb = boot_logo();
+    stamp_marker(&mut fb, marker);
+    fb
+}
+
+/// Draw `(marker)` in the bottom-right corner of `fb`, clear of the droplet: on every frame of a
+/// droplet that's building up, as on the whole one.
+pub fn stamp_marker(fb: &mut FrameBuffer, marker: u8) {
+    // Three 6-px cells flush with the right edge, the glyphs' 7 rows on the bottom rows.
+    text::draw_str(fb, WIDTH - 3 * 6, HEIGHT - 8, &[b'(', marker, b')']);
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -876,6 +1008,101 @@ mod tests {
         // Corners stay dark.
         assert!(!fb.get_pixel(0, VISIBLE_TOP));
         assert!(!fb.get_pixel(WIDTH - 1, HEIGHT - 1));
+    }
+
+    fn lit(fb: &FrameBuffer) -> usize {
+        (0..WIDTH)
+            .flat_map(|x| (0..HEIGHT).map(move |y| (x, y)))
+            .filter(|&(x, y)| fb.get_pixel(x, y))
+            .count()
+    }
+
+    #[test]
+    fn partial_zero_is_blank() {
+        assert_eq!(lit(&boot_logo_partial(0)), 0);
+    }
+
+    #[test]
+    fn partial_lights_nine_pixels_per_block() {
+        for n in 0..=BOOT_LOGO_BLOCKS {
+            assert_eq!(lit(&boot_logo_partial(n)), 9 * n, "n = {n}");
+        }
+        assert_eq!(lit(&boot_logo_partial(30)), 225);
+    }
+
+    #[test]
+    fn partial_full_equals_boot_logo() {
+        assert_eq!(
+            boot_logo_partial(BOOT_LOGO_BLOCKS).as_bytes(),
+            boot_logo().as_bytes()
+        );
+    }
+
+    #[test]
+    fn partial_grows_monotonically() {
+        for n in 0..BOOT_LOGO_BLOCKS {
+            let (a, b) = (boot_logo_partial(n), boot_logo_partial(n + 1));
+            for x in 0..WIDTH {
+                for y in 0..HEIGHT {
+                    assert!(
+                        !a.get_pixel(x, y) || b.get_pixel(x, y),
+                        "n = {n} ({x}, {y})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn parentheses_have_glyphs() {
+        let unknown = text::glyph(0x7F);
+        assert_ne!(text::glyph(b'('), unknown);
+        assert_ne!(text::glyph(b')'), unknown);
+    }
+
+    #[test]
+    fn marked_adds_pixels_outside_the_droplet_only_in_view() {
+        let logo = boot_logo();
+        let d = boot_logo_marked(b'D');
+        let r = boot_logo_marked(b'R');
+        // The droplet's box: x0 = 47, y0 = 11, 33 × 30.
+        let in_droplet = |x: usize, y: usize| (47..80).contains(&x) && (11..41).contains(&y);
+        let mut outside = 0;
+        for x in 0..WIDTH {
+            for y in 0..HEIGHT {
+                if logo.get_pixel(x, y) {
+                    assert!(d.get_pixel(x, y), "droplet pixel ({x}, {y}) lost");
+                }
+                if d.get_pixel(x, y) {
+                    assert!(y >= VISIBLE_TOP, "bezel row {y} col {x} lit");
+                    if !in_droplet(x, y) {
+                        outside += 1;
+                    }
+                }
+            }
+        }
+        assert!(outside > 0, "no marker drawn");
+        assert_ne!(d.as_bytes(), r.as_bytes());
+    }
+
+    #[test]
+    fn stamp_marker_marks_a_partial_droplet_like_the_whole_one() {
+        let whole = boot_logo_marked(b'R');
+        let mut part = boot_logo_partial(5);
+        stamp_marker(&mut part, b'R');
+        let five = boot_logo_partial(5);
+        let logo = boot_logo();
+        for x in 0..WIDTH {
+            for y in 0..HEIGHT {
+                // The droplet's first five blocks stay; the marker's pixels match the whole frame's.
+                if five.get_pixel(x, y) {
+                    assert!(part.get_pixel(x, y), "block pixel ({x}, {y}) lost");
+                }
+                if !logo.get_pixel(x, y) {
+                    assert_eq!(part.get_pixel(x, y), whole.get_pixel(x, y), "({x}, {y})");
+                }
+            }
+        }
     }
 
     #[test]
@@ -1000,5 +1227,192 @@ mod tests {
         let fb = FrameBuffer::new();
         capture_frame_via(Some(panel), &fb);
         assert_eq!(*panel.frames.lock().unwrap(), [fb.as_bytes().to_vec()]);
+    }
+}
+
+/// The fast paths ([`FrameBuffer::fill_rect`], [`FrameBuffer::blit_columns`], the
+/// text, the `embedded-graphics` overrides) against drawing a pixel at a time.
+#[cfg(all(test, not(target_os = "none")))]
+mod fast_path_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// A frame of arbitrary bytes.
+    fn any_frame() -> impl Strategy<Value = FrameBuffer> {
+        proptest::collection::vec(any::<u8>(), FRAME_BYTES).prop_map(|v| {
+            let mut fb = FrameBuffer::new();
+            for (page, chunk) in fb.pages.iter_mut().zip(v.chunks(WIDTH)) {
+                page.copy_from_slice(chunk);
+            }
+            fb
+        })
+    }
+
+    #[test]
+    fn fill_rect_masks_partial_pages() {
+        let mut fb = FrameBuffer::new();
+        fb.fill_rect(2, 5, 3, 6, true); // rows 5..=10: page 0 bits 5-7, page 1 bits 0-2
+        assert_eq!(fb.pages[0][2..5], [0xE0; 3]);
+        assert_eq!(fb.pages[1][2..5], [0x07; 3]);
+        assert_eq!((fb.pages[0][1], fb.pages[0][5]), (0, 0));
+        // Zero-sized and off the frame: nothing.
+        let mut fb = FrameBuffer::new();
+        fb.fill_rect(10, 10, 0, 5, true);
+        fb.fill_rect(10, 10, 5, 0, true);
+        fb.fill_rect(WIDTH, 0, 5, 5, true);
+        fb.fill_rect(0, HEIGHT, 5, 5, true);
+        fb.fill_rect(usize::MAX, usize::MAX, usize::MAX, usize::MAX, true);
+        assert!(fb.as_bytes().iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn blit_columns_straddles_and_clips() {
+        let mut fb = FrameBuffer::new();
+        fb.blit_columns(3, 13, &[0x7F]); // rows 13..=19: page 1 bits 5-7, page 2 bits 0-3
+        assert_eq!((fb.pages[1][3], fb.pages[2][3]), (0xE0, 0x0F));
+        // The last page: the lower half falls off the frame, and the right edge clips.
+        let mut fb = FrameBuffer::new();
+        fb.blit_columns(WIDTH - 2, HEIGHT - 3, &[0xFF, 0xFF, 0xFF]);
+        assert_eq!(fb.pages[PAGES - 1][WIDTH - 2..], [0xE0, 0xE0]);
+        assert_eq!(fb.as_bytes().iter().filter(|&&b| b != 0).count(), 2);
+    }
+
+    #[test]
+    fn text_at_huge_positions_draws_nothing() {
+        let mut fb = FrameBuffer::new();
+        text::draw_str(&mut fb, usize::MAX - 2, 0, b"A");
+        text::draw_str(&mut fb, 0, usize::MAX, b"A");
+        text::draw_str(&mut fb, WIDTH - 5, 0, b"A"); // doesn't fit whole
+        assert!(fb.as_bytes().iter().all(|&b| b == 0));
+    }
+
+    proptest! {
+        #[test]
+        fn fill_rect_matches_pixels(
+            frame in any_frame(),
+            x in 0usize..140, y in 0usize..56, w in 0usize..140, h in 0usize..56, on: bool,
+        ) {
+            let (mut fast, mut slow) = (frame.clone(), frame);
+            fast.fill_rect(x, y, w, h, on);
+            for yy in y..(y + h).min(HEIGHT) {
+                for xx in x..(x + w).min(WIDTH) {
+                    slow.set_pixel(xx, yy, on);
+                }
+            }
+            prop_assert_eq!(fast.as_bytes(), slow.as_bytes());
+        }
+
+        #[test]
+        fn blit_columns_matches_pixels(
+            frame in any_frame(),
+            x in 0usize..140, y in 0usize..56,
+            cols in proptest::collection::vec(any::<u8>(), 0..20),
+        ) {
+            let (mut fast, mut slow) = (frame.clone(), frame);
+            fast.blit_columns(x, y, &cols);
+            for (i, &c) in cols.iter().enumerate() {
+                for bit in 0..8 {
+                    if c & (1 << bit) != 0 {
+                        slow.set_pixel(x + i, y + bit, true);
+                    }
+                }
+            }
+            prop_assert_eq!(fast.as_bytes(), slow.as_bytes());
+        }
+
+        /// The text as it was drawn before: each glyph's set pixels, one at a time.
+        #[test]
+        fn text_matches_pixels(
+            frame in any_frame(), x in 0usize..130, y in 0usize..50,
+            s in proptest::collection::vec(32u8..127, 0..25),
+        ) {
+            let (mut fast, mut slow) = (frame.clone(), frame);
+            text::draw_str(&mut fast, x, y, &s);
+            let mut gx = x;
+            for &ch in &s {
+                if gx + 6 > WIDTH {
+                    break;
+                }
+                for (c, &bits) in text::glyph(ch).iter().enumerate() {
+                    for bit in 0..7 {
+                        if bits & (1 << bit) != 0 {
+                            slow.set_pixel(gx + c, y + bit, true);
+                        }
+                    }
+                }
+                gx += 6;
+            }
+            prop_assert_eq!(fast.as_bytes(), slow.as_bytes());
+        }
+    }
+
+    #[cfg(feature = "embedded-graphics")]
+    mod eg {
+        use super::*;
+        use embedded_graphics_core::Pixel;
+        use embedded_graphics_core::draw_target::DrawTarget;
+        use embedded_graphics_core::geometry::{OriginDimensions, Point, Size};
+        use embedded_graphics_core::pixelcolor::BinaryColor;
+        use embedded_graphics_core::primitives::Rectangle;
+
+        /// `embedded-graphics`' own defaults: everything through `draw_iter`.
+        struct Reference(FrameBuffer);
+
+        impl OriginDimensions for Reference {
+            fn size(&self) -> Size {
+                Size::new(WIDTH as u32, HEIGHT as u32)
+            }
+        }
+
+        impl DrawTarget for Reference {
+            type Color = BinaryColor;
+            type Error = core::convert::Infallible;
+            fn draw_iter<I: IntoIterator<Item = Pixel<BinaryColor>>>(
+                &mut self,
+                pixels: I,
+            ) -> Result<(), Self::Error> {
+                self.0.draw_iter(pixels)
+            }
+        }
+
+        fn rect(x: i32, y: i32, w: u32, h: u32) -> Rectangle {
+            Rectangle::new(Point::new(x, y), Size::new(w, h))
+        }
+
+        proptest! {
+            #[test]
+            fn fill_solid_matches_default(
+                frame in any_frame(),
+                x in -20i32..140, y in -20i32..60, w in 0u32..160, h in 0u32..70, on: bool,
+            ) {
+                let (mut fast, mut slow) = (frame.clone(), Reference(frame));
+                let color = BinaryColor::from(on);
+                fast.fill_solid(&rect(x, y, w, h), color).unwrap();
+                slow.fill_solid(&rect(x, y, w, h), color).unwrap();
+                prop_assert_eq!(fast.as_bytes(), slow.0.as_bytes());
+            }
+
+            #[test]
+            fn fill_contiguous_matches_default(
+                frame in any_frame(),
+                x in -20i32..140, y in -20i32..60, w in 0u32..40, h in 0u32..70,
+                bits in proptest::collection::vec(any::<bool>(), 0..2900),
+            ) {
+                let (mut fast, mut slow) = (frame.clone(), Reference(frame));
+                let colors = || bits.iter().map(|&b| BinaryColor::from(b));
+                fast.fill_contiguous(&rect(x, y, w, h), colors()).unwrap();
+                slow.fill_contiguous(&rect(x, y, w, h), colors()).unwrap();
+                prop_assert_eq!(fast.as_bytes(), slow.0.as_bytes());
+            }
+        }
+
+        #[test]
+        fn clear_fills_every_byte() {
+            let mut fb = FrameBuffer::new();
+            fb.clear(BinaryColor::On).unwrap();
+            assert!(fb.as_bytes().iter().all(|&b| b == 0xFF));
+            fb.clear(BinaryColor::Off).unwrap();
+            assert!(fb.as_bytes().iter().all(|&b| b == 0));
+        }
     }
 }

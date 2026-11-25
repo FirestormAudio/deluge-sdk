@@ -5,23 +5,27 @@
 //! place from there (rza1-rt's `link_xip.x`): rza1-rt's reset handler installs the vector table,
 //! copies `.data` from flash and sets the stacks, then `main`:
 //!
+//! 0. switches the flash reads to the stock bootloader's fast reads
+//!    ([`stage0_set_fast_read`], run from RAM): the ROM's `03h` reads at its slow clock with the
+//!    read cache off made the slot check and the shim's copy take about 1.6 s;
 //! 1. turns on the L1 I-cache (and nothing else: the MMU and D-cache stay off), so the CRC loop
-//!    runs from cache instead of refetching every instruction over the slow SPI reads;
+//!    runs from cache instead of refetching every instruction over SPI;
 //! 2. starts the PMU cycle counter, to time the checks;
 //! 3. reads and clears the watchdog's overflow flag (`WRCSR.WOVF`, which the watchdog's own
 //!    internal reset leaves set, HW manual §12.5.5): set, the last boot was killed by the
 //!    watchdog;
-//! 4. validates boot slots A and B ([`deluge_image::slot::validate`]: header page, then body
-//!    CRC) through the XIP window;
-//! 5. picks one ([`deluge_image::slot::select`]: the newest valid slot, falling back from a
-//!    pending one the watchdog killed), writes the boot-info word into retention RAM and branches
+//! 4. parses both slots' header pages through the XIP window, then picks one
+//!    ([`deluge_image::slot::select_lazy`]: the newest valid slot, falling back from a pending one
+//!    the watchdog killed), CRC-checking only the bodies that choice depends on, normally just
+//!    the booted slot's, with a table held in RAM;
+//! 5. writes the boot-info word into retention RAM and branches
 //!    to the slot's entry; with neither slot valid it blinks the SYNC LED (P6_7) `code` times
 //!    per round, where `code` is slot A's [`SlotError::code`], forever.
 //!
 //! [`STAGE0_STATUS`] records what happened, for a J-Link to read without resetting the core.
-//! Stage-0 never writes flash and never touches clocks, SDRAM, the MMU, the D-cache, the flash
-//! controller or any peripheral but the watchdog's reset flag and the one GPIO pin. The register
-//! addresses come from `rza1-pac`; it pulls in no HAL.
+//! Stage-0 never writes flash and never touches clocks, SDRAM, the MMU, the D-cache or any
+//! peripheral but the flash controller's read mode, the watchdog's reset flag and the one GPIO
+//! pin. The register addresses come from `rza1-pac`; it pulls in no HAL.
 
 #![no_std]
 #![no_main]
@@ -30,10 +34,21 @@ use core::arch::asm;
 use core::panic::PanicInfo;
 use core::ptr::{read_volatile, write_volatile};
 
-use deluge_image::slot::{self, BOOT_INFO_ADDR, Choice, DELUGE, SLOT_LEN, SlotError, SlotHeader};
+use deluge_image::crc::{CrcTable, IEEE_TABLE, crc32_with};
+use deluge_image::slot::{
+    self, BOOT_INFO_ADDR, Body, Choice, DELUGE, SLOT_LEN, SlotError, SlotHeader,
+};
 
 /// Where the SPI flash is mapped, and where the ROM enters stage-0.
 const FLASH_BASE: u32 = 0x1800_0000;
+
+/// The CRC table, in RAM: the reset handler copies `.data` from flash. A table read through the
+/// uncached XIP window would cost a flash read per byte checked.
+#[unsafe(link_section = ".data")]
+static CRC_TABLE: CrcTable = IEEE_TABLE;
+
+/// The status block's error code for a body [`slot::select_lazy`] didn't need to read.
+const UNCHECKED: u32 = 0xFF;
 
 /// Counts SYNC LED toggles of the fault blink. Initialised to a non-zero value so that reading
 /// `0x5A5A_xxxx` over J-Link proves the reset handler copied `.data` from flash.
@@ -49,13 +64,14 @@ struct Stage0Status {
     state: u32,
     /// `1` if the watchdog had overflowed (the last boot ended in a watchdog reset), else `0`.
     wovf: u32,
-    /// Slot A's and B's [`SlotError::code`], or `0` for a valid slot.
+    /// Slot A's and B's [`SlotError::code`], `0` for a valid slot, or [`UNCHECKED`] for a slot
+    /// whose header is valid and whose body wasn't needed.
     error: [u32; 2],
     /// Slot A's and B's header `sequence`, or `0` for an invalid slot.
     sequence: [u32; 2],
     /// The boot-info word written for the entered slot, or `0`.
     choice: u32,
-    /// CPU cycles spent validating both slots (PMCCNTR, ÷64 divider off).
+    /// CPU cycles spent validating the slots (PMCCNTR, ÷64 divider off).
     crc_cycles: u32,
     /// The raw `CPG.FRQCR`, so `crc_cycles` can be turned into time.
     frqcr: u16,
@@ -102,6 +118,80 @@ const PMC6: *mut u16 = 0xFCFE_3418 as *mut u16;
 const PNOT6: *mut u16 = 0xFCFE_3718 as *mut u16;
 /// P6_7, the SYNC LED.
 const SYNC_LED: u16 = 1 << 7;
+
+// SPIBSC channel 0, the flash controller (HW manual §17.4), as `rza1_hal::spibsc::set_fast_read`
+// programs it. Offsets from the base.
+const SPIBSC0: usize = 0x3FEF_A000;
+const CMNCR: usize = 0x00;
+const SSLDR: usize = 0x04;
+const SPBCR: usize = 0x08;
+const DRCR: usize = 0x0C;
+const DRCMR: usize = 0x10;
+const DREAR: usize = 0x14;
+const DROPR: usize = 0x18;
+const DRENR: usize = 0x1C;
+const CMNSR: usize = 0x48;
+const DRDMCR: usize = 0x58;
+/// `DRCR.SSLN`: negate the chip select after the current access.
+const DRCR_SSLN: u32 = 1 << 24;
+/// `DRCR`: 2-beat bursts, the read cache on, SSL kept between accesses.
+const DRCR_FAST: u32 = 1 << 16 | 1 << 8 | 1;
+/// `DRCR.RCF`: flush the read cache.
+const DRCR_RCF: u32 = 1 << 9;
+/// `CMNSR.SSLF`: the chip select is asserted.
+const CMNSR_SSLF: u32 = 1 << 1;
+/// `CMNCR`'s fields set here, and their values: read mode, SFDE, idle pins Hi-Z, data sampled on
+/// the even edge, SPI mode 0, one flash.
+const CMNCR_MASK: u32 = 0x81FF_F37B;
+const CMNCR_FAST: u32 = 0x01FF_F320;
+/// `SSLDR`'s three delays (0 is one SPBCLK each).
+const SSLDR_DELAYS: u32 = 0x0007_0707;
+/// Polls of `CMNSR.SSLF` before going ahead anyway.
+const SSL_TIMEOUT: u32 = 2_000_000;
+
+/// Leave the boot ROM's flash reads (`03h` at its slow clock, the read cache off) for the stock
+/// bootloader's: `0Bh` fast read with 8 dummy cycles, SPBR = 1, BRDV = 0 (66.67 Mbps), the read
+/// cache on. The same values the loader and every stock unit run with. Measured on the bench
+/// (2026-11-15): stage-0's slot check 1.14 s -> 0.17 s, power-on to the loader 1.58 s -> 0.24 s.
+///
+/// Runs from RAM (in `.data`, which the reset handler copied): nothing may execute from the flash
+/// window while its timing changes. It touches only the controller's registers, with no calls,
+/// so no instruction is fetched from flash until it returns: `tools/check-xip-image.py
+/// --ram-code stage0_set_fast_read` checks the built image for that (stage-0 is built release).
+///
+/// # Safety
+/// No flash operation in progress. Called through a pointer, so the call itself can't go by way
+/// of a linker veneer in flash.
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".data.stage0_fast_read")]
+#[inline(never)]
+unsafe extern "C" fn stage0_set_fast_read() {
+    let reg = |off: usize| (SPIBSC0 + off) as *mut u32;
+    // SAFETY: the flash controller's registers; this code runs from RAM.
+    unsafe {
+        write_volatile(reg(DRCR), read_volatile(reg(DRCR)) | DRCR_SSLN);
+        let mut n = SSL_TIMEOUT;
+        while read_volatile(reg(CMNSR)) & CMNSR_SSLF != 0 && n != 0 {
+            n -= 1;
+        }
+        write_volatile(
+            reg(CMNCR),
+            (read_volatile(reg(CMNCR)) & !CMNCR_MASK) | CMNCR_FAST,
+        );
+        write_volatile(reg(SSLDR), read_volatile(reg(SSLDR)) & !SSLDR_DELAYS);
+        write_volatile(reg(SPBCR), 1 << 8);
+        write_volatile(reg(DRCR), DRCR_FAST);
+        write_volatile(reg(DRCMR), 0x0B << 16);
+        write_volatile(reg(DREAR), 0);
+        write_volatile(reg(DROPR), 0);
+        // Command, 24-bit address and data, all single-bit; dummy cycles on.
+        write_volatile(reg(DRENR), 1 << 15 | 1 << 14 | 0x7 << 8);
+        write_volatile(reg(DRDMCR), 7);
+        write_volatile(reg(DRCR), DRCR_FAST | DRCR_RCF);
+        let _ = read_volatile(reg(DRCR));
+        asm!("dsb", "isb", options(nostack, preserves_flags));
+    }
+}
 
 #[panic_handler]
 fn panic(_: &PanicInfo) -> ! {
@@ -211,11 +301,13 @@ fn slot_bytes(n: usize) -> &'static [u8] {
     unsafe { core::slice::from_raw_parts(base as *const u8, SLOT_LEN as usize) }
 }
 
-/// Record slot `n`'s check in the status block.
-fn record(n: usize, r: &Result<SlotHeader, SlotError>) {
-    let (error, sequence) = match r {
-        Ok(h) => (0, h.sequence),
-        Err(e) => (e.code(), 0),
+/// Record slot `n`'s check in the status block: its header check, and what was learned of its body.
+fn record(n: usize, header: &Result<SlotHeader, SlotError>, body: Body) {
+    let (error, sequence) = match (header, body) {
+        (Err(e), _) => (e.code(), 0),
+        (Ok(h), Body::Valid) => (0, h.sequence),
+        (Ok(h), Body::Unchecked) => (UNCHECKED, h.sequence),
+        (Ok(_), Body::Invalid(e)) => (e.code(), 0),
     };
     // SAFETY: the status block as in `fault`.
     unsafe {
@@ -224,8 +316,24 @@ fn record(n: usize, r: &Result<SlotHeader, SlotError>) {
     }
 }
 
+/// Slot `n`'s error for the fault blink: its header error, else its body error.
+fn slot_error(header: &Result<SlotHeader, SlotError>, body: Body) -> SlotError {
+    match (header, body) {
+        (Err(e), _) => *e,
+        (Ok(_), Body::Invalid(e)) => e,
+        // `select_lazy` only reports NoSlot once every header-valid body failed.
+        _ => SlotError::BadMagic,
+    }
+}
+
 #[rza1_rt::entry]
 fn main() -> ! {
+    // SAFETY: nothing is mid-operation on the flash; the call goes through a pointer to the RAM
+    // copy.
+    unsafe {
+        let fast_read: unsafe extern "C" fn() = core::hint::black_box(stage0_set_fast_read);
+        fast_read();
+    }
     enable_icache();
     start_cycle_counter();
     let wovf = take_overflow();
@@ -244,26 +352,25 @@ fn main() -> ! {
     }
 
     let c0 = cycles();
-    let a = slot::validate(slot_bytes(0));
-    let b = slot::validate(slot_bytes(1));
+    let headers = [slot::parse(slot_bytes(0)), slot::parse(slot_bytes(1))];
+    let (choice, body) = slot::select_lazy(headers[0], headers[1], wovf, |n| {
+        let h = headers[n as usize].as_ref().map_err(|e| *e)?;
+        slot::check_body(slot_bytes(n as usize), h, |d| crc32_with(&CRC_TABLE, d))
+    });
     let c1 = cycles();
-    record(0, &a);
-    record(1, &b);
+    record(0, &headers[0], body[0]);
+    record(1, &headers[1], body[1]);
     // SAFETY: as above.
     unsafe { write_volatile(&raw mut STAGE0_STATUS.crc_cycles, c1.wrapping_sub(c0)) };
 
-    let results = [a, b];
-    let ((n, reason), header) = match slot::select(a, b, wovf) {
-        Choice::Boot { slot, reason } => match results[slot as usize] {
+    let ((n, reason), header) = match choice {
+        Choice::Boot { slot, reason } => match headers[slot as usize] {
             Ok(h) => ((slot, reason), h),
-            // `select` only picks a slot that validated.
+            // `select_lazy` only boots a slot whose header parsed.
             Err(e) => fault(e),
         },
-        // Both slots are invalid; A's error is the one blinked.
-        Choice::NoSlot => match a {
-            Err(e) => fault(e),
-            Ok(_) => fault(SlotError::BadMagic), // unreachable: `select` would have taken A
-        },
+        // No slot is valid; A's error is the one blinked.
+        Choice::NoSlot => fault(slot_error(&headers[0], body[0])),
     };
     let info = slot::boot_info(n, reason as u8);
     let base = FLASH_BASE + DELUGE.slot_offsets[n as usize];
@@ -274,7 +381,7 @@ fn main() -> ! {
         write_volatile(&raw mut STAGE0_STATUS.state, STATE_ENTERING);
         write_volatile(BOOT_INFO_ADDR as *mut u32, info);
         write_volatile(PSR6, u32::from(SYNC_LED) << 16);
-        // `validate` checked the entry is 4-aligned and inside the body, so this is ARM code in
+        // `parse` checked the entry is 4-aligned and inside the body, so this is ARM code in
         // the chosen slot. The slot's reset handler sets up everything it needs from scratch.
         asm!(
             "dsb",

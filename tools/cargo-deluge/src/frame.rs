@@ -19,7 +19,7 @@ pub(crate) fn build_frame(elf: &[u8]) -> Vec<u8> {
 
 /// CRC-32 (IEEE) — the same checksum the device computes
 /// (`deluge_image::crc32`); a test pins the two implementations together.
-fn crc32(data: &[u8]) -> u32 {
+pub(crate) fn crc32(data: &[u8]) -> u32 {
     let mut crc: u32 = 0xFFFF_FFFF;
     for &byte in data {
         crc ^= byte as u32;

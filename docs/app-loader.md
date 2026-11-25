@@ -29,6 +29,7 @@ menu.
 | Loaded at | SRAM, at or above `0x20040000` (by the first-stage bootloader) |
 | Display | 128 × 48 OLED, encoder-driven menu |
 | Boots from | SD card `/APPS/`, on-board flash slot, or USB (dev mode) |
+| Updates from | a `.uf2` dropped on the `USB UPDATE` drive, or the SD card |
 
 ---
 
@@ -69,7 +70,7 @@ can never overwrite anything the unit needs to boot.
 | `0x000000` | 256 KB | First-Stage Bootloader (FSB) | no |
 | `0x040000` | 256 KB | Reserved (the former device-settings record at `0x07F000`) | no |
 | `0x080000` | 512 KB | Second-Stage Bootloader (SSB): the app loader | no |
-| `0x100000` | 2.75 MB | **App slot** (`SLOT_OFFSET`) — flashed app | **yes** |
+| `0x100000` | 2.75 MB | **App slot** (`SLOT_OFFSET`) — flashed app (a DAPP image) | **yes** |
 | `0x3C0000` | 64 KB | **App-loader settings** (`SETTINGS_OFFSET`) — auto-boot, dev mode | **yes** |
 | `0x3D0000` | 64 KB | **Deluge device settings** (`DELUGE_SETTINGS_OFFSET`) | **yes** |
 | `0x3E0000` | 128 KB | free | no |
@@ -87,7 +88,11 @@ The old copy is left in place.
 On power-up the loader:
 
 1. **Initialises the platform** — MMU, caches, SDRAM, GIC, and the OSTM timers,
-   then the PIC link and OLED.
+   then the PIC link and OLED, which then shows the Deluge droplet building up
+   block by block at the stock bootloader's pace: in about two thirds of a second
+   before the menu (with `(D)` in the corner throughout in dev mode, `(R)` when
+   LOAD is held), or on an `INSTANT` unit through the steps below and the load,
+   until the hand-off.
 2. **Probes the on-flash app slot.** If a valid image is present it becomes the
    default boot entry, listed first as **`BOOT FLASH`**. This is independent of
    the SD card, so a unit with flashed firmware boots with no card inserted.
@@ -96,10 +101,11 @@ On power-up the loader:
 4. **Builds the boot menu** and shows it on the OLED, auto-booting the default
    entry after the configured delay (5 seconds out of the box — see
    [`SETTINGS`](#settings--auto-boot-and-dev-mode)).
-5. **Launches your selection** — streams the chosen ELF, loads its `PT_LOAD`
-   segments, flushes the caches, blanks the OLED, quiesces all DMA/timers/IRQs,
-   and branches to the entry point. This never returns; the app owns the machine
-   until the next power-cycle.
+5. **Launches your selection** — streams the chosen ELF while the droplet fills
+   in, at the stock bootloader's pace (a fast load waits for it to complete),
+   loads its `PT_LOAD` segments, flushes the caches, leaves the droplet on the
+   OLED, quiesces all DMA/timers/IRQs, and branches to the entry point. This never
+   returns; the app owns the machine until the next power-cycle.
 
 ---
 
@@ -124,7 +130,8 @@ The menu lists, in order:
    present. This is the auto-boot default.
 2. **Your SD `/APPS/` images** — every loadable ELF on the card, by filename.
 3. **`DATA TRANSFER`** — a synthetic entry; see below.
-4. **`SETTINGS`** — a synthetic entry opening the settings screen (auto-boot
+4. **`USB UPDATE`** — a synthetic entry; see below.
+5. **`SETTINGS`** — a synthetic entry opening the settings screen (auto-boot
    delay and dev mode).
 
 Up to four entries are visible at once; a proportional scrollbar appears on the
@@ -152,7 +159,7 @@ will not boot out from under you).
 ### Recovery — always reach the menu
 
 **Hold the LOAD button down while powering the unit on.** The loader
-shows `RECOVERY`, then the boot menu with no countdown, waiting indefinitely —
+shows the droplet with `(R)` in the corner, then the boot menu with no countdown, waiting indefinitely —
 whatever the auto-boot setting says.
 
 This is the way back from an `AUTO-BOOT: INSTANT` unit whose flashed firmware is
@@ -176,6 +183,41 @@ card-detect pin is unreliable, and the backend retries the card on demand when
 the host probes it. With no card the host simply sees an empty drive; this also
 guarantees the menu always has at least one entry.
 
+### `USB UPDATE` — install firmware by drag-and-drop
+
+Selecting **`USB UPDATE`** shows the unit to your computer as a small drive named `DELUGE`,
+holding `INFO_UF2.TXT` (the loader's version and what's in the app slot) and `INDEX.HTM` (a link
+back to this manual). Drag a `.uf2` file onto it:
+
+```text
+USB UPDATE
+DROP A .UF2 FILE
+████████░░░░░░  61%
+BACK TO CANCEL
+```
+
+- **An app** (official, Community or your own firmware) goes into the flash app slot and becomes
+  `BOOT FLASH`. The unit shows `UPDATED` / `APP` and restarts.
+- **A loader** (`LOADER.SLT` packed as a `.uf2`) goes into the boot slot that isn't running, as
+  `UPDATE LOADER` does. The unit shows `LOADER UPDATED` / `POWER-CYCLE NOW`; power it off and on
+  to start the new loader, which confirms itself or is rolled back.
+
+Nothing is written until the whole file has arrived and checked out. A file for another board or
+display, a damaged or truncated one, or one too large for its slot is refused with
+`WRONG BOARD`, `DAMAGED FILE` or `TOO LARGE`, and flash is left exactly as it was. A loader file
+on a unit whose loader was started by the stock bootloader gets `NEEDS SLOT BOOT`. If the flash
+itself fails while writing, the unit shows `UPDATE FAILED` / `WRITE FAILED` and goes back to the
+drive; the app slot then reads empty (its header is written last), so drop the file again. Press **BACK**
+to leave at any time before writing starts; once it starts, it runs to the end.
+
+Dev mode isn't needed: choosing `USB UPDATE` on the unit is what lets the drive accept firmware.
+Your computer may warn that the drive was removed without ejecting when the unit disconnects to
+write; that's harmless.
+
+To make a `.uf2` from an ELF, a Community `.bin` or a `LOADER.SLT`, use
+`cargo deluge uf2 <file> [--loader] [--variant oled|7seg]`. The loader runs on OLED units only,
+so only OLED files install today.
+
 ### `SETTINGS` — auto-boot and dev mode
 
 Selecting **`SETTINGS`** opens this screen:
@@ -188,7 +230,7 @@ SETTINGS
   BACK
 ```
 
-A loader built with `flash-protect` adds an `SSB UPDATE: ARM` row before `BACK`.
+A loader built with `flash-protect` adds an `SSB UPDATE` row before `BACK`.
 
 - **`AUTO-BOOT`** — how long the menu waits before launching the default entry.
   Press SELECT to edit (the value is bracketed, `<5S>`, while live), turn the
@@ -261,15 +303,19 @@ flash slot:
 2. **Long-press** SELECT (hold ≥ 0.7 s). A `WRITE TO FLASH?` prompt appears.
 3. Choose **`YES`**.
 
-The loader flattens the ELF into a flat `.bin`, validates its first-stage-boot
-(FSB) metadata, and programs it into the app slot (`0x100000`). A progress bar
+The loader flattens the ELF into a flat image, validates its first-stage-boot
+(FSB) metadata, puts a DAPP header on it (load address, entry, length, CRC), and programs it
+into the app slot (`0x100000`). A progress bar
 tracks the flatten (first half) and the program (second half). On success it
 shows `FLASHED OK / NOW DEFAULT` and the image becomes the first/default
 **`BOOT FLASH`** entry on the next menu pass.
 
 Safety notes:
 
-- Only **fully SRAM-linked** images can be stored. The loader rejects anything
+- Only **fully SRAM-linked** images can be stored. The image's CRC is checked again every time
+  `BOOT FLASH` launches it; a damaged slot shows `FLASH APP BAD` / `HOLD LOAD AT POWER-ON`. With
+  auto-boot on, a power cycle would only launch it again: hold **LOAD** while powering on to reach
+  the menu, then store or drop a good app. The loader rejects anything
   that fails FSB validation *before* touching the slot, so a bad ELF can never
   corrupt an image already in flash. Errors are reported on the OLED
   (`BAD MAGIC`, `WRONG FORMAT`, `NOT FLASHABLE`, `TOO LARGE`, `VERIFY FAILED`,
@@ -289,7 +335,7 @@ accident or otherwise. The boot menu itself always runs unlocked.
 The protection has two parts that behave differently:
 
 - **The region protection** (the block-protect bits) is non-volatile: it stays on across power
-  cycles, until `SSB UPDATE: ARM` clears it. The first-stage bootloader runs before the loader,
+  cycles, until `SSB UPDATE` clears it. The first-stage bootloader runs before the loader,
   so it can't write a new second-stage image while it is on, whether that's a new loader or
   stock or Community firmware.
 - **The lock** (the status register made read-only) lasts only until the next power cycle. The
@@ -297,18 +343,23 @@ The protection has two parts that behave differently:
 
 To update the loader on a protected unit, or to install stock or Community firmware on it:
 
-1. **`SETTINGS` → `SSB UPDATE: ARM`**, then `BACK`.
-2. Power-cycle. The loader clears the protection, launches nothing, and shows
-   `SSB UPDATE READY / POWER-CYCLE NOW`.
+1. Power the unit on holding LOAD to reach the boot menu. It has to be a power-on: after a
+   warm reset the lock is still set, and the next step shows `SSB UNLOCK REFUSED`.
+2. **`SETTINGS` → `SSB UPDATE`**. The loader clears the protection, launches nothing, and
+   shows `SSB UPDATE READY / POWER-CYCLE NOW`.
 3. Install the new loader, or the firmware's `.bin`, as in
    [Installing the loader](#installing-the-loader).
 
 Stock and Community firmware never set the protection again, so a unit returned to them stays
-unprotected.
+unprotected. If you select `SSB UPDATE` by mistake, power-cycle: the next launch sets the
+protection again.
+
+`SSB UPDATE` acts at once instead of being saved for the next boot. The settings sector sits
+outside the protected region, so a saved request is one any app could make.
 
 The protection recipe is written only for the three parts `FLASH INFO` can identify; on any
 other part the loader launches unlocked and logs why. Nothing the feature writes is permanent:
-a power cycle clears the lock, `SSB UPDATE: ARM` clears the region protection, holding LOAD at
+a power cycle clears the lock, `SSB UPDATE` clears the region protection, holding LOAD at
 power-on reaches the menu unlocked, and a J-Link can clear the protection while the loader runs.
 
 The feature is off in the default build and in the CI image. To build it:
@@ -335,7 +386,7 @@ The loader is designed so you can always get back to a working state:
   USB uploads.
 - **Reinstalling the loader itself** — repeat
   [Installing the loader](#installing-the-loader). On a loader built with `flash-protect`, run
-  `SSB UPDATE: ARM` first (see [Bootloader write protection](#bootloader-write-protection)); the
+  `SSB UPDATE` first (see [Bootloader write protection](#bootloader-write-protection)); the
   same goes for going back to stock or Community firmware.
 
 ---

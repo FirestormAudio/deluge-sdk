@@ -21,7 +21,7 @@ can write to the SPI flash. Even then, the stock first-stage bootloader can rein
 loader or any firmware from the SD card. For a unit that runs untrusted apps, a loader built
 with [bootloader write protection](app-loader.md#bootloader-write-protection) locks both
 bootloaders in the flash chip before it launches an app; reinstalling over it then needs the
-loader's `SSB UPDATE: ARM` step first (see below).
+loader's `SSB UPDATE` step first (see below).
 
 ## Do I need a debug probe?
 
@@ -48,9 +48,9 @@ protection stays on across power cycles, so the first-stage bootloader can't wri
 firmware until the loader lifts it:
 
 1. Hold LOAD while powering on to reach the boot menu.
-2. **`SETTINGS` → `SSB UPDATE: ARM`**, then `BACK`.
-3. Power-cycle. The loader clears the protection and shows `SSB UPDATE READY / POWER-CYCLE NOW`.
-4. Put the firmware's `.bin` on the SD card and hold SHIFT while powering on.
+2. **`SETTINGS` → `SSB UPDATE`**. The loader clears the protection and shows
+   `SSB UPDATE READY / POWER-CYCLE NOW`.
+3. Put the firmware's `.bin` on the SD card and hold SHIFT while powering on.
 
 Stock and Community firmware never set the protection again. See
 [Bootloader write protection](app-loader.md#bootloader-write-protection).

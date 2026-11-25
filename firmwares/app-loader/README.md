@@ -36,9 +36,12 @@ table below the image and so starts it about `0x2004A000`, and `stock_fsb.x` fai
    ELF, load its `PT_LOAD` segments to their physical addresses, flush all
    caches, and branch to `e_entry`.
 
-The menu also exposes two synthetic entries:
+The menu also exposes these synthetic entries:
 
 - **`DATA TRANSFER`** — expose the raw SD card over USB Mass Storage.
+- **`USB UPDATE`** — a drive to drop a `.uf2` onto (`cargo deluge uf2`): an app is written
+  into the flash app slot, a loader into the inactive boot slot, once the whole file has
+  arrived and checked out (`src/uf2.rs`, logic in `deluge_loader::uf2`).
 - **`SETTINGS`** — opens the settings screen: the `AUTO-BOOT` delay
   (`INSTANT` / `1S`–`20S` / `NEVER`) and the persistent dev-mode flag. Written to
   flash on exit.
@@ -72,8 +75,8 @@ the CDC device down first so a later `DATA TRANSFER` MSC init has the port free.
 ### Store an app to flash
 
 **Long-press** SELECT on an SD `/APPS` ELF entry to pop up a `WRITE TO FLASH?`
-prompt. Choosing `YES` flattens the ELF into a flat `.bin`, validates its FSB
-metadata, and programs it into the flash app slot (`0x100000`, above the FSB /
+prompt. Choosing `YES` flattens the ELF into a flat image, validates its FSB
+metadata, puts a DAPP header on it (`deluge_image::app`), and programs it into the flash app slot (`0x100000`, above the FSB /
 settings / SSB, which the `deluge_bsp::flash` writable-window guard protects). The
 stored image then becomes the first/default `BOOT FLASH` entry and the unit can
 boot it with no SD card present. Only fully SRAM-linked images can be stored.
@@ -88,10 +91,11 @@ boot it with no SD card present. Only fully SRAM-linked images can be stored.
 | [`devupload`](src/devupload.rs) | Dev-mode USB CDC upload listener: receive a framed ELF, load it to RAM, and launch |
 | [`settings`](src/settings.rs) | Persistent loader settings (auto-boot delay, dev-mode flag) in the SPI-flash settings block (format in `deluge-image`) |
 | [`file_browser`](src/file_browser.rs) | Enumerates loadable ELF images from `/APPS` on the SD card |
-| [`flashboot`](src/flashboot.rs) | Probes/launches a firmware image stored in SPI flash, and programs the flash slot |
+| [`flashboot`](src/flashboot.rs) | Probes/launches the DAPP image stored in SPI flash, and programs the flash slot |
 | [`launcher`](src/launcher.rs) | Cache flush + branch-to-application handoff |
 | [`ui`](src/ui.rs) | OLED + encoder boot menu (128×48), long-press detection, `WRITE TO FLASH?` prompt |
-| [`usbmsc`](src/usbmsc.rs) | USB MSC DATA TRANSFER mode (raw SD card) |
+| [`usbmsc`](src/usbmsc.rs) | USB MSC sessions: DATA TRANSFER (raw SD card) and the `USB UPDATE` drive |
+| [`uf2`](src/uf2.rs) | `USB UPDATE`: the UF2 drive, its screen, and writing what was dropped |
 
 ## Building
 

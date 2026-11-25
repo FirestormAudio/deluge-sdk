@@ -18,7 +18,7 @@
 //! The body follows the header directly. Images are never executed in place: the header says
 //! where the body runs, and the loader copies it there.
 
-use crate::crc::crc32;
+use crate::crc::{Crc32, crc32};
 
 /// `b"DAPP"` read as a little-endian `u32`.
 pub const APP_MAGIC: u32 = 0x5050_4144;
@@ -148,6 +148,58 @@ pub fn validate_app(image: &[u8], accepts: &[u16], max_body: u32) -> Result<AppH
         return Err(AppError::BodyCrc);
     }
     Ok(header)
+}
+
+/// [`validate_app`]'s body check a chunk at a time, for a caller that reports progress between
+/// chunks (the loader's flash boot draws its droplet). Start it from the header
+/// [`validate_app_header`] accepted.
+pub struct BodyCheck {
+    header: AppHeader,
+    crc: Crc32,
+    done: u32,
+}
+
+impl BodyCheck {
+    /// A check of `header`'s body, nothing read yet.
+    pub fn new(header: AppHeader) -> Self {
+        BodyCheck {
+            header,
+            crc: Crc32::new(),
+            done: 0,
+        }
+    }
+
+    /// Body bytes checked so far.
+    pub fn done(&self) -> u32 {
+        self.done
+    }
+
+    /// The body's length.
+    pub fn total(&self) -> u32 {
+        self.header.body_len
+    }
+
+    /// Fold up to `chunk` (at least one) more body bytes of `image` (header then body). `None`
+    /// while bytes remain; then the result [`validate_app`] gives: the header, or
+    /// [`AppError::Truncated`] / [`AppError::BodyCrc`].
+    pub fn step(&mut self, image: &[u8], chunk: usize) -> Option<Result<AppHeader, AppError>> {
+        let start = APP_HEADER_LEN + self.done as usize;
+        let end = APP_HEADER_LEN + self.header.body_len as usize;
+        let stop = end.min(start.saturating_add(chunk.max(1)));
+        let Some(bytes) = image.get(start..stop) else {
+            return Some(Err(AppError::Truncated));
+        };
+        self.crc.update(bytes);
+        self.done += bytes.len() as u32;
+        if stop < end {
+            return None;
+        }
+        Some(if self.crc.finalize() == self.header.body_crc {
+            Ok(self.header)
+        } else {
+            Err(AppError::BodyCrc)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -286,5 +338,51 @@ mod tests {
         let img = image(&body(), 7, LOAD);
         assert!(img[0x18..0x3C].iter().all(|&b| b == 0xFF));
         assert_eq!(&img[..4], b"DAPP");
+    }
+
+    fn run(check: &mut BodyCheck, img: &[u8], chunk: usize) -> Result<AppHeader, AppError> {
+        let mut last = 0;
+        loop {
+            let r = check.step(img, chunk);
+            assert!(check.done() >= last && check.done() <= check.total());
+            last = check.done();
+            if let Some(r) = r {
+                return r;
+            }
+        }
+    }
+
+    #[test]
+    fn body_check_matches_validate_app() {
+        let img = image(&body(), 0, LOAD);
+        let h = validate_app_header(&img, &[0], 1 << 20).unwrap();
+        for chunk in [1, 7, 64, 1000] {
+            let mut c = BodyCheck::new(h);
+            assert_eq!(c.total(), 64);
+            assert_eq!(run(&mut c, &img, chunk), validate_app(&img, &[0], 1 << 20));
+            assert_eq!(c.done(), 64);
+        }
+    }
+
+    #[test]
+    fn body_check_finds_a_bad_body() {
+        let mut img = image(&body(), 0, LOAD);
+        let h = validate_app_header(&img, &[0], 1 << 20).unwrap();
+        img[APP_HEADER_LEN + 63] ^= 1;
+        assert_eq!(
+            run(&mut BodyCheck::new(h), &img, 16),
+            Err(AppError::BodyCrc)
+        );
+    }
+
+    #[test]
+    fn body_check_finds_a_truncated_body() {
+        let img = image(&body(), 0, LOAD);
+        let h = validate_app_header(&img, &[0], 1 << 20).unwrap();
+        let short = &img[..APP_HEADER_LEN + 40];
+        assert_eq!(
+            run(&mut BodyCheck::new(h), short, 16),
+            Err(AppError::Truncated)
+        );
     }
 }

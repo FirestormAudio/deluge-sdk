@@ -9,7 +9,8 @@
 //! - Pipes 1–2 (ISO)                → D0FIFO  (dedicated for audio)
 //! - Pipes 3–15 (bulk / interrupt)  → CFIFO, shared with control
 //!
-//! D1FIFO is left to a DMA channel: it and D0FIFO are the ports a DMA can use.
+//! D1FIFO is left to a DMA channel: it and D0FIFO are the ports a DMA can use. The device driver deselects it on
+//! every enable and bus reset, so its owner selects its pipe again after [`Event::Reset`](embassy_usb_driver::Event).
 //! Whoever selects a pipe on the shared CFIFO copies it in the same critical
 //! section (or in the USB interrupt), so no one else re-points the port meanwhile.
 //!

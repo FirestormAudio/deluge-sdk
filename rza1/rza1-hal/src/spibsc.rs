@@ -239,6 +239,9 @@ const CMD_WRSR1: u32 = 0x01; // Write Status Register-1 (optionally SR1+SR2 comb
 const CMD_WRSR2: u32 = 0x31; // Write Status Register-2 (separate-write parts)
 const CMD_RDSR2: u32 = 0x35; // Read Status Register-2 (SR2)
 const CMD_WREN_VOLATILE: u32 = 0x50; // Write Enable for Volatile Status Register
+const CMD_RDSR3: u32 = 0x15; // Read Status Register-3 (W25Q32JV)
+const CMD_WRSR3: u32 = 0x11; // Write Status Register-3 (W25Q32JV)
+const CMD_GLOBAL_BLOCK_UNLOCK: u32 = 0x98; // W25Q32JV, with SR3 WPS = 1
 const CMD_RESET_ENABLE: u32 = 0x66;
 const CMD_RESET: u32 = 0x99;
 
@@ -696,6 +699,57 @@ pub unsafe fn write_protection_volatile(
     sr2: Option<u8>,
 ) -> bool {
     unsafe { write_status(CMD_WREN_VOLATILE, method, sr1, sr2) }
+}
+
+/// Read Status Register-3 (`15h`) once. Only the W25Q32JV of the supported parts has one: its
+/// `WPS` bit (bit 2) swaps the SR1 block-protect field for per-block locks. `flash-sr-probe`
+/// reads it to check the lock-down covers SR3 too. Runs with interrupts masked.
+pub fn read_sr3() -> u8 {
+    critical_section::with(|_| unsafe {
+        to_manual();
+        SPIBSC0.smcmr().write_value(CMD_RDSR3 << 16);
+        SPIBSC0.smadr().write_value(0);
+        SPIBSC0.smenr().write_value(SMENR_CDE | SMENR_SPIDE_8);
+        SPIBSC0.smwdr0().write_value(0);
+        SPIBSC0.smcr().write_value(SMCR_SPIE | SMCR_SPIRE);
+        let _ = wait_tend();
+        let v = ((SPIBSC0.smrdr0().read() >> 24) & 0xFF) as u8;
+        to_read_mode();
+        v
+    })
+}
+
+/// Write `val` to the *volatile* copy of Status Register-3 (`50h` then `11h`), lost at the
+/// next power cycle or software reset. W25Q32JV only; `flash-sr-probe`'s lock-down check.
+/// Returns `false` if the write timed out. A chip that ignores it still returns `true`: read
+/// SR3 back to know.
+///
+/// # Safety
+/// As [`write_protection`].
+pub unsafe fn write_sr3_volatile(val: u8) -> bool {
+    critical_section::with(|_| unsafe {
+        to_manual();
+        let ok = write_sr_byte(CMD_WREN_VOLATILE, CMD_WRSR3, val);
+        to_read_mode();
+        ok
+    })
+}
+
+/// Global Block Unlock (`06h` then `98h`): clears every per-block lock bit. It only matters
+/// while SR3's `WPS` is set; W25Q32JV only. `flash-sr-probe`'s lock-down check.
+/// Returns `false` if the part timed out.
+///
+/// # Safety
+/// As [`write_protection`].
+pub unsafe fn global_block_unlock() -> bool {
+    critical_section::with(|_| unsafe {
+        to_manual();
+        command(CMD_WREN);
+        command(CMD_GLOBAL_BLOCK_UNLOCK);
+        let ok = wait_wip();
+        to_read_mode();
+        ok
+    })
 }
 
 /// Clock out the software reset (`66h` then `99h`) and wait out its recovery

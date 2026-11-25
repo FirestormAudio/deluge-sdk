@@ -9,6 +9,13 @@ breaking changes.
 
 ### Added
 
+- The app-loader's `USB UPDATE`: the unit shows a drive to drop a `.uf2` onto. An app goes into
+  the flash app slot and the unit restarts; a loader goes into the inactive boot slot through the
+  A/B self-update. Nothing is written until the whole file has arrived and validated; a file for
+  another board, a damaged or a too-large one is refused with flash untouched.
+  `cargo deluge uf2` packs an ELF, a Community `.bin` or a `LOADER.SLT`.
+- `deluge_image::uf2` (UF2 blocks and the Deluge's family IDs), `deluge_loader::uf2` (the
+  assembler, validation and the fake FAT16 volume), `rza1_hal::wdt::Watchdog::reset_now`.
 - `deluge_bsp::audio::tx_block_signal()`: waits for the transmit ring's next 128-frame block to
   complete, as `rx_block_signal()` does for the receive ring, so a firmware can render one block
   each time the codec starts the next.
@@ -23,11 +30,32 @@ breaking changes.
   or a harness), and `take_edges` is the untimed take. `ENCODER_DELTAS` and `take_detents` are
   unchanged for their callers.
 
+### Changed
+
+- The Deluge's flash app slot holds a DAPP image (`deluge_image::app`): store-to-flash writes
+  one, and `BOOT FLASH` checks its CRC before launching. An image stored by an earlier loader
+  stops showing as `BOOT FLASH` until it's stored again.
+- OLED drawing is faster. `deluge_bsp::oled::FrameBuffer` gains `fill_rect`, which writes a byte
+  (eight rows) at a time, and `blit_columns`; its `embedded-graphics` `fill_solid` and `clear` use
+  the byte-wide fill and `fill_contiguous` clips once instead of per pixel, and `deluge::Oled`
+  forwards to them. The built-in 5×7 text draws a glyph as five column blits instead of 35 pixel
+  writes.
+
 ### Fixed
 
+- USB mass storage of the SD card (`DATA TRANSFER`, `msc-firmware`): a card pulled or swapped
+  while a computer is attached is re-identified. `deluge_bsp::usb::sd_block::SdBlock` forgets the
+  old card on a card-detect edge, on a ready card that's no longer in the slot, or on a failed
+  transfer (`deluge_bsp::sd::forget_stale_card`), so the next TEST UNIT READY brings the new card
+  up. It used to keep addressing the old card, every read a medium error until BACK.
 - `deluge-flash-protect`: a write that sets SR1 on its own re-sends SR2 with the QE bit that was
   read, so a part that clears SR2 on a one-byte `01h` keeps its QE; the read-back now checks QE
   too, so a write that loses it isn't reported as written.
+- `flash-protect` loader: an app could unprotect the bootloader region. The `SSB UPDATE: ARM`
+  request was saved in the settings sector, which sits outside the protected region, so an app
+  could set it and the next power-on cleared the protection. `SETTINGS` → `SSB UPDATE` now
+  clears the protection at once, from the menu, and nothing is saved.
+  `deluge_image::settings::Settings` loses `ssb_write_enable`; flag bit 1 is ignored.
 
 ## [0.2.0] - 2026-11-09
 
