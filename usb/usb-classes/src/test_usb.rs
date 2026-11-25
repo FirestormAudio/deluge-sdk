@@ -53,13 +53,18 @@ impl FakeDriver {
 pub struct FakeEp(EndpointInfo, Option<Vec<u8>>);
 
 impl FakeEp {
-    /// An enabled bulk OUT endpoint that reads `transfer` once.
+    /// An enabled 64-byte bulk OUT endpoint that reads `transfer` once.
     pub fn reading(transfer: &[u8]) -> Self {
+        Self::reading_packets(transfer, 64)
+    }
+
+    /// An enabled bulk OUT endpoint of `max_packet` bytes that reads `transfer` once, a packet at a time.
+    pub fn reading_packets(transfer: &[u8], max_packet: u16) -> Self {
         Self(
             EndpointInfo {
                 addr: EndpointAddress::from_parts(1, Direction::Out),
                 ep_type: embassy_usb::driver::EndpointType::Bulk,
-                max_packet_size: 64,
+                max_packet_size: max_packet,
                 interval_ms: 0,
             },
             Some(transfer.to_vec()),
@@ -91,7 +96,12 @@ impl EndpointOut for FakeEp {
         if script.is_empty() {
             return core::future::pending().await;
         }
-        let n = script.len().min(buf.len());
+        // One packet a read, as the driver does; one that does not fit is an overflow, and is lost.
+        let n = script.len().min(self.0.max_packet_size as usize);
+        if n > buf.len() {
+            script.drain(..n);
+            return Err(EndpointError::BufferOverflow);
+        }
         buf[..n].copy_from_slice(&script[..n]);
         script.drain(..n);
         Ok(n)
