@@ -900,6 +900,9 @@ pub struct Rusb1ControlPipe {
     /// The `SETUP_GEN` of the request `setup()` returned last: once the port has moved on,
     /// that request is over.
     generation: u32,
+    /// The request was a control IN of length 0, which embassy-usb answers with neither
+    /// data nor `accept`.
+    zero_length_in: bool,
 }
 
 impl Rusb1ControlPipe {
@@ -908,6 +911,7 @@ impl Rusb1ControlPipe {
             port,
             mps,
             generation: 0,
+            zero_length_in: false,
         }
     }
 
@@ -955,6 +959,11 @@ impl ControlPipe for Rusb1ControlPipe {
     async fn setup(&mut self) -> [u8; 8] {
         let p = self.port as usize;
         trace!("usb{}: setup() waiting", self.port);
+        // embassy-usb has handled a zero-length IN request (`reject` cleared the flag):
+        // end its status stage.
+        if core::mem::take(&mut self.zero_length_in) {
+            self.complete_status();
+        }
         let (pkt, generation) = core::future::poll_fn(|cx| {
             CTRL_WAKERS[p].register(cx.waker());
             // The stage, the packet and its generation in one step: a SETUP between two
@@ -974,6 +983,7 @@ impl ControlPipe for Rusb1ControlPipe {
         })
         .await;
         self.generation = generation;
+        self.zero_length_in = pkt[0] & 0x80 != 0 && pkt[6] == 0 && pkt[7] == 0;
         // A fresh SETUP marks the start of a new control transfer: discard any
         // stale reset-abort flag here, ONCE per transfer. Do NOT clear it in
         // data_in/data_out — those are called once per packet, so clearing there
@@ -988,32 +998,45 @@ impl ControlPipe for Rusb1ControlPipe {
     async fn data_out(
         &mut self,
         buf: &mut [u8],
-        _first: bool,
+        first: bool,
         _last: bool,
     ) -> Result<usize, EndpointError> {
         let p = self.port as usize;
         trace!("usb{}: data_out buf_len={}", self.port, buf.len());
+        let u = usb(self.port);
 
-        // Set PID=BUF so hardware ACKs the host's OUT token and receives the
-        // data-stage payload into the CFIFO.  PID was forced to NAK by hardware
-        // when the preceding SETUP packet was received (TRM §28.3.30 PID[1:0]
-        // function-controller note).  Without this, every host OUT token is
-        // met with NAK and no data ever arrives.
+        // The first packet: set PID=BUF so hardware ACKs the host's OUT token and
+        // receives the data-stage payload into the CFIFO.  PID was forced to NAK by
+        // hardware when the preceding SETUP packet was received (TRM §28.3.30
+        // PID[1:0] function-controller note).  Without this, every host OUT token
+        // is met with NAK and no data ever arrives.
         //
         // Also re-enable BRDY0, clear any stale BRDYSTS bit 0, and discard any
         // previously latched PIPE0_BRDY signal.  Otherwise a zero-length OUT ACK
         // from the host to the preceding status stage (fired while BRDYENB was
         // still set) makes the await below return immediately with 0 bytes.
-        let u = usb(self.port);
-        // Clear BRDYSTS bit 0 (write-0-to-clear, all other bits kept 1).
-        u.brdysts().write_value(!(1u16));
-        // Re-enable BRDY0 interrupt (may have been disabled by accept()).
-        u.brdyenb().modify(|r| *r |= 0x0001);
-        // Discard any stale software flag set by a spurious BRDY0 above.
-        PIPE0_BRDY[p].store(0, Ordering::Release);
-
-        let ctr = pipectr(u, 0).read();
-        pipectr(u, 0).write_value((ctr & !PIPECTR_PID_MASK) | PIPECTR_PID_BUF);
+        //
+        // Later packets need none of it: PID is still BUF, so the next packet may
+        // already be in, and its BRDY latched.
+        if first {
+            let armed = critical_section::with(|_| {
+                if !self.current() {
+                    return false;
+                }
+                // Clear BRDYSTS bit 0 (write-0-to-clear, all other bits kept 1).
+                u.brdysts().write_value(!(1u16));
+                // Re-enable BRDY0 interrupt (may have been disabled by accept()).
+                u.brdyenb().modify(|r| *r |= 0x0001);
+                // Discard any stale software flag set by a spurious BRDY0 above.
+                PIPE0_BRDY[p].store(0, Ordering::Release);
+                let ctr = pipectr(u, 0).read();
+                pipectr(u, 0).write_value((ctr & !PIPECTR_PID_MASK) | PIPECTR_PID_BUF);
+                true
+            });
+            if !armed {
+                return Err(EndpointError::Disabled);
+            }
+        }
 
         // The reset-abort flag is cleared once per transfer in setup(); a reset
         // that fires now (or between packets) must stay latched so this and any
@@ -1039,10 +1062,14 @@ impl ControlPipe for Rusb1ControlPipe {
         }
 
         // Read from CFIFO (pipe 0 OUT), which the USB interrupt shares: one step.
-        critical_section::with(|_| unsafe {
-            let u = usb(self.port);
+        let read = critical_section::with(|_| unsafe {
             let fifo = FifoPort::cfifo(u);
             fifo_select_pipe(&fifo, 0, false);
+            // The pipe, the direction and FRDY, before DTLN is read (TRM §28.3.8).
+            let reading = (0..64).any(|_| fifo.sel.read() & super::regs::FIFOSEL_ISEL == 0);
+            if !reading || !fifo_is_ready(&fifo, 0) {
+                return None;
+            }
             let vld = fifo_dtln(&fifo) as usize;
             let len = buf.len().min(vld);
             if len > 0 {
@@ -1053,8 +1080,16 @@ impl ControlPipe for Rusb1ControlPipe {
                 "usb{}: data_out read {} bytes (fifo had {})",
                 self.port, len, vld
             );
-            Ok(len)
-        })
+            Some(len)
+        });
+        match read {
+            Some(len) => Ok(len),
+            None => {
+                warn!("usb{}: data_out CFIFO not ready — stalling", self.port);
+                self.stall_current();
+                Err(EndpointError::Disabled)
+            }
+        }
     }
 
     async fn data_in(&mut self, data: &[u8], first: bool, last: bool) -> Result<(), EndpointError> {
@@ -1116,10 +1151,8 @@ impl ControlPipe for Rusb1ControlPipe {
         });
         if let Err(not_ready) = filled {
             if not_ready {
-                warn!(
-                    "usb{}: data_in CFIFO not ready — returning Disabled",
-                    self.port
-                );
+                warn!("usb{}: data_in CFIFO not ready — stalling", self.port);
+                self.stall_current();
             }
             return Err(EndpointError::Disabled);
         }
@@ -1157,6 +1190,7 @@ impl ControlPipe for Rusb1ControlPipe {
 
     async fn reject(&mut self) {
         trace!("usb{}: reject (STALL)", self.port);
+        self.zero_length_in = false;
         self.stall_current();
     }
 
@@ -2179,6 +2213,109 @@ mod tests {
         let f = core::pin::pin!(pipe.accept());
         assert!(matches!(poll(f), Poll::Ready(())));
         assert_eq!(dcpctr() & PIPECTR_CCPL, 0);
+    }
+
+    /// A packet that arrives between two `data_out` calls is kept for the second (PID stays BUF, so the host may send
+    /// it as soon as the buffer is clear).
+    #[test]
+    fn a_control_write_keeps_a_packet_that_arrives_early() {
+        let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pipe = control_pipe();
+        let u = usb(1);
+        setup_arrives([0x21, 1, 0, 1, 0, 0, 100, 0]);
+        take_setup(&mut pipe);
+        let out_packet = |len: u16| {
+            test::rcw0(u.intsts(0).addr());
+            test::rcw0(u.brdysts().addr());
+            test::poke16(u.intsts(0).addr(), INTSTS0_BRDY);
+            test::poke16(u.brdysts().addr(), 1);
+            unsafe { dcd_int_handler(1) };
+            test::poke16(u.cfifoctr().addr(), crate::usb::regs::FIFOCTR_FRDY | len);
+        };
+        let mut buf = [0u8; 64];
+        {
+            let mut f = core::pin::pin!(pipe.data_out(&mut buf, true, false));
+            assert!(poll(f.as_mut()).is_pending());
+            out_packet(64);
+            assert!(matches!(poll(f), Poll::Ready(Ok(64))));
+        }
+        out_packet(36);
+        let f = core::pin::pin!(pipe.data_out(&mut buf, false, true));
+        assert!(matches!(poll(f), Poll::Ready(Ok(36))));
+    }
+
+    /// The length is read only once the port shows the control pipe, reading, and ready (TRM §28.3.8).
+    #[test]
+    fn a_control_write_reads_no_length_until_the_port_is_ready() {
+        let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pipe = control_pipe();
+        let u = usb(1);
+        setup_arrives([0x21, 1, 0, 1, 0, 0, 4, 0]);
+        take_setup(&mut pipe);
+        let mut buf = [0u8; 64];
+        let mut f = core::pin::pin!(pipe.data_out(&mut buf, true, true));
+        assert!(poll(f.as_mut()).is_pending());
+        PIPE0_BRDY[1].store(1, Ordering::Release);
+        test::poke16(u.cfifoctr().addr(), 4); // a length, but FRDY clear
+        assert!(matches!(poll(f), Poll::Ready(Err(EndpointError::Disabled))));
+        assert_eq!(
+            dcpctr() & 0b10,
+            0b10,
+            "the host gets a STALL, not a timeout"
+        );
+    }
+
+    /// A port that never becomes ready gets the host a STALL, not a timeout.
+    #[test]
+    fn a_control_read_that_cannot_fill_stalls() {
+        let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pipe = control_pipe();
+        let u = usb(1);
+        setup_arrives(get_descriptor(18));
+        take_setup(&mut pipe);
+        test::poke16(u.cfifoctr().addr(), 0);
+        let f = core::pin::pin!(pipe.data_in(&[0u8; 18], true, true));
+        assert!(matches!(poll(f), Poll::Ready(Err(EndpointError::Disabled))));
+        assert_eq!(dcpctr() & 0b10, 0b10, "STALL");
+    }
+
+    /// embassy-usb calls nothing for a control IN request of length 0 that it accepts: the next `setup()` completes
+    /// its status stage.
+    #[test]
+    fn a_zero_length_control_read_gets_its_status_stage() {
+        let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pipe = control_pipe();
+        setup_arrives([0x80, 0, 0, 0, 0, 0, 0, 0]);
+        take_setup(&mut pipe);
+        assert_eq!(
+            dcpctr() & PIPECTR_CCPL,
+            0,
+            "not before the request is handled"
+        );
+        {
+            let f = core::pin::pin!(pipe.setup());
+            assert!(poll(f).is_pending());
+        }
+        assert_eq!(
+            dcpctr() & (PIPECTR_CCPL | PIPECTR_PID_MASK),
+            PIPECTR_CCPL | PIPECTR_PID_BUF
+        );
+    }
+
+    #[test]
+    fn a_rejected_zero_length_control_read_stays_stalled() {
+        let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pipe = control_pipe();
+        setup_arrives([0x80, 0, 0, 0, 0, 0, 0, 0]);
+        take_setup(&mut pipe);
+        {
+            let f = core::pin::pin!(pipe.reject());
+            assert!(matches!(poll(f), Poll::Ready(())));
+        }
+        let f = core::pin::pin!(pipe.setup());
+        assert!(poll(f).is_pending());
+        assert_eq!(dcpctr() & PIPECTR_CCPL, 0);
+        assert_eq!(dcpctr() & 0b10, 0b10);
     }
 
     /// The BEMP that ends an IN transfer turns that pipe's BEMP interrupt off. The pipe stays at
