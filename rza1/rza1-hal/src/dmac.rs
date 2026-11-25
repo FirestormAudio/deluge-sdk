@@ -292,6 +292,11 @@ impl<'d> Dma<'d> {
         raw::wait_transfer_complete(self.ch).await
     }
 
+    /// Whether the channel is enabled: started and not stopped, by a descriptor that wasn't valid or by software.
+    pub(crate) fn enabled(&self) -> bool {
+        crate::pac::DMAC.ch(self.ch as usize).chstat().read() & CHSTAT_EN != 0
+    }
+
     /// Stop the channel and release its peripheral-request route.
     pub fn stop(&mut self) {
         // SAFETY: this channel is owned, so no other code drives it.

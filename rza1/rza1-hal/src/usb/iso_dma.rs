@@ -1,0 +1,806 @@
+//! Isochronous streams moved by the DMAC: no work per packet.
+//!
+//! A packet to the host is a link descriptor. Its end (`TEND`, sampled because `DnFBCFG.TENDE` is
+//! set) commits a packet shorter than the endpoint's, so a stream of any packet sizes needs no
+//! interrupt. The CPU writes a descriptor whole and marks it valid last; the DMAC clears the mark
+//! after it, so the CPU sees what was sent, and stops at a descriptor that isn't valid: an underrun.
+
+use core::cell::RefCell;
+
+use critical_section::Mutex;
+use embassy_usb_driver::EndpointType;
+
+use super::driver::Rusb1EndpointIn;
+use super::fifo::FIFO_POLLS;
+use super::pipe::{pipe_brdy_disable, pipe_enable, pipe_reset};
+use super::regs::{
+    D0FBCFG_TENDE, FIFOCTR_FRDY, FIFOSEL_CURPIPE_MASK, FIFOSEL_DREQE, FIFOSEL_MBW_SHIFT, MBW_32,
+    PIPECTR_PID_BUF, PIPECTR_PID_MASK, pipectr, usb,
+};
+use crate::dma_buf::Uncached;
+use crate::dmac::{
+    CHCFG_AM_BURST, CHCFG_DAD, CHCFG_DDS_32BIT, CHCFG_DEM, CHCFG_DMS, CHCFG_HIEN, CHCFG_LVL,
+    CHCFG_REQD, CHCFG_SDS_32BIT, Dma,
+};
+use crate::pac::usb::Usb;
+use crate::ring_buffer::RingDescs;
+
+/// DMARS for each port's D0FIFO (MID 0b10_0000 / 0b10_0010, RID 0b11).
+const D0FIFO_DMARS: [u32; 2] = [0x83, 0x8B];
+/// FIFOSEL with the 32-bit width and no pipe.
+const MBW_WORDS: u16 = MBW_32 << FIFOSEL_MBW_SHIFT;
+
+/// A descriptor's header once it is ready: LV (valid) and DIM; LE clear (the chain goes on), WBD
+/// clear (the DMAC writes the header back with LV clear once it is done).
+const READY: u32 = 0b1001;
+
+/// The chain of descriptors of a stream to the host: a ring the CPU fills and the DMAC empties.
+pub(crate) struct Chain<'d> {
+    descs: RingDescs<'d>,
+    /// The FIFO register every packet goes to, and the channel's CHCFG.
+    dst: u32,
+    chcfg: u32,
+    /// Descriptors made ready and taken back since the last reset.
+    pushed: u64,
+    sent: u64,
+}
+
+impl<'d> Chain<'d> {
+    /// A chain on `descs`, all of it: nothing is ready.
+    pub(crate) fn new(descs: RingDescs<'d>, dst: u32, chcfg: u32) -> Self {
+        let mut chain = Self {
+            descs,
+            dst,
+            chcfg,
+            pushed: 0,
+            sent: 0,
+        };
+        chain.reset();
+        chain
+    }
+
+    /// How many descriptors there are.
+    fn len(&self) -> usize {
+        self.descs.len()
+    }
+
+    /// Forgets every packet: none is ready, and the next push is the first descriptor. The channel
+    /// must be stopped.
+    pub(crate) fn reset(&mut self) {
+        for i in 0..self.len() {
+            // SAFETY: the lent table, which the stopped channel does not read.
+            unsafe { self.descs.word_ptr(i).write_volatile(0) };
+        }
+        (self.pushed, self.sent) = (0, 0);
+    }
+
+    /// The address of descriptor `i`, as the DMAC knows it.
+    pub(crate) fn address(&mut self, i: usize) -> u32 {
+        self.descs.word_ptr(i) as u32
+    }
+
+    /// Packets ready or being sent, as of the last [`reclaim`](Self::reclaim).
+    pub(crate) fn queued(&self) -> usize {
+        (self.pushed - self.sent) as usize
+    }
+
+    /// Makes one packet ready: `words` words from bus address `src`. False when every descriptor is
+    /// in use.
+    pub(crate) fn push(&mut self, src: u32, words: u32) -> bool {
+        if self.queued() == self.len() {
+            return false;
+        }
+        let i = (self.pushed % self.len() as u64) as usize;
+        let next = self.address((i + 1) % self.len());
+        let packet = [src, self.dst, words * 4, self.chcfg, 0, 0, next];
+        // SAFETY: descriptor `i` is not ready (it was sent and taken back, or never used), so the
+        // DMAC does not read it; the header goes last, and the barrier orders it after the rest.
+        unsafe {
+            let d = self.descs.word_ptr(i);
+            for (k, w) in packet.into_iter().enumerate() {
+                d.add(k + 1).write_volatile(w);
+            }
+            barrier();
+            d.write_volatile(READY);
+            barrier();
+        }
+        self.pushed += 1;
+        true
+    }
+
+    /// Takes back every descriptor the DMAC has finished, in order. Returns how many.
+    pub(crate) fn reclaim(&mut self) -> usize {
+        let before = self.sent;
+        while self.sent != self.pushed {
+            let i = (self.sent % self.len() as u64) as usize;
+            // SAFETY: the lent table; a header the DMAC may write back.
+            if unsafe { self.descs.word_ptr(i).read_volatile() } & 1 != 0 {
+                break;
+            }
+            self.sent += 1;
+        }
+        (self.sent - before) as usize
+    }
+
+    /// Where a stopped channel starts again: the first descriptor not yet sent.
+    pub(crate) fn restart_at(&mut self) -> *const u32 {
+        let i = (self.sent % self.len() as u64) as usize;
+        self.descs.word_ptr(i)
+    }
+}
+
+/// Orders the writes before it ahead of those after it, as the DMAC sees them.
+fn barrier() {
+    // SAFETY: a barrier, with no memory or register effects of its own.
+    #[cfg(target_os = "none")]
+    unsafe {
+        core::arch::asm!("dsb", options(nostack))
+    };
+}
+
+// ── A stream to the host ────────────────────────────────────────────────────
+
+/// A port's stream to the host, from the pipe's endpoint to its DMA channel.
+struct InStream {
+    pipe: u8,
+    dma: Dma<'static>,
+    chain: Chain<'static>,
+    start_ahead: usize,
+    /// The host has the endpoint enabled, and the FIFO port is the stream's.
+    armed: bool,
+    /// The DMA has been started, and PID is BUF, since the endpoint was enabled.
+    launched: bool,
+    generation: u32,
+    stops: u32,
+}
+
+/// Per port, the stream on its D0FIFO.
+static IN_STREAM: [Mutex<RefCell<Option<InStream>>>; 2] =
+    [const { Mutex::new(RefCell::new(None)) }; 2];
+
+/// Runs `f` on port `port`'s stream to the host, if it has one.
+fn with_in<R>(port: usize, f: impl FnOnce(&mut InStream) -> R) -> Option<R> {
+    critical_section::with(|cs| IN_STREAM[port].borrow_ref_mut(cs).as_mut().map(f))
+}
+
+impl InStream {
+    /// Takes the endpoint: the pipe reset and NAK, the FIFO port on it, nothing queued. The DMA starts
+    /// when enough is pushed.
+    ///
+    /// # Safety
+    /// The caller owns port `u` and its pipes.
+    unsafe fn arm(&mut self, u: Usb) {
+        self.disarm(u);
+        let n = self.pipe as usize;
+        unsafe {
+            pipe_brdy_disable(u, n);
+            pipe_reset(u, n); // NAK, deselected, its buffers and toggle cleared
+        }
+        self.chain.reset();
+        self.generation = self.generation.wrapping_add(1);
+        u.d0fbcfg().write_value(D0FBCFG_TENDE);
+        u.d0fifosel().write_value(MBW_WORDS);
+        let deselected = (0..FIFO_POLLS).any(|_| u.d0fifosel().read() & FIFOSEL_CURPIPE_MASK == 0);
+        u.d0fifosel().write_value(MBW_WORDS | u16::from(self.pipe));
+        let ready = deselected
+            && (0..FIFO_POLLS).any(|_| {
+                u.d0fifosel().read() & FIFOSEL_CURPIPE_MASK == u16::from(self.pipe)
+                    && u.d0fifoctr().read() & FIFOCTR_FRDY != 0
+            });
+        if !ready {
+            warn!("usb{}: D0FIFO not ready for the stream", self.pipe);
+        }
+        self.armed = ready;
+    }
+
+    /// Gives the endpoint and the port up: DREQE off, the channel stopped, the port deselected.
+    fn disarm(&mut self, u: Usb) {
+        if !self.armed {
+            return;
+        }
+        u.d0fifosel().modify(|r| *r &= !FIFOSEL_DREQE);
+        // The channel is halted before anything it reads is changed.
+        crate::dmac::halt_channel(self.dma.number());
+        self.dma.stop();
+        u.d0fifosel().write_value(0);
+        u.d0fbcfg().write_value(0);
+        (self.armed, self.launched) = (false, false);
+    }
+
+    /// Starts the channel at the first packet not sent. The first time, the port asks for transfers and the pipe
+    /// answers the host.
+    fn launch(&mut self, u: Usb, port: usize) {
+        let first = self.chain.restart_at();
+        // SAFETY: the chain's descriptors are complete and lent for good; the channel is stopped.
+        unsafe {
+            self.dma
+                .init_with_link_descriptor(first, D0FIFO_DMARS[port]);
+            self.dma.channel_start();
+        }
+        if !self.launched {
+            u.d0fifosel().modify(|r| *r |= FIFOSEL_DREQE);
+            // SAFETY: the stream's pipe, armed.
+            unsafe { pipe_enable(u, self.pipe as usize) };
+            self.launched = true;
+        }
+    }
+
+    fn push(&mut self, packet: &[u32], port: usize) -> bool {
+        if !self.armed || packet.is_empty() {
+            return false;
+        }
+        self.chain.reclaim();
+        if !self.chain.push(packet.as_ptr() as u32, packet.len() as u32) {
+            return false;
+        }
+        if !self.dma.enabled() && self.chain.queued() >= self.start_ahead {
+            if self.launched {
+                self.stops = self.stops.wrapping_add(1);
+            }
+            self.launch(usb(port as u8), port);
+        }
+        true
+    }
+}
+
+/// A stream of packets to the host, moved by a DMA channel. Dropping it stops the DMA and frees the port.
+///
+/// Packets are whole 32-bit words: the endpoint's frames must be multiples of 4 bytes. Start the endpoint's class
+/// handler as usual; the stream runs while the host has it enabled.
+pub struct DmaIsoIn {
+    port: u8,
+    pipe: u8,
+}
+
+impl DmaIsoIn {
+    /// Queues a packet: `packet` is in uncached memory, holds whole words, and must stay as it is until the stream has
+    /// sent it. False when the host has the endpoint disabled or the queue is full.
+    ///
+    /// The DMA starts, and starts again after it stopped for want of a packet, when the stream's threshold
+    /// ([`into_dma_stream`](Rusb1EndpointIn::into_dma_stream)) is queued.
+    pub fn push(&mut self, packet: Uncached<'static, u32>) -> bool {
+        with_in(self.port as usize, |s| {
+            s.push(packet.as_slice(), self.port as usize)
+        })
+        .unwrap_or(false)
+    }
+
+    /// Packets queued and not sent.
+    pub fn queued(&mut self) -> usize {
+        with_in(self.port as usize, |s| {
+            s.chain.reclaim();
+            s.chain.queued()
+        })
+        .unwrap_or(0)
+    }
+
+    /// How many times the endpoint has been enabled: it changes when a stream starts over.
+    pub fn generation(&self) -> u32 {
+        with_in(self.port as usize, |s| s.generation).unwrap_or(0)
+    }
+
+    /// Times the DMA ran out of packets and was started again.
+    pub fn stops(&self) -> u32 {
+        with_in(self.port as usize, |s| s.stops).unwrap_or(0)
+    }
+
+    /// Whether the host has the endpoint enabled and the DMA is running.
+    pub fn running(&self) -> bool {
+        with_in(self.port as usize, |s| s.launched && s.dma.enabled()).unwrap_or(false)
+    }
+
+    /// The pipe it runs on.
+    pub fn pipe(&self) -> u8 {
+        self.pipe
+    }
+}
+
+#[cfg(all(test, not(target_os = "none")))]
+impl DmaIsoIn {
+    /// The chain, for a test to play the DMAC's part.
+    fn with_chain<R>(&mut self, f: impl FnOnce(&mut Chain<'static>) -> R) -> R {
+        with_in(self.port as usize, |s| f(&mut s.chain)).unwrap()
+    }
+
+    fn first_descriptor(&mut self) -> u32 {
+        self.with_chain(|c| c.address(0))
+    }
+}
+
+impl Drop for DmaIsoIn {
+    fn drop(&mut self) {
+        critical_section::with(|cs| {
+            let slot = &mut *IN_STREAM[self.port as usize].borrow_ref_mut(cs);
+            if let Some(s) = slot.as_mut() {
+                s.disarm(usb(self.port));
+            }
+            *slot = None;
+        });
+    }
+}
+
+/// Binds a stream to the host to `pipe` on `port`, with nothing enabled yet.
+fn bind_in(
+    port: u8,
+    pipe: u8,
+    dma: Dma<'static>,
+    descs: RingDescs<'static>,
+    start_ahead: usize,
+) -> DmaIsoIn {
+    let chcfg = CHCFG_DMS
+        | CHCFG_DEM
+        | CHCFG_DAD
+        | CHCFG_DDS_32BIT
+        | CHCFG_SDS_32BIT
+        | CHCFG_AM_BURST
+        | CHCFG_LVL
+        | CHCFG_HIEN
+        | CHCFG_REQD
+        | u32::from(dma.number() & 7);
+    let dst = usb(port).d0fifo().addr() as u32;
+    critical_section::with(|cs| {
+        let slot = &mut *IN_STREAM[port as usize].borrow_ref_mut(cs);
+        assert!(
+            slot.is_none(),
+            "usb: port {} already has a DMA stream on D0FIFO",
+            port
+        );
+        assert!(
+            start_ahead <= descs.len(),
+            "usb: more ahead than descriptors"
+        );
+        *slot = Some(InStream {
+            pipe,
+            dma,
+            chain: Chain::new(descs, dst, chcfg),
+            start_ahead,
+            armed: false,
+            launched: false,
+            generation: 0,
+            stops: 0,
+        });
+    });
+    DmaIsoIn { port, pipe }
+}
+
+/// The host enabled or disabled a pipe's endpoint: true if a stream is bound to it, which has taken or given it up.
+/// (The driver still disables the pipe itself.)
+///
+/// # Safety
+/// The caller owns port `port` and its pipes.
+pub(crate) unsafe fn set_enabled(port: u8, pipe: u8, enabled: bool) -> bool {
+    with_in(port as usize, |s| {
+        if s.pipe != pipe {
+            return false;
+        }
+        if enabled {
+            // SAFETY: the caller's contract.
+            unsafe { s.arm(usb(port)) };
+        } else {
+            s.disarm(usb(port));
+        }
+        true
+    })
+    .unwrap_or(false)
+}
+
+/// The bus was reset: every stream of port `port` lets its endpoint and port go.
+pub(crate) fn bus_reset(port: u8) {
+    with_in(port as usize, |s| s.disarm(usb(port)));
+}
+
+impl Rusb1EndpointIn {
+    /// Sends packets on this isochronous endpoint by DMA. `descs` is the queue of packets and `start_ahead` how many of
+    /// them it takes to start the DMA, and to start it again after it ran dry: the latency the stream holds.
+    ///
+    /// # Panics
+    /// If the endpoint isn't isochronous, or the port already has such a stream (it has one port for DMA: D0FIFO).
+    pub fn into_dma_stream(
+        self,
+        dma: Dma<'static>,
+        descs: RingDescs<'static>,
+        start_ahead: usize,
+    ) -> DmaIsoIn {
+        assert!(
+            self.info.ep_type == EndpointType::Isochronous,
+            "usb: into_dma_stream needs an isochronous endpoint"
+        );
+        let stream = bind_in(self.port, self.pipe, dma, descs, start_ahead);
+        // Bound after the host enabled the endpoint: take it now, as the enable would have.
+        let u = usb(self.port);
+        if pipectr(u, self.pipe as usize).read() & PIPECTR_PID_MASK == PIPECTR_PID_BUF {
+            // SAFETY: this endpoint's pipe.
+            unsafe { set_enabled(self.port, self.pipe, true) };
+        }
+        stream
+    }
+}
+
+#[cfg(all(test, not(target_os = "none")))]
+mod tests {
+    use super::*;
+    use crate::ring_buffer::test_descs;
+
+    const DST: u32 = 0xE801_0018;
+    const CHCFG: u32 = 0x8122_2268;
+
+    fn chain(n: usize) -> Chain<'static> {
+        Chain::new(test_descs(n), DST, CHCFG)
+    }
+
+    fn word(c: &mut Chain, i: usize, w: usize) -> u32 {
+        unsafe { c.descs.word_ptr(i).add(w).read_volatile() }
+    }
+
+    /// The DMAC has sent descriptor `i`: it clears the valid mark.
+    fn sent(c: &mut Chain, i: usize) {
+        unsafe { c.descs.word_ptr(i).write_volatile(0b1000) };
+    }
+
+    #[test]
+    fn a_pushed_descriptor_is_complete_and_valid() {
+        let mut c = chain(4);
+        assert!(c.push(0x2000_0000, 12));
+        assert_eq!(
+            word(&mut c, 0, 0),
+            0b1001,
+            "valid, the chain goes on, written back"
+        );
+        assert_eq!(word(&mut c, 0, 1), 0x2000_0000);
+        assert_eq!(word(&mut c, 0, 2), DST);
+        assert_eq!(word(&mut c, 0, 3), 48, "bytes");
+        assert_eq!(word(&mut c, 0, 4), CHCFG);
+        let next = c.address(1);
+        assert_eq!(word(&mut c, 0, 7), next);
+    }
+
+    #[test]
+    fn the_last_descriptor_links_to_the_first() {
+        let mut c = chain(3);
+        for i in 0..3 {
+            assert!(c.push(i * 64, 4));
+        }
+        let first = c.address(0);
+        assert_eq!(word(&mut c, 2, 7), first);
+    }
+
+    #[test]
+    fn a_full_chain_refuses_a_push() {
+        let mut c = chain(3);
+        for _ in 0..3 {
+            assert!(c.push(0, 4));
+        }
+        assert!(!c.push(0, 4));
+        assert_eq!(c.queued(), 3);
+        assert_eq!(word(&mut c, 0, 1), 0, "nothing overwritten");
+    }
+
+    #[test]
+    fn reclaim_takes_back_only_what_the_dmac_cleared_in_order() {
+        let mut c = chain(4);
+        for _ in 0..4 {
+            assert!(c.push(0, 4));
+        }
+        sent(&mut c, 0);
+        sent(&mut c, 2); // not next: the one before it is still going
+        assert_eq!(c.reclaim(), 1);
+        assert_eq!(c.queued(), 3);
+        sent(&mut c, 1);
+        assert_eq!(c.reclaim(), 2);
+        assert_eq!(c.queued(), 1);
+    }
+
+    #[test]
+    fn queued_survives_the_wrap() {
+        let mut c = chain(3);
+        for k in 0..50u32 {
+            assert!(c.push(k * 16, 4));
+            assert_eq!(c.queued(), 1);
+            sent(&mut c, (k % 3) as usize);
+            assert_eq!(c.reclaim(), 1);
+            assert_eq!(c.queued(), 0);
+        }
+    }
+
+    /// Reset forgets every descriptor, so none is left valid for the next start.
+    #[test]
+    fn reset_leaves_nothing_valid() {
+        let mut c = chain(3);
+        for _ in 0..3 {
+            c.push(0, 4);
+        }
+        c.reset();
+        assert_eq!(c.queued(), 0);
+        for i in 0..3 {
+            assert_eq!(word(&mut c, i, 0) & 1, 0);
+        }
+        assert!(c.push(0x10, 4));
+        assert_eq!(word(&mut c, 0, 1), 0x10, "the first descriptor again");
+    }
+
+    #[test]
+    fn the_first_unsent_descriptor_is_where_a_restart_begins() {
+        let mut c = chain(4);
+        for _ in 0..3 {
+            c.push(0, 4);
+        }
+        sent(&mut c, 0);
+        c.reclaim();
+        let at = c.address(1);
+        assert_eq!(c.restart_at() as u32, at);
+    }
+
+    // ── The stream to the host ──────────────────────────────────────────────
+    use crate::dmac::{CHSTAT_EN, Dma};
+    use crate::mmio::test;
+    use crate::peripherals::DMA_CH0;
+    use crate::usb::regs::{
+        FIFOCTR_FRDY, FIFOSEL_CURPIPE_MASK, FIFOSEL_DREQE, PIPECTR_PID_BUF, PIPECTR_PID_MASK,
+        pipectr, usb,
+    };
+
+    fn set_enabled(port: u8, pipe: u8, enabled: bool) -> bool {
+        // SAFETY: the test owns the port (SERIAL).
+        unsafe { super::set_enabled(port, pipe, enabled) }
+    }
+
+    /// The streams are statics, one a port and direction: these tests share port 1's.
+    use crate::usb::PORT1_TESTS as SERIAL;
+
+    const PIPE: u8 = 2;
+    const START: usize = 3;
+
+    fn chctrl() -> usize {
+        crate::pac::DMAC.ch(0).chctrl().addr()
+    }
+    fn chstat() -> usize {
+        crate::pac::DMAC.ch(0).chstat().addr()
+    }
+
+    /// A stream on port 1, pipe 2, channel 0, on 8 descriptors, with nothing enabled yet and the FIFO ready.
+    fn stream() -> DmaIsoIn {
+        test::reset();
+        test::poke16(usb(1).d0fifoctr().addr(), FIFOCTR_FRDY);
+        let dma = unsafe { Dma::steal::<DMA_CH0>() };
+        bind_in(1, PIPE, dma, test_descs(8), START)
+    }
+
+    fn packet() -> &'static [u32] {
+        std::vec![0x1234_5678u32; 6].leak()
+    }
+
+    fn push(s: &mut DmaIsoIn) -> bool {
+        s.push(crate::dma_buf::Uncached::new(packet()).unwrap())
+    }
+
+    fn channel_started() -> usize {
+        test::log()
+            .iter()
+            .filter(|a| a.write && a.addr == chctrl() && a.val & 1 != 0)
+            .count()
+    }
+
+    /// Where the last write to `addr` was.
+    fn last(addr: usize) -> Option<usize> {
+        test::log().iter().rposition(|a| a.write && a.addr == addr)
+    }
+
+    #[test]
+    fn enabling_arms_the_port_and_starts_nothing() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let s = stream();
+        assert!(set_enabled(1, PIPE, true));
+        let u = usb(1);
+        assert_eq!(test::peek16(u.d0fbcfg().addr()), 0x0010, "TENDE");
+        assert_eq!(
+            test::peek16(u.d0fifosel().addr()) & FIFOSEL_CURPIPE_MASK,
+            u16::from(PIPE)
+        );
+        assert_eq!(test::peek16(u.d0fifosel().addr()) & FIFOSEL_DREQE, 0);
+        assert_eq!(
+            test::peek16(pipectr(u, PIPE as usize).addr()) & PIPECTR_PID_MASK,
+            0,
+            "NAK"
+        );
+        assert_eq!(channel_started(), 0);
+        assert_eq!(s.generation(), 1);
+        assert!(!s.running());
+    }
+
+    /// TENDE is on before the pipe is selected, and the port is deselected before it is selected again.
+    #[test]
+    fn the_port_is_set_up_in_order() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _s = stream();
+        set_enabled(1, PIPE, true);
+        let u = usb(1);
+        let log = test::log();
+        let at = |pred: &dyn Fn(&crate::mmio::test::Access) -> bool| {
+            log.iter().position(|a| a.write && pred(a)).unwrap()
+        };
+        let tende = at(&|a| a.addr == u.d0fbcfg().addr() && a.val == 0x0010);
+        let select = at(&|a| a.addr == u.d0fifosel().addr() && a.val & 0xF == u32::from(PIPE));
+        let deselect = log[..select]
+            .iter()
+            .rposition(|a| a.write && a.addr == u.d0fifosel().addr() && a.val & 0xF == 0)
+            .unwrap();
+        assert!(tende < select && deselect < select);
+    }
+
+    #[test]
+    fn pushing_before_the_host_enables_the_endpoint_is_refused() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let mut s = stream();
+        assert!(!push(&mut s));
+        assert_eq!(s.queued(), 0);
+    }
+
+    /// The DMA starts once enough is queued: not with a packet less. DREQE, then PID = BUF.
+    #[test]
+    fn it_starts_only_with_enough_queued() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let mut s = stream();
+        set_enabled(1, PIPE, true);
+        for _ in 0..START - 1 {
+            assert!(push(&mut s));
+        }
+        assert_eq!(channel_started(), 0);
+        assert!(push(&mut s));
+        assert_eq!(channel_started(), 1);
+        let u = usb(1);
+        assert_eq!(
+            test::peek32(crate::pac::DMAC.ch(0).nxla().addr()),
+            s.first_descriptor()
+        );
+        assert_ne!(test::peek16(u.d0fifosel().addr()) & FIFOSEL_DREQE, 0);
+        assert_eq!(
+            test::peek16(pipectr(u, PIPE as usize).addr()) & PIPECTR_PID_MASK,
+            PIPECTR_PID_BUF
+        );
+        let start = last(chctrl()).unwrap();
+        let dreqe = last(u.d0fifosel().addr()).unwrap();
+        let buf = last(pipectr(u, PIPE as usize).addr()).unwrap();
+        assert!(
+            start < dreqe && dreqe < buf,
+            "start, then DREQE, then PID=BUF"
+        );
+    }
+
+    /// A channel that has run on keeps going: nothing is restarted while it is enabled.
+    #[test]
+    fn a_running_channel_is_left_alone() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let mut s = stream();
+        set_enabled(1, PIPE, true);
+        for _ in 0..START {
+            push(&mut s);
+        }
+        test::poke32(chstat(), CHSTAT_EN);
+        for _ in 0..3 {
+            assert!(push(&mut s));
+        }
+        assert_eq!(channel_started(), 1);
+        assert_eq!(s.stops(), 0);
+        assert!(s.running());
+    }
+
+    /// The DMAC stopped at a descriptor that wasn't ready: the next pushes start it at the first one not sent, and
+    /// nothing is sent twice.
+    #[test]
+    fn a_stopped_channel_restarts_at_the_first_unsent_descriptor() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let mut s = stream();
+        set_enabled(1, PIPE, true);
+        for _ in 0..START {
+            push(&mut s);
+        }
+        s.with_chain(|c| {
+            for i in 0..START {
+                sent(c, i);
+            }
+        });
+        test::poke32(chstat(), 0);
+        for _ in 0..START - 1 {
+            assert!(push(&mut s));
+        }
+        assert_eq!(s.stops(), 0, "not until enough is queued again");
+        assert!(push(&mut s));
+        assert_eq!(s.stops(), 1);
+        assert_eq!(channel_started(), 2);
+        let want = s.with_chain(|c| c.address(START));
+        assert_eq!(test::peek32(crate::pac::DMAC.ch(0).nxla().addr()), want);
+    }
+
+    #[test]
+    fn disabling_stops_the_dma_and_frees_the_port() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let mut s = stream();
+        set_enabled(1, PIPE, true);
+        for _ in 0..START {
+            push(&mut s);
+        }
+        test::poke32(chstat(), CHSTAT_EN);
+        assert!(set_enabled(1, PIPE, false));
+        let u = usb(1);
+        assert_eq!(test::peek16(u.d0fifosel().addr()), 0);
+        assert_eq!(test::peek16(u.d0fbcfg().addr()), 0);
+        assert_eq!(test::peek32(chctrl()) & 1, 0, "stopped");
+        assert!(!push(&mut s), "and refuses packets");
+        // DREQE goes off before the pipe is deselected.
+        let log = test::log();
+        let sel = |a: &crate::mmio::test::Access| a.write && a.addr == u.d0fifosel().addr();
+        let on = log
+            .iter()
+            .rposition(|a| sel(a) && a.val & u32::from(FIFOSEL_DREQE) != 0)
+            .expect("DREQE was on");
+        let off = on
+            + log[on..]
+                .iter()
+                .position(|a| {
+                    sel(a)
+                        && a.val & u32::from(FIFOSEL_DREQE) == 0
+                        && a.val & 0xF == u32::from(PIPE)
+                })
+                .expect("DREQE off with the pipe still selected");
+        let gone = log.iter().rposition(|a| sel(a) && a.val == 0).unwrap();
+        assert!(off < gone);
+    }
+
+    #[test]
+    fn enabling_again_forgets_what_was_queued() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let mut s = stream();
+        set_enabled(1, PIPE, true);
+        push(&mut s);
+        push(&mut s);
+        set_enabled(1, PIPE, true);
+        assert_eq!(s.queued(), 0);
+        assert_eq!(s.generation(), 2);
+        assert_eq!(channel_started(), 0);
+    }
+
+    #[test]
+    fn a_bus_reset_stops_the_stream() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let mut s = stream();
+        set_enabled(1, PIPE, true);
+        for _ in 0..START {
+            push(&mut s);
+        }
+        test::poke32(chstat(), CHSTAT_EN);
+        bus_reset(1);
+        assert_eq!(test::peek32(chctrl()) & 1, 0);
+        assert_eq!(test::peek16(usb(1).d0fifosel().addr()), 0);
+        assert!(!push(&mut s));
+    }
+
+    /// Another pipe's endpoint is not this stream's business.
+    #[test]
+    fn another_pipe_is_not_the_streams() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _s = stream();
+        assert!(!set_enabled(1, PIPE + 1, true));
+        assert!(!set_enabled(0, PIPE, true));
+    }
+
+    #[test]
+    #[should_panic(expected = "D0FIFO")]
+    fn a_second_stream_on_a_port_is_refused() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _s = stream();
+        let _second = bind_in(
+            1,
+            1,
+            unsafe { Dma::steal::<DMA_CH0>() },
+            test_descs(8),
+            START,
+        );
+    }
+
+    #[test]
+    fn dropping_a_stream_frees_its_port() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        drop(stream());
+        let _again = stream();
+    }
+}

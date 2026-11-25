@@ -57,13 +57,17 @@ pub mod driver;
 pub(crate) mod fifo;
 pub mod host;
 pub mod iso;
+mod iso_dma;
 pub(crate) mod pipe;
 pub(crate) mod regs;
 
 use driver::dcd_int_handler;
 pub use driver::{Rusb1Bus, Rusb1ControlPipe, Rusb1Driver, Rusb1EndpointIn, Rusb1EndpointOut};
+#[cfg(all(test, not(target_os = "none")))]
+pub(crate) static PORT1_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 use host::hcd_int_handler;
 pub use host::{Rusb1Allocator, Rusb1HostDriver, Rusb1Pipe};
+pub use iso_dma::DmaIsoIn;
 
 use core::marker::PhantomData;
 

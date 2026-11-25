@@ -822,7 +822,12 @@ impl Bus for Rusb1Bus {
                     // device must do the same or every IN packet goes out with
                     // the wrong DATAx phase and the host ACKs but discards it as
                     // a duplicate.  pipe_reset leaves PID=NAK.
-                    if super::iso::in_bound(self.port, p) && ep_addr.direction() == Direction::In {
+                    if super::iso_dma::set_enabled(self.port, p as u8, true) {
+                        // A DMA stream has taken the pipe, reset and NAK; it releases
+                        // it when its first packets are queued.
+                    } else if super::iso::in_bound(self.port, p)
+                        && ep_addr.direction() == Direction::In
+                    {
                         // Continuous ISO IN (mic/capture): activate in IFIS mode so
                         // the SIE flushes the IN buffer each microframe, generating
                         // the BRDY that drives the hook refill (as TinyUSB's
@@ -838,6 +843,7 @@ impl Bus for Rusb1Bus {
                         // in `write()`, so nothing to enable here.
                     }
                 } else {
+                    super::iso_dma::set_enabled(self.port, p as u8, false);
                     pipe_disable(u, p);
                     pipe_bemp_disable(u, p);
                     pipe_brdy_disable(u, p);
@@ -1914,6 +1920,9 @@ unsafe fn process_bus_reset(port: u8) {
             u.cfifoctr().write_value(FIFOCTR_BCLR);
         }
 
+        // DMA streams stop before their ports are deselected.
+        super::iso_dma::bus_reset(port);
+
         // Deselect D0FIFO and D1FIFO (CURPIPE = 0).
         u.d0fifosel().write_value(0);
         u.d1fifosel().write_value(0);
@@ -2557,6 +2566,56 @@ mod tests {
         assert_eq!(dcpctr() & PIPECTR_CCPL, 0, "CCPL set a second time");
     }
 
+    /// The host enabling an endpoint with a DMA stream takes the pipe for it: NAK, the FIFO port selected, and no
+    /// packet-by-packet interrupt. Disabling it lets the port go before the pipe is reset.
+    #[test]
+    fn endpoint_enables_drive_a_dma_stream() {
+        let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut d = fresh_port1();
+        let ep = d
+            .alloc_endpoint_in(EndpointType::Isochronous, None, 392, 1)
+            .unwrap();
+        let (addr, pipe) = (ep.info.addr, ep.pipe as usize);
+        let u = usb(1);
+        test::poke16(u.d0fifoctr().addr(), crate::usb::regs::FIFOCTR_FRDY);
+        let stream = ep.into_dma_stream(
+            unsafe { crate::dmac::Dma::steal::<crate::peripherals::DMA_CH0>() },
+            crate::ring_buffer::test_descs(8),
+            3,
+        );
+        let mut bus = Rusb1Bus {
+            port: 1,
+            connected: true,
+        };
+        next_setup(1);
+        bus.endpoint_set_enabled(addr, true);
+        assert_eq!(stream.generation(), 1);
+        assert_eq!(
+            test::peek16(pipectr(u, pipe).addr()) & 0b11,
+            0b00,
+            "NAK until packets are queued"
+        );
+        assert_eq!(test::peek16(u.brdyenb().addr()) & (1 << pipe), 0, "no BRDY");
+        assert_eq!(test::peek16(u.d0fifosel().addr()) & 0xF, pipe as u16);
+
+        let mark = test::log().len();
+        next_setup(1);
+        bus.endpoint_set_enabled(addr, false);
+        let log = test::log();
+        let gone = log[mark..]
+            .iter()
+            .position(|a| a.write && a.addr == u.d0fifosel().addr() && a.val == 0)
+            .expect("the port is let go");
+        let reset = log[mark..]
+            .iter()
+            .position(|a| {
+                a.write && a.addr == pipectr(u, pipe).addr() && a.val as u16 & PIPECTR_ACLRM != 0
+            })
+            .expect("the pipe is reset");
+        assert!(gone < reset);
+        drop(stream);
+    }
+
     /// The BEMP that ends an IN transfer turns that pipe's BEMP interrupt off. The pipe stays at
     /// PID=BUF with its buffer empty, and while the host polls it with IN tokens the BEMP keeps
     /// re-asserting: left enabled until `write()` gets to run, it is an interrupt storm that keeps
@@ -2590,8 +2649,8 @@ mod tests {
         );
     }
 
-    /// The allocation tests share port 1's allocator; run them one at a time.
-    static ALLOC_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// The allocation tests share port 1's allocator, and its streams; run them one at a time.
+    use crate::usb::PORT1_TESTS as ALLOC_TESTS;
 
     fn fresh_port1() -> Rusb1Driver<'static> {
         test::reset();

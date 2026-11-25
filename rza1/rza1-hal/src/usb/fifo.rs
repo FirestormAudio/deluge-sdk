@@ -32,7 +32,7 @@ use crate::pac::usb::Usb;
 
 /// Polls of a FIFO port's registers before giving up on it: about 38 µs at the
 /// shortest bus wait, two accesses a poll.
-const FIFO_POLLS: usize = 256;
+pub(crate) const FIFO_POLLS: usize = 256;
 
 /// Hardware FIFO port: data register, its byte lanes, SEL register and CTR register.
 pub(crate) struct FifoPort {

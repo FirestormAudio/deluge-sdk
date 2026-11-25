@@ -70,6 +70,7 @@ pub(crate) const FIFOSEL_ISEL: u16 = 0x0020; // CFIFOSEL only
 pub(crate) const FIFOSEL_DREQE: u16 = 0x1000; // DnFIFOSEL only: DMA request enable
 pub(crate) const FIFOSEL_DCLRM: u16 = 0x2000; // DnFIFOSEL only: clear the buffer once its data is read
 pub(crate) const FIFOSEL_BIGEND: u16 = 0x0100;
+pub(crate) const D0FBCFG_TENDE: u16 = 0x0010; // D0FBCFG: the DMAC's end of a transfer commits the packet
 pub(crate) const FIFOSEL_MBW_MASK: u16 = 0x0C00;
 pub(crate) const FIFOSEL_MBW_SHIFT: u32 = 10;
 pub(crate) const FIFOSEL_REW: u16 = 0x4000;
