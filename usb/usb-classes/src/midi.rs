@@ -123,8 +123,10 @@ const MIDI1_TX_BATCH: usize = 64;
 /// The largest bulk packet at either speed: the MIDI 1.0 OUT pump's buffer.
 const BULK_MPS_MAX: usize = 512;
 
-/// The speed the device controller runs the bus at, which sets both alternates' bulk packet size: USB 2.0 fixes bulk endpoints at 512 bytes at high speed and caps them at 64 at full
-/// speed.
+/// The speed the device controller runs the bus at, which sets both alternates' bulk packet size: USB 2.0 fixes bulk
+/// endpoints at 512 bytes at high speed and caps them at 64 at full speed. The descriptors are built once, so a device
+/// built for [`High`](BusSpeed::High) is high speed only: enumerated at full speed (behind a full-speed hub) its
+/// endpoints are too large.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BusSpeed {
     /// Full speed (12 Mbit/s): 64-byte bulk packets.
@@ -365,6 +367,8 @@ pub fn try_send_ump_to_host(words: [u32; 4]) -> bool {
 pub struct MidiClassHandler {
     ms_iface: InterfaceNumber,
     state: &'static MidiState,
+    /// The function declares the MIDI 2.0 alternate.
+    midi2: bool,
 }
 
 impl Handler for MidiClassHandler {
@@ -405,6 +409,7 @@ impl Handler for MidiClassHandler {
             && req.request == Request::GET_DESCRIPTOR
             && req.value == (CS_GR_TRM_BLOCK as u16) << 8 | MIDI2_ALT as u16
             && req.index == u8::from(self.ms_iface) as u16
+            && self.midi2
         {
             return Some(InResponse::Accepted(&GTB_DESCRIPTOR));
         }
@@ -445,6 +450,65 @@ pub fn build_with<'d, D: Driver<'d>>(
     speed: BusSpeed,
     state: &'static MidiState,
 ) -> (MidiClassHandler, MidiEndpoints<'d, D>) {
+    let (handler, ep_out_midi1, ep_in_midi1, midi2) = build_function(builder, speed, state, true);
+    let (ep_out_midi2, ep_in_midi2) = midi2.expect("the MIDI 2.0 alternate");
+    (
+        handler,
+        MidiEndpoints {
+            ep_out_midi1,
+            ep_in_midi1,
+            ep_out_midi2,
+            ep_in_midi2,
+        },
+    )
+}
+
+/// Endpoint handles returned by [`build_midi1`].
+pub struct Midi1Endpoints<'d, D: Driver<'d>> {
+    /// Bulk OUT — MIDI 1.0 event packets (host → device).
+    pub ep_out_midi1: D::EndpointOut,
+    /// Bulk IN — MIDI 1.0 event packets (device → host).
+    pub ep_in_midi1: D::EndpointIn,
+}
+
+/// As [`build`], with the MIDI 1.0 alternate only: a host that would pick MIDI 2.0 uses MIDI 1.0, for a firmware that
+/// serves only the MIDI 1.0 endpoints.
+pub fn build_midi1<'d, D: Driver<'d>>(
+    builder: &mut Builder<'d, D>,
+    speed: BusSpeed,
+) -> (MidiClassHandler, Midi1Endpoints<'d, D>) {
+    build_midi1_with(builder, speed, &DEFAULT_STATE)
+}
+
+/// As [`build_midi1`], for the device whose state is `state`.
+pub fn build_midi1_with<'d, D: Driver<'d>>(
+    builder: &mut Builder<'d, D>,
+    speed: BusSpeed,
+    state: &'static MidiState,
+) -> (MidiClassHandler, Midi1Endpoints<'d, D>) {
+    let (handler, ep_out_midi1, ep_in_midi1, _) = build_function(builder, speed, state, false);
+    (
+        handler,
+        Midi1Endpoints {
+            ep_out_midi1,
+            ep_in_midi1,
+        },
+    )
+}
+
+/// The function's descriptors and endpoints, with the MIDI 2.0 alternate if `midi2`.
+#[allow(clippy::type_complexity)]
+fn build_function<'d, D: Driver<'d>>(
+    builder: &mut Builder<'d, D>,
+    speed: BusSpeed,
+    state: &'static MidiState,
+    midi2: bool,
+) -> (
+    MidiClassHandler,
+    D::EndpointOut,
+    D::EndpointIn,
+    Option<(D::EndpointOut, D::EndpointIn)>,
+) {
     let mut func = builder.function(USB_CLASS_AUDIO, 0x00, 0x00);
 
     // ── AudioControl interface (mandatory stub for USB Audio Class) ─────────
@@ -518,6 +582,15 @@ pub fn build_with<'d, D: Driver<'d>>(
     let ep_in_midi1 = alt0.endpoint_bulk_in(None, speed.bulk_max_packet());
     alt0.descriptor(CS_ENDPOINT, &[MS_GENERAL, 1, JACK_EMB_IN_ID]);
 
+    let handler = MidiClassHandler {
+        ms_iface,
+        state,
+        midi2,
+    };
+    if !midi2 {
+        return (handler, ep_out_midi1, ep_in_midi1, None);
+    }
+
     // Alt 1: MIDI 2.0 — bulk sized for the bus speed, GTBs via GET_DESCRIPTOR (0x26) ─
     let mut alt1 = ms_ib.alt_setting(USB_CLASS_AUDIO, USB_SUBCLASS_MIDI_STREAMING, 0x00, None);
 
@@ -540,13 +613,10 @@ pub fn build_with<'d, D: Driver<'d>>(
     alt1.descriptor(CS_ENDPOINT, &[MS_GENERAL_2_0, 1, GTB_ID]);
 
     (
-        MidiClassHandler { ms_iface, state },
-        MidiEndpoints {
-            ep_out_midi1,
-            ep_in_midi1,
-            ep_out_midi2,
-            ep_in_midi2,
-        },
+        handler,
+        ep_out_midi1,
+        ep_in_midi1,
+        Some((ep_out_midi2, ep_in_midi2)),
     )
 }
 
@@ -614,7 +684,9 @@ pub async fn run_rx_midi1_with<'d, D: Driver<'d>>(
                         match midi_packets::route_rx_packet(packet, packet_mode) {
                             RxRoute::Packet(p) => state.packets.deliver_packet_from_host(p).await,
                             RxRoute::Message(msg) => {
-                                let _ = state.rx.try_send(msg);
+                                // A high-speed packet holds up to 128 events, more than the queue: wait for room,
+                                // which holds the host off, rather than drop the rest.
+                                state.rx.send(msg).await;
                             }
                             RxRoute::Drop => {}
                         }
@@ -817,6 +889,7 @@ mod tests {
         MidiClassHandler {
             ms_iface: InterfaceNumber(1),
             state,
+            midi2: true,
         }
     }
 
@@ -919,6 +992,64 @@ mod tests {
         for e in &events {
             assert_eq!(S.packets().try_recv_packet_from_host(), Some(*e));
         }
+    }
+
+    /// In message mode a high-speed packet can carry more events than the message queue holds: the task waits for
+    /// room instead of dropping the rest.
+    #[test]
+    fn message_mode_keeps_every_event_of_a_long_packet() {
+        use crate::test_usb::{FakeDriver, FakeEp};
+        static P: PacketQueues = PacketQueues::new();
+        static S: MidiState = MidiState::new(&P);
+        let events: std::vec::Vec<[u8; 4]> = (0..40u8).map(|i| [0x09, 0x90, i, 0x64]).collect();
+        let transfer: std::vec::Vec<u8> = events.iter().flatten().copied().collect();
+        let task = run_rx_midi1_with::<FakeDriver>(&S, FakeEp::reading_packets(&transfer, 512));
+        let mut task = core::pin::pin!(task);
+        let mut got = std::vec::Vec::new();
+        for _ in 0..10 {
+            assert!(embassy_futures::poll_once(task.as_mut()).is_pending());
+            while let Some(msg) = S.try_recv_from_host() {
+                got.push(msg[1]);
+            }
+        }
+        assert_eq!(got, (0..40u8).collect::<std::vec::Vec<_>>());
+    }
+
+    /// The MIDI 1.0-only function declares one alternate setting, so a MIDI 2.0 host uses MIDI 1.0.
+    #[test]
+    fn the_midi1_only_function_has_no_midi2_alternate() {
+        use crate::test_usb::{config_descriptor, endpoints};
+        let desc = config_descriptor(|b| {
+            let _ = build_midi1(b, BusSpeed::High);
+        });
+        let bulk: std::vec::Vec<(u8, u16)> = endpoints(&desc)
+            .into_iter()
+            .filter(|e| e.attributes & 0x03 == 0x02)
+            .map(|e| (e.alt, e.max_packet))
+            .collect();
+        assert_eq!(bulk, [(0, 512), (0, 512)]);
+        // No interface descriptor of the MIDI Streaming interface has an alternate setting other than 0.
+        let mut i = 0;
+        while i + 1 < desc.len() && desc[i] >= 2 {
+            if desc[i + 1] == 4 && desc[i + 6] == 0x03 {
+                assert_eq!(desc[i + 3], 0, "a second MIDI Streaming alternate");
+            }
+            i += desc[i] as usize;
+        }
+    }
+
+    /// Nor does it answer for the Group Terminal Blocks of an alternate it doesn't have.
+    #[test]
+    fn the_midi1_only_function_does_not_answer_for_group_terminal_blocks() {
+        static P: PacketQueues = PacketQueues::new();
+        static S: MidiState = MidiState::new(&P);
+        let mut h = None;
+        let _ = crate::test_usb::config_descriptor(|b| {
+            h = Some(build_midi1_with(b, BusSpeed::High, &S).0)
+        });
+        let mut h = h.unwrap();
+        let mut buf = [0u8; 64];
+        assert!(h.control_in(gtb_request(1, 1, 18), &mut buf).is_none());
     }
 
     #[test]

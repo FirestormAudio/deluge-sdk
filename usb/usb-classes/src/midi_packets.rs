@@ -25,11 +25,12 @@ use embassy_sync::channel::Channel;
 /// One USB-MIDI 1.0 event packet: `[cable << 4 | CIN, midi0, midi1, midi2]`.
 pub type Packet = [u8; 4];
 
-/// Packets in one full-speed 64-byte bulk transfer.
+/// Packets in one full-speed 64-byte bulk transfer. A high-speed transfer carries up to 128 (512 bytes).
 pub const PACKETS_PER_TRANSFER: usize = 64 / 4;
 
-/// Depth of the host → device packet queue: four bulk transfers, so a SysEx
-/// burst survives a few consumer polls without the RX task stalling the host.
+/// Depth of the host → device packet queue: four full-speed bulk transfers, so a SysEx burst survives a few consumer
+/// polls without the RX task stalling the host. A high-speed transfer can be twice the queue; the RX task then waits
+/// for room, which holds the host off, and loses nothing.
 pub const RX_PACKET_CAPACITY: usize = 4 * PACKETS_PER_TRANSFER;
 
 /// Depth of the device → host packet queue. A consumer that checks

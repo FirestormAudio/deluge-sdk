@@ -96,7 +96,8 @@ impl EndpointOut for FakeEp {
         if script.is_empty() {
             return core::future::pending().await;
         }
-        // One packet a read, as the driver does; one that does not fit is an overflow, and is lost.
+        // One packet a read; one that does not fit is an overflow, and is lost, as embassy's read contract specifies
+        // (rza1-hal's driver truncates it instead).
         let n = script.len().min(self.0.max_packet_size as usize);
         if n > buf.len() {
             script.drain(..n);
