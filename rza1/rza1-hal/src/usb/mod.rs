@@ -67,7 +67,7 @@ pub use driver::{Rusb1Bus, Rusb1ControlPipe, Rusb1Driver, Rusb1EndpointIn, Rusb1
 pub(crate) static PORT1_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 use host::hcd_int_handler;
 pub use host::{Rusb1Allocator, Rusb1HostDriver, Rusb1Pipe};
-pub use iso_dma::DmaIsoIn;
+pub use iso_dma::{DmaIsoIn, DmaIsoOut};
 
 use core::marker::PhantomData;
 

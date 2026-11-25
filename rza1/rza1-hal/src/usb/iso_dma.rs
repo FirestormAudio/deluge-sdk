@@ -10,29 +10,33 @@ use core::cell::RefCell;
 use critical_section::Mutex;
 use embassy_usb_driver::EndpointType;
 
-use super::driver::Rusb1EndpointIn;
+use super::driver::{Rusb1EndpointIn, Rusb1EndpointOut};
 use super::fifo::FIFO_POLLS;
-use super::pipe::{pipe_brdy_disable, pipe_enable, pipe_reset};
+use super::pipe::{pipe_brdy_disable, pipe_disable, pipe_enable, pipe_reset};
 use super::regs::{
-    D0FBCFG_TENDE, FIFOCTR_FRDY, FIFOSEL_CURPIPE_MASK, FIFOSEL_DREQE, FIFOSEL_MBW_SHIFT, MBW_32,
-    PIPECTR_PID_BUF, PIPECTR_PID_MASK, pipectr, usb,
+    D0FBCFG_TENDE, FIFOCTR_FRDY, FIFOSEL_CURPIPE_MASK, FIFOSEL_DCLRM, FIFOSEL_DREQE,
+    FIFOSEL_MBW_SHIFT, MBW_32, PIPECFG_BFRE, PIPECTR_PID_BUF, PIPECTR_PID_MASK, pipectr, usb,
 };
-use crate::dma_buf::Uncached;
+use crate::dma_buf::{Uncached, UncachedMut};
 use crate::dmac::{
     CHCFG_AM_BURST, CHCFG_DAD, CHCFG_DDS_32BIT, CHCFG_DEM, CHCFG_DMS, CHCFG_HIEN, CHCFG_LVL,
-    CHCFG_REQD, CHCFG_SDS_32BIT, Dma,
+    CHCFG_REQD, CHCFG_SAD, CHCFG_SDS_32BIT, Dma,
 };
 use crate::pac::usb::Usb;
 use crate::ring_buffer::RingDescs;
 
 /// DMARS for each port's D0FIFO (MID 0b10_0000 / 0b10_0010, RID 0b11).
 const D0FIFO_DMARS: [u32; 2] = [0x83, 0x8B];
+/// DMARS for each port's D1FIFO (MID 0b10_0001 / 0b10_0011, RID 0b11).
+const D1FIFO_DMARS: [u32; 2] = [0x87, 0x8F];
 /// FIFOSEL with the 32-bit width and no pipe.
 const MBW_WORDS: u16 = MBW_32 << FIFOSEL_MBW_SHIFT;
 
 /// A descriptor's header once it is ready: LV (valid) and DIM; LE clear (the chain goes on), WBD
 /// clear (the DMAC writes the header back with LV clear once it is done).
 const READY: u32 = 0b1001;
+/// A descriptor of a ring that never ends: LV, WBD (no write-back, so it stays valid) and DIM.
+const LOOPING: u32 = 0b1101;
 
 /// The chain of descriptors of a stream to the host: a ring the CPU fills and the DMAC empties.
 pub(crate) struct Chain<'d> {
@@ -363,13 +367,283 @@ fn bind_in(
     DmaIsoIn { port, pipe }
 }
 
+// ── A stream from the host ──────────────────────────────────────────────────
+
+/// A port's stream from the host: a ring its DMA channel fills for as long as the endpoint is enabled.
+struct OutStream {
+    port: u8,
+    pipe: u8,
+    dma: Dma<'static>,
+    ring: UncachedMut<'static, u32>,
+    descs: RingDescs<'static>,
+    armed: bool,
+    generation: u32,
+    /// Words received since the endpoint was enabled, and where in the ring the last look was.
+    total: u32,
+    last: usize,
+}
+
+/// Per port, the stream on its D1FIFO.
+static OUT_STREAM: [Mutex<RefCell<Option<OutStream>>>; 2] =
+    [const { Mutex::new(RefCell::new(None)) }; 2];
+
+/// Runs `f` on port `port`'s stream from the host, if it has one.
+fn with_out<R>(port: usize, f: impl FnOnce(&mut OutStream) -> R) -> Option<R> {
+    critical_section::with(|cs| OUT_STREAM[port].borrow_ref_mut(cs).as_mut().map(f))
+}
+
+impl OutStream {
+    /// Takes the endpoint and sets the ring going: the pipe set to raise no BRDY until it is read dry (BFRE), the
+    /// buffer cleared as the DMA reads it (DCLRM), and the host answered.
+    ///
+    /// # Safety
+    /// The caller owns port `u` and its pipes.
+    unsafe fn arm(&mut self, u: Usb, port: usize) {
+        self.disarm(u);
+        let n = self.pipe as usize;
+        // SAFETY: the stream's pipe.
+        unsafe {
+            pipe_brdy_disable(u, n);
+            pipe_reset(u, n); // NAK, deselected, its buffers and toggle cleared
+        }
+        set_bfre(u, n, true);
+        // A change of BFRE needs the pipe cleared after it (TRM Table 28.13).
+        // SAFETY: the stream's pipe.
+        unsafe { pipe_reset(u, n) };
+        self.chain();
+        self.generation = self.generation.wrapping_add(1);
+        (self.total, self.last) = (0, 0);
+        u.d1fifosel().write_value(MBW_WORDS);
+        let deselected = (0..FIFO_POLLS).any(|_| u.d1fifosel().read() & FIFOSEL_CURPIPE_MASK == 0);
+        u.d1fifosel()
+            .write_value(MBW_WORDS | FIFOSEL_DCLRM | u16::from(self.pipe));
+        let selected = deselected
+            && (0..FIFO_POLLS)
+                .any(|_| u.d1fifosel().read() & FIFOSEL_CURPIPE_MASK == u16::from(self.pipe));
+        if !selected {
+            warn!("usb{}: D1FIFO not ready for the stream", port);
+            set_bfre(u, n, false);
+            u.d1fifosel().write_value(0);
+            return;
+        }
+        // SAFETY: the ring's descriptors, lent for good; the channel is stopped.
+        unsafe {
+            self.dma
+                .init_with_link_descriptor(self.descs.word_ptr(0), D1FIFO_DMARS[port]);
+            self.dma.channel_start();
+        }
+        u.d1fifosel().modify(|r| *r |= FIFOSEL_DREQE);
+        // SAFETY: the stream's pipe.
+        unsafe { pipe_enable(u, n) };
+        self.armed = true;
+    }
+
+    /// Gives the endpoint and the port up: DREQE off, the channel stopped, the port deselected, BFRE off.
+    fn disarm(&mut self, u: Usb) {
+        if !self.armed {
+            return;
+        }
+        u.d1fifosel().modify(|r| *r &= !FIFOSEL_DREQE);
+        // The channel is halted before anything it writes is let go.
+        crate::dmac::halt_channel(self.dma.number());
+        self.dma.stop();
+        u.d1fifosel().write_value(0);
+        let n = self.pipe as usize;
+        // SAFETY: the stream's pipe. PIPECFG changes with PID at NAK and no port on the pipe.
+        unsafe { pipe_disable(u, n) };
+        set_bfre(u, n, false);
+        self.armed = false;
+    }
+
+    /// Writes the descriptors: the ring in equal parts, the last linked to the first.
+    fn chain(&mut self) {
+        let (n, words) = (self.descs.len(), self.ring.len() / self.descs.len());
+        let base = self.ring.bus_addr();
+        for i in 0..n {
+            let next = self.descs.word_ptr((i + 1) % n) as u32;
+            let dst = base + (i * words * 4) as u32;
+            let d = self.descs.word_ptr(i);
+            let w = [
+                LOOPING,
+                self.src(),
+                dst,
+                (words * 4) as u32,
+                self.chcfg(),
+                0,
+                0,
+                next,
+            ];
+            for (k, v) in w.into_iter().enumerate() {
+                // SAFETY: the lent table; the channel is stopped.
+                unsafe { d.add(k).write_volatile(v) };
+            }
+        }
+        barrier();
+    }
+
+    fn src(&self) -> u32 {
+        usb(self.port).d1fifo().addr() as u32
+    }
+
+    fn chcfg(&self) -> u32 {
+        CHCFG_DMS
+            | CHCFG_DEM
+            | CHCFG_SAD
+            | CHCFG_DDS_32BIT
+            | CHCFG_SDS_32BIT
+            | CHCFG_AM_BURST
+            | CHCFG_LVL
+            | CHCFG_HIEN
+            | u32::from(self.dma.number() & 7)
+    }
+
+    /// Words received since the endpoint was enabled.
+    fn position(&mut self) -> u32 {
+        if self.armed {
+            let len = self.ring.len();
+            let word = self.dma.current_dst().wrapping_sub(self.ring.bus_addr()) / 4;
+            let at = word as usize % len;
+            self.total = self
+                .total
+                .wrapping_add(((at + len - self.last) % len) as u32);
+            self.last = at;
+        }
+        self.total
+    }
+}
+
+/// Sets or clears pipe `n`'s BFRE, with the pipe selected for it only here. PID must be NAK.
+fn set_bfre(u: Usb, n: usize, on: bool) {
+    critical_section::with(|_| {
+        u.pipesel().write_value(n as u16);
+        u.pipecfg().modify(|r| {
+            *r = if on {
+                *r | PIPECFG_BFRE
+            } else {
+                *r & !PIPECFG_BFRE
+            };
+        });
+        u.pipesel().write_value(0);
+    });
+}
+
+/// A stream of packets from the host, moved by a DMA channel into a ring. Dropping it stops the DMA and frees the port.
+pub struct DmaIsoOut {
+    port: u8,
+    pipe: u8,
+}
+
+impl DmaIsoOut {
+    /// Words received since the host last enabled the endpoint, wherever the ring is: `position % ring length` is the
+    /// next word the DMA writes. Call it more often than the ring fills.
+    pub fn position(&mut self) -> u32 {
+        with_out(self.port as usize, |s| s.position()).unwrap_or(0)
+    }
+
+    /// How many times the endpoint has been enabled: it changes when the stream starts over, and the position with it.
+    pub fn generation(&self) -> u32 {
+        with_out(self.port as usize, |s| s.generation).unwrap_or(0)
+    }
+
+    /// Whether the host has the endpoint enabled and the DMA is running.
+    pub fn running(&self) -> bool {
+        with_out(self.port as usize, |s| s.armed && s.dma.enabled()).unwrap_or(false)
+    }
+
+    /// The pipe it runs on.
+    pub fn pipe(&self) -> u8 {
+        self.pipe
+    }
+}
+
+#[cfg(all(test, not(target_os = "none")))]
+impl DmaIsoOut {
+    fn with_descs<R>(&mut self, f: impl FnOnce(&mut RingDescs<'static>) -> R) -> R {
+        with_out(self.port as usize, |s| f(&mut s.descs)).unwrap()
+    }
+}
+
+impl Drop for DmaIsoOut {
+    fn drop(&mut self) {
+        critical_section::with(|cs| {
+            let slot = &mut *OUT_STREAM[self.port as usize].borrow_ref_mut(cs);
+            if let Some(s) = slot.as_mut() {
+                s.disarm(usb(self.port));
+            }
+            *slot = None;
+        });
+    }
+}
+
+/// Binds a stream from the host to `pipe` on `port`, with nothing enabled yet.
+fn bind_out(
+    port: u8,
+    pipe: u8,
+    dma: Dma<'static>,
+    ring: UncachedMut<'static, u32>,
+    descs: RingDescs<'static>,
+) -> DmaIsoOut {
+    assert!(
+        descs.len() >= 2 && ring.len() % descs.len() == 0,
+        "usb: the ring isn't whole descriptors"
+    );
+    critical_section::with(|cs| {
+        let slot = &mut *OUT_STREAM[port as usize].borrow_ref_mut(cs);
+        assert!(
+            slot.is_none(),
+            "usb: port {} already has a DMA stream on D1FIFO",
+            port
+        );
+        *slot = Some(OutStream {
+            port,
+            pipe,
+            dma,
+            ring,
+            descs,
+            armed: false,
+            generation: 0,
+            total: 0,
+            last: 0,
+        });
+    });
+    DmaIsoOut { port, pipe }
+}
+
+impl Rusb1EndpointOut {
+    /// Receives this isochronous endpoint's packets by DMA into `ring`, one after the other, whole words each. The ring
+    /// is in as many equal parts as `descs` (at least two); read it with the stream's
+    /// [`position`](DmaIsoOut::position).
+    ///
+    /// # Panics
+    /// If the endpoint isn't isochronous, the ring isn't whole descriptors, or the port already has such a stream (it
+    /// has one port for DMA: D1FIFO).
+    pub fn into_dma_stream(
+        self,
+        dma: Dma<'static>,
+        ring: UncachedMut<'static, u32>,
+        descs: RingDescs<'static>,
+    ) -> DmaIsoOut {
+        assert!(
+            self.info.ep_type == EndpointType::Isochronous,
+            "usb: into_dma_stream needs an isochronous endpoint"
+        );
+        let stream = bind_out(self.port, self.pipe, dma, ring, descs);
+        let u = usb(self.port);
+        if pipectr(u, self.pipe as usize).read() & PIPECTR_PID_MASK == PIPECTR_PID_BUF {
+            // SAFETY: this endpoint's pipe.
+            unsafe { set_enabled(self.port, self.pipe, true) };
+        }
+        stream
+    }
+}
+
 /// The host enabled or disabled a pipe's endpoint: true if a stream is bound to it, which has taken or given it up.
 /// (The driver still disables the pipe itself.)
 ///
 /// # Safety
 /// The caller owns port `port` and its pipes.
 pub(crate) unsafe fn set_enabled(port: u8, pipe: u8, enabled: bool) -> bool {
-    with_in(port as usize, |s| {
+    let in_stream = with_in(port as usize, |s| {
         if s.pipe != pipe {
             return false;
         }
@@ -381,12 +655,27 @@ pub(crate) unsafe fn set_enabled(port: u8, pipe: u8, enabled: bool) -> bool {
         }
         true
     })
-    .unwrap_or(false)
+    .unwrap_or(false);
+    in_stream
+        || with_out(port as usize, |s| {
+            if s.pipe != pipe {
+                return false;
+            }
+            if enabled {
+                // SAFETY: the caller's contract.
+                unsafe { s.arm(usb(port), port as usize) };
+            } else {
+                s.disarm(usb(port));
+            }
+            true
+        })
+        .unwrap_or(false)
 }
 
 /// The bus was reset: every stream of port `port` lets its endpoint and port go.
 pub(crate) fn bus_reset(port: u8) {
     with_in(port as usize, |s| s.disarm(usb(port)));
+    with_out(port as usize, |s| s.disarm(usb(port)));
 }
 
 impl Rusb1EndpointIn {
@@ -802,5 +1091,269 @@ mod tests {
         let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         drop(stream());
         let _again = stream();
+    }
+
+    // ── The stream from the host ────────────────────────────────────────────
+    use crate::dma_buf::UncachedMut;
+    use crate::peripherals::DMA_CH1;
+    use crate::usb::regs::{FIFOSEL_DCLRM, PIPECFG_BFRE, PIPECTR_ACLRM};
+
+    const OUT_PIPE: u8 = 1;
+    const WORDS: usize = 64;
+
+    fn out_chctrl() -> usize {
+        crate::pac::DMAC.ch(1).chctrl().addr()
+    }
+
+    /// A stream on port 1, pipe 1, channel 1, with a 64-word ring in 4 descriptors, and the ring.
+    fn out_stream() -> (DmaIsoOut, u32) {
+        test::reset();
+        test::poke16(usb(1).d1fifoctr().addr(), FIFOCTR_FRDY);
+        let ring = UncachedMut::new(std::vec![0u32; WORDS].leak()).unwrap();
+        let base = ring.bus_addr();
+        let dma = unsafe { Dma::steal::<DMA_CH1>() };
+        (bind_out(1, OUT_PIPE, dma, ring, test_descs(4)), base)
+    }
+
+    fn at(base: u32, word: usize) {
+        test::poke32(crate::pac::DMAC.ch(1).crda().addr(), base + word as u32 * 4);
+    }
+
+    #[test]
+    fn enabling_an_out_endpoint_sets_the_ring_going() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut s, base) = out_stream();
+        assert!(set_enabled(1, OUT_PIPE, true));
+        let u = usb(1);
+        assert_ne!(test::peek16(u.pipecfg().addr()) & PIPECFG_BFRE, 0, "BFRE");
+        assert_eq!(
+            test::peek16(u.pipesel().addr()),
+            0,
+            "PIPESEL left on no pipe"
+        );
+        let sel = test::peek16(u.d1fifosel().addr());
+        assert_eq!(sel & FIFOSEL_CURPIPE_MASK, u16::from(OUT_PIPE));
+        assert_ne!(sel & FIFOSEL_DCLRM, 0, "DCLRM");
+        assert_ne!(sel & FIFOSEL_DREQE, 0, "DREQE");
+        assert_eq!(
+            test::peek16(pipectr(u, OUT_PIPE as usize).addr()) & PIPECTR_PID_MASK,
+            PIPECTR_PID_BUF
+        );
+        assert_ne!(test::peek32(out_chctrl()) & 1, 0, "channel started");
+        assert_eq!(s.generation(), 1);
+        // The ring's four quarters, in a loop that never ends.
+        s.with_descs(|d| {
+            for i in 0..4 {
+                let mut w = |k: usize| unsafe { d.word_ptr(i).add(k).read_volatile() };
+                assert_eq!(w(0), 0b1101, "valid for good: no write-back");
+                assert_eq!(w(2), base + (i * WORDS / 4 * 4) as u32);
+                assert_eq!(w(3), (WORDS / 4 * 4) as u32);
+                assert_eq!(w(1), usb(1).d1fifo().addr() as u32);
+            }
+            let first = d.word_ptr(0) as u32;
+            assert_eq!(unsafe { d.word_ptr(3).add(7).read_volatile() }, first);
+        });
+    }
+
+    /// DREQE comes on with the pipe selected and the channel started, and the pipe answers after it.
+    #[test]
+    fn the_out_port_is_set_up_in_order() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let (_s, _) = out_stream();
+        set_enabled(1, OUT_PIPE, true);
+        let u = usb(1);
+        let start = last(out_chctrl()).unwrap();
+        let dreqe = last(u.d1fifosel().addr()).unwrap();
+        let buf = last(pipectr(u, OUT_PIPE as usize).addr()).unwrap();
+        assert!(start < dreqe && dreqe < buf);
+        let log = test::log();
+        let select = log
+            .iter()
+            .position(|a| {
+                a.write && a.addr == u.d1fifosel().addr() && a.val & 0xF == u32::from(OUT_PIPE)
+            })
+            .unwrap();
+        let deselect = log[..select]
+            .iter()
+            .rposition(|a| a.write && a.addr == u.d1fifosel().addr() && a.val & 0xF == 0)
+            .unwrap();
+        let bfre = log
+            .iter()
+            .position(|a| {
+                a.write && a.addr == u.pipecfg().addr() && a.val & u32::from(PIPECFG_BFRE) != 0
+            })
+            .unwrap();
+        assert!(
+            bfre < select && deselect < select,
+            "BFRE is set while the pipe is on no port"
+        );
+        let cleared = log[bfre..].iter().any(|a| {
+            a.write
+                && a.addr == pipectr(u, OUT_PIPE as usize).addr()
+                && a.val as u16 & PIPECTR_ACLRM != 0
+        });
+        assert!(cleared, "the pipe is cleared after BFRE changes");
+    }
+
+    #[test]
+    fn position_counts_across_wraps() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut s, base) = out_stream();
+        assert_eq!(s.position(), 0, "nothing before it is enabled");
+        set_enabled(1, OUT_PIPE, true);
+        at(base, 0);
+        assert_eq!(s.position(), 0);
+        at(base, 10);
+        assert_eq!(s.position(), 10);
+        at(base, 60);
+        assert_eq!(s.position(), 60);
+        at(base, 4); // past the end and round
+        assert_eq!(s.position(), 68);
+        at(base, 4);
+        assert_eq!(s.position(), 68, "nothing new");
+        for _ in 0..10 {
+            at(base, 40);
+            s.position();
+            at(base, 4);
+            s.position();
+        }
+        assert_eq!(s.position(), 68 + 10 * 64);
+        at(base, WORDS); // CRDA can read one past the end while the next descriptor loads
+        assert_eq!(s.position(), 68 + 10 * 64 + 60);
+    }
+
+    #[test]
+    fn enabling_again_starts_the_position_over() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut s, base) = out_stream();
+        set_enabled(1, OUT_PIPE, true);
+        at(base, 30);
+        assert_eq!(s.position(), 30);
+        at(base, 0);
+        set_enabled(1, OUT_PIPE, true);
+        assert_eq!(s.generation(), 2);
+        assert_eq!(s.position(), 0);
+    }
+
+    #[test]
+    fn disabling_an_out_endpoint_releases_d1() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut s, base) = out_stream();
+        set_enabled(1, OUT_PIPE, true);
+        at(base, 20);
+        s.position();
+        assert!(set_enabled(1, OUT_PIPE, false));
+        let u = usb(1);
+        assert_eq!(test::peek16(u.d1fifosel().addr()), 0);
+        assert_eq!(
+            test::peek16(u.pipecfg().addr()) & PIPECFG_BFRE,
+            0,
+            "BFRE off again"
+        );
+        assert_eq!(test::peek16(u.pipesel().addr()), 0);
+        assert_eq!(test::peek32(out_chctrl()) & 1, 0, "stopped");
+        at(base, 40);
+        assert_eq!(s.position(), 20, "holds still");
+        let log = test::log();
+        let on = log
+            .iter()
+            .rposition(|a| {
+                a.write && a.addr == u.d1fifosel().addr() && a.val & u32::from(FIFOSEL_DREQE) != 0
+            })
+            .unwrap();
+        let off = on
+            + log[on..]
+                .iter()
+                .position(|a| {
+                    a.write
+                        && a.addr == u.d1fifosel().addr()
+                        && a.val & u32::from(FIFOSEL_DREQE) == 0
+                        && a.val & 0xF == u32::from(OUT_PIPE)
+                })
+                .expect("DREQE off with the pipe still selected");
+        let gone = log
+            .iter()
+            .rposition(|a| a.write && a.addr == u.d1fifosel().addr() && a.val == 0)
+            .unwrap();
+        assert!(off < gone);
+    }
+
+    #[test]
+    fn a_bus_reset_stops_the_receive() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let (s, _) = out_stream();
+        set_enabled(1, OUT_PIPE, true);
+        test::poke32(crate::pac::DMAC.ch(1).chstat().addr(), CHSTAT_EN);
+        assert!(s.running());
+        bus_reset(1);
+        assert_eq!(test::peek32(out_chctrl()) & 1, 0);
+        assert_eq!(test::peek16(usb(1).d1fifosel().addr()), 0);
+        assert!(!s.running());
+    }
+
+    #[test]
+    fn another_pipe_is_not_the_out_streams() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let (s, _) = out_stream();
+        assert!(!set_enabled(1, OUT_PIPE + 1, true));
+        assert!(!set_enabled(0, OUT_PIPE, true));
+        assert_eq!(s.generation(), 0);
+        assert_eq!(test::peek32(out_chctrl()) & 1, 0);
+    }
+
+    #[test]
+    fn the_two_streams_of_a_port_are_separate() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let (out, _) = out_stream();
+        let dma = unsafe { Dma::steal::<DMA_CH0>() };
+        let into = bind_in(1, PIPE, dma, test_descs(8), START);
+        test::poke16(usb(1).d0fifoctr().addr(), FIFOCTR_FRDY);
+        assert!(set_enabled(1, OUT_PIPE, true));
+        assert!(set_enabled(1, PIPE, true));
+        assert_eq!(out.generation(), 1);
+        assert_eq!(into.generation(), 1);
+        assert!(set_enabled(1, PIPE, false));
+        assert_ne!(
+            test::peek16(usb(1).d1fifosel().addr()),
+            0,
+            "the other goes on"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "D1FIFO")]
+    fn a_second_out_stream_on_a_port_is_refused() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let (_s, _) = out_stream();
+        let ring = UncachedMut::new(std::vec![0u32; WORDS].leak()).unwrap();
+        let _second = bind_out(
+            1,
+            2,
+            unsafe { Dma::steal::<DMA_CH1>() },
+            ring,
+            test_descs(4),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "whole descriptors")]
+    fn a_ring_that_is_not_whole_descriptors_is_refused() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        test::reset();
+        let ring = UncachedMut::new(std::vec![0u32; 63].leak()).unwrap();
+        let _ = bind_out(
+            1,
+            OUT_PIPE,
+            unsafe { Dma::steal::<DMA_CH1>() },
+            ring,
+            test_descs(4),
+        );
+    }
+
+    #[test]
+    fn dropping_an_out_stream_frees_its_port() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        drop(out_stream());
+        let _again = out_stream();
     }
 }
