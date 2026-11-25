@@ -975,7 +975,7 @@ impl ControlPipe for Rusb1ControlPipe {
                 let stage = CTRL_STAGE[p].swap(CTRL_STAGE_NONE, Ordering::Acquire);
                 // Accept any non-idle stage: CTSQ_READ_DATA (1), CTSQ_WRITE_DATA (3),
                 // and CTSQ_WRITE_ZLP (5) all indicate a new SETUP packet was received.
-                // (The ISR only sets CTRL_STAGE when INTSTS0.VALID=1.)
+                // (The ISR sets CTRL_STAGE only for VALID with CTSQ at one of those stages.)
                 if stage != CTRL_STAGE_NONE {
                     let pkt = unsafe { *SETUP_PKT[p].borrow(cs).get() };
                     Poll::Ready((pkt, SETUP_GEN[p].load(Ordering::Acquire)))
@@ -1072,7 +1072,8 @@ impl ControlPipe for Rusb1ControlPipe {
             let fifo = FifoPort::cfifo(u);
             fifo_select_pipe(&fifo, 0, false);
             // The pipe, the direction and FRDY, before DTLN is read (TRM §28.3.8).
-            let reading = (0..64).any(|_| fifo.sel.read() & super::regs::FIFOSEL_ISEL == 0);
+            let reading = (0..super::fifo::FIFO_POLLS)
+                .any(|_| fifo.sel.read() & super::regs::FIFOSEL_ISEL == 0);
             if !reading || !fifo_is_ready(&fifo, 0) {
                 return Err(true);
             }
@@ -1995,17 +1996,38 @@ unsafe fn forget_unallocated_pipes(port: u8) {
             });
         }
         u.pipesel().write_value(0);
-        u.d0fbcfg().write_value(0);
-        u.d1fbcfg().write_value(0);
-        // DCPCFG as a device needs it (DIR and SHTNAK clear, TRM §28.3.28), which the
-        // host driver leaves otherwise; written with the DCP deselected.
+        // DMA requests off and both ports deselected before their access mode changes (TRM §28.3.6).
         u.d0fifosel().modify(|r| *r &= !super::regs::FIFOSEL_DREQE);
         u.d1fifosel().modify(|r| *r &= !super::regs::FIFOSEL_DREQE);
         u.d0fifosel().write_value(0);
         u.d1fifosel().write_value(0);
+        u.d0fbcfg().write_value(0);
+        u.d1fbcfg().write_value(0);
+        // DCPCFG as a device needs it (DIR and SHTNAK clear, TRM §28.3.28), which the
+        // host driver leaves otherwise; written with the DCP deselected.
         u.cfifosel().write_value(1);
         u.dcpcfg().write_value(0);
         u.cfifosel().write_value(0);
+        // Only a power-on reset clears these, and this driver uses none of them: transaction counters, which would NAK
+        // a bulk OUT pipe after their count; BRDYM, which would make BRDYSTS clear itself; and the NRDY enables.
+        for tre in [
+            u.pipe1tre(),
+            u.pipe2tre(),
+            u.pipe3tre(),
+            u.pipe4tre(),
+            u.pipe5tre(),
+            u.pipe9tre(),
+            u.pipeatre(),
+            u.pipebtre(),
+            u.pipectre(),
+            u.pipedtre(),
+            u.pipeetre(),
+            u.pipeftre(),
+        ] {
+            tre.write_value(0);
+        }
+        u.sofcfg().write_value(0);
+        u.nrdyenb().write_value(0);
     }
 }
 
@@ -2508,6 +2530,69 @@ mod tests {
         assert!(matches!(poll(f), Poll::Ready(Err(EndpointError::Disabled))));
         assert!(!test::log()[mark..].iter().any(|a| a.write
             && [pipectr(u, 0).addr(), u.cfifo().addr(), u.cfifoctr().addr()].contains(&a.addr)));
+    }
+
+    /// DFACC changes only once DMA requests are off and the port is deselected (TRM §28.3.6).
+    #[test]
+    fn enabling_the_bus_turns_dma_requests_off_before_the_dnfifo_access_mode() {
+        let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        fresh_port1();
+        let u = usb(1);
+        // A previous image's DMA left requests on with no pipe selected, which no pipe's quieting clears.
+        test::poke16(u.d0fifosel().addr(), super::super::regs::FIFOSEL_DREQE);
+        test::poke16(u.d1fifosel().addr(), super::super::regs::FIFOSEL_DREQE);
+        unsafe { forget_unallocated_pipes(1) };
+        let log = test::log();
+        for (sel, cfg) in [
+            (u.d0fifosel().addr(), u.d0fbcfg().addr()),
+            (u.d1fifosel().addr(), u.d1fbcfg().addr()),
+        ] {
+            let cfg_at = log.iter().position(|a| a.write && a.addr == cfg).unwrap();
+            // The port as it stood when DnFBCFG was written.
+            let then = log[..cfg_at]
+                .iter()
+                .rev()
+                .find(|a| a.write && a.addr == sel)
+                .map_or(u32::from(super::super::regs::FIFOSEL_DREQE), |a| a.val);
+            assert_eq!(
+                then, 0,
+                "DREQE off and the port deselected before DnFBCFG ({sel:#x})"
+            );
+        }
+    }
+
+    /// Only a power-on reset clears the transaction counters, BRDYM and the NRDY enables, which this driver never
+    /// sets: an image started over firmware that used them inherits them.
+    #[test]
+    fn enabling_the_bus_clears_counters_and_modes_a_previous_image_left() {
+        let _g = ALLOC_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        fresh_port1();
+        let u = usb(1);
+        let tres = [
+            u.pipe1tre(),
+            u.pipe2tre(),
+            u.pipe3tre(),
+            u.pipe4tre(),
+            u.pipe5tre(),
+            u.pipe9tre(),
+            u.pipeatre(),
+            u.pipebtre(),
+            u.pipectre(),
+            u.pipedtre(),
+            u.pipeetre(),
+            u.pipeftre(),
+        ];
+        for t in &tres {
+            test::poke16(t.addr(), 0x0200);
+        }
+        test::poke16(u.sofcfg().addr(), 0x0040);
+        test::poke16(u.nrdyenb().addr(), 0xFFFF);
+        unsafe { forget_unallocated_pipes(1) };
+        for t in &tres {
+            assert_eq!(test::peek16(t.addr()), 0, "PIPEnTRE at {:#x}", t.addr());
+        }
+        assert_eq!(test::peek16(u.sofcfg().addr()), 0, "BRDYM");
+        assert_eq!(test::peek16(u.nrdyenb().addr()), 0, "NRDYENB");
     }
 
     /// The host driver leaves the DCP's DIR or SHTNAK set; a device needs neither (TRM §28.3.28).

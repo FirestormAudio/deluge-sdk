@@ -2145,9 +2145,10 @@ fn wait_pbusy(ctr: crate::pac::common::Reg<u16, crate::pac::common::RW>) {
     }
 }
 
-/// Whether D0FIFO is ready (FRDY) within a few reads: a check, not a wait.
+/// Whether D0FIFO is ready (FRDY) within a few reads: a check, not a wait. 32 reads span about 2 µs at the shortest
+/// bus wait, as 8 did at the longest.
 fn frdy_now(u: Usb) -> bool {
-    (0..8).any(|_| u.d0fifoctr().read() & FIFOCTR_FRDY != 0)
+    (0..32).any(|_| u.d0fifoctr().read() & FIFOCTR_FRDY != 0)
 }
 
 /// Future that resolves when pipe `n`'s transfer completes or errors.
