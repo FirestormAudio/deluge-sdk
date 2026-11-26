@@ -68,11 +68,12 @@ pub const SAMPLE_RATE_48000: u32 = 48_000;
 
 /// Handles UAC2 SET_CUR / GET_CUR for sample-rate negotiation.
 ///
-/// `CAPTURE_CH` is the number of channels in the ISO IN (capture) endpoint.
-/// The speaker (ISO OUT) endpoint is always stereo.
+/// `CAPTURE_CH` is the number of channels in the ISO IN (capture) endpoint, `PLAYBACK_CH` the number in the ISO OUT
+/// (playback) one, stereo by default. Two playback channels are FL FR; any other count has no predefined spatial
+/// mapping, as capture has.
 ///
 /// Create via [`AudioClass::new`], register with `builder.handler()`.
-pub struct AudioClass<const CAPTURE_CH: usize> {
+pub struct AudioClass<const CAPTURE_CH: usize, const PLAYBACK_CH: usize = 2> {
     ac_iface: InterfaceNumber,
     as_iface: InterfaceNumber,         // speaker OUT
     as_capture_iface: InterfaceNumber, // mic IN
@@ -84,7 +85,7 @@ pub struct AudioClass<const CAPTURE_CH: usize> {
     pub capture_active: bool,
 }
 
-impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
+impl<const CAPTURE_CH: usize, const PLAYBACK_CH: usize> AudioClass<CAPTURE_CH, PLAYBACK_CH> {
     fn request_targets_ac_interface(&self, req: &Request) -> bool {
         (req.index as u8) == u8::from(self.ac_iface)
     }
@@ -115,23 +116,14 @@ impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
 
     /// The capture endpoint's wMaxPacketSize with 4-byte slots ([`new_in_words`](Self::new_in_words)): 49 frames
     /// while that fits in 1024 bytes, else 12 frames of a high-speed microframe. Both are whole 32-bit words.
-    pub const CAPTURE_MAX_PACKET_WORDS: u16 = {
-        assert!(
-            CAPTURE_CH % 2 == 0,
-            "word-slot capture needs an even channel count: a 16-bit frame is then whole words"
-        );
-        let full_speed = 49 * CAPTURE_CH * 4;
-        let high_speed = 12 * CAPTURE_CH * 4;
-        assert!(
-            high_speed <= 1024,
-            "capture ISO IN max packet exceeds the 1024-byte high-speed limit"
-        );
-        (if full_speed <= 1024 {
-            full_speed
-        } else {
-            high_speed
-        }) as u16
-    };
+    pub const CAPTURE_MAX_PACKET_WORDS: u16 = word_slot_packet(CAPTURE_CH);
+
+    /// The playback endpoint's packet with 4-byte slots, by the capture rule for `PLAYBACK_CH`: 49 frames while that fits
+    /// in 1024 bytes, else 12 frames. What a word-slot build passes [`new_in_words`](Self::new_in_words).
+    pub const PLAYBACK_MAX_PACKET_WORDS: u16 = word_slot_packet(PLAYBACK_CH);
+
+    /// `bmChannelConfig` of the playback stream: FL FR for two channels, else no predefined spatial mapping.
+    const PLAYBACK_CONFIG: [u8; 4] = (if PLAYBACK_CH == 2 { 0x03u32 } else { 0 }).to_le_bytes();
 
     /// As [`new`](Self::new), with 24-bit samples left-justified in 4-byte slots (`bSubslotSize` 4, `bBitResolution`
     /// 24) in alternate 2 of both streams, so every packet of either setting is whole 32-bit words for an even channel
@@ -139,7 +131,8 @@ impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
     ///
     /// The playback interface comes first and the capture one after it, so Linux finds the implicit feedback.
     ///
-    /// `iso_packet_size` is the playback endpoint's packet in bytes, for 4-byte slots: 392 covers 49 stereo frames.
+    /// `iso_packet_size` is the playback endpoint's packet in bytes, for 4-byte slots: 392 covers 49 stereo frames, and
+    /// [`PLAYBACK_MAX_PACKET_WORDS`](Self::PLAYBACK_MAX_PACKET_WORDS) is the size for `PLAYBACK_CH` channels.
     pub fn new_in_words<'d, D: Driver<'d>>(
         builder: &mut Builder<'d, D>,
         iso_packet_size: u16,
@@ -222,11 +215,11 @@ impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
                 (TERM_USB_STREAMING >> 8) as u8,
                 0x00,
                 CLOCK_SOURCE_ID,
-                0x02,
-                0x03,
-                0x00,
-                0x00,
-                0x00, // 2ch FL+FR
+                PLAYBACK_CH as u8,
+                Self::PLAYBACK_CONFIG[0],
+                Self::PLAYBACK_CONFIG[1],
+                Self::PLAYBACK_CONFIG[2],
+                Self::PLAYBACK_CONFIG[3], // PLAYBACK_CH channels
                 0x00,
                 0x00,
                 0x00,
@@ -445,12 +438,12 @@ impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
                 0x00,
                 0x00,
                 0x00, // PCM format
-                0x02,
-                0x03,
-                0x00,
-                0x00,
-                0x00,
-                0x00, // 2ch FL+FR
+                PLAYBACK_CH as u8,
+                Self::PLAYBACK_CONFIG[0],
+                Self::PLAYBACK_CONFIG[1],
+                Self::PLAYBACK_CONFIG[2],
+                Self::PLAYBACK_CONFIG[3],
+                0x00, // PLAYBACK_CH channels
             ],
         );
         as_alt1.descriptor(CS_INTERFACE, &[AS_FORMAT_TYPE, 0x01, 0x02, 0x10]); // subslot=2, 16-bit
@@ -481,12 +474,12 @@ impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
                 0x00,
                 0x00,
                 0x00, // PCM format
-                0x02,
-                0x03,
-                0x00,
-                0x00,
-                0x00,
-                0x00, // 2ch FL+FR
+                PLAYBACK_CH as u8,
+                Self::PLAYBACK_CONFIG[0],
+                Self::PLAYBACK_CONFIG[1],
+                Self::PLAYBACK_CONFIG[2],
+                Self::PLAYBACK_CONFIG[3],
+                0x00, // PLAYBACK_CH channels
             ],
         );
         as_alt2.descriptor(CS_INTERFACE, &[AS_FORMAT_TYPE, 0x01, slot_24, 0x18]); // 24-bit
@@ -514,7 +507,9 @@ impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
     }
 }
 
-impl<const CAPTURE_CH: usize> Handler for AudioClass<CAPTURE_CH> {
+impl<const CAPTURE_CH: usize, const PLAYBACK_CH: usize> Handler
+    for AudioClass<CAPTURE_CH, PLAYBACK_CH>
+{
     fn control_out(&mut self, req: Request, data: &[u8]) -> Option<OutResponse> {
         // UAC2 SET_CUR — clock source SAM_FREQ_CONTROL
         if req.request_type == RequestType::Class
@@ -596,6 +591,27 @@ impl<const CAPTURE_CH: usize> Handler for AudioClass<CAPTURE_CH> {
         self.streaming_active = false;
         self.capture_active = false;
     }
+}
+
+/// A word-slot (4-byte) endpoint's packet for `channels`: 49 frames while that fits in 1024 bytes, which covers a 1 ms
+/// packet with a stuffing frame at full speed, else 12 frames of a high-speed microframe. Whole 32-bit words for an even
+/// channel count.
+const fn word_slot_packet(channels: usize) -> u16 {
+    assert!(
+        channels % 2 == 0,
+        "word slots need an even channel count: a 16-bit frame is then whole words"
+    );
+    let full_speed = 49 * channels * 4;
+    let high_speed = 12 * channels * 4;
+    assert!(
+        high_speed <= 1024,
+        "word-slot ISO max packet exceeds the 1024-byte high-speed limit"
+    );
+    (if full_speed <= 1024 {
+        full_speed
+    } else {
+        high_speed
+    }) as u16
 }
 
 #[cfg(test)]
@@ -769,6 +785,68 @@ mod tests {
             hex(eight),
             "09022f010301008032080b0003010020000904000000010120000924010002084b000008240a100101000011240211010100100203000000000000000c240312010300111000000011240213010200100800000000000000000c24031401010013100000000904010000010220000904010101010220001024011400010100000008000000000006240201021007058125a8000108250100000000000904010201010220001024011400010100000008000000000006240201031807058125a8000108250100000000000904020000010220000904020101010220001024011100010100000002030000000006240201021007050105200101082501000000000009040202010102200010240111000101000000020300000000062402010318070501052001010825010000000000"
         );
+    }
+
+    /// The playback stream's channels as each of its descriptors declares them: the USB streaming input terminal, then
+    /// each alternate's AS_GENERAL, as (bNrChannels, bmChannelConfig).
+    fn playback_channels(desc: &[u8]) -> Vec<(u8, u32)> {
+        let config = |b: &[u8]| u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < desc.len() {
+            let n = desc[i] as usize;
+            if desc[i + 1] == CS_INTERFACE
+                && n == 17
+                && desc[i + 2] == AC_INPUT_TERM
+                && desc[i + 3] == INPUT_TERM_ID
+            {
+                out.push((desc[i + 8], config(&desc[i + 9..])));
+            }
+            if desc[i + 1] == CS_INTERFACE
+                && n == 16
+                && desc[i + 2] == AS_GENERAL
+                && desc[i + 3] == INPUT_TERM_ID
+            {
+                out.push((desc[i + 10], config(&desc[i + 11..])));
+            }
+            i += n;
+        }
+        out
+    }
+
+    /// The playback endpoint's wMaxPacketSize in each alternate.
+    fn playback_max_packets(desc: &[u8]) -> Vec<u16> {
+        endpoints(desc)
+            .into_iter()
+            .filter(|e| e.addr & 0x80 == 0 && e.attributes & 0x03 == 0x01)
+            .map(|e| e.max_packet)
+            .collect()
+    }
+
+    /// Eight playback channels carry no predefined speaker layout; two keep FL FR.
+    #[test]
+    fn new_in_words_declares_the_playback_channels() {
+        let eight = config_descriptor(|b| {
+            let _ = AudioClass::<16, 8>::new_in_words(
+                b,
+                AudioClass::<16, 8>::PLAYBACK_MAX_PACKET_WORDS,
+            );
+        });
+        assert_eq!(playback_channels(&eight), [(8, 0), (8, 0), (8, 0)]);
+        assert_eq!(playback_max_packets(&eight), [384, 384]);
+        let two = config_descriptor(|b| {
+            let _ = AudioClass::<2>::new_in_words(b, 392);
+        });
+        assert_eq!(playback_channels(&two), [(2, 0x03), (2, 0x03), (2, 0x03)]);
+    }
+
+    /// The playback packet follows the capture rule for its own channel count: 49 frames of 4-byte slots while that
+    /// fits a packet, else 12.
+    #[test]
+    fn the_playback_packet_fits() {
+        assert_eq!(AudioClass::<2>::PLAYBACK_MAX_PACKET_WORDS, 392);
+        assert_eq!(AudioClass::<16, 8>::PLAYBACK_MAX_PACKET_WORDS, 384);
+        assert_eq!(AudioClass::<16, 2>::PLAYBACK_MAX_PACKET_WORDS, 392);
     }
 
     #[test]
