@@ -337,6 +337,25 @@ pub fn init_host_mode<'d, T: Instance, H: ServesHost<T>>(
     }
 }
 
+/// The speed a device-mode port runs at on its link, as the last bus reset's handshake settled it (`DVSTCTR0.RHST`), or
+/// `None` while a reset's handshake runs or before a host is there. A function whose packets only fit a high-speed
+/// microframe reads this before it starts a stream.
+pub fn device_speed<T: Instance>() -> Option<embassy_usb_driver::Speed> {
+    speed_from_rhst(regs::usb(T::PORT).dvstctr0().read())
+}
+
+/// `DVSTCTR0`'s `RHST` field as a speed: `001` low, `010` full, `011` high; `000` and `1xx` (a reset's handshake
+/// running) none.
+fn speed_from_rhst(dvstctr0: u16) -> Option<embassy_usb_driver::Speed> {
+    use embassy_usb_driver::Speed;
+    match dvstctr0 & regs::DVSTCTR0_RHST {
+        regs::DVSTCTR0_RHST_LS => Some(Speed::Low),
+        regs::DVSTCTR0_RHST_FS => Some(Speed::Full),
+        regs::DVSTCTR0_RHST_HS => Some(Speed::High),
+        _ => None,
+    }
+}
+
 /// Disconnect a device-mode port from the host and stop its SIE: the D+ pull-up off (the host
 /// sees an unplug), USB interrupts masked, `USBE` cleared. A later [`init_device_mode`]
 /// re-attaches.
@@ -366,6 +385,22 @@ mod tests {
     fn irq_ids() {
         assert_eq!(irq(0), 73);
         assert_eq!(irq(1), 74);
+    }
+
+    /// DVSTCTR0.RHST in device mode: the speed the reset handshake settled, or none while it runs (`1xx`) or before
+    /// a host is there (`000`).
+    #[test]
+    fn the_device_speed_is_what_the_reset_handshake_settled() {
+        use embassy_usb_driver::Speed;
+        assert_eq!(speed_from_rhst(0b000), None);
+        assert_eq!(speed_from_rhst(0b001), Some(Speed::Low));
+        assert_eq!(speed_from_rhst(0b010), Some(Speed::Full));
+        assert_eq!(speed_from_rhst(0b011), Some(Speed::High));
+        for handshaking in 0b100..=0b111 {
+            assert_eq!(speed_from_rhst(handshaking), None);
+        }
+        // Only RHST's bits count.
+        assert_eq!(speed_from_rhst(0xFFF8 | 0b011), Some(Speed::High));
     }
 
     #[test]
