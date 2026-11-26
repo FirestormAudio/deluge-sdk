@@ -9,9 +9,10 @@
 //! ```
 
 use core::sync::atomic::{AtomicU8, Ordering};
+use embassy_usb::FunctionBuilder;
 use embassy_usb::control::{InResponse, OutResponse, Recipient, Request, RequestType};
 use embassy_usb::descriptor::{SynchronizationType, UsageType};
-use embassy_usb::driver::{Driver, Endpoint};
+use embassy_usb::driver::{Driver, Endpoint, EndpointAddress};
 use embassy_usb::types::InterfaceNumber;
 use embassy_usb::{Builder, Handler};
 
@@ -112,6 +113,49 @@ impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
         }) as u16
     };
 
+    /// The capture endpoint's wMaxPacketSize with 4-byte slots ([`new_in_words`](Self::new_in_words)): 49 frames
+    /// while that fits in 1024 bytes, else 12 frames of a high-speed microframe. Both are whole 32-bit words.
+    pub const CAPTURE_MAX_PACKET_WORDS: u16 = {
+        assert!(
+            CAPTURE_CH % 2 == 0,
+            "word-slot capture needs an even channel count: a 16-bit frame is then whole words"
+        );
+        let full_speed = 49 * CAPTURE_CH * 4;
+        let high_speed = 12 * CAPTURE_CH * 4;
+        assert!(
+            high_speed <= 1024,
+            "capture ISO IN max packet exceeds the 1024-byte high-speed limit"
+        );
+        (if full_speed <= 1024 {
+            full_speed
+        } else {
+            high_speed
+        }) as u16
+    };
+
+    /// As [`new`](Self::new), with 24-bit samples left-justified in 4-byte slots (`bSubslotSize` 4, `bBitResolution`
+    /// 24) in alternate 2 of both streams, so every packet of either setting is whole 32-bit words for an even channel
+    /// count. Both alternates use packets of [`CAPTURE_MAX_PACKET_WORDS`](Self::CAPTURE_MAX_PACKET_WORDS) to the host.
+    ///
+    /// The playback interface comes first and the capture one after it, so Linux finds the implicit feedback.
+    ///
+    /// `iso_packet_size` is the playback endpoint's packet in bytes, for 4-byte slots: 392 covers 49 stereo frames.
+    pub fn new_in_words<'d, D: Driver<'d>>(
+        builder: &mut Builder<'d, D>,
+        iso_packet_size: u16,
+    ) -> (Self, D::EndpointOut, D::EndpointIn)
+    where
+        D::EndpointIn: Endpoint,
+    {
+        Self::build(
+            builder,
+            iso_packet_size,
+            4,
+            Self::CAPTURE_MAX_PACKET_WORDS,
+            true,
+        )
+    }
+
     /// Allocate USB interfaces and ISO OUT (speaker) + ISO IN (mic) endpoints
     /// for the UAC2 device.
     ///
@@ -133,7 +177,21 @@ impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
     where
         D::EndpointIn: Endpoint,
     {
-        let _ = Self::CAPTURE_MAX_PACKET; // evaluates the size check at compile time
+        Self::build(builder, iso_packet_size, 3, Self::CAPTURE_MAX_PACKET, false)
+    }
+
+    /// The function, with `slot_24` bytes to a 24-bit sample, `capture_mps` the capture endpoint's packet, and the
+    /// playback interface before the capture one if `speaker_first`.
+    fn build<'d, D: Driver<'d>>(
+        builder: &mut Builder<'d, D>,
+        iso_packet_size: u16,
+        slot_24: u8,
+        capture_mps: u16,
+        speaker_first: bool,
+    ) -> (Self, D::EndpointOut, D::EndpointIn)
+    where
+        D::EndpointIn: Endpoint,
+    {
         let mut func = builder.function(USB_CLASS_AUDIO, 0x00, USB_PROTOCOL_IP_02_00);
 
         // ── AudioControl interface ──────────────────────────────────────────
@@ -229,9 +287,44 @@ impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
             ],
         );
 
+        // The two streams. Linux takes implicit feedback for a generic UAC2 device only from the interface after the
+        // playback one (sound/usb/implicit.c), so the word-slot function puts playback first; `new` keeps its order.
+        let (as_iface, as_capture_iface, ep_out, ep_in);
+        if speaker_first {
+            (as_iface, ep_out) = Self::speaker_interface(&mut func, iso_packet_size, slot_24, None);
+            (as_capture_iface, ep_in) = Self::capture_interface(&mut func, slot_24, capture_mps);
+        } else {
+            (as_capture_iface, ep_in) = Self::capture_interface(&mut func, slot_24, capture_mps);
+            // The speaker's endpoint takes the capture endpoint's number.
+            let number = Some(ep_in.info().addr);
+            (as_iface, ep_out) =
+                Self::speaker_interface(&mut func, iso_packet_size, slot_24, number);
+        }
+
+        (
+            Self {
+                ac_iface,
+                as_iface,
+                as_capture_iface,
+                sample_rate: SAMPLE_RATE_44100,
+                streaming_active: false,
+                capture_active: false,
+            },
+            ep_out,
+            ep_in,
+        )
+    }
+
+    /// The capture stream's interface (ISO IN, the implicit feedback source), with `slot_24` bytes to a 24-bit sample.
+    fn capture_interface<'d, D: Driver<'d>>(
+        func: &mut FunctionBuilder<'_, 'd, D>,
+        slot_24: u8,
+        capture_mps: u16,
+    ) -> (InterfaceNumber, D::EndpointIn)
+    where
+        D::EndpointIn: Endpoint,
+    {
         // ── AudioStreaming Capture interface (mic ISO IN) ────────────────────
-        // Allocated BEFORE the speaker interface so we know ep_in.addr to use
-        // as bSynchAddress in the speaker ISO OUT endpoint.
         let mut as_cap_ib = func.interface();
         let as_capture_iface = as_cap_ib.interface_number();
         // Alt 0: zero-bandwidth
@@ -270,7 +363,7 @@ impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
         as_cap_alt1.descriptor(CS_INTERFACE, &[AS_FORMAT_TYPE, 0x01, 0x02, 0x10]); // subslot=2, 16-bit
         let ep_in = as_cap_alt1.endpoint_isochronous_in(
             None,
-            Self::CAPTURE_MAX_PACKET, // see CAPTURE_MAX_PACKET
+            capture_mps,
             1,
             SynchronizationType::Asynchronous,
             UsageType::ImplicitFeedbackDataEndpoint,
@@ -303,10 +396,10 @@ impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
                 0x00, // CAPTURE_CH channels, no predefined spatial mapping
             ],
         );
-        as_cap_alt2.descriptor(CS_INTERFACE, &[AS_FORMAT_TYPE, 0x01, 0x03, 0x18]); // subslot=3, 24-bit
+        as_cap_alt2.descriptor(CS_INTERFACE, &[AS_FORMAT_TYPE, 0x01, slot_24, 0x18]); // 24-bit
         let _ep_in_24 = as_cap_alt2.endpoint_isochronous_in(
             Some(ep_in.info().addr), // reuses the same pipe as alt 1
-            Self::CAPTURE_MAX_PACKET,
+            capture_mps,
             1,
             SynchronizationType::Asynchronous,
             UsageType::ImplicitFeedbackDataEndpoint,
@@ -314,6 +407,16 @@ impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
         );
         as_cap_alt2.descriptor(CS_ENDPOINT, &[0x01, 0x00, 0x00, 0x00, 0x00, 0x00]);
 
+        (as_capture_iface, ep_in)
+    }
+
+    /// The playback stream's interface (ISO OUT), its endpoint numbered `number` if given.
+    fn speaker_interface<'d, D: Driver<'d>>(
+        func: &mut FunctionBuilder<'_, 'd, D>,
+        iso_packet_size: u16,
+        slot_24: u8,
+        number: Option<EndpointAddress>,
+    ) -> (InterfaceNumber, D::EndpointOut) {
         // ── AudioStreaming Speaker interface (ISO OUT) ───────────────────────
         let mut as_ib = func.interface();
         let as_iface = as_ib.interface_number();
@@ -352,8 +455,8 @@ impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
         );
         as_alt1.descriptor(CS_INTERFACE, &[AS_FORMAT_TYPE, 0x01, 0x02, 0x10]); // subslot=2, 16-bit
         let ep_out = as_alt1.endpoint_isochronous_out(
-            Some(ep_in.info().addr), // bSynchAddress = mic IN (implicit feedback)
-            iso_packet_size,         // MPS=288 so ep_out.info.max_packet_size covers alt2 too
+            number,
+            iso_packet_size, // one size for both alternates, so it covers the 24-bit one
             1,
             SynchronizationType::Asynchronous,
             UsageType::DataEndpoint,
@@ -386,7 +489,7 @@ impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
                 0x00, // 2ch FL+FR
             ],
         );
-        as_alt2.descriptor(CS_INTERFACE, &[AS_FORMAT_TYPE, 0x01, 0x03, 0x18]); // subslot=3, 24-bit
+        as_alt2.descriptor(CS_INTERFACE, &[AS_FORMAT_TYPE, 0x01, slot_24, 0x18]); // 24-bit
         let _ep_out_24 = as_alt2.endpoint_isochronous_out(
             Some(ep_out.info().addr), // reuse same OUT pipe as alt 1
             iso_packet_size,
@@ -397,18 +500,7 @@ impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
         );
         as_alt2.descriptor(CS_ENDPOINT, &[0x01, 0x00, 0x00, 0x00, 0x00, 0x00]);
 
-        (
-            Self {
-                ac_iface,
-                as_iface,
-                as_capture_iface,
-                sample_rate: SAMPLE_RATE_44100,
-                streaming_active: false,
-                capture_active: false,
-            },
-            ep_out,
-            ep_in,
-        )
+        (as_iface, ep_out)
     }
 
     /// Current sample rate in Hz.
@@ -536,6 +628,147 @@ mod tests {
     #[test]
     fn eight_channel_capture_is_sized_per_microframe() {
         assert_eq!(capture_max_packets::<8>(), [168, 168]);
+    }
+
+    /// The type-I format descriptors (CS_INTERFACE, FORMAT_TYPE) in descriptor order: subslot bytes and bits.
+    fn formats(desc: &[u8]) -> Vec<(u8, u8)> {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < desc.len() {
+            let n = desc[i] as usize;
+            if desc[i + 1] == CS_INTERFACE && desc[i + 2] == AS_FORMAT_TYPE && n == 6 {
+                out.push((desc[i + 4], desc[i + 5]));
+            }
+            i += n;
+        }
+        out
+    }
+
+    #[test]
+    fn word_slots_carry_24_bits_in_alternate_2_of_both_streams() {
+        let desc = config_descriptor(|b| {
+            let _ = AudioClass::<2>::new_in_words(b, 392);
+        });
+        assert_eq!(formats(&desc), [(2, 16), (4, 24), (2, 16), (4, 24)]);
+    }
+
+    #[test]
+    fn new_keeps_packed_24_bit() {
+        let desc = config_descriptor(|b| {
+            let _ = AudioClass::<2>::new(b, 288);
+        });
+        assert_eq!(formats(&desc), [(2, 16), (3, 24), (2, 16), (3, 24)]);
+    }
+
+    /// In words, the capture packet is 49 frames of 4-byte slots while that fits a packet, else 12 frames.
+    #[test]
+    fn the_word_slot_capture_packet_fits() {
+        assert_eq!(AudioClass::<2>::CAPTURE_MAX_PACKET_WORDS, 392);
+        assert_eq!(AudioClass::<8>::CAPTURE_MAX_PACKET_WORDS, 384);
+        assert_eq!(AudioClass::<16>::CAPTURE_MAX_PACKET_WORDS, 768);
+        let desc = config_descriptor(|b| {
+            let _ = AudioClass::<2>::new_in_words(b, 392);
+        });
+        let capture: Vec<u16> = endpoints(&desc)
+            .into_iter()
+            .filter(|e| e.addr & 0x80 != 0 && e.attributes & 0x03 == 0x01)
+            .map(|e| e.max_packet)
+            .collect();
+        assert_eq!(capture, [392, 392]);
+    }
+
+    /// (interface, alternate, endpoint address) of each isochronous endpoint.
+    fn streams(desc: &[u8]) -> Vec<(u8, u8, u8)> {
+        endpoints(desc)
+            .into_iter()
+            .filter(|e| e.attributes & 0x03 == 0x01)
+            .map(|e| (e.iface, e.alt, e.addr))
+            .collect()
+    }
+
+    /// Linux takes implicit feedback for a generic UAC2 device from the interface after the playback one, with the
+    /// same alternate number (sound/usb/implicit.c, `audioformat_implicit_fb_quirk`): playback is interface 1 and
+    /// capture 2, both with alternates 1 and 2.
+    #[test]
+    fn in_words_the_capture_stream_follows_the_playback_stream() {
+        let desc = config_descriptor(|b| {
+            let _ = AudioClass::<2>::new_in_words(b, 392);
+        });
+        let s = streams(&desc);
+        assert_eq!(s.len(), 4);
+        assert!(
+            s[..2].iter().all(|&(i, _, ep)| i == 1 && ep & 0x80 == 0),
+            "{s:x?}"
+        );
+        assert!(
+            s[2..].iter().all(|&(i, _, ep)| i == 2 && ep & 0x80 != 0),
+            "{s:x?}"
+        );
+        assert_eq!([s[0].1, s[1].1, s[2].1, s[3].1], [1, 2, 1, 2]);
+    }
+
+    /// The demo and controller firmwares keep their interfaces: capture 1, playback 2.
+    #[test]
+    fn new_keeps_capture_first() {
+        let desc = config_descriptor(|b| {
+            let _ = AudioClass::<2>::new(b, 288);
+        });
+        let s = streams(&desc);
+        assert!(
+            s[..2].iter().all(|&(i, _, ep)| i == 1 && ep & 0x80 != 0),
+            "{s:x?}"
+        );
+        assert!(
+            s[2..].iter().all(|&(i, _, ep)| i == 2 && ep & 0x80 == 0),
+            "{s:x?}"
+        );
+    }
+
+    /// Each stream's alternate goes to its own state, whichever interface it is.
+    #[test]
+    fn alternates_reach_the_stream_they_name() {
+        let mut class = None;
+        let _ = config_descriptor(|b| class = Some(AudioClass::<2>::new_in_words(b, 392).0));
+        let mut class = class.unwrap();
+        // 24 is each depth's starting value: alternate 1 (16 bits) shows the routing.
+        class.set_alternate_setting(InterfaceNumber(1), 1);
+        assert!(class.streaming_active && !class.capture_active);
+        assert_eq!(USB_BITS_PER_SAMPLE.load(Ordering::Relaxed), 16);
+        assert_eq!(
+            USB_CAPTURE_BITS_PER_SAMPLE.load(Ordering::Relaxed),
+            24,
+            "capture untouched"
+        );
+        class.set_alternate_setting(InterfaceNumber(2), 1);
+        assert!(class.capture_active);
+        assert_eq!(USB_CAPTURE_BITS_PER_SAMPLE.load(Ordering::Relaxed), 16);
+        class.set_alternate_setting(InterfaceNumber(1), 2);
+        assert_eq!(USB_BITS_PER_SAMPLE.load(Ordering::Relaxed), 24);
+    }
+
+    /// `new()` builds what it did before the word-slot function: other firmwares ship these bytes. Taken from the
+    /// SDK's main before the word-slot work.
+    #[test]
+    fn new_builds_the_same_descriptor_as_before() {
+        let hex = |d: Vec<u8>| {
+            d.iter()
+                .map(|b| std::format!("{b:02x}"))
+                .collect::<std::string::String>()
+        };
+        let two = config_descriptor(|b| {
+            let _ = AudioClass::<2>::new(b, 288);
+        });
+        let eight = config_descriptor(|b| {
+            let _ = AudioClass::<8>::new(b, 288);
+        });
+        assert_eq!(
+            hex(two),
+            "09022f010301008032080b0003010020000904000000010120000924010002084b000008240a100101000011240211010100100203000000000000000c240312010300111000000011240213010200100200000000000000000c240314010100131000000009040100000102200009040101010102200010240114000101000000020000000000062402010210070581252601010825010000000000090401020101022000102401140001010000000200000000000624020103180705812526010108250100000000000904020000010220000904020101010220001024011100010100000002030000000006240201021007050105200101082501000000000009040202010102200010240111000101000000020300000000062402010318070501052001010825010000000000"
+        );
+        assert_eq!(
+            hex(eight),
+            "09022f010301008032080b0003010020000904000000010120000924010002084b000008240a100101000011240211010100100203000000000000000c240312010300111000000011240213010200100800000000000000000c24031401010013100000000904010000010220000904010101010220001024011400010100000008000000000006240201021007058125a8000108250100000000000904010201010220001024011400010100000008000000000006240201031807058125a8000108250100000000000904020000010220000904020101010220001024011100010100000002030000000006240201021007050105200101082501000000000009040202010102200010240111000101000000020300000000062402010318070501052001010825010000000000"
+        );
     }
 
     #[test]
