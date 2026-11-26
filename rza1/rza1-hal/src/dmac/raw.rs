@@ -36,13 +36,7 @@ pub(super) unsafe fn init_with_link_descriptor(ch: u8, descriptor: *const u32, d
         trace!("dmac: ch{} CHCFG ok", ch);
 
         // 3. DMARS: even channel → bits [15:0], odd channel → bits [31:16]
-        let dmars = DMAC.dmars((ch / 2) as usize).addr();
-        let (shifted, mask) = if ch & 1 == 0 {
-            (dmars_val & 0xFFFF, 0xFFFF_0000u32)
-        } else {
-            ((dmars_val & 0xFFFF) << 16, 0x0000_FFFFu32)
-        };
-        crate::mmio::write32(dmars, (crate::mmio::read32(dmars) & mask) | shifted);
+        set_dmars(ch, dmars_val);
         trace!("dmac: ch{} DMARS ok", ch);
 
         // 4. NXLA = address of the link descriptor
@@ -99,14 +93,24 @@ pub(super) unsafe fn stop(ch: u8) {
         // DMARS, so a latched route (e.g. SCIF1-RX = 0x66) would keep claiming
         // its request line and starve the next program's channel. Only this
         // channel's half: the other half routes its pair.
-        let dmars = DMAC.dmars((ch / 2) as usize).addr();
-        let keep = if ch % 2 == 0 {
-            0xFFFF_0000
-        } else {
-            0x0000_FFFF
-        };
-        crate::mmio::write32(dmars, crate::mmio::read32(dmars) & keep);
+        set_dmars(ch, 0);
     }
+}
+
+/// Sets channel `ch`'s half of the DMARS word it shares with its pair (even channel bits [15:0], odd [31:16]) to
+/// `route`, leaving the other half as it is. One critical section, so two channels' drivers can't lose each other's
+/// update, whatever context each runs in.
+fn set_dmars(ch: u8, route: u32) {
+    let dmars = DMAC.dmars((ch / 2) as usize).addr();
+    let (shifted, keep) = if ch & 1 == 0 {
+        (route & 0xFFFF, 0xFFFF_0000u32)
+    } else {
+        ((route & 0xFFFF) << 16, 0x0000_FFFFu32)
+    };
+    critical_section::with(|_| {
+        // SAFETY: DMARS, a register of the DMAC, which this channel's driver owns half of.
+        unsafe { crate::mmio::write32(dmars, (crate::mmio::read32(dmars) & keep) | shifted) };
+    });
 }
 
 /// Whether a one-shot transfer started with [`start_transfer`] is still running on channel `ch`:
@@ -184,13 +188,7 @@ pub(super) unsafe fn init_register_mode(ch: u8, chcfg: u32, dst: u32, dmars: u32
     DMAC.ch(ch as usize).n0da().write_value(dst);
 
     // 5. DMARS.
-    let dmars_ptr = DMAC.dmars((ch / 2) as usize);
-    let (shifted, mask) = if ch & 1 == 0 {
-        (dmars & 0xFFFF, 0xFFFF_0000u32)
-    } else {
-        ((dmars & 0xFFFF) << 16, 0x0000_FFFFu32)
-    };
-    dmars_ptr.write_value((dmars_ptr.read() & mask) | shifted);
+    set_dmars(ch, dmars);
 }
 
 /// Call from the DMAINT completion ISR for channel `ch`.
@@ -234,13 +232,7 @@ pub(super) unsafe fn init_register_mode_rx(ch: u8, chcfg: u32, src: u32, dmars: 
     DMAC.ch(ch as usize).n0sa().write_value(src);
 
     // 5. DMARS.
-    let dmars_ptr = DMAC.dmars((ch / 2) as usize);
-    let (shifted, mask) = if ch & 1 == 0 {
-        (dmars & 0xFFFF, 0xFFFF_0000u32)
-    } else {
-        ((dmars & 0xFFFF) << 16, 0x0000_FFFFu32)
-    };
-    dmars_ptr.write_value((dmars_ptr.read() & mask) | shifted);
+    set_dmars(ch, dmars);
 }
 
 /// Arm and start a one-shot peripheral→memory DMA transfer on a channel
@@ -332,4 +324,24 @@ pub(super) async fn wait_block(ch: u8) {
         }
     })
     .await
+}
+
+#[cfg(all(test, not(target_os = "none")))]
+mod tests {
+    use super::*;
+    use crate::mmio::test;
+
+    /// A channel's route leaves its pair's half of the shared word alone, whichever half it has.
+    #[test]
+    fn a_channels_route_leaves_its_pairs_half() {
+        test::reset();
+        let word = DMAC.dmars(7).addr();
+        test::poke32(word, 0x00C6_0000);
+        set_dmars(14, 0x83);
+        assert_eq!(test::peek32(word), 0x00C6_0083);
+        set_dmars(15, 0x8B);
+        assert_eq!(test::peek32(word), 0x008B_0083);
+        set_dmars(14, 0);
+        assert_eq!(test::peek32(word), 0x008B_0000);
+    }
 }
