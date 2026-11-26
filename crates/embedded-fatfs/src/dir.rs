@@ -390,6 +390,31 @@ impl<'a, IO: ReadWriteSeek, TP: TimeProvider, OCC: OemCpConverter> Dir<'a, IO, T
         }
     }
 
+    /// Sets the attributes of the existing file or directory at `path`: its hidden, system, read-only and archive
+    /// bits. Whether it is a directory or a volume label is not an attribute a caller may change.
+    ///
+    /// `path` is a '/' separated path relative to self directory.
+    ///
+    /// # Errors
+    ///
+    /// Errors that can be returned:
+    ///
+    /// * `Error::NotFound` will be returned if `path` points to a non-existing directory entry.
+    /// * `Error::InvalidInput` will be returned if `attrs` would change the directory or volume-label bit.
+    /// * `Error::Io` will be returned if the underlying storage object returned an I/O error.
+    pub async fn set_attributes(&self, path: &str, attrs: FileAttributes) -> Result<(), Error<IO::Error>> {
+        trace!("Dir::set_attributes {}", path);
+        let entry = self.open_meta(path).await?;
+        let fixed = FileAttributes::DIRECTORY | FileAttributes::VOLUME_ID;
+        if (entry.attributes() & fixed) != (attrs & fixed) {
+            return Err(Error::InvalidInput);
+        }
+        let mut editor = entry.editor();
+        editor.set_attributes(attrs);
+        editor.flush(self.fs).await?;
+        Ok(())
+    }
+
     /// Opens existing file.
     ///
     /// `path` is a '/' separated file path relative to self directory.
@@ -1530,6 +1555,32 @@ impl ShortNameGenerator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn set_attributes_hides_a_directory_and_keeps_its_kind() {
+        use crate::{format_volume, FileSystem, FormatVolumeOptions, FsOptions};
+        use embedded_io_adapters::tokio_1::FromTokio;
+        let mut storage = FromTokio::new(std::io::Cursor::new(vec![0u8; 2 * 1024 * 1024]));
+        format_volume(&mut storage, FormatVolumeOptions::new()).await.unwrap();
+        storage.seek(SeekFrom::Start(0)).await.unwrap();
+        let fs = FileSystem::new(storage, FsOptions::new()).await.unwrap();
+        let root = fs.root_dir();
+        root.create_dir("A").await.unwrap();
+        root.create_dir("A/B").await.unwrap();
+        root.set_attributes("A/B", FileAttributes::HIDDEN | FileAttributes::DIRECTORY)
+            .await
+            .unwrap();
+        let attrs = root.open_meta("A/B").await.unwrap().attributes();
+        assert!(attrs.contains(FileAttributes::HIDDEN | FileAttributes::DIRECTORY));
+        assert!(matches!(
+            root.set_attributes("A/B", FileAttributes::HIDDEN).await,
+            Err(Error::InvalidInput)
+        ));
+        assert!(matches!(
+            root.set_attributes("A/C", FileAttributes::HIDDEN).await,
+            Err(Error::NotFound)
+        ));
+    }
 
     #[test]
     fn test_split_path() {

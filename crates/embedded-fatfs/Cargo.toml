@@ -4,7 +4,7 @@
 
 [package]
 name = "deluge-embedded-fatfs"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 authors = ["Rafał Harabień", "Scott Mabin", "Katherine Whitlock <kate@skylinesynths.nyc>"]
 repository = "https://github.com/FirestormAudio/deluge-sdk"

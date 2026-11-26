@@ -595,6 +595,13 @@ impl DirEntryEditor {
         }
     }
 
+    pub(crate) fn set_attributes(&mut self, attrs: FileAttributes) {
+        if attrs != self.data.attrs {
+            self.data.attrs = attrs;
+            self.dirty = true;
+        }
+    }
+
     pub(crate) async fn flush<IO: ReadWriteSeek, TP, OCC>(
         &mut self,
         fs: &FileSystem<IO, TP, OCC>,
@@ -696,7 +703,7 @@ impl<'a, IO: ReadWriteSeek, TP, OCC: OemCpConverter> DirEntry<'a, IO, TP, OCC> {
         self.data.first_cluster(self.fs.fat_type())
     }
 
-    fn editor(&self) -> DirEntryEditor {
+    pub(crate) fn editor(&self) -> DirEntryEditor {
         DirEntryEditor::new(self.data.clone(), self.entry_pos)
     }
 
