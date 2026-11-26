@@ -116,6 +116,10 @@ impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
     /// The capture endpoint's wMaxPacketSize with 4-byte slots ([`new_in_words`](Self::new_in_words)): 49 frames
     /// while that fits in 1024 bytes, else 12 frames of a high-speed microframe. Both are whole 32-bit words.
     pub const CAPTURE_MAX_PACKET_WORDS: u16 = {
+        assert!(
+            CAPTURE_CH % 2 == 0,
+            "word-slot capture needs an even channel count: a 16-bit frame is then whole words"
+        );
         let full_speed = 49 * CAPTURE_CH * 4;
         let high_speed = 12 * CAPTURE_CH * 4;
         assert!(
@@ -134,6 +138,8 @@ impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
     /// count. Both alternates use packets of [`CAPTURE_MAX_PACKET_WORDS`](Self::CAPTURE_MAX_PACKET_WORDS) to the host.
     ///
     /// The playback interface comes first and the capture one after it, so Linux finds the implicit feedback.
+    ///
+    /// `iso_packet_size` is the playback endpoint's packet in bytes, for 4-byte slots: 392 covers 49 stereo frames.
     pub fn new_in_words<'d, D: Driver<'d>>(
         builder: &mut Builder<'d, D>,
         iso_packet_size: u16,
@@ -450,7 +456,7 @@ impl<const CAPTURE_CH: usize> AudioClass<CAPTURE_CH> {
         as_alt1.descriptor(CS_INTERFACE, &[AS_FORMAT_TYPE, 0x01, 0x02, 0x10]); // subslot=2, 16-bit
         let ep_out = as_alt1.endpoint_isochronous_out(
             number,
-            iso_packet_size, // MPS=288 so ep_out.info.max_packet_size covers alt2 too
+            iso_packet_size, // one size for both alternates, so it covers the 24-bit one
             1,
             SynchronizationType::Asynchronous,
             UsageType::DataEndpoint,
@@ -724,12 +730,45 @@ mod tests {
         let mut class = None;
         let _ = config_descriptor(|b| class = Some(AudioClass::<2>::new_in_words(b, 392).0));
         let mut class = class.unwrap();
-        class.set_alternate_setting(InterfaceNumber(1), 2);
+        // 24 is each depth's starting value: alternate 1 (16 bits) shows the routing.
+        class.set_alternate_setting(InterfaceNumber(1), 1);
         assert!(class.streaming_active && !class.capture_active);
-        assert_eq!(USB_BITS_PER_SAMPLE.load(Ordering::Relaxed), 24);
+        assert_eq!(USB_BITS_PER_SAMPLE.load(Ordering::Relaxed), 16);
+        assert_eq!(
+            USB_CAPTURE_BITS_PER_SAMPLE.load(Ordering::Relaxed),
+            24,
+            "capture untouched"
+        );
         class.set_alternate_setting(InterfaceNumber(2), 1);
         assert!(class.capture_active);
         assert_eq!(USB_CAPTURE_BITS_PER_SAMPLE.load(Ordering::Relaxed), 16);
+        class.set_alternate_setting(InterfaceNumber(1), 2);
+        assert_eq!(USB_BITS_PER_SAMPLE.load(Ordering::Relaxed), 24);
+    }
+
+    /// `new()` builds what it did before the word-slot function: other firmwares ship these bytes. Taken from the
+    /// SDK's main before the word-slot work.
+    #[test]
+    fn new_builds_the_same_descriptor_as_before() {
+        let hex = |d: Vec<u8>| {
+            d.iter()
+                .map(|b| std::format!("{b:02x}"))
+                .collect::<std::string::String>()
+        };
+        let two = config_descriptor(|b| {
+            let _ = AudioClass::<2>::new(b, 288);
+        });
+        let eight = config_descriptor(|b| {
+            let _ = AudioClass::<8>::new(b, 288);
+        });
+        assert_eq!(
+            hex(two),
+            "09022f010301008032080b0003010020000904000000010120000924010002084b000008240a100101000011240211010100100203000000000000000c240312010300111000000011240213010200100200000000000000000c240314010100131000000009040100000102200009040101010102200010240114000101000000020000000000062402010210070581252601010825010000000000090401020101022000102401140001010000000200000000000624020103180705812526010108250100000000000904020000010220000904020101010220001024011100010100000002030000000006240201021007050105200101082501000000000009040202010102200010240111000101000000020300000000062402010318070501052001010825010000000000"
+        );
+        assert_eq!(
+            hex(eight),
+            "09022f010301008032080b0003010020000904000000010120000924010002084b000008240a100101000011240211010100100203000000000000000c240312010300111000000011240213010200100800000000000000000c24031401010013100000000904010000010220000904010101010220001024011400010100000008000000000006240201021007058125a8000108250100000000000904010201010220001024011400010100000008000000000006240201031807058125a8000108250100000000000904020000010220000904020101010220001024011100010100000002030000000006240201021007050105200101082501000000000009040202010102200010240111000101000000020300000000062402010318070501052001010825010000000000"
+        );
     }
 
     #[test]
