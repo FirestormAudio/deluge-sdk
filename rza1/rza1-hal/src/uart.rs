@@ -553,6 +553,7 @@ fn irq_ring_pop_stamped(ch: usize) -> Option<(u8, u64)> {
         };
         // SAFETY: `tail` < `len`, inside the lent buffers.
         let byte = unsafe { r.ptr.add(tail).read_volatile() };
+        // SAFETY: as for the byte; the tick buffer is as long as the byte buffer.
         let tick = r
             .ticks
             .map_or(0, |t| unsafe { t.add(tail).read_volatile() });
