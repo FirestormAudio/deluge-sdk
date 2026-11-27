@@ -682,7 +682,7 @@ pub async fn run_rx_midi1_with<'d, D: Driver<'d>>(
                 Ok(n) => {
                     // One tick for the whole transfer: when its read completed, the closest this
                     // task gets to the wire.
-                    let ticks = embassy_time::Instant::now().as_ticks();
+                    let ticks = embassy_time::Instant::now().as_ticks() as u32;
                     let packet_mode = state.packets.packets_enabled();
                     for packet in midi_packets::packets_in(&buf[..n]) {
                         match midi_packets::route_rx_packet(packet, packet_mode) {

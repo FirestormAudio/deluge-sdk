@@ -25,9 +25,11 @@ use embassy_sync::channel::Channel;
 /// One USB-MIDI 1.0 event packet: `[cable << 4 | CIN, midi0, midi1, midi2]`.
 pub type Packet = [u8; 4];
 
-/// A packet received from the host and the Embassy tick its transfer's read completed at: every
-/// packet of one transfer carries the same tick.
-pub type StampedPacket = (Packet, u64);
+/// A packet received from the host and the low 32 bits of the Embassy tick its transfer's read
+/// completed at: every packet of one transfer carries the same tick. 32 bits keep the queue small;
+/// a reader differences the tick against the clock's own low 32 bits, which spans over an hour at
+/// a 1 MHz tick.
+pub type StampedPacket = (Packet, u32);
 
 /// Packets in one full-speed 64-byte bulk transfer. A high-speed transfer carries up to 128 (512 bytes).
 pub const PACKETS_PER_TRANSFER: usize = 64 / 4;
@@ -117,7 +119,7 @@ impl PacketQueues {
     }
 
     /// As [`deliver_packet_from_host`].
-    pub async fn deliver_packet_from_host(&self, packet: Packet, ticks: u64) {
+    pub async fn deliver_packet_from_host(&self, packet: Packet, ticks: u32) {
         self.rx.send((packet, ticks)).await;
     }
 
@@ -257,7 +259,7 @@ pub fn packets_in(transfer: &[u8]) -> impl Iterator<Item = Packet> + '_ {
 ///
 /// Waiting holds back the next OUT transfer, so the host is flow-controlled
 /// (NAKed) instead of losing packets mid-SysEx.
-pub async fn deliver_packet_from_host(packet: Packet, ticks: u64) {
+pub async fn deliver_packet_from_host(packet: Packet, ticks: u32) {
     DEFAULT.deliver_packet_from_host(packet, ticks).await;
 }
 
