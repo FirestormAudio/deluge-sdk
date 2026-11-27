@@ -72,31 +72,28 @@ pub fn init_midi(
     install(&MIDI_RX, &MIDI_TX, rx, tx);
 }
 
-/// Bytes [`init_midi_stamped`]'s receive ring holds: 82 ms of a saturated line, far longer than
-/// any reader leaves it.
-const MIDI_RX_BYTES: usize = 256;
-
-/// Bring up the MIDI DIN UART (SCIF0): receive on RXI, stamping each byte with the Embassy tick it
-/// arrived at ([`try_read_midi_stamped`]); transmit through the FIFO and TXI. Needs no DMA
-/// channel. Call once, instead of [`init_midi`].
-pub fn init_midi_stamped(scif: Peri<'static, MidiScif>, pins: MidiPins, baud: u32) {
+/// Bring up the MIDI DIN UART (SCIF0): receive on RXI into `rx_buf`, stamping each byte with the
+/// Embassy tick it arrived at into `rx_ticks` ([`try_read_midi_stamped`]); transmit through the
+/// FIFO and TXI. Needs no DMA channel. Call once, instead of [`init_midi`]. The caller places the
+/// buffers (e.g. outside internal SRAM); 256 bytes is 82 ms of a saturated line.
+///
+/// # Panics
+/// If the buffers are empty or of different lengths.
+pub fn init_midi_stamped(
+    scif: Peri<'static, MidiScif>,
+    pins: MidiPins,
+    baud: u32,
+    rx_buf: &'static mut [u8],
+    rx_ticks: &'static mut [u64],
+) {
     log::debug!("bsp uart: MIDI SCIF{} @ {} bps, stamped", MIDI_CH, baud);
-    static mut RX_BUF: [u8; MIDI_RX_BYTES] = [0; MIDI_RX_BYTES];
-    static mut RX_TICKS: [u64; MIDI_RX_BYTES] = [0; MIDI_RX_BYTES];
-    // SAFETY: SCIF0 is owned once, so this runs once and lends the buffers to one receiver.
-    let (buf, ticks) = unsafe {
-        (
-            &mut *core::ptr::addr_of_mut!(RX_BUF),
-            &mut *core::ptr::addr_of_mut!(RX_TICKS),
-        )
-    };
     let (rx, tx) = Uart::new_stamped(
         scif,
         pins.tx,
         pins.rx,
         MidiStampedIrqs,
-        buf,
-        ticks,
+        rx_buf,
+        rx_ticks,
         None,
         config(baud),
     )
