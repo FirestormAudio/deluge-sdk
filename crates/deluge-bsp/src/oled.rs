@@ -695,6 +695,11 @@ pub unsafe fn draw_blocking(fb: &FrameBuffer) {
 /// **Must be called inside an Embassy task.**
 #[cfg(target_os = "none")]
 pub async fn send_frame(fb: &FrameBuffer) {
+    // Wait for a gap before the bus's next reservation (a CV word due at a set time) long enough
+    // for the whole frame, or until the frame has waited as long as the display can.
+    wait_for_bus_window().await;
+    let locked_at = embassy_time::Instant::now().as_ticks();
+
     // Take exclusive ownership of RSPI0 for the ENTIRE select→DMA→deselect
     // sequence — acquired BEFORE selecting the OLED. The OLED's chip-select is
     // driven by the PIC asynchronously, so if the bus were free at any moment
@@ -762,6 +767,78 @@ pub async fn send_frame(fb: &FrameBuffer) {
 
     // Release RSPI0 — only now, with the OLED deselected, may a CV write proceed.
     drop(bus);
+    record_frame_hold(embassy_time::Instant::now().as_ticks() - locked_at);
+}
+
+/// The longest a frame waits for a gap: about one frame at 25 fps.
+#[cfg(target_os = "none")]
+const MAX_DEFER: embassy_time::Duration = embassy_time::Duration::from_millis(40);
+/// The room a frame leaves before the next reservation.
+#[cfg(target_os = "none")]
+const FRAME_MARGIN: embassy_time::Duration = embassy_time::Duration::from_micros(100);
+/// How often a frame looks again while a reservation already due is still waiting to be written.
+#[cfg(target_os = "none")]
+const OVERDUE_POLL: embassy_time::Duration = embassy_time::Duration::from_micros(100);
+/// The frame-hold estimate before any frame is measured: 768 bytes at 4 MHz is 1.5 ms, plus the
+/// PIC's select and deselect round trips.
+#[cfg(target_os = "none")]
+const FRAME_HOLD_SEED: embassy_time::Duration = embassy_time::Duration::from_millis(3);
+
+#[cfg(target_os = "none")]
+static FRAME_HOLD: critical_section::Mutex<core::cell::Cell<crate::bus_window::FrameHold>> =
+    critical_section::Mutex::new(core::cell::Cell::new(crate::bus_window::FrameHold::new(
+        FRAME_HOLD_SEED.as_ticks(),
+    )));
+
+#[cfg(target_os = "none")]
+fn record_frame_hold(held: u64) {
+    critical_section::with(|cs| {
+        let cell = FRAME_HOLD.borrow(cs);
+        let mut hold = cell.get();
+        hold.record(held);
+        cell.set(hold);
+    });
+}
+
+/// Returns once a frame may take RSPI0 (see [`crate::bus_window::decide`]).
+#[cfg(target_os = "none")]
+async fn wait_for_bus_window() {
+    use crate::bus_window::{Decision, decide};
+    use embassy_time::{Instant, Timer};
+    let started = Instant::now().as_ticks();
+    let mut deferred = false;
+    loop {
+        let now = Instant::now().as_ticks();
+        let hold = critical_section::with(|cs| FRAME_HOLD.borrow(cs).get().get());
+        let waited = now - started;
+        match decide(
+            now,
+            crate::bus::next_reservation(),
+            hold,
+            FRAME_MARGIN.as_ticks(),
+            waited,
+            MAX_DEFER.as_ticks(),
+        ) {
+            Decision::Go => {
+                if deferred {
+                    crate::bus::count_deferred(waited >= MAX_DEFER.as_ticks());
+                }
+                return;
+            }
+            Decision::WaitUntil(at) => {
+                deferred = true;
+                // A reservation already due waits to be written; look again shortly.
+                let until = at
+                    .max(now + OVERDUE_POLL.as_ticks())
+                    .min(started + MAX_DEFER.as_ticks());
+                embassy_futures::select::select(
+                    Timer::at(Instant::from_ticks(until)),
+                    crate::bus::reservation_changed(),
+                )
+                .await;
+            }
+        }
+    }
 }
 
 /// Host/QEMU stand-in for [`send_frame`]: no RSPI0/PIC/DMAC hardware to drive,

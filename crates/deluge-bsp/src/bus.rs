@@ -210,6 +210,71 @@ pub fn try_lock_rspi0() -> Option<Rspi0Guard> {
     RSPI0.try_lock().ok().map(live)
 }
 
+// ── Reservations ─────────────────────────────────────────────────────────────
+//
+// A short transfer due at a set time (a CV word) reserves the bus for then, and a long one (an OLED
+// frame) starts only if it will be done first (see `bus_window`). One reservation: the earliest
+// the reserving side has queued.
+
+/// The reserved tick (Embassy), or `u64::MAX` for none.
+static RESERVATION: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(u64::MAX);
+/// Wakes a frame waiting for a gap when the reservation moves.
+static RESERVATION_CHANGED: embassy_sync::waitqueue::AtomicWaker =
+    embassy_sync::waitqueue::AtomicWaker::new();
+/// Frames that waited for a gap, and those of them that went without one.
+static DEFERRED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static FORCED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// Reserve RSPI0 from Embassy tick `at` (`None`: no reservation), replacing any reservation; wakes
+/// a frame waiting for a gap. Any context, interrupts included.
+pub fn reserve_rspi0(at: Option<u64>) {
+    use core::sync::atomic::Ordering;
+    let at = at.unwrap_or(u64::MAX);
+    if RESERVATION.swap(at, Ordering::AcqRel) != at {
+        RESERVATION_CHANGED.wake();
+    }
+}
+
+/// The current reservation, if any.
+pub fn next_reservation() -> Option<u64> {
+    let at = RESERVATION.load(core::sync::atomic::Ordering::Acquire);
+    (at != u64::MAX).then_some(at)
+}
+
+/// Resolves the next time the reservation moves.
+pub(crate) async fn reservation_changed() {
+    let mut registered = false;
+    core::future::poll_fn(|cx| {
+        if registered {
+            core::task::Poll::Ready(())
+        } else {
+            RESERVATION_CHANGED.register(cx.waker());
+            registered = true;
+            core::task::Poll::Pending
+        }
+    })
+    .await
+}
+
+/// Count a frame that waited for a gap; `forced` if it went without one.
+pub(crate) fn count_deferred(forced: bool) {
+    use core::sync::atomic::Ordering;
+    DEFERRED.fetch_add(1, Ordering::Relaxed);
+    if forced {
+        FORCED.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Frames that waited for a gap before the next reservation, and those of them that went without
+/// one after waiting their longest.
+pub fn window_stats() -> (u32, u32) {
+    use core::sync::atomic::Ordering;
+    (
+        DEFERRED.load(Ordering::Relaxed),
+        FORCED.load(Ordering::Relaxed),
+    )
+}
+
 /// Fabricate an RSPI0 token, **bypassing the mutex**.
 ///
 /// For use only when the normal locking discipline cannot apply — i.e. a panic
