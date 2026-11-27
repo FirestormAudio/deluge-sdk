@@ -484,7 +484,8 @@ fn on_rxi(ch: usize) {
                             ))
                         };
                     }
-                    r.head = (r.head + 1) % r.len;
+                    // Wrapped by compare, not `%`: the A9 has no divide instruction.
+                    r.head = if r.head + 1 == r.len { 0 } else { r.head + 1 };
                     r.count += 1;
                 }
                 Some(_) => overrun = true,
@@ -544,7 +545,12 @@ fn irq_ring_pop_stamped(ch: usize) -> Option<(u8, u64)> {
         if r.count == 0 {
             return None;
         }
-        let tail = (r.head + r.len - r.count) % r.len;
+        // `count` <= `len`, so one conditional subtract wraps it (the A9 has no divide instruction).
+        let tail = if r.head >= r.count {
+            r.head - r.count
+        } else {
+            r.head + r.len - r.count
+        };
         // SAFETY: `tail` < `len`, inside the lent buffers.
         let byte = unsafe { r.ptr.add(tail).read_volatile() };
         let tick = r
