@@ -26,7 +26,7 @@ testing.
 | [`controls`] | Stable human-readable IDs for buttons, encoder shaft clicks, rotation indices, and gold-knob indicator bars |
 | [`encoder`] | 6× rotary encoder IRQ accumulators (`ENCODER_DELTAS`) and detent extraction; wakes the firmware encoder task via `ENCODER_WAKER` |
 | [`pads`] | Lock-free shared pad state — 144 pads packed into 5 × `AtomicU32`; `pad_get` / `pad_toggle` for ISR-safe access |
-| [`uart`] | SCIF0 MIDI DIN + SCIF1 PIC UART: `init_midi`/`init_pic` from the `Board`'s singletons; DMA receive rings, PIC transmit by DMA |
+| [`uart`] | SCIF0 MIDI DIN + SCIF1 PIC UART: `init_midi`/`init_pic` from the `Board`'s singletons; DMA receive rings, PIC transmit by DMA; `init_midi_stamped` receives MIDI on RXI with per-byte arrival ticks |
 | [`sd`] | SDHI SD v2 card — full JEDEC init, block read/write, SDHC/SDXC auto-detect, DMA bounce buffer |
 | [`fat`] | `embedded-sdmmc` wrapper — `DelugeVolumeManager`, `DelugeBlockDevice`, FAT filesystem access |
 | [`usb`] | The Deluge's USB identities (`ids`), (feature `usb-msc`) the SD card as a Mass Storage medium (`sd_block`), and (feature `usb-host`) the host-role supervisor; the classes themselves are in the [`usb-classes`](../../usb/usb-classes) crate |

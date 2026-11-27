@@ -279,12 +279,14 @@ const TRIGGER_PRIORITY: rza1_hal::interrupt::Priority = rza1_hal::interrupt::Pri
 /// the HAL's `init`.
 pub(crate) fn apply_irq_priorities() {
     use rza1_hal::interrupt::{Interrupt, Priority, typelevel::*};
-    let set: [(fn(Priority), Priority); 21] = [
+    let set: [(fn(Priority), Priority); 22] = [
         (USB0::set_priority, DRIVER_PRIORITY),
         (USB1::set_priority, DRIVER_PRIORITY),
         (BRI0::set_priority, DRIVER_PRIORITY),
         (ERI0::set_priority, DRIVER_PRIORITY),
         (TXI0::set_priority, DRIVER_PRIORITY),
+        // MIDI DIN's receive interrupt, when `uart::init_midi_stamped` receives on it.
+        (RXI0::set_priority, DRIVER_PRIORITY),
         (BRI1::set_priority, DRIVER_PRIORITY),
         (ERI1::set_priority, DRIVER_PRIORITY),
         (TXI1::set_priority, DRIVER_PRIORITY),
@@ -607,6 +609,7 @@ mod tests {
             ("USB1", USB1::get_priority()),
             ("ERI0", ERI0::get_priority()),
             ("TXI0", TXI0::get_priority()),
+            ("RXI0", RXI0::get_priority()),
             ("ERI1", ERI1::get_priority()),
             ("TXI1", TXI1::get_priority()),
             ("SDHI1_STATUS", SDHI1_STATUS::get_priority()),
@@ -625,8 +628,8 @@ mod tests {
         ];
         use Priority::*;
         let want = [
-            P10, P10, P10, P10, P10, P10, P10, P10, P5, P14, P4, P4, P14, P14, P14, P14, P14, P14,
-            P14,
+            P10, P10, P10, P10, P10, P10, P10, P10, P10, P5, P14, P4, P4, P14, P14, P14, P14, P14,
+            P14, P14,
         ];
         for ((name, got), want) in got.iter().zip(want) {
             assert_eq!(*got, want, "{name}");
