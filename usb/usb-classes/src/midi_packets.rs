@@ -25,6 +25,12 @@ use embassy_sync::channel::Channel;
 /// One USB-MIDI 1.0 event packet: `[cable << 4 | CIN, midi0, midi1, midi2]`.
 pub type Packet = [u8; 4];
 
+/// A packet received from the host and the low 32 bits of the Embassy tick its transfer's read
+/// completed at: every packet of one transfer carries the same tick. 32 bits keep the queue small;
+/// a reader differences the tick against the clock's own low 32 bits, which spans over an hour at
+/// a 1 MHz tick.
+pub type StampedPacket = (Packet, u32);
+
 /// Packets in one full-speed 64-byte bulk transfer. A high-speed transfer carries up to 128 (512 bytes).
 pub const PACKETS_PER_TRANSFER: usize = 64 / 4;
 
@@ -42,8 +48,8 @@ pub const TX_PACKET_CAPACITY: usize = 1024;
 /// on. A firmware with more than one USB-MIDI device keeps one per device (a `static`); the free
 /// functions in this module work on [`DEFAULT`].
 pub struct PacketQueues {
-    /// Packets received from the host, in packet mode.
-    rx: Channel<CriticalSectionRawMutex, Packet, RX_PACKET_CAPACITY>,
+    /// Packets received from the host, in packet mode, with their transfer's tick.
+    rx: Channel<CriticalSectionRawMutex, StampedPacket, RX_PACKET_CAPACITY>,
     /// Packets queued for transmission to the host, in packet mode.
     tx: Channel<CriticalSectionRawMutex, Packet, TX_PACKET_CAPACITY>,
     /// `true` once a consumer has selected packet mode.
@@ -84,6 +90,13 @@ impl PacketQueues {
     /// As [`try_recv_packet_from_host`].
     #[inline]
     pub fn try_recv_packet_from_host(&self) -> Option<Packet> {
+        self.try_recv_stamped_packet_from_host()
+            .map(|(packet, _)| packet)
+    }
+
+    /// As [`try_recv_stamped_packet_from_host`].
+    #[inline]
+    pub fn try_recv_stamped_packet_from_host(&self) -> Option<StampedPacket> {
         self.rx.try_receive().ok()
     }
 
@@ -106,8 +119,8 @@ impl PacketQueues {
     }
 
     /// As [`deliver_packet_from_host`].
-    pub async fn deliver_packet_from_host(&self, packet: Packet) {
-        self.rx.send(packet).await;
+    pub async fn deliver_packet_from_host(&self, packet: Packet, ticks: u32) {
+        self.rx.send((packet, ticks)).await;
     }
 
     /// As [`next_packet_to_host`].
@@ -162,6 +175,12 @@ pub fn packets_enabled() -> bool {
 #[inline]
 pub fn try_recv_packet_from_host() -> Option<Packet> {
     DEFAULT.try_recv_packet_from_host()
+}
+
+/// As [`try_recv_packet_from_host`], with the Embassy tick the packet's transfer was read at.
+#[inline]
+pub fn try_recv_stamped_packet_from_host() -> Option<StampedPacket> {
+    DEFAULT.try_recv_stamped_packet_from_host()
 }
 
 /// Queue one USB-MIDI 1.0 event packet for transmission to the host, unchanged.
@@ -235,12 +254,13 @@ pub fn packets_in(transfer: &[u8]) -> impl Iterator<Item = Packet> + '_ {
     transfer.as_chunks::<4>().0.iter().copied()
 }
 
-/// Queue a packet received from the host, waiting while the queue is full.
+/// Queue a packet received from the host, with the Embassy tick its transfer's read completed
+/// at, waiting while the queue is full.
 ///
 /// Waiting holds back the next OUT transfer, so the host is flow-controlled
 /// (NAKed) instead of losing packets mid-SysEx.
-pub async fn deliver_packet_from_host(packet: Packet) {
-    DEFAULT.deliver_packet_from_host(packet).await;
+pub async fn deliver_packet_from_host(packet: Packet, ticks: u32) {
+    DEFAULT.deliver_packet_from_host(packet, ticks).await;
 }
 
 /// Wait for the next packet the consumer queued for the host.
@@ -359,7 +379,7 @@ mod tests {
     fn two_instances_do_not_share_packets() {
         static A: PacketQueues = PacketQueues::new();
         static B: PacketQueues = PacketQueues::new();
-        embassy_futures::block_on(A.deliver_packet_from_host(SYSEX_CABLE2[0]));
+        embassy_futures::block_on(A.deliver_packet_from_host(SYSEX_CABLE2[0], 0));
         assert_eq!(B.try_recv_packet_from_host(), None);
         assert_eq!(A.try_recv_packet_from_host(), Some(SYSEX_CABLE2[0]));
         assert!(B.try_send_packet_to_host(SYSEX_CABLE2[1]));
@@ -371,10 +391,27 @@ mod tests {
     }
 
     #[test]
+    fn a_delivered_packet_keeps_its_transfer_tick() {
+        static Q: PacketQueues = PacketQueues::new();
+        Q.use_packets();
+        embassy_futures::block_on(Q.deliver_packet_from_host([0x09, 0x90, 0x3C, 0x64], 1_234));
+        embassy_futures::block_on(Q.deliver_packet_from_host([0x08, 0x80, 0x3C, 0x00], 1_234));
+        assert_eq!(
+            Q.try_recv_stamped_packet_from_host(),
+            Some(([0x09, 0x90, 0x3C, 0x64], 1_234))
+        );
+        assert_eq!(
+            Q.try_recv_packet_from_host(),
+            Some([0x08, 0x80, 0x3C, 0x00])
+        );
+        assert_eq!(Q.try_recv_stamped_packet_from_host(), None);
+    }
+
+    #[test]
     fn clear_empties_both_queues() {
         static Q: PacketQueues = PacketQueues::new();
         Q.use_packets();
-        embassy_futures::block_on(Q.deliver_packet_from_host(SYSEX_CABLE2[0]));
+        embassy_futures::block_on(Q.deliver_packet_from_host(SYSEX_CABLE2[0], 0));
         assert!(Q.try_send_packet_to_host(SYSEX_CABLE2[1]));
         Q.clear();
         assert_eq!(Q.try_recv_packet_from_host(), None);
@@ -398,7 +435,7 @@ mod tests {
         // Host → device: what the RX task delivers is what the consumer reads.
         let note_on = [0x09, 0x90, 0x3C, 0x64];
         for p in SYSEX_CABLE2.iter().chain([&note_on]) {
-            embassy_futures::block_on(DEFAULT.deliver_packet_from_host(*p));
+            embassy_futures::block_on(DEFAULT.deliver_packet_from_host(*p, 0));
         }
         let received: Vec<Packet> = core::iter::from_fn(try_recv_packet_from_host).collect();
         assert_eq!(

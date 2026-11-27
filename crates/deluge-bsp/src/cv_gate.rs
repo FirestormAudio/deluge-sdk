@@ -180,6 +180,19 @@ pub async fn cv_set(ch: u8, value: u16) {
     select_dac(false);
 }
 
+/// Write a voltage code to CV channel `ch` now, if RSPI0 is free: for interrupt context, which can't
+/// wait for the bus. Returns false, writing nothing, while another transfer (an OLED frame) holds
+/// it. A write to an unwired channel is dropped (and returns true), as [`cv_set`] drops it.
+#[cfg(target_os = "none")]
+pub fn try_cv_set_now(ch: u8, value: u16) -> bool {
+    let Some(mut bus) = crate::bus::try_lock_rspi0() else {
+        return false;
+    };
+    bus.enter_32bit();
+    cv_set_blocking(&mut bus, ch, value);
+    true
+}
+
 /// Write a voltage code to CV channel `ch` on a bus the caller already holds (in 32-bit mode).
 #[cfg(target_os = "none")]
 fn cv_set_blocking(bus: &mut crate::bus::Rspi0, ch: u8, value: u16) {

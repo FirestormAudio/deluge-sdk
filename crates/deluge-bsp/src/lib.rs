@@ -74,6 +74,7 @@ pub mod board;
 pub mod heap;
 pub use board::Board;
 pub mod bus;
+pub mod bus_window;
 pub mod clock_out;
 pub mod controls;
 #[cfg(target_os = "none")]

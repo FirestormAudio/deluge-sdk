@@ -34,6 +34,13 @@ rza1_hal::bind_interrupts!(struct MidiIrqs {
     DMAINT13 => dmac::InterruptHandler<MidiRxDma>;
 });
 
+rza1_hal::bind_interrupts!(struct MidiStampedIrqs {
+    BRI0 => uart::BreakInterruptHandler<MidiScif>;
+    ERI0 => uart::ErrorInterruptHandler<MidiScif>;
+    RXI0 => uart::RxInterruptHandler<MidiScif>;
+    TXI0 => uart::TxInterruptHandler<MidiScif>;
+});
+
 rza1_hal::bind_interrupts!(struct PicIrqs {
     BRI1 => uart::BreakInterruptHandler<PicScif>;
     ERI1 => uart::ErrorInterruptHandler<PicScif>;
@@ -62,6 +69,35 @@ pub fn init_midi(
     let rx_dma = Dma::new(rx_dma, MidiIrqs);
     let (rx, tx) =
         Uart::new_with_rx_dma(scif, pins.tx, pins.rx, rx_dma, None, MidiIrqs, config(baud)).split();
+    install(&MIDI_RX, &MIDI_TX, rx, tx);
+}
+
+/// Bring up the MIDI DIN UART (SCIF0): receive on RXI into `rx_buf`, stamping each byte with the
+/// Embassy tick it arrived at into `rx_ticks` ([`try_read_midi_stamped`]); transmit through the
+/// FIFO and TXI. Needs no DMA channel. Call once, instead of [`init_midi`]. The caller places the
+/// buffers (e.g. outside internal SRAM); 256 bytes is 82 ms of a saturated line.
+///
+/// # Panics
+/// If the buffers are empty or of different lengths.
+pub fn init_midi_stamped(
+    scif: Peri<'static, MidiScif>,
+    pins: MidiPins,
+    baud: u32,
+    rx_buf: &'static mut [u8],
+    rx_ticks: &'static mut [u64],
+) {
+    log::debug!("bsp uart: MIDI SCIF{} @ {} bps, stamped", MIDI_CH, baud);
+    let (rx, tx) = Uart::new_stamped(
+        scif,
+        pins.tx,
+        pins.rx,
+        MidiStampedIrqs,
+        rx_buf,
+        rx_ticks,
+        None,
+        config(baud),
+    )
+    .split();
     install(&MIDI_RX, &MIDI_TX, rx, tx);
 }
 
@@ -170,6 +206,19 @@ pub async fn read_midi_byte() -> u8 {
 /// [`init_midi`] hasn't run, or while a [`read_midi_byte`] is waiting (it drains the ring).
 pub fn try_read_midi() -> Option<u8> {
     try_read(&MIDI_RX, "MIDI")
+}
+
+/// The next byte from the MIDI DIN ring and the Embassy tick it arrived at, without waiting: the
+/// tick is 0 unless [`init_midi_stamped`] brought the UART up. `None` as for [`try_read_midi`].
+pub fn try_read_midi_stamped() -> Option<(u8, u64)> {
+    let mut slot = MIDI_RX.try_lock().ok()?;
+    let rx = slot.as_mut()?;
+    loop {
+        match rx.try_read_stamped() {
+            Ok(byte) => return byte,
+            Err(e) => log::debug!("bsp uart: MIDI receive error: {e:?}"),
+        }
+    }
 }
 
 /// Put as much of `data` in the MIDI DIN transmit FIFO as fits now; returns how much. Enough for
