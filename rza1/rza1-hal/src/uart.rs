@@ -460,13 +460,30 @@ fn on_rxi(ch: usize) {
     critical_section::with(|cs| {
         let cell = IRQ_RING[ch].borrow(cs);
         let mut ring = cell.get();
-        for _ in 0..(sc.fdr().read().0 & 0x1F) {
+        let count = (sc.fdr().read().0 & 0x1F) as usize;
+        // One clock read for the whole drain; each byte's own arrival is spaced back from it.
+        let now = match ring {
+            Some(IrqRing { ticks: Some(_), .. }) => embassy_time::Instant::now().as_ticks(),
+            _ => 0,
+        };
+        for index in 0..count {
             let byte = sc.frdr().read().0;
             match ring.as_mut() {
                 Some(r) if r.count < r.len => {
-                    // SAFETY: `head` < `len`, inside the lent buffer, which the receiver's
+                    // SAFETY: `head` < `len`, inside the lent buffers, which the receiver's
                     // borrow keeps alive while it is installed.
                     unsafe { r.ptr.add(r.head).write_volatile(byte) };
+                    if let Some(ticks) = r.ticks {
+                        // SAFETY: as for `ptr`; the tick buffer is as long as the byte buffer.
+                        unsafe {
+                            ticks.add(r.head).write_volatile(backdate(
+                                now,
+                                index,
+                                count,
+                                r.byte_ticks,
+                            ))
+                        };
+                    }
                     r.head = (r.head + 1) % r.len;
                     r.count += 1;
                 }
@@ -489,6 +506,11 @@ fn on_rxi(ch: usize) {
 #[derive(Clone, Copy)]
 struct IrqRing {
     ptr: *mut u8,
+    /// Each byte's arrival tick, parallel to `ptr`, for a receiver built by
+    /// [`Uart::new_stamped`].
+    ticks: Option<*mut u64>,
+    /// Embassy ticks one byte takes on the line, for spacing a burst drained in one interrupt.
+    byte_ticks: u64,
     len: usize,
     /// Where the next byte goes.
     head: usize,
@@ -507,8 +529,15 @@ static IRQ_RING: [critical_section::Mutex<core::cell::Cell<Option<IrqRing>>>; NU
 /// Whether SCIF n receives on RXI: [`set_baud_regs`] restores RIE.
 static RX_IRQ_ACTIVE: [AtomicBool; NUM_CHANNELS] = [const { AtomicBool::new(false) }; NUM_CHANNELS];
 
-/// The oldest unread byte in SCIF `ch`'s lent ring.
-fn irq_ring_pop(ch: usize) -> Option<u8> {
+/// The tick byte `index` of `count` drained together arrived at, given the drain happened at
+/// `now`: the last byte arrived at `now`, each earlier one a byte-time before the next.
+pub(crate) fn backdate(now: u64, index: usize, count: usize, byte_ticks: u64) -> u64 {
+    now.saturating_sub((count - 1 - index) as u64 * byte_ticks)
+}
+
+/// The oldest unread byte in SCIF `ch`'s lent ring and its arrival tick (0 on a ring that isn't
+/// stamped).
+fn irq_ring_pop_stamped(ch: usize) -> Option<(u8, u64)> {
     critical_section::with(|cs| {
         let cell = IRQ_RING[ch].borrow(cs);
         let mut r = cell.get()?;
@@ -516,12 +545,20 @@ fn irq_ring_pop(ch: usize) -> Option<u8> {
             return None;
         }
         let tail = (r.head + r.len - r.count) % r.len;
-        // SAFETY: `tail` < `len`, inside the lent buffer.
+        // SAFETY: `tail` < `len`, inside the lent buffers.
         let byte = unsafe { r.ptr.add(tail).read_volatile() };
+        let tick = r
+            .ticks
+            .map_or(0, |t| unsafe { t.add(tail).read_volatile() });
         r.count -= 1;
         cell.set(Some(r));
-        Some(byte)
+        Some((byte, tick))
     })
+}
+
+/// The oldest unread byte in SCIF `ch`'s lent ring.
+fn irq_ring_pop(ch: usize) -> Option<u8> {
+    irq_ring_pop_stamped(ch).map(|(byte, _)| byte)
 }
 
 /// Called from GIC dispatch when ERI (framing/parity error) fires for SCIF `ch`.
@@ -779,7 +816,7 @@ impl<'d> Uart<'d, Async> {
     /// If `rx_buf` is empty, [`crate::clocks::init`] has not been called, or `config`'s baud rate
     /// is 0 or out of SCBRR's range.
     pub fn new<T: Instance>(
-        _scif: Peri<'d, T>,
+        scif: Peri<'d, T>,
         tx: Peri<'d, impl TxPin<T>>,
         rx: Peri<'d, impl RxPin<T>>,
         irq: impl Binding<T::BreakInterrupt, BreakInterruptHandler<T>>
@@ -792,7 +829,60 @@ impl<'d> Uart<'d, Async> {
         tx_dma: Option<Dma<'d>>,
         config: Config,
     ) -> Self {
+        Self::new_irq(scif, tx, rx, irq, rx_buf, None, tx_dma, config)
+    }
+
+    /// As [`new`](Self::new), also stamping each received byte with the Embassy tick it arrived
+    /// at, into `rx_ticks` alongside `rx_buf`: read them with
+    /// [`UartRx::try_read_stamped`]. A burst the interrupt drains at once is spaced back one
+    /// byte-time per byte from the drain's tick, so each byte reads its own arrival.
+    ///
+    /// # Panics
+    /// As [`new`](Self::new), and if `rx_ticks` is not as long as `rx_buf`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_stamped<T: Instance>(
+        scif: Peri<'d, T>,
+        tx: Peri<'d, impl TxPin<T>>,
+        rx: Peri<'d, impl RxPin<T>>,
+        irq: impl Binding<T::BreakInterrupt, BreakInterruptHandler<T>>
+        + Binding<T::ErrorInterrupt, ErrorInterruptHandler<T>>
+        + Binding<T::RxInterrupt, RxInterruptHandler<T>>
+        + Binding<T::TxInterrupt, TxInterruptHandler<T>>
+        + Copy
+        + 'd,
+        rx_buf: &'static mut [u8],
+        rx_ticks: &'static mut [u64],
+        tx_dma: Option<Dma<'d>>,
+        config: Config,
+    ) -> Self {
+        assert_eq!(
+            rx_ticks.len(),
+            rx_buf.len(),
+            "uart: the tick buffer's length differs"
+        );
+        Self::new_irq(scif, tx, rx, irq, rx_buf, Some(rx_ticks), tx_dma, config)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_irq<T: Instance>(
+        _scif: Peri<'d, T>,
+        tx: Peri<'d, impl TxPin<T>>,
+        rx: Peri<'d, impl RxPin<T>>,
+        irq: impl Binding<T::BreakInterrupt, BreakInterruptHandler<T>>
+        + Binding<T::ErrorInterrupt, ErrorInterruptHandler<T>>
+        + Binding<T::RxInterrupt, RxInterruptHandler<T>>
+        + Binding<T::TxInterrupt, TxInterruptHandler<T>>
+        + Copy
+        + 'd,
+        rx_buf: &'static mut [u8],
+        rx_ticks: Option<&'static mut [u64]>,
+        tx_dma: Option<Dma<'d>>,
+        config: Config,
+    ) -> Self {
         assert!(!rx_buf.is_empty(), "uart: the receive buffer is empty");
+        assert!(config.baudrate != 0, "uart: baud rate 0");
+        // Ten bits a byte (8N1, the only framing a stamped receiver is built for).
+        let byte_ticks = 10 * embassy_time::TICK_HZ / u64::from(config.baudrate);
         let ch = T::INDEX;
         let (tx_alt, rx_alt) = (tx.alternate(), rx.alternate());
         crate::gpio::mux(tx, tx_alt);
@@ -802,6 +892,8 @@ impl<'d> Uart<'d, Async> {
         critical_section::with(|cs| {
             IRQ_RING[ch].borrow(cs).set(Some(IrqRing {
                 ptr: rx_buf.as_mut_ptr(),
+                ticks: rx_ticks.map(|t| t.as_mut_ptr()),
+                byte_ticks,
                 len: rx_buf.len(),
                 head: 0,
                 count: 0,
@@ -1027,6 +1119,20 @@ impl<'d> UartRx<'d, Async> {
             return Err(e);
         }
         Ok(self.try_read_ring())
+    }
+
+    /// The next received byte and the Embassy tick it arrived at, or `None` if the ring is empty.
+    /// Latched errors come first, as for [`try_read`](Self::try_read). A receiver not built by
+    /// [`Uart::new_stamped`] reads tick 0.
+    pub fn try_read_stamped(&mut self) -> Result<Option<(u8, u64)>, Error> {
+        if let Some(e) = take_error(self.ch) {
+            return Err(e);
+        }
+        Ok(match &mut self.path {
+            RxPath::Irq { .. } => irq_ring_pop_stamped(self.ch),
+            RxPath::Dma(ring) => ring.try_read().map(|byte| (byte, 0)),
+            RxPath::Fifo => None,
+        })
     }
 
     /// The next byte from the ring, ignoring latched errors.
@@ -2259,6 +2365,75 @@ mod irq_tests {
         receive(0x99);
         // SAFETY: the leaked buffer outlives the test; nothing writes it now.
         assert_eq!(unsafe { core::slice::from_raw_parts(view, 4) }, [0; 4]);
+    }
+
+    fn scif2_stamped(len: usize, baud: u32) -> UartRx<'static, Async> {
+        crate::clocks::init(crate::clocks::TEST_CLOCKS);
+        test::reset();
+        while take_error(2).is_some() {}
+        let mut config = Config::default();
+        config.baudrate = baud;
+        let (rx, _tx) = unsafe {
+            Uart::new_stamped(
+                SCIF2::steal(),
+                crate::peripherals::P5_7::steal(),
+                crate::peripherals::P1_10::steal(),
+                Irqs,
+                leaked(len),
+                std::vec![0u64; len].leak(),
+                None,
+                config,
+            )
+        }
+        .split();
+        rx
+    }
+
+    /// `count` bytes of `byte` arrive together: the receive interrupt drains them in one go.
+    fn receive_burst(byte: u8, count: u16) {
+        test::poke16(SCFDR, count);
+        test::poke8(SCFRDR, byte);
+        test::poke16(SCFSR, RDF);
+        unsafe {
+            <RxInterruptHandler<SCIF2> as Handler<crate::interrupt::typelevel::RXI2>>::on_interrupt(
+            )
+        };
+    }
+
+    #[test]
+    fn backdating_spaces_a_burst_one_byte_time_apart() {
+        // Three bytes drained at tick 10_000, 320 ticks per byte (31250 baud at 1 MHz).
+        assert_eq!(super::backdate(10_000, 0, 3, 320), 9_360);
+        assert_eq!(super::backdate(10_000, 1, 3, 320), 9_680);
+        assert_eq!(super::backdate(10_000, 2, 3, 320), 10_000);
+        assert_eq!(super::backdate(100, 0, 3, 320), 0, "never below zero");
+    }
+
+    #[test]
+    fn a_stamped_receiver_returns_each_byte_with_its_arrival_tick() {
+        let _serial = serial();
+        let mut rx = scif2_stamped(8, 31_250);
+        let byte_ticks = 10 * embassy_time::TICK_HZ / 31_250;
+        embassy_time::MockDriver::get().advance(embassy_time::Duration::from_ticks(5 * byte_ticks));
+        let drained_at = embassy_time::Instant::now().as_ticks();
+        receive_burst(0x90, 2);
+        assert_eq!(
+            rx.try_read_stamped(),
+            Ok(Some((0x90, drained_at - byte_ticks)))
+        );
+        assert_eq!(rx.try_read_stamped(), Ok(Some((0x90, drained_at))));
+        assert_eq!(rx.try_read_stamped(), Ok(None));
+        // An unstamped read of a stamped receiver still gets the bytes.
+        receive_burst(0xF8, 1);
+        assert_eq!(rx.try_read(), Ok(Some(0xF8)));
+    }
+
+    #[test]
+    fn an_unstamped_receiver_reads_tick_zero() {
+        let _serial = serial();
+        let mut rx = scif2(leaked(4));
+        receive(0x42);
+        assert_eq!(rx.try_read_stamped(), Ok(Some((0x42, 0))));
     }
 
     /// A non-DMA writer waiting for FIFO space has TIE set; a line-settings change keeps it, or
