@@ -73,8 +73,9 @@ use embassy_usb::{Builder, Handler};
 
 use crate::midi_packets::{self, RxRoute};
 pub use crate::midi_packets::{
-    Packet, PacketQueues, packets_enabled, try_recv_packet_from_host, try_send_packet_to_host,
-    tx_packet_free, tx_packet_pending, use_packets,
+    Packet, PacketQueues, StampedPacket, packets_enabled, try_recv_packet_from_host,
+    try_recv_stamped_packet_from_host, try_send_packet_to_host, tx_packet_free, tx_packet_pending,
+    use_packets,
 };
 
 // ============================================================================
