@@ -679,10 +679,15 @@ pub async fn run_rx_midi1_with<'d, D: Driver<'d>>(
         loop {
             match ep_out.read(buf).await {
                 Ok(n) => {
+                    // One tick for the whole transfer: when its read completed, the closest this
+                    // task gets to the wire.
+                    let ticks = embassy_time::Instant::now().as_ticks();
                     let packet_mode = state.packets.packets_enabled();
                     for packet in midi_packets::packets_in(&buf[..n]) {
                         match midi_packets::route_rx_packet(packet, packet_mode) {
-                            RxRoute::Packet(p) => state.packets.deliver_packet_from_host(p).await,
+                            RxRoute::Packet(p) => {
+                                state.packets.deliver_packet_from_host(p, ticks).await
+                            }
                             RxRoute::Message(msg) => {
                                 // A high-speed packet holds up to 128 events, more than the queue: wait for room,
                                 // which holds the host off, rather than drop the rest.
@@ -1100,7 +1105,10 @@ mod tests {
         );
         assert!(S.rx.try_send([0x90, 0x3C, 0x64]).is_ok());
         assert!(S.rx2.try_send([1, 0, 0, 0]).is_ok());
-        embassy_futures::block_on(S.packets().deliver_packet_from_host([0x08, 0x80, 0x3C, 0]));
+        embassy_futures::block_on(
+            S.packets()
+                .deliver_packet_from_host([0x08, 0x80, 0x3C, 0], 0),
+        );
         S.end_session();
         assert!(!S.connected());
         assert!(!S.midi2_active());
